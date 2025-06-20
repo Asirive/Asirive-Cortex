@@ -1,0 +1,62 @@
+<!DOCTYPE html><html lang=""><head><meta charset="utf-8"><meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="viewport" content="width=device-width,maximum-scale=1,user-scalable=1"><meta name="description" content="沁恒是一家基于自研专业接口IP、微处理器内核IP构建一体化芯片的集成电路设计企业。主要产品包括USB/蓝牙/以太网接口芯片和连接型/互联型/无线型MCU，产品侧重于连接、联网和控制。"><meta name="keywords" content="RISC-V,全栈MCU,USB,蓝牙,以太网,WCH"><link rel="icon" href="/favicon.ico"><title>南京沁恒微电子股份有限公司</title><script>window._CONFIG = {};
+      // 中文
+      window._CONFIG['domianURL'] = 'https://api.wch.cn'
+      // window._CONFIG['domianURL'] = 'http://192.168.111.189:6002'
+      window._CONFIG['pageTitle'] = ' - 南京沁恒微电子股份有限公司'//详情页标题
+      localStorage.setItem('locale','zh')
+
+      // 英文
+      // window._CONFIG['domianURL'] = 'https://api.wch.cn'
+      // window._CONFIG['domianURL'] = 'http://192.168.111.189:7060/'
+      // window._CONFIG['pageTitle'] = ' - Nanjing Qinheng Microelectronics Co., Ltd.'//详情页标题
+      // localStorage.setItem('locale','en')</script><link href="/css/chunk-09a7de75.734fd238.css" rel="prefetch"><link href="/css/chunk-0c8fb9b2.c3884b60.css" rel="prefetch"><link href="/css/chunk-284ae8b4.053841ab.css" rel="prefetch"><link href="/css/chunk-36e0e98c.8315f63a.css" rel="prefetch"><link href="/css/chunk-3d21f080.57e05fd7.css" rel="prefetch"><link href="/css/chunk-418c12f4.af034bbf.css" rel="prefetch"><link href="/css/chunk-44e47f61.d338524e.css" rel="prefetch"><link href="/css/chunk-4b483c80.ffc9c968.css" rel="prefetch"><link href="/css/chunk-5fecf562.6fcd7b4d.css" rel="prefetch"><link href="/css/chunk-641b20bb.9ff06b53.css" rel="prefetch"><link href="/css/chunk-71b26e8e.1caa7b4f.css" rel="prefetch"><link href="/css/chunk-72345160.29df0479.css" rel="prefetch"><link href="/css/chunk-7db1ebf0.5da63095.css" rel="prefetch"><link href="/css/chunk-86eb8b70.29ecdf0f.css" rel="prefetch"><link href="/css/chunk-a64a2408.18051d6c.css" rel="prefetch"><link href="/css/chunk-c764f6f8.a6aa64ab.css" rel="prefetch"><link href="/css/chunk-cf310886.bef078a3.css" rel="prefetch"><link href="/css/chunk-d4cad342.bd6ca3be.css" rel="prefetch"><link href="/css/chunk-e5c9da58.2c86efbf.css" rel="prefetch"><link href="/css/chunk-f5a7559a.6ce5c413.css" rel="prefetch"><link href="/js/chunk-09a7de75.c0790c3a.js" rel="prefetch"><link href="/js/chunk-0c8fb9b2.f5e244c4.js" rel="prefetch"><link href="/js/chunk-284ae8b4.2afed23d.js" rel="prefetch"><link href="/js/chunk-2d0c0275.dbdbc6b4.js" rel="prefetch"><link href="/js/chunk-2d22c089.299912a5.js" rel="prefetch"><link href="/js/chunk-36e0e98c.d5b388e3.js" rel="prefetch"><link href="/js/chunk-3d21f080.5739bfc1.js" rel="prefetch"><link href="/js/chunk-418c12f4.5648a9e3.js" rel="prefetch"><link href="/js/chunk-44e47f61.935295b5.js" rel="prefetch"><link href="/js/chunk-4b483c80.0fb11f76.js" rel="prefetch"><link href="/js/chunk-578f79b9.cc290e71.js" rel="prefetch"><link href="/js/chunk-5fecf562.91f87a39.js" rel="prefetch"><link href="/js/chunk-641b20bb.6500aaff.js" rel="prefetch"><link href="/js/chunk-71b26e8e.3f3e99d7.js" rel="prefetch"><link href="/js/chunk-72345160.31649eb9.js" rel="prefetch"><link href="/js/chunk-7db1ebf0.6a1f4d51.js" rel="prefetch"><link href="/js/chunk-86eb8b70.c1a42f83.js" rel="prefetch"><link href="/js/chunk-a64a2408.b256148a.js" rel="prefetch"><link href="/js/chunk-c764f6f8.d084fc8f.js" rel="prefetch"><link href="/js/chunk-cf310886.3e25e3a2.js" rel="prefetch"><link href="/js/chunk-d4cad342.b57c9fe1.js" rel="prefetch"><link href="/js/chunk-e5c9da58.afb92ae7.js" rel="prefetch"><link href="/js/chunk-f5a7559a.db72a9b8.js" rel="prefetch"><link href="/css/app.bcd1d619.css" rel="preload" as="style"><link href="/css/chunk-vendors.66b8a5ce.css" rel="preload" as="style"><link href="/js/app.63c484d3.js" rel="preload" as="script"><link href="/js/chunk-vendors.6ca5caf4.js" rel="preload" as="script"><link href="/css/chunk-vendors.66b8a5ce.css" rel="stylesheet"><link href="/css/app.bcd1d619.css" rel="stylesheet"></head><style>body{
+      margin:0px;
+    }</style><body><noscript><strong>We're sorry but wch123 doesn't work properly without JavaScript enabled. Please enable it to continue.</strong></noscript><div id="app"></div><script src="/js/chunk-vendors.6ca5caf4.js"></script><script src="/js/app.63c484d3.js"></script></body><script>var ie = IEVersion();
+    console.log('ie====',ie)
+    if (ie ) {//原：8
+      alert("为了您的浏览体验，建议您使用最新版本的谷歌浏览器。")
+      // var r=alert("您当前浏览器版本过低，为了您的浏览体验，请升级浏览器或使用最新版本的谷歌浏览器。")
+      // if(r){
+      //   return
+      // }
+    }
+    function IEVersion() {
+      var userAgent = navigator.userAgent; //取得浏览器的userAgent字符串
+      var isIE = userAgent.indexOf(".NET") > -1 ; //判断是否IE<11浏览器
+      // var isEdge = userAgent.indexOf("Edge") > -1 && !isIE; //判断是否IE的Edge浏览器
+      // var isIE11 = userAgent.indexOf('Trident') > -1 && userAgent.indexOf("rv:11.0") > -1;
+      if (isIE) {
+        return true
+      //   var reIE = new RegExp("MSIE (\\d+\\.\\d+);");
+      //   reIE.test(userAgent);
+      //   var fIEVersion = parseFloat(RegExp["$1"]);
+      //   console.log(fIEVersion)
+      //   if (fIEVersion == 7) {
+      //     return 7;
+      //   } else if (fIEVersion == 8) {
+      //     return 8;
+      //   } else if (fIEVersion == 9) {
+      //     return 9;
+      //   } else if (fIEVersion == 10) {
+      //     return 10;
+      //   } else {
+      //     return 6;//IE版本<=7
+      //   }
+      // } else if (isEdge) {
+      //   return 'edge';//edge
+      // } else if (isIE11) {
+      //   return 11; //IE11
+      // } else {
+      //   return 15;//不是ie浏览器
+      // }
+    }else{
+      return false
+    }
+  
+    // screenResolution()
+    // function screenResolution(){
+    //   // console.log('分辨率宽度：',window.screen.width)
+    //   if(window.screen.width < 1360){
+    //     alert('您当前设备屏幕分辨率过低，为了您的浏览体验，请更换分辨率更高的设备。')
+    //   }
+    }</script></html>
