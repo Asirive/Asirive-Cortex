@@ -1,0 +1,36 @@
+# Python dependencies
+.env
+*.pyc
+__pycache__/
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+temp_*.wav
+temp_*.mp3
+*.log
+
+# Model weights (too large for git)
+# models/*.pt  # Uncomment if models are >100MB
+
+# User data
+recordings/
+debug_images/
+*.pkl
+*.cache

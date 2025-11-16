@@ -1,7 +1,7 @@
 import cv2
 import time
 
-ESP32_CAM_STREAM_URL = "http://192.168.99.73/stream"
+ESP32_CAM_STREAM_URL = "http://10.104.142.73/stream"
 
 print(f"Attempting to connect to: {ESP32_CAM_STREAM_URL}")
 print(f"OpenCV version: {cv2.__version__}")

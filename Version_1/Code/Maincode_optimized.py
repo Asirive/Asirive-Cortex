@@ -25,12 +25,12 @@ from murf import Murf
 
 
 # --- Configuration ---
-GOOGLE_API_KEY = "AIzaSyBpvmKgr280xIXN0XL1YwkeUbiWEzwWXBw"
+GOOGLE_API_KEY = "AIzaSyB2ScnKpE0n6Skg2tTKdl2Gn_tQaWroWZY"
 MURF_API_KEY = "ap2_2bc1ff2a-0e45-4c92-b440-93ba18a3eb32" # IMPORTANT: Replace with your actual Murf AI API key
 genai.configure(api_key=GOOGLE_API_KEY)
 GEMINI_MODEL_ID = "gemini-1.5-flash-latest"
 
-DEFAULT_ESP32_CAM_IP = "192.168.51.73"
+DEFAULT_ESP32_CAM_IP = "10.104.142.73"
 
 WHISPER_API_URL = "hf-audio/whisper-large-v3"
 AUDIO_FILE_FOR_WHISPER = "temp_mic_input.wav"
@@ -271,6 +271,7 @@ class App:
                     if not self.use_webcam_fallback:
                         self.status_queue.put(f"Status: Connecting to {self.esp32_ip}...")
                         stream_url = f"http://{self.esp32_ip}/stream"
+                        self.debug_print(f"Attempting cv2.VideoCapture on: {stream_url}") # DEBUG
                         self.cap = cv2.VideoCapture(stream_url)
                         
                         if self.cap.isOpened():
@@ -302,6 +303,7 @@ class App:
                     continue
 
                 ret, frame = self.cap.read()
+                self.debug_print(f"Frame read attempt: ret={ret}") # DEBUG
                 if not ret:
                     self.status_queue.put("Status: Stream lost. Reconnecting...")
                     self.debug_print("Frame read failed. Releasing capture.")
@@ -310,10 +312,15 @@ class App:
                     time.sleep(1) # Wait a moment before trying to reconnect
                     continue
 
+                # --- ROTATE FRAME IF FROM ESP32 ---
+                if not self.use_webcam_fallback:
+                    frame = cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+
                 # Store the latest frame for Gemini
                 self.latest_frame_for_gemini = frame
 
                 if not self.frame_queue.full():
+                    self.debug_print("Putting frame in frame_queue.") # DEBUG
                     self.frame_queue.put(frame)
 
             except Exception as e:
@@ -337,6 +344,7 @@ class App:
                 continue
             try:
                 frame = self.frame_queue.get(timeout=1)
+                self.debug_print("Got frame from frame_queue for YOLO processing.") # DEBUG
 
                 # Perform inference
                 results = self.model(frame, verbose=False)
@@ -357,6 +365,7 @@ class App:
 
                 # Put the annotated frame in the queue for the UI
                 if not self.processed_frame_queue.full():
+                    self.debug_print("Putting annotated frame in processed_frame_queue.") # DEBUG
                     self.processed_frame_queue.put(annotated_frame)
 
             except queue.Empty:
@@ -370,6 +379,7 @@ class App:
         """Gets an annotated frame from the queue and displays it on the canvas."""
         try:
             frame = self.processed_frame_queue.get_nowait()
+            self.debug_print("Got frame from processed_frame_queue for UI update.") # DEBUG
 
             # Resize frame to fit canvas while maintaining aspect ratio
             h, w, _ = frame.shape
