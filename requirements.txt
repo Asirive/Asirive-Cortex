@@ -1,0 +1,54 @@
+# Project-Cortex v2.0 - Python Dependencies
+# Laptop Development + Raspberry Pi 5 Deployment
+# Last Updated: November 16, 2025
+
+# ===== Core Framework =====
+python-dotenv==1.0.0          # Environment variable management
+
+# ===== Computer Vision =====
+opencv-python==4.8.1.78       # Image processing (laptop + RPi)
+# picamera2==0.3.16           # RPi 5 camera (install on RPi only)
+numpy==1.24.3                 # Array operations
+
+# ===== AI/ML Models =====
+ultralytics==8.0.227          # YOLO object detection
+torch==2.1.0                  # PyTorch (CPU-only for RPi)
+torchvision==0.16.0           # Vision utilities
+pillow==10.1.0                # Image manipulation
+
+# ===== Cloud AI APIs =====
+google-generativeai==0.3.1   # Google Gemini API
+openai==1.3.5                 # OpenAI GPT-4 Vision (fallback)
+requests==2.31.0              # HTTP requests
+gradio-client==0.7.1          # Hugging Face API client (Whisper STT)
+
+# ===== Audio Processing =====
+pygame==2.5.2                 # Audio playback
+sounddevice==0.4.6            # Audio recording
+scipy==1.11.4                 # Audio file I/O
+# murf==1.0.0                 # Murf AI TTS (optional, install if using)
+
+# ===== GUI (Development) =====
+# Tkinter comes with Python standard library
+Pillow==10.1.0                # For ImageTk
+
+# ===== GPIO & Hardware (RPi only) =====
+# gpiod==2.1.0                # Modern GPIO library for RPi 5
+# pyserial==3.5               # GPS module communication (optional)
+
+# ===== Web Framework (Layer 3 - Future) =====
+# fastapi==0.104.1            # REST API backend
+# uvicorn==0.24.0             # ASGI server
+# websockets==12.0            # Real-time dashboard
+
+# ===== Utilities =====
+pyyaml==6.0.1                 # Config file parsing
+python-dateutil==2.8.2        # Date/time utilities
+
+# ===== Development Tools =====
+pytest==7.4.3                 # Testing framework
+black==23.11.0                # Code formatting
+flake8==6.1.0                 # Linting
+
+# ===== Performance Monitoring =====
+psutil==5.9.6                 # System resource monitoring
