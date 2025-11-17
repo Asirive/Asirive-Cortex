@@ -7,8 +7,38 @@ This is the laptop-first development version that uses:
 - Same 3-Layer AI architecture as production
 - Easy deployment to RPi 5 via VS Code Remote SSH
 
+HYBRID 3-LAYER AI ARCHITECTURE:
+================================
+Layer 1 (Reflex) - Local YOLO Object Detection:
+  - Runs on CPU (Raspberry Pi compatible)
+  - Uses YOLOv11x for maximum accuracy
+  - Real-time object detection (<100ms latency target)
+  - Provides safety-critical alerts (obstacles, hazards)
+  - Always active, works offline
+
+Layer 2 (Thinker) - Cloud Multimodal AI (Google Gemini):
+  - Analyzes complex scenes using visual + Layer 1 context
+  - Handles OCR, text reading, detailed scene descriptions
+  - Requires internet connection (via mobile hotspot)
+  - Triggered by user queries
+  - Uses Layer 1 detections to enhance accuracy
+
+Layer 3 (Guide) - Audio Interface & Navigation:
+  - Text-to-Speech (Piper TTS local, Murf AI for rich descriptions)
+  - Speech-to-Text (Whisper Large v3 via Hugging Face)
+  - 3D Spatial Audio (OpenAL - future implementation)
+  - GPS Navigation (optional for YIA demo)
+
+DEVICE CONFIGURATION:
+=====================
+- YOLO_DEVICE='cpu' is MANDATORY for Raspberry Pi deployment
+- Model runs entirely on CPU (no CUDA/GPU required)
+- Optimized for RPi 5's Quad-core ARM Cortex-A76 @ 2.4GHz
+- Expected inference time: ~500-800ms on RPi 5 with yolo11x.pt
+
 Author: Haziq (@IRSPlays)
-Date: November 16, 2025
+Date: November 17, 2025
+Competition: Young Innovators Awards (YIA) 2026
 """
 
 import os
@@ -23,24 +53,35 @@ import numpy as np
 import torch
 from PIL import Image, ImageTk
 import google.generativeai as genai
-import pygame
 import sounddevice as sd
 from scipy.io.wavfile import write as write_wav
 from gradio_client import Client as GradioClient, file as gradio_file
 from ultralytics import YOLO
 from dotenv import load_dotenv
 import logging
+import sys
+import warnings
+
+# Suppress pygame deprecation warnings
+warnings.filterwarnings('ignore', category=DeprecationWarning, module='pygame')
+
+# Configure UTF-8 output for Windows console
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+
+import pygame  # Import after console reconfiguration
 
 # Load environment variables
 load_dotenv()
 
-# Configure logging
+# Configure logging with UTF-8 encoding to handle emojis on Windows
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('cortex_gui.log'),
-        logging.StreamHandler()
+        logging.FileHandler('cortex_gui.log', encoding='utf-8'),
+        logging.StreamHandler(sys.stdout)  # Use sys.stdout instead of default stderr
     ]
 )
 logger = logging.getLogger(__name__)
@@ -50,8 +91,9 @@ GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY', '')
 GEMINI_MODEL_ID = os.getenv('GEMINI_MODEL', 'gemini-1.5-flash-latest')
 MURF_API_KEY = os.getenv('MURF_API_KEY', '')
 WHISPER_API_URL = os.getenv('WHISPER_MODEL', 'hf-audio/whisper-large-v3')
-YOLO_MODEL_PATH = os.getenv('YOLO_MODEL_PATH', 'models/yolo11s.pt')
+YOLO_MODEL_PATH = os.getenv('YOLO_MODEL_PATH', 'models/yolo11x.pt')  # Using yolo11x for best accuracy
 YOLO_CONFIDENCE = float(os.getenv('YOLO_CONFIDENCE', '0.5'))
+YOLO_DEVICE = os.getenv('YOLO_DEVICE', 'cpu')  # Force CPU for RPi compatibility
 
 # Temporary files
 AUDIO_FILE_FOR_WHISPER = "temp_mic_input.wav"
@@ -283,7 +325,7 @@ class ProjectCortexGUI:
         threading.Thread(target=self._init_yolo_thread, daemon=True).start()
     
     def _init_yolo_thread(self):
-        """Background YOLO model loading."""
+        """Background YOLO model loading with forced CPU inference."""
         try:
             if not os.path.exists(YOLO_MODEL_PATH):
                 logger.error(f"❌ Model not found: {YOLO_MODEL_PATH}")
@@ -291,22 +333,23 @@ class ProjectCortexGUI:
                 self.debug_print(f"❌ FATAL: {YOLO_MODEL_PATH} not found")
                 return
             
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            # Force CPU device for Raspberry Pi compatibility
+            device = YOLO_DEVICE  # Use configured device (default: 'cpu')
             logger.info(f"Loading YOLO on device: {device}")
-            self.debug_print(f"🔄 Loading YOLO on {device}...")
+            self.debug_print(f"🔄 Loading YOLO {os.path.basename(YOLO_MODEL_PATH)} on {device}...")
             
+            # Load model with explicit device specification
             self.model = YOLO(YOLO_MODEL_PATH)
-            self.model.to(device)
+            # Note: Ultralytics automatically uses CPU if device='cpu' is passed during inference
             self.classes = self.model.names
             
-            # Test inference
-            if device == 'cuda':
-                dummy = np.zeros((480, 640, 3), dtype=np.uint8)
-                self.model(dummy, verbose=False)
+            # Run warm-up inference on CPU to verify model works
+            dummy = np.zeros((640, 640, 3), dtype=np.uint8)
+            self.model(dummy, verbose=False, device=device)
             
             self.status_queue.put(f"Status: YOLO ready ({device})")
             self.debug_print(f"✅ YOLO loaded: {os.path.basename(YOLO_MODEL_PATH)} on {device}")
-            logger.info("✅ YOLO model loaded successfully")
+            logger.info(f"✅ YOLO model loaded successfully on {device}")
             
         except Exception as e:
             logger.error(f"❌ YOLO loading failed: {e}", exc_info=True)
@@ -400,7 +443,7 @@ class ProjectCortexGUI:
     
     def yolo_processing_thread(self):
         """
-        Layer 1 (Reflex): Real-time object detection.
+        Layer 1 (Reflex): Real-time object detection with CPU inference.
         Processes frames with YOLO and puts annotated frames in queue.
         """
         while not self.stop_event.is_set():
@@ -411,24 +454,29 @@ class ProjectCortexGUI:
             try:
                 frame = self.frame_queue.get(timeout=1)
                 
-                # Run YOLO inference
-                results = self.model(frame, conf=YOLO_CONFIDENCE, verbose=False)
+                # Run YOLO inference with explicit CPU device
+                results = self.model(frame, conf=YOLO_CONFIDENCE, verbose=False, device=YOLO_DEVICE)
                 annotated_frame = results[0].plot()
                 
-                # Extract detections
+                # Extract detections (only above confidence threshold)
                 detections = []
                 for box in results[0].boxes:
-                    class_id = int(box.cls)
-                    class_name = self.classes[class_id]
                     confidence = float(box.conf)
-                    detections.append(f"{class_name} ({confidence:.2f})")
+                    if confidence > YOLO_CONFIDENCE:  # Explicit threshold check
+                        class_id = int(box.cls)
+                        class_name = self.classes[class_id]
+                        detections.append(f"{class_name} ({confidence:.2f})")
                 
                 detections_str = ", ".join(sorted(set(detections))) or "nothing"
                 self.detection_queue.put(detections_str)
                 
-                # Put annotated frame for UI
-                if not self.processed_frame_queue.full():
-                    self.processed_frame_queue.put(annotated_frame)
+                # Put annotated frame for UI (clear old frames if queue is full)
+                if self.processed_frame_queue.full():
+                    try:
+                        self.processed_frame_queue.get_nowait()  # Remove oldest frame
+                    except queue.Empty:
+                        pass
+                self.processed_frame_queue.put(annotated_frame)
                 
             except queue.Empty:
                 continue
@@ -437,7 +485,7 @@ class ProjectCortexGUI:
                 time.sleep(1)
     
     def update_video(self):
-        """Updates canvas with annotated video frame."""
+        """Gets an annotated frame from the queue and displays it on the canvas."""
         try:
             frame = self.processed_frame_queue.get_nowait()
             
@@ -465,7 +513,9 @@ class ProjectCortexGUI:
                     anchor=tk.CENTER
                 )
         except queue.Empty:
-            pass
+            pass  # No new frame, keep displaying the last one
+        except Exception as e:
+            logger.error(f"Video display error: {e}")
         finally:
             self.window.after(self.delay, self.update_video)
     
@@ -685,20 +735,33 @@ class ProjectCortexGUI:
         threading.Thread(target=self._send_query_thread, args=(query, frame_copy), daemon=True).start()
     
     def _send_query_thread(self, query, frame):
-        """Background Gemini API call."""
+        """Layer 2 (Thinker): Background Gemini API call with Layer 1 context."""
         try:
             # Convert to PIL Image
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             img_pil = Image.fromarray(rgb_frame)
             
-            # Build context with detections
-            context = f"""You are an AI assistant for visually impaired users. 
-Current detected objects: {self.last_detections}
-User query: {query}
+            # Build hybrid AI context with Layer 1 (YOLO) detections
+            context = f"""You are Project-Cortex, an AI assistant for visually impaired users.
 
-Analyze the image and provide a clear, concise response."""
+**3-Layer Hybrid AI Architecture:**
+- Layer 1 (Reflex - Local YOLO): Currently detected objects: {self.last_detections}
+- Layer 2 (Thinker - You): Analyze the scene using the image and Layer 1 context
+- Layer 3 (Guide): Your response will be converted to speech
+
+**User Query:** {query}
+
+**Instructions:**
+1. Use Layer 1 detections as context for your analysis
+2. Provide clear, concise descriptions suitable for audio output
+3. Focus on safety-critical information first (obstacles, hazards)
+4. Describe spatial relationships (e.g., "person on your left")
+5. Keep responses under 50 words for TTS efficiency
+
+Provide your response:"""
             
-            self.debug_print(f"🔄 Sending to Gemini: '{query[:50]}...'")
+            self.debug_print(f"🔄 Layer 2 (Gemini): Analyzing '{query[:50]}...'")
+            self.debug_print(f"   Layer 1 Context: {self.last_detections}")
             
             model = genai.GenerativeModel(GEMINI_MODEL_ID)
             response = model.generate_content([context, img_pil])
@@ -706,9 +769,9 @@ Analyze the image and provide a clear, concise response."""
             self.response_text.delete('1.0', tk.END)
             self.response_text.insert(tk.END, response.text)
             self.status_queue.put("Status: Response received")
-            self.debug_print("✅ Gemini response received")
+            self.debug_print("✅ Layer 2 response received")
             
-            # TODO: Generate TTS from response
+            # TODO: Layer 3 (Guide) - Generate TTS from response
             # self.generate_tts(response.text)
             
         except Exception as e:
@@ -761,8 +824,13 @@ Analyze the image and provide a clear, concise response."""
         self.window.destroy()
 
 
-# --- Main Entry Point ---
-if __name__ == "__main__":
+def main():
+    """Main entry point for Project-Cortex GUI."""
     root = tk.Tk()
     app = ProjectCortexGUI(root)
     root.mainloop()
+
+
+# --- Main Entry Point ---
+if __name__ == "__main__":
+    main()
