@@ -8,7 +8,7 @@ python-dotenv==1.0.0          # Environment variable management
 # ===== Computer Vision =====
 opencv-python==4.8.1.78       # Image processing (laptop + RPi)
 # picamera2==0.3.16           # RPi 5 camera (install on RPi only)
-numpy==1.24.3                 # Array operations
+numpy>=1.24.3,<2.0            # Array operations (pinned to 1.x for OpenCV compatibility)
 
 # ===== AI/ML Models =====
 ultralytics==8.0.227          # YOLO object detection
