@@ -43,8 +43,8 @@ Competition: Young Innovators Awards (YIA) 2026
 
 import os
 import cv2
-import tkinter as tk
-from tkinter import scrolledtext, messagebox
+import customtkinter as ctk
+from tkinter import messagebox
 import threading
 import queue
 import time
@@ -61,6 +61,11 @@ from dotenv import load_dotenv
 import logging
 import sys
 import warnings
+
+# Import our custom AI handlers
+from layer1_reflex.whisper_handler import WhisperSTT
+from layer1_reflex.kokoro_handler import KokoroTTS
+from layer2_thinker.gemini_handler import GeminiVision
 
 # Suppress pygame deprecation warnings
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='pygame')
@@ -93,7 +98,7 @@ MURF_API_KEY = os.getenv('MURF_API_KEY', '')
 WHISPER_API_URL = os.getenv('WHISPER_MODEL', 'hf-audio/whisper-large-v3')
 YOLO_MODEL_PATH = os.getenv('YOLO_MODEL_PATH', 'models/yolo11x.pt')  # Using yolo11x for best accuracy
 YOLO_CONFIDENCE = float(os.getenv('YOLO_CONFIDENCE', '0.5'))
-YOLO_DEVICE = os.getenv('YOLO_DEVICE', 'cpu')  # Force CPU for RPi compatibility
+YOLO_DEVICE = os.getenv('YOLO_DEVICE', 'cuda')  # Use CUDA for GPU acceleration (auto-fallback to CPU if unavailable)
 
 # Temporary files
 AUDIO_FILE_FOR_WHISPER = "temp_mic_input.wav"
@@ -103,6 +108,9 @@ TEMP_TTS_OUTPUT_FILE = "temp_tts_output.mp3"
 CAMERA_SOURCE = 0  # USB webcam
 USE_PICAMERA = False  # Set to True when running on RPi 5
 
+# Set CustomTkinter appearance
+ctk.set_appearance_mode("Dark")
+ctk.set_default_color_theme("blue")
 
 class ProjectCortexGUI:
     """
@@ -117,7 +125,7 @@ class ProjectCortexGUI:
     def __init__(self, window, window_title="Project-Cortex v2.0 - Development GUI"):
         self.window = window
         self.window.title(window_title)
-        self.window.geometry("1280x800")
+        self.window.geometry("1280x850")
         
         # --- Core State ---
         self.model = None  # YOLO model
@@ -143,19 +151,17 @@ class ProjectCortexGUI:
         # --- Audio ---
         self.input_devices = {}
         self.output_devices = {}
-        self.selected_input_device = tk.StringVar(self.window)
-        self.selected_output_device = tk.StringVar(self.window)
+        self.selected_input_device = ctk.StringVar(value="Loading...")
+        self.selected_output_device = ctk.StringVar(value="Loading...")
         self.last_used_output_device = None
         self.recording_active = False
         self.audio_queue = queue.Queue()
         self.last_tts_file = None
         
-        # --- Gemini AI ---
-        if GOOGLE_API_KEY:
-            genai.configure(api_key=GOOGLE_API_KEY)
-            logger.info("✅ Gemini API configured")
-        else:
-            logger.warning("⚠️ No GOOGLE_API_KEY found in .env")
+        # --- AI Handler Instances ---
+        self.whisper_stt = None  # Lazy load to avoid startup delay
+        self.kokoro_tts = None   # Lazy load to avoid startup delay
+        self.gemini_vision = None  # Lazy load to avoid startup delay
         
         # --- Build UI ---
         self.init_ui()
@@ -181,138 +187,210 @@ class ProjectCortexGUI:
     def init_ui(self):
         """Sets up the main UI layout."""
         # Main container with dark theme
-        self.window.configure(bg='#1e1e1e')
+        self.window.grid_columnconfigure(0, weight=1)
+        self.window.grid_rowconfigure(1, weight=1)
         
-        # --- Top Frame: Status ---
-        top_frame = tk.Frame(self.window, bg='#1e1e1e')
-        top_frame.pack(fill=tk.X, padx=10, pady=5)
+        # --- Top Frame: Status HUD ---
+        top_frame = ctk.CTkFrame(self.window, corner_radius=10)
+        top_frame.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
         
-        self.status_label = tk.Label(
+        self.status_label = ctk.CTkLabel(
             top_frame, 
-            text="Status: Initializing...", 
-            fg="#00ff00", 
-            bg='#1e1e1e',
-            font=('Consolas', 11, 'bold')
+            text="SYSTEM STATUS: INITIALIZING...", 
+            text_color="#00ff00", 
+            font=('Consolas', 14, 'bold')
         )
-        self.status_label.pack(side=tk.LEFT)
+        self.status_label.pack(side="left", padx=20, pady=10)
         
-        camera_label = tk.Label(
-            top_frame,
-            text=f"📹 Camera: {'RPi IMX415' if USE_PICAMERA else 'USB Webcam'}",
-            fg="#00aaff",
-            bg='#1e1e1e',
-            font=('Consolas', 10)
-        )
-        camera_label.pack(side=tk.RIGHT)
+        # Handler Status Indicators
+        self.handler_status_frame = ctk.CTkFrame(top_frame, fg_color="transparent")
+        self.handler_status_frame.pack(side="right", padx=20)
         
+        self.create_status_indicator("YOLO", "#00ff00")
+        self.create_status_indicator("WHISPER", "#555555")
+        self.create_status_indicator("GEMINI", "#555555")
+        self.create_status_indicator("KOKORO", "#555555")
+
         # --- Video Frame ---
-        video_frame = tk.Frame(self.window, bg='#000000')
-        video_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+        video_frame = ctk.CTkFrame(self.window, fg_color="black", corner_radius=0)
+        video_frame.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
         
-        self.canvas = tk.Canvas(video_frame, bg="black", highlightthickness=0)
-        self.canvas.pack(fill=tk.BOTH, expand=True)
+        self.canvas = ctk.CTkCanvas(video_frame, bg="black", highlightthickness=0)
+        self.canvas.pack(fill="both", expand=True)
         self.canvas.bind("<Configure>", self.on_canvas_resize)
         
         # --- Controls Frame ---
-        controls_frame = tk.Frame(self.window, bg='#2d2d2d')
-        controls_frame.pack(fill=tk.BOTH, padx=10, pady=5)
+        controls_frame = ctk.CTkFrame(self.window, corner_radius=10)
+        controls_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=10)
         
         # Query Section
-        query_frame = tk.Frame(controls_frame, bg='#2d2d2d')
-        query_frame.pack(fill=tk.X, pady=5, padx=5)
+        query_frame = ctk.CTkFrame(controls_frame, fg_color="transparent")
+        query_frame.pack(fill="x", pady=10, padx=10)
         
-        tk.Label(query_frame, text="💬 Ask Gemini:", bg='#2d2d2d', fg='white', font=('Arial', 10, 'bold')).pack(side=tk.LEFT, padx=5)
-        self.input_entry = tk.Entry(query_frame, font=('Arial', 10), bg='#3c3c3c', fg='white', insertbackground='white')
-        self.input_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+        ctk.CTkLabel(query_frame, text="💬 Ask Gemini:", font=('Arial', 12, 'bold')).pack(side="left", padx=5)
+        self.input_entry = ctk.CTkEntry(query_frame, placeholder_text="Type your question here...", font=('Arial', 12))
+        self.input_entry.pack(side="left", fill="x", expand=True, padx=10)
         self.input_entry.bind('<Return>', lambda e: self.send_query())
         
-        self.send_query_btn = tk.Button(
+        self.send_query_btn = ctk.CTkButton(
             query_frame, 
             text="Send 🚀", 
             command=self.send_query,
-            bg='#007acc',
-            fg='white',
-            font=('Arial', 10, 'bold'),
-            padx=15
+            font=('Arial', 12, 'bold'),
+            width=100
         )
-        self.send_query_btn.pack(side=tk.RIGHT, padx=5)
+        self.send_query_btn.pack(side="right", padx=5)
         
         # Response Section
-        tk.Label(controls_frame, text="🤖 Gemini's Response:", bg='#2d2d2d', fg='white', font=('Arial', 10, 'bold')).pack(anchor=tk.W, padx=5)
-        self.response_text = scrolledtext.ScrolledText(
+        ctk.CTkLabel(controls_frame, text="🤖 Gemini's Response:", font=('Arial', 12, 'bold')).pack(anchor="w", padx=15)
+        self.response_text = ctk.CTkTextbox(
             controls_frame, 
-            height=5, 
-            wrap=tk.WORD,
-            bg='#1e1e1e',
-            fg='#00ff00',
-            font=('Consolas', 9),
-            insertbackground='white'
+            height=100, 
+            font=('Consolas', 12),
+            text_color="#00ff00"
         )
-        self.response_text.pack(fill=tk.X, expand=True, padx=5, pady=2)
+        self.response_text.pack(fill="x", expand=True, padx=15, pady=5)
         
         # Audio Controls
-        audio_frame = tk.Frame(controls_frame, bg='#2d2d2d')
-        audio_frame.pack(fill=tk.X, pady=5, padx=5)
+        audio_frame = ctk.CTkFrame(controls_frame, fg_color="transparent")
+        audio_frame.pack(fill="x", pady=10, padx=10)
         
-        self.record_btn = tk.Button(
+        self.record_btn = ctk.CTkButton(
             audio_frame, 
             text="🎤 Record Voice", 
             command=self.toggle_recording,
-            bg='#dc3545',
-            fg='white',
-            font=('Arial', 10, 'bold'),
-            padx=10
+            fg_color="#dc3545",
+            hover_color="#c82333",
+            font=('Arial', 12, 'bold')
         )
-        self.record_btn.pack(side=tk.LEFT, padx=5)
+        self.record_btn.pack(side="left", padx=5)
         
-        self.play_tts_btn = tk.Button(
+        self.play_tts_btn = ctk.CTkButton(
             audio_frame, 
             text="🔊 Replay TTS", 
             command=self.replay_last_tts,
-            bg='#28a745',
-            fg='white',
-            font=('Arial', 10, 'bold'),
-            padx=10
+            fg_color="#28a745",
+            hover_color="#218838",
+            font=('Arial', 12, 'bold')
         )
-        self.play_tts_btn.pack(side=tk.LEFT, padx=5)
+        self.play_tts_btn.pack(side="left", padx=5)
         
         # Audio Device Selection
-        tk.Label(audio_frame, text="Input:", bg='#2d2d2d', fg='white').pack(side=tk.LEFT, padx=5)
-        self.input_device_menu = tk.OptionMenu(audio_frame, self.selected_input_device, "Loading...")
-        self.input_device_menu.config(bg='#3c3c3c', fg='white')
-        self.input_device_menu.pack(side=tk.LEFT, padx=2)
+        ctk.CTkLabel(audio_frame, text="Input:").pack(side="left", padx=5)
+        self.input_device_menu = ctk.CTkOptionMenu(audio_frame, variable=self.selected_input_device, values=["Loading..."])
+        self.input_device_menu.pack(side="left", padx=5)
         
-        tk.Label(audio_frame, text="Output:", bg='#2d2d2d', fg='white').pack(side=tk.LEFT, padx=5)
-        self.output_device_menu = tk.OptionMenu(audio_frame, self.selected_output_device, "Loading...")
-        self.output_device_menu.config(bg='#3c3c3c', fg='white')
-        self.output_device_menu.pack(side=tk.LEFT, padx=2)
+        ctk.CTkLabel(audio_frame, text="Output:").pack(side="left", padx=5)
+        self.output_device_menu = ctk.CTkOptionMenu(audio_frame, variable=self.selected_output_device, values=["Loading..."])
+        self.output_device_menu.pack(side="left", padx=5)
         
-        tk.Button(
+        ctk.CTkButton(
             audio_frame, 
             text="🔄", 
             command=self.populate_audio_devices,
-            bg='#6c757d',
-            fg='white'
-        ).pack(side=tk.LEFT, padx=2)
+            width=30,
+            fg_color="#6c757d"
+        ).pack(side="left", padx=5)
         
+        # Initialize Debug Console
+        self.init_debug_console(controls_frame)
+
+    def create_status_indicator(self, name, color):
+        frame = ctk.CTkFrame(self.handler_status_frame, fg_color="transparent")
+        frame.pack(side="left", padx=10)
+        
+        indicator = ctk.CTkLabel(frame, text="●", text_color=color, font=('Arial', 20))
+        indicator.pack(side="left")
+        
+        label = ctk.CTkLabel(frame, text=name, font=('Arial', 10, 'bold'))
+        label.pack(side="left", padx=2)
+        
+        # Store reference to update later
+        setattr(self, f"status_indicator_{name.lower()}", indicator)
+
+    def update_handler_status(self, handler, status):
+        """Updates the color of the status indicators."""
+        color = "#00ff00" if status == "active" else "#555555"
+        if status == "processing": color = "#ffff00"
+        if status == "error": color = "#ff0000"
+        
+        indicator = getattr(self, f"status_indicator_{handler}", None)
+        if indicator:
+            indicator.configure(text_color=color)
+
+    def init_debug_console(self, parent_frame):
+        """Initialize the debug console in the UI."""
         # Debug Console
-        debug_frame = tk.Frame(controls_frame, bg='#2d2d2d')
-        debug_frame.pack(fill=tk.BOTH, expand=True, pady=5, padx=5)
+        debug_frame = ctk.CTkFrame(parent_frame, fg_color="transparent")
+        debug_frame.pack(fill="both", expand=True, pady=5, padx=5)
         
-        tk.Label(debug_frame, text="🔧 Debug Console:", bg='#2d2d2d', fg='white', font=('Arial', 9, 'bold')).pack(anchor=tk.W)
-        self.debug_text = scrolledtext.ScrolledText(
+        ctk.CTkLabel(debug_frame, text="🔧 Debug Console:", font=('Arial', 12, 'bold')).pack(anchor="w")
+        self.debug_text = ctk.CTkTextbox(
             debug_frame, 
-            height=4, 
-            wrap=tk.WORD,
-            bg='#0c0c0c',
-            fg='#00ff00',
-            font=('Consolas', 8)
+            height=100, 
+            font=('Consolas', 10),
+            text_color="#00ff00"
         )
-        self.debug_text.pack(fill=tk.BOTH, expand=True)
+        self.debug_text.pack(fill="both", expand=True)
         
         self.debug_print("✅ UI Initialized - Project-Cortex v2.0")
         self.debug_print(f"📂 YOLO Model: {YOLO_MODEL_PATH}")
+        self.debug_print(f"🎮 Device: {YOLO_DEVICE}")
         self.debug_print(f"🤖 Gemini Model: {GEMINI_MODEL_ID}")
+
+    def init_whisper_stt(self):
+        """Lazy initialize Whisper STT (called on first voice command)."""
+        if self.whisper_stt is None:
+            try:
+                self.update_handler_status("whisper", "processing")
+                self.debug_print("⏳ Loading Whisper STT...")
+                self.whisper_stt = WhisperSTT(model_size="base", device=None)  # Auto-detect GPU/CPU
+                self.whisper_stt.load_model()
+                self.debug_print("✅ Whisper STT ready")
+                logger.info("✅ Whisper STT initialized")
+                self.update_handler_status("whisper", "active")
+            except Exception as e:
+                logger.error(f"❌ Whisper STT init failed: {e}")
+                self.debug_print(f"❌ Whisper failed: {e}")
+                self.update_handler_status("whisper", "error")
+                self.whisper_stt = None
+        return self.whisper_stt is not None
+    
+    def init_kokoro_tts(self):
+        """Lazy initialize Kokoro TTS (called on first TTS request)."""
+        if self.kokoro_tts is None:
+            try:
+                self.update_handler_status("kokoro", "processing")
+                self.debug_print("⏳ Loading Kokoro TTS...")
+                self.kokoro_tts = KokoroTTS(lang_code="a", default_voice="af_alloy")
+                self.kokoro_tts.load_pipeline()
+                self.debug_print("✅ Kokoro TTS ready")
+                logger.info("✅ Kokoro TTS initialized")
+                self.update_handler_status("kokoro", "active")
+            except Exception as e:
+                logger.error(f"❌ Kokoro TTS init failed: {e}")
+                self.debug_print(f"❌ Kokoro failed: {e}")
+                self.update_handler_status("kokoro", "error")
+                self.kokoro_tts = None
+        return self.kokoro_tts is not None
+    
+    def init_gemini_vision(self):
+        """Lazy initialize Gemini Vision (called on first scene analysis)."""
+        if self.gemini_vision is None:
+            try:
+                self.update_handler_status("gemini", "processing")
+                self.debug_print("⏳ Loading Gemini Vision...")
+                self.gemini_vision = GeminiVision(api_key=GOOGLE_API_KEY)
+                self.gemini_vision.initialize()
+                self.debug_print("✅ Gemini Vision ready")
+                logger.info("✅ Gemini Vision initialized")
+                self.update_handler_status("gemini", "active")
+            except Exception as e:
+                logger.error(f"❌ Gemini Vision init failed: {e}")
+                self.debug_print(f"❌ Gemini failed: {e}")
+                self.update_handler_status("gemini", "error")
+                self.gemini_vision = None
+        return self.gemini_vision is not None
     
     def on_canvas_resize(self, event):
         """Handles canvas resize for video scaling."""
@@ -322,6 +400,7 @@ class ProjectCortexGUI:
     def init_yolo(self):
         """Loads YOLO model in background thread."""
         self.status_queue.put("Status: Loading YOLO model...")
+        self.update_handler_status("yolo", "processing")
         threading.Thread(target=self._init_yolo_thread, daemon=True).start()
     
     def _init_yolo_thread(self):
@@ -331,30 +410,48 @@ class ProjectCortexGUI:
                 logger.error(f"❌ Model not found: {YOLO_MODEL_PATH}")
                 self.status_queue.put(f"Status: ERROR - Model not found")
                 self.debug_print(f"❌ FATAL: {YOLO_MODEL_PATH} not found")
+                self.update_handler_status("yolo", "error")
                 return
             
-            # Force CPU device for Raspberry Pi compatibility
-            device = YOLO_DEVICE  # Use configured device (default: 'cpu')
+            # Verify CUDA availability and set device accordingly
+            import torch
+            if YOLO_DEVICE == 'cuda':
+                if torch.cuda.is_available():
+                    device = 'cuda'
+                    gpu_name = torch.cuda.get_device_name(0)
+                    gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+                    logger.info(f"✅ CUDA available: {gpu_name} ({gpu_memory:.1f}GB)")
+                    self.debug_print(f"🔥 GPU Detected: {gpu_name} ({gpu_memory:.1f}GB)")
+                else:
+                    device = 'cpu'
+                    logger.warning("⚠️ CUDA requested but not available, falling back to CPU")
+                    self.debug_print("⚠️ GPU not available, using CPU")
+            else:
+                device = YOLO_DEVICE  # Use configured device (cpu, mps, etc.)
+            
             logger.info(f"Loading YOLO on device: {device}")
             self.debug_print(f"🔄 Loading YOLO {os.path.basename(YOLO_MODEL_PATH)} on {device}...")
             
             # Load model with explicit device specification
             self.model = YOLO(YOLO_MODEL_PATH)
-            # Note: Ultralytics automatically uses CPU if device='cpu' is passed during inference
+            self.yolo_device = device  # Store actual device for inference
+            # Note: Ultralytics automatically uses specified device during inference
             self.classes = self.model.names
             
-            # Run warm-up inference on CPU to verify model works
+            # Run warm-up inference to verify model works and load to GPU memory
             dummy = np.zeros((640, 640, 3), dtype=np.uint8)
             self.model(dummy, verbose=False, device=device)
             
             self.status_queue.put(f"Status: YOLO ready ({device})")
             self.debug_print(f"✅ YOLO loaded: {os.path.basename(YOLO_MODEL_PATH)} on {device}")
             logger.info(f"✅ YOLO model loaded successfully on {device}")
+            self.update_handler_status("yolo", "active")
             
         except Exception as e:
             logger.error(f"❌ YOLO loading failed: {e}", exc_info=True)
             self.status_queue.put("Status: YOLO FAILED")
             self.debug_print(f"❌ ERROR: {e}")
+            self.update_handler_status("yolo", "error")
             self.model = None
     
     def video_capture_thread(self):
@@ -454,8 +551,8 @@ class ProjectCortexGUI:
             try:
                 frame = self.frame_queue.get(timeout=1)
                 
-                # Run YOLO inference with explicit CPU device
-                results = self.model(frame, conf=YOLO_CONFIDENCE, verbose=False, device=YOLO_DEVICE)
+                # Run YOLO inference with verified device
+                results = self.model(frame, conf=YOLO_CONFIDENCE, verbose=False, device=self.yolo_device)
                 annotated_frame = results[0].plot()
                 
                 # Extract detections (only above confidence threshold)
@@ -510,7 +607,7 @@ class ProjectCortexGUI:
                     self.canvas_width // 2, 
                     self.canvas_height // 2, 
                     image=self.photo, 
-                    anchor=tk.CENTER
+                    anchor="center"
                 )
         except queue.Empty:
             pass  # No new frame, keep displaying the last one
@@ -523,7 +620,7 @@ class ProjectCortexGUI:
         """Updates status label from queue."""
         try:
             message = self.status_queue.get_nowait()
-            self.status_label.config(text=message)
+            self.status_label.configure(text=message)
         except queue.Empty:
             pass
         finally:
@@ -566,14 +663,8 @@ class ProjectCortexGUI:
             }
             
             # Update input menu
-            input_menu = self.input_device_menu["menu"]
-            input_menu.delete(0, "end")
             if self.input_devices:
-                for name in self.input_devices.keys():
-                    input_menu.add_command(
-                        label=name, 
-                        command=lambda value=name: self.selected_input_device.set(value)
-                    )
+                self.input_device_menu.configure(values=list(self.input_devices.keys()))
                 default_in = sd.default.device[0]
                 default_name = f"{default_in}: {sd.query_devices(default_in)['name']}"
                 if default_name in self.input_devices:
@@ -582,14 +673,8 @@ class ProjectCortexGUI:
                     self.selected_input_device.set(list(self.input_devices.keys())[0])
             
             # Update output menu
-            output_menu = self.output_device_menu["menu"]
-            output_menu.delete(0, "end")
             if self.output_devices:
-                for name in self.output_devices.keys():
-                    output_menu.add_command(
-                        label=name, 
-                        command=lambda value=name: self.selected_output_device.set(value)
-                    )
+                self.output_device_menu.configure(values=list(self.output_devices.keys()))
                 default_out = sd.default.device[1]
                 default_name = f"{default_out}: {sd.query_devices(default_out)['name']}"
                 if default_name in self.output_devices:
@@ -622,7 +707,7 @@ class ProjectCortexGUI:
             self.debug_print(f"🎤 Recording on: {device_name}")
             
             self.recording_active = True
-            self.record_btn.config(text="🛑 Stop Recording", bg='#ff4444')
+            self.record_btn.configure(text="🛑 Stop Recording", fg_color='#ff4444')
             self.audio_queue = queue.Queue()
             
             threading.Thread(target=self._record_audio_thread, args=(device_id,), daemon=True).start()
@@ -631,7 +716,7 @@ class ProjectCortexGUI:
             logger.error(f"Recording start failed: {e}")
             self.debug_print(f"❌ Recording error: {e}")
             self.recording_active = False
-            self.record_btn.config(text="🎤 Record Voice", bg='#dc3545')
+            self.record_btn.configure(text="🎤 Record Voice", fg_color='#dc3545')
     
     def _record_audio_thread(self, device_id):
         """Audio recording worker thread."""
@@ -659,7 +744,7 @@ class ProjectCortexGUI:
             return
         
         self.recording_active = False
-        self.record_btn.config(text="🎤 Record Voice", bg='#dc3545')
+        self.record_btn.configure(text="🎤 Record Voice", fg_color='#dc3545')
         self.debug_print("Processing audio...")
         
         time.sleep(0.2)  # Wait for last chunks
@@ -679,38 +764,43 @@ class ProjectCortexGUI:
         self.process_recorded_audio()
     
     def process_recorded_audio(self):
-        """Layer 3 (Guide): Transcribe audio with Whisper."""
+        """Layer 3 (Guide): Transcribe audio with Whisper using new handler."""
         self.status_queue.put("Status: Transcribing...")
+        self.update_handler_status("whisper", "processing")
         threading.Thread(target=self._transcribe_thread, daemon=True).start()
     
     def _transcribe_thread(self):
-        """Background Whisper transcription."""
+        """Background Whisper transcription using WhisperSTT handler."""
         try:
-            self.debug_print(f"🔄 Calling Whisper API...")
-            client = GradioClient(WHISPER_API_URL)
+            # Lazy load Whisper STT
+            if not self.init_whisper_stt():
+                self.debug_print("❌ Whisper not available")
+                self.status_queue.put("Status: Whisper unavailable")
+                self.update_handler_status("whisper", "error")
+                return
             
-            result = client.predict(
-                inputs=gradio_file(AUDIO_FILE_FOR_WHISPER),
-                task="transcribe",
-                api_name="/predict"
-            )
+            self.debug_print("🔄 Transcribing with Whisper...")
             
-            transcribed_text = str(result[0]) if isinstance(result, (list, tuple)) else str(result)
-            transcribed_text = transcribed_text.strip()
+            # Transcribe audio file
+            transcribed_text = self.whisper_stt.transcribe_file(AUDIO_FILE_FOR_WHISPER)
             
-            if transcribed_text:
+            if transcribed_text and transcribed_text.strip():
                 self.debug_print(f"📝 Transcribed: '{transcribed_text}'")
-                self.input_entry.delete(0, tk.END)
+                self.input_entry.delete(0, "end")
                 self.input_entry.insert(0, transcribed_text)
                 self.send_query()
+                self.status_queue.put("Status: Transcription complete")
+                self.update_handler_status("whisper", "active")
             else:
                 self.debug_print("⚠️ Empty transcription")
                 self.status_queue.put("Status: Transcription empty")
+                self.update_handler_status("whisper", "active")
             
         except Exception as e:
             logger.error(f"Whisper transcription failed: {e}", exc_info=True)
             self.debug_print(f"❌ Transcription error: {e}")
             self.status_queue.put("Status: Transcription failed")
+            self.update_handler_status("whisper", "error")
     
     def send_query(self):
         """Layer 2 (Thinker): Send query to Gemini with video frame."""
@@ -728,21 +818,29 @@ class ProjectCortexGUI:
             return
         
         self.status_queue.put("Status: Thinking...")
-        self.response_text.delete('1.0', tk.END)
-        self.response_text.insert(tk.END, "🤔 Gemini is analyzing...\n")
+        self.response_text.delete('1.0', "end")
+        self.response_text.insert("end", "🤔 Gemini is analyzing...\n")
+        self.update_handler_status("gemini", "processing")
         
         frame_copy = self.latest_frame_for_gemini.copy()
         threading.Thread(target=self._send_query_thread, args=(query, frame_copy), daemon=True).start()
     
     def _send_query_thread(self, query, frame):
-        """Layer 2 (Thinker): Background Gemini API call with Layer 1 context."""
+        """Layer 2 (Thinker): Background Gemini API call with Layer 1 context using new handler."""
         try:
-            # Convert to PIL Image
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            img_pil = Image.fromarray(rgb_frame)
+            # Lazy load Gemini Vision
+            if not self.init_gemini_vision():
+                self.response_text.delete('1.0', "end")
+                self.response_text.insert("end", "❌ Gemini Vision not available")
+                self.status_queue.put("Status: Gemini unavailable")
+                self.update_handler_status("gemini", "error")
+                return
             
-            # Build hybrid AI context with Layer 1 (YOLO) detections
-            context = f"""You are Project-Cortex, an AI assistant for visually impaired users.
+            self.debug_print(f"🔄 Layer 2 (Gemini): Analyzing '{query[:50]}...'")
+            self.debug_print(f"   Layer 1 Context: {self.last_detections}")
+            
+            # Build enhanced prompt with Layer 1 context
+            enhanced_prompt = f"""You are Project-Cortex, an AI assistant for visually impaired users.
 
 **3-Layer Hybrid AI Architecture:**
 - Layer 1 (Reflex - Local YOLO): Currently detected objects: {self.last_detections}
@@ -756,30 +854,77 @@ class ProjectCortexGUI:
 2. Provide clear, concise descriptions suitable for audio output
 3. Focus on safety-critical information first (obstacles, hazards)
 4. Describe spatial relationships (e.g., "person on your left")
-5. Keep responses under 50 words for TTS efficiency
-
-Provide your response:"""
+5. Keep responses under 50 words for TTS efficiency"""
             
-            self.debug_print(f"🔄 Layer 2 (Gemini): Analyzing '{query[:50]}...'")
-            self.debug_print(f"   Layer 1 Context: {self.last_detections}")
+            # Use GeminiVision handler for scene analysis
+            response_text = self.gemini_vision.answer_question(frame, enhanced_prompt)
             
-            model = genai.GenerativeModel(GEMINI_MODEL_ID)
-            response = model.generate_content([context, img_pil])
-            
-            self.response_text.delete('1.0', tk.END)
-            self.response_text.insert(tk.END, response.text)
-            self.status_queue.put("Status: Response received")
-            self.debug_print("✅ Layer 2 response received")
-            
-            # TODO: Layer 3 (Guide) - Generate TTS from response
-            # self.generate_tts(response.text)
+            if response_text:
+                self.response_text.delete('1.0', "end")
+                self.response_text.insert("end", response_text)
+                self.status_queue.put("Status: Response received")
+                self.debug_print("✅ Layer 2 response received")
+                self.update_handler_status("gemini", "active")
+                
+                # Layer 3 (Guide) - Generate TTS from response
+                self.generate_tts(response_text)
+            else:
+                self.response_text.delete('1.0', "end")
+                self.response_text.insert("end", "❌ No response from Gemini")
+                self.status_queue.put("Status: Gemini failed")
+                self.update_handler_status("gemini", "error")
             
         except Exception as e:
             logger.error(f"Gemini API error: {e}", exc_info=True)
-            self.response_text.delete('1.0', tk.END)
-            self.response_text.insert(tk.END, f"❌ Error: {str(e)}")
+            self.response_text.delete('1.0', "end")
+            self.response_text.insert("end", f"❌ Error: {str(e)}")
             self.status_queue.put("Status: Gemini failed")
             self.debug_print(f"❌ Gemini error: {e}")
+            self.update_handler_status("gemini", "error")
+    
+    def generate_tts(self, text):
+        """Layer 3 (Guide): Generate TTS audio using Kokoro handler."""
+        threading.Thread(target=self._generate_tts_thread, args=(text,), daemon=True).start()
+    
+    def _generate_tts_thread(self, text):
+        """Background TTS generation using KokoroTTS handler."""
+        try:
+            # Lazy load Kokoro TTS
+            if not self.init_kokoro_tts():
+                self.debug_print("❌ Kokoro TTS not available")
+                self.update_handler_status("kokoro", "error")
+                return
+            
+            self.debug_print("🔊 Generating speech with Kokoro...")
+            self.status_queue.put("Status: Generating speech...")
+            self.update_handler_status("kokoro", "processing")
+            
+            # Generate audio
+            audio_data = self.kokoro_tts.generate_speech(text)
+            
+            if audio_data is not None:
+                # Save to temp file
+                import scipy.io.wavfile as wavfile
+                wavfile.write(TEMP_TTS_OUTPUT_FILE, 24000, audio_data)
+                self.last_tts_file = TEMP_TTS_OUTPUT_FILE
+                
+                self.debug_print("✅ Speech generated, playing...")
+                self.status_queue.put("Status: Playing audio...")
+                self.update_handler_status("kokoro", "active")
+                
+                # Play audio
+                self.play_audio_file(TEMP_TTS_OUTPUT_FILE)
+                self.status_queue.put("Status: Ready")
+            else:
+                self.debug_print("❌ TTS generation failed")
+                self.status_queue.put("Status: TTS failed")
+                self.update_handler_status("kokoro", "error")
+            
+        except Exception as e:
+            logger.error(f"TTS generation failed: {e}", exc_info=True)
+            self.debug_print(f"❌ TTS error: {e}")
+            self.status_queue.put("Status: TTS failed")
+            self.update_handler_status("kokoro", "error")
     
     def replay_last_tts(self):
         """Replay last generated TTS audio."""
@@ -802,8 +947,8 @@ Provide your response:"""
         """Thread-safe debug console logging."""
         def _update():
             timestamp = time.strftime('%H:%M:%S')
-            self.debug_text.insert(tk.END, f"[{timestamp}] {msg}\n")
-            self.debug_text.see(tk.END)
+            self.debug_text.insert("end", f"[{timestamp}] {msg}\n")
+            self.debug_text.see("end")
         
         if self.window.winfo_exists():
             self.window.after(0, _update)
@@ -826,7 +971,11 @@ Provide your response:"""
 
 def main():
     """Main entry point for Project-Cortex GUI."""
-    root = tk.Tk()
+    # Initialize CustomTkinter
+    ctk.set_appearance_mode("Dark")
+    ctk.set_default_color_theme("blue")
+    
+    root = ctk.CTk()
     app = ProjectCortexGUI(root)
     root.mainloop()
 
