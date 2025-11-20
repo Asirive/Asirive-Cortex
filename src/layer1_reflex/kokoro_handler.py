@@ -176,18 +176,28 @@ class KokoroTTS:
                 logger.warning("⚠️ No audio generated")
                 return None
             
-            # Extract audio tensors from Result objects
-            # Kokoro returns KPipeline.Result objects with .output.audio attribute
+            # Extract audio data from chunks
+            # Kokoro generator yields tuples: (graphemes, phonemes, audio)
             audio_tensors = []
             for chunk in audio_chunks:
-                if hasattr(chunk, 'output') and hasattr(chunk.output, 'audio'):
-                    # Convert PyTorch tensor to numpy array
-                    audio_tensor = chunk.output.audio
-                    if hasattr(audio_tensor, 'cpu'):  # PyTorch tensor
-                        audio_np = audio_tensor.cpu().numpy()
-                    else:
-                        audio_np = np.array(audio_tensor, dtype=np.float32)
-                    audio_tensors.append(audio_np)
+                # Check if chunk is a tuple (gs, ps, audio)
+                if isinstance(chunk, tuple) and len(chunk) == 3:
+                    _, _, audio_data = chunk
+                # Check if chunk has .output.audio (Result object)
+                elif hasattr(chunk, 'output') and hasattr(chunk.output, 'audio'):
+                    audio_data = chunk.output.audio
+                # Direct audio data
+                else:
+                    audio_data = chunk
+                
+                # Convert to numpy if needed
+                if hasattr(audio_data, 'cpu'):  # PyTorch tensor
+                    audio_np = audio_data.cpu().numpy()
+                elif hasattr(audio_data, 'numpy'):  # NumPy-compatible
+                    audio_np = audio_data.numpy() if callable(audio_data.numpy) else audio_data
+                else:
+                    audio_np = np.array(audio_data, dtype=np.float32)
+                audio_tensors.append(audio_np)
             
             if not audio_tensors:
                 logger.error("❌ No valid audio data extracted from chunks")

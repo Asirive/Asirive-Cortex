@@ -65,7 +65,9 @@ import warnings
 # Import our custom AI handlers
 from layer1_reflex.whisper_handler import WhisperSTT
 from layer1_reflex.kokoro_handler import KokoroTTS
-from layer2_thinker.gemini_handler import GeminiVision
+from layer1_reflex.vad_handler import VADHandler  # NEW: Voice Activity Detection
+from layer2_thinker.gemini_tts_handler import GeminiTTS  # NEW: Gemini 2.5 Flash TTS (replaces old GeminiVision)
+from layer3_guide.router import IntentRouter
 
 # Suppress pygame deprecation warnings
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='pygame')
@@ -92,7 +94,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # --- Configuration from Environment ---
-GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY', '')
+GOOGLE_API_KEY = os.getenv('GEMINI_API_KEY', os.getenv('GOOGLE_API_KEY', ''))
 GEMINI_MODEL_ID = os.getenv('GEMINI_MODEL', 'gemini-1.5-flash-latest')
 MURF_API_KEY = os.getenv('MURF_API_KEY', '')
 WHISPER_API_URL = os.getenv('WHISPER_MODEL', 'hf-audio/whisper-large-v3')
@@ -160,8 +162,14 @@ class ProjectCortexGUI:
         
         # --- AI Handler Instances ---
         self.whisper_stt = None  # Lazy load to avoid startup delay
-        self.kokoro_tts = None   # Lazy load to avoid startup delay
-        self.gemini_vision = None  # Lazy load to avoid startup delay
+        self.kokoro_tts = None   # Lazy load to avoid startup delay (kept for backward compatibility)
+        self.gemini_tts = None   # NEW: Gemini 2.5 Flash TTS (image + prompt -> audio)
+        self.vad_handler = None  # NEW: Voice Activity Detection handler
+        
+        # --- Voice Activation State ---
+        self.voice_activation_enabled = ctk.BooleanVar(value=False)
+        self.vad_listening = False
+        self.vad_speech_buffer = None
         
         # --- Build UI ---
         self.init_ui()
@@ -208,8 +216,9 @@ class ProjectCortexGUI:
         
         self.create_status_indicator("YOLO", "#00ff00")
         self.create_status_indicator("WHISPER", "#555555")
-        self.create_status_indicator("GEMINI", "#555555")
-        self.create_status_indicator("KOKORO", "#555555")
+        self.create_status_indicator("VAD", "#555555")  # NEW: Voice Activity Detection indicator
+        self.create_status_indicator("GEMINI-TTS", "#555555")  # NEW: Gemini 2.5 TTS indicator
+        self.create_status_indicator("KOKORO", "#555555")  # Kept for backward compatibility
 
         # --- Video Frame ---
         video_frame = ctk.CTkFrame(self.window, fg_color="black", corner_radius=0)
@@ -255,6 +264,16 @@ class ProjectCortexGUI:
         audio_frame = ctk.CTkFrame(controls_frame, fg_color="transparent")
         audio_frame.pack(fill="x", pady=10, padx=10)
         
+        # Voice Activation Toggle
+        self.voice_activation_switch = ctk.CTkSwitch(
+            audio_frame,
+            text="🎙️ Voice Activation",
+            variable=self.voice_activation_enabled,
+            command=self.toggle_voice_activation,
+            font=('Arial', 12, 'bold')
+        )
+        self.voice_activation_switch.pack(side="left", padx=5)
+        
         self.record_btn = ctk.CTkButton(
             audio_frame, 
             text="🎤 Record Voice", 
@@ -294,6 +313,9 @@ class ProjectCortexGUI:
         
         # Initialize Debug Console
         self.init_debug_console(controls_frame)
+        
+        # Initialize Intent Router
+        self.router = IntentRouter()
 
     def create_status_indicator(self, name, color):
         frame = ctk.CTkFrame(self.handler_status_frame, fg_color="transparent")
@@ -374,23 +396,23 @@ class ProjectCortexGUI:
                 self.kokoro_tts = None
         return self.kokoro_tts is not None
     
-    def init_gemini_vision(self):
-        """Lazy initialize Gemini Vision (called on first scene analysis)."""
-        if self.gemini_vision is None:
+    def init_gemini_tts(self):
+        """Lazy initialize Gemini 2.5 Flash TTS (NEW: image + prompt -> audio)."""
+        if self.gemini_tts is None:
             try:
-                self.update_handler_status("gemini", "processing")
-                self.debug_print("⏳ Loading Gemini Vision...")
-                self.gemini_vision = GeminiVision(api_key=GOOGLE_API_KEY)
-                self.gemini_vision.initialize()
-                self.debug_print("✅ Gemini Vision ready")
-                logger.info("✅ Gemini Vision initialized")
-                self.update_handler_status("gemini", "active")
+                self.update_handler_status("gemini-tts", "processing")
+                self.debug_print("⏳ Loading Gemini 2.5 Flash TTS...")
+                self.gemini_tts = GeminiTTS(api_key=GOOGLE_API_KEY, voice_name="Kore")
+                self.gemini_tts.initialize()
+                self.debug_print("✅ Gemini TTS ready")
+                logger.info("✅ Gemini TTS initialized")
+                self.update_handler_status("gemini-tts", "active")
             except Exception as e:
-                logger.error(f"❌ Gemini Vision init failed: {e}")
-                self.debug_print(f"❌ Gemini failed: {e}")
-                self.update_handler_status("gemini", "error")
-                self.gemini_vision = None
-        return self.gemini_vision is not None
+                logger.error(f"❌ Gemini TTS init failed: {e}")
+                self.debug_print(f"❌ Gemini TTS failed: {e}")
+                self.update_handler_status("gemini-tts", "error")
+                self.gemini_tts = None
+        return self.gemini_tts is not None
     
     def on_canvas_resize(self, event):
         """Handles canvas resize for video scaling."""
@@ -763,54 +785,273 @@ class ProjectCortexGUI:
         
         self.process_recorded_audio()
     
+    # =================================================================
+    # VOICE ACTIVATION (VAD) METHODS
+    # =================================================================
+    
+    def toggle_voice_activation(self):
+        """Toggle voice activation mode on/off."""
+        if self.voice_activation_enabled.get():
+            self.start_voice_activation()
+        else:
+            self.stop_voice_activation()
+    
+    def start_voice_activation(self):
+        """Start voice activation mode using Silero VAD."""
+        try:
+            self.debug_print("🎙️ Starting Voice Activation...")
+            
+            # Initialize VAD handler if not already loaded
+            if not self.init_vad():
+                self.voice_activation_enabled.set(False)
+                return
+            
+            # Get selected input device
+            device_name = self.selected_input_device.get()
+            if not device_name or ":" not in device_name:
+                messagebox.showerror("Error", "Select a valid input device for voice activation")
+                self.voice_activation_enabled.set(False)
+                return
+            
+            device_id = self.input_devices[device_name]
+            
+            # Start VAD listening
+            if self.vad_handler.start_listening(device_index=device_id):
+                self.vad_listening = True
+                self.update_handler_status("vad", "active")
+                self.debug_print("✅ Voice Activation ENABLED - Speak to interact")
+                self.status_queue.put("Status: VOICE-ACTIVATED MODE")
+                
+                # Disable manual record button while VAD is active
+                self.record_btn.configure(state="disabled")
+            else:
+                self.voice_activation_enabled.set(False)
+                self.debug_print("❌ Failed to start voice activation")
+                
+        except Exception as e:
+            logger.error(f"Voice activation start failed: {e}")
+            self.debug_print(f"❌ VAD error: {e}")
+            self.voice_activation_enabled.set(False)
+            self.update_handler_status("vad", "error")
+    
+    def stop_voice_activation(self):
+        """Stop voice activation mode."""
+        try:
+            if self.vad_handler and self.vad_listening:
+                self.vad_handler.stop_listening()
+                self.vad_listening = False
+                self.update_handler_status("vad", "inactive")
+                self.debug_print("🛑 Voice Activation DISABLED")
+                self.status_queue.put("Status: Ready")
+                
+                # Re-enable manual record button
+                self.record_btn.configure(state="normal")
+                
+        except Exception as e:
+            logger.error(f"Voice activation stop failed: {e}")
+            self.debug_print(f"❌ VAD stop error: {e}")
+    
+    def on_vad_speech_start(self):
+        """Callback when VAD detects speech start."""
+        self.debug_print("🗣️ Speech detected - Recording...")
+        self.status_queue.put("Status: LISTENING...")
+        self.update_handler_status("vad", "processing")
+    
+    def on_vad_speech_end(self, audio_data):
+        """Callback when VAD detects speech end."""
+        try:
+            duration_ms = len(audio_data) / 16000 * 1000
+            self.debug_print(f"🎤 Speech ended: {duration_ms:.0f}ms")
+            
+            # Save audio to file for Whisper
+            # Convert from float32 [-1, 1] to int16
+            audio_int16 = (audio_data * 32767).astype(np.int16)
+            write_wav(AUDIO_FILE_FOR_WHISPER, 16000, audio_int16)
+            self.debug_print(f"💾 VAD audio saved: {AUDIO_FILE_FOR_WHISPER}")
+            
+            # Process audio through the same pipeline as manual recording
+            self.process_recorded_audio()
+            
+            # Reset VAD status
+            self.update_handler_status("vad", "active")
+            self.status_queue.put("Status: VOICE-ACTIVATED MODE")
+            
+        except Exception as e:
+            logger.error(f"VAD speech end processing failed: {e}")
+            self.debug_print(f"❌ VAD processing error: {e}")
+            self.update_handler_status("vad", "error")
+    
+    def init_vad(self):
+        """Initialize VAD handler (lazy loading)."""
+        if self.vad_handler is not None:
+            return True
+        
+        try:
+            self.debug_print("⏳ Loading Silero VAD...")
+            self.update_handler_status("vad", "loading")
+            
+            # Create VAD handler with callbacks
+            self.vad_handler = VADHandler(
+                sample_rate=16000,
+                chunk_size=512,  # 32ms at 16kHz
+                threshold=0.5,   # Balanced sensitivity
+                min_speech_duration_ms=500,  # Minimum 0.5s of speech
+                min_silence_duration_ms=700,  # 0.7s silence to end
+                padding_duration_ms=300,  # 300ms padding before/after
+                on_speech_start=self.on_vad_speech_start,
+                on_speech_end=self.on_vad_speech_end
+            )
+            
+            if not self.vad_handler.load_model():
+                raise Exception("Failed to load VAD model")
+            
+            self.update_handler_status("vad", "inactive")
+            self.debug_print("✅ Silero VAD loaded")
+            return True
+            
+        except Exception as e:
+            logger.error(f"VAD init failed: {e}")
+            self.debug_print(f"❌ VAD init error: {e}")
+            self.update_handler_status("vad", "error")
+            self.vad_handler = None
+            return False
+    
+    # =================================================================
+    # END VAD METHODS
+    # =================================================================
+    
     def process_recorded_audio(self):
-        """Layer 3 (Guide): Transcribe audio with Whisper using new handler."""
+        """
+        Process recorded audio: Transcribe -> Route -> Execute.
+        """
         self.status_queue.put("Status: Transcribing...")
         self.update_handler_status("whisper", "processing")
-        threading.Thread(target=self._transcribe_thread, daemon=True).start()
+        threading.Thread(target=self._process_audio_pipeline, daemon=True).start()
     
-    def _transcribe_thread(self):
-        """Background Whisper transcription using WhisperSTT handler."""
+    def _process_audio_pipeline(self):
+        """Background pipeline: Whisper -> Router -> Layer Handler."""
         try:
-            # Lazy load Whisper STT
+            # 1. Transcribe with Whisper
             if not self.init_whisper_stt():
                 self.debug_print("❌ Whisper not available")
-                self.status_queue.put("Status: Whisper unavailable")
                 self.update_handler_status("whisper", "error")
                 return
             
-            self.debug_print("🔄 Transcribing with Whisper...")
-            
-            # Transcribe audio file
+            self.debug_print("🔄 Transcribing...")
             transcribed_text = self.whisper_stt.transcribe_file(AUDIO_FILE_FOR_WHISPER)
             
-            if transcribed_text and transcribed_text.strip():
-                self.debug_print(f"📝 Transcribed: '{transcribed_text}'")
-                self.input_entry.delete(0, "end")
-                self.input_entry.insert(0, transcribed_text)
-                self.send_query()
-                self.status_queue.put("Status: Transcription complete")
-                self.update_handler_status("whisper", "active")
-            else:
+            if not transcribed_text or not transcribed_text.strip():
                 self.debug_print("⚠️ Empty transcription")
                 self.status_queue.put("Status: Transcription empty")
                 self.update_handler_status("whisper", "active")
+                return
+
+            self.debug_print(f"📝 User said: '{transcribed_text}'")
+            self.input_entry.delete(0, "end")
+            self.input_entry.insert(0, transcribed_text)
+            self.update_handler_status("whisper", "active")
+            
+            # 2. Route Intent
+            target_layer = self.router.route(transcribed_text)
+            layer_desc = self.router.get_layer_description(target_layer)
+            self.debug_print(f"🧠 Routing to {layer_desc}")
+            self.status_queue.put(f"Status: {layer_desc}")
+            
+            # 3. Execute Layer Logic
+            if target_layer == "layer1":
+                self._execute_layer1_reflex(transcribed_text)
+            elif target_layer == "layer2":
+                self._execute_layer2_thinker(transcribed_text)
+            elif target_layer == "layer3":
+                self._execute_layer3_guide(transcribed_text)
             
         except Exception as e:
-            logger.error(f"Whisper transcription failed: {e}", exc_info=True)
-            self.debug_print(f"❌ Transcription error: {e}")
-            self.status_queue.put("Status: Transcription failed")
+            logger.error(f"Audio pipeline failed: {e}", exc_info=True)
+            self.debug_print(f"❌ Pipeline error: {e}")
+            self.status_queue.put("Status: Error")
             self.update_handler_status("whisper", "error")
+
+    def _execute_layer1_reflex(self, text):
+        """Layer 1: Local Object Detection Report."""
+        self.debug_print("⚡ Layer 1 (Reflex) Activated")
+        
+        # Get current detections
+        detections = self.last_detections
+        if not detections or detections == "nothing":
+            response = "I don't see anything specific right now."
+        else:
+            # Simple sentence structure logic
+            items = detections.split(", ")
+            unique_items = set([i.split(" (")[0] for i in items])
+            response = f"I see {', '.join(unique_items)}."
+        
+        self.response_text.delete('1.0', "end")
+        self.response_text.insert("end", f"[Layer 1] {response}")
+        self.generate_tts(response)
+
+    def _execute_layer2_thinker(self, text):
+        """Layer 2: Cloud Gemini Vision."""
+        self.debug_print("☁️ Layer 2 (Thinker) Activated")
+        self.send_query()  # Re-use existing Gemini logic
+
+    def _execute_layer3_guide(self, text):
+        """Layer 3: Navigation & Memory (Using Gemini TTS for spoken guidance)."""
+        self.debug_print("🗺️ Layer 3 (Guide) Activated")
+        
+        # For now, we use Gemini TTS for navigation guidance
+        # In the future, this would connect to GPS/Maps API
+        
+        if not self.init_gemini_tts():
+            self.debug_print("❌ Gemini TTS not available for Layer 3")
+            return
+
+        prompt = f"""You are the Navigation Guide for a blind user.
+User Query: "{text}"
+Current Visual Context: {self.last_detections}
+
+If the user asks for location, simulate a GPS response (e.g., "You are currently at your desk").
+If the user asks to go somewhere, provide general direction based on the visual context (e.g., "I see a door to your left").
+Speak naturally and keep it short (under 30 words)."""
+
+        self.status_queue.put("Status: Guide Thinking...")
+        self.update_handler_status("gemini-tts", "processing")
+        
+        if self.latest_frame_for_gemini is not None:
+            # Use Gemini TTS for navigation response
+            from PIL import Image
+            rgb_frame = cv2.cvtColor(self.latest_frame_for_gemini, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(rgb_frame)
+            
+            audio_path = self.gemini_tts.generate_speech_from_image(
+                image=pil_image,
+                prompt=prompt,
+                save_to_file=True
+            )
+            
+            if audio_path:
+                self.response_text.delete('1.0', "end")
+                self.response_text.insert("end", f"[Layer 3] Navigation guidance generated\n")
+                self.last_tts_file = audio_path
+                self.play_audio(audio_path)
+                self.update_handler_status("gemini-tts", "active")
+            else:
+                self.debug_print("❌ Layer 3 failed")
+        else:
+            self.debug_print("⚠️ No video frame for Layer 3 context")
+
+    def _transcribe_thread(self):
+        """Deprecated: Old transcription thread."""
+        pass
     
     def send_query(self):
-        """Layer 2 (Thinker): Send query to Gemini with video frame."""
+        """Layer 2 (Thinker): Send query to Gemini 2.5 Flash TTS with video frame (image + prompt -> audio)."""
         query = self.input_entry.get().strip()
         if not query:
             messagebox.showwarning("Input Error", "Please enter a query")
             return
         
         if not GOOGLE_API_KEY:
-            messagebox.showerror("API Error", "GOOGLE_API_KEY not set in .env file")
+            messagebox.showerror("API Error", "GEMINI_API_KEY not set in .env file")
             return
         
         if self.latest_frame_for_gemini is None:
@@ -819,24 +1060,24 @@ class ProjectCortexGUI:
         
         self.status_queue.put("Status: Thinking...")
         self.response_text.delete('1.0', "end")
-        self.response_text.insert("end", "🤔 Gemini is analyzing...\n")
-        self.update_handler_status("gemini", "processing")
+        self.response_text.insert("end", "🎙️ Gemini 2.5 TTS is generating audio...\n")
+        self.update_handler_status("gemini-tts", "processing")
         
         frame_copy = self.latest_frame_for_gemini.copy()
         threading.Thread(target=self._send_query_thread, args=(query, frame_copy), daemon=True).start()
     
     def _send_query_thread(self, query, frame):
-        """Layer 2 (Thinker): Background Gemini API call with Layer 1 context using new handler."""
+        """Layer 2 (Thinker): Send image + prompt to Gemini 2.5 Flash TTS and receive audio directly."""
         try:
-            # Lazy load Gemini Vision
-            if not self.init_gemini_vision():
+            # Lazy load Gemini TTS (NEW: Single API call for vision + TTS)
+            if not self.init_gemini_tts():
                 self.response_text.delete('1.0', "end")
-                self.response_text.insert("end", "❌ Gemini Vision not available")
-                self.status_queue.put("Status: Gemini unavailable")
-                self.update_handler_status("gemini", "error")
+                self.response_text.insert("end", "❌ Gemini TTS not available")
+                self.status_queue.put("Status: Gemini TTS unavailable")
+                self.update_handler_status("gemini-tts", "error")
                 return
             
-            self.debug_print(f"🔄 Layer 2 (Gemini): Analyzing '{query[:50]}...'")
+            self.debug_print(f"🔄 Layer 2 (Gemini TTS): Generating speech for '{query[:50]}...'")
             self.debug_print(f"   Layer 1 Context: {self.last_detections}")
             
             # Build enhanced prompt with Layer 1 context
@@ -844,30 +1085,42 @@ class ProjectCortexGUI:
 
 **3-Layer Hybrid AI Architecture:**
 - Layer 1 (Reflex - Local YOLO): Currently detected objects: {self.last_detections}
-- Layer 2 (Thinker - You): Analyze the scene using the image and Layer 1 context
-- Layer 3 (Guide): Your response will be converted to speech
+- Layer 2 (Thinker - You): Describe the scene using the image and Layer 1 context
+- Layer 3 (Guide): Your spoken response will be played to the user
 
 **User Query:** {query}
 
 **Instructions:**
-1. Use Layer 1 detections as context for your analysis
-2. Provide clear, concise descriptions suitable for audio output
-3. Focus on safety-critical information first (obstacles, hazards)
+1. Speak naturally and clearly (your output will be audio, not text)
+2. Use Layer 1 detections as context for your description
+3. Prioritize safety-critical information (obstacles, hazards)
 4. Describe spatial relationships (e.g., "person on your left")
-5. Keep responses under 50 words for TTS efficiency"""
+5. Keep response under 50 words for clarity
+6. Speak as if talking directly to the visually impaired user"""
             
-            # Use GeminiVision handler for scene analysis
-            response_text = self.gemini_vision.answer_question(frame, enhanced_prompt)
+            # Convert OpenCV frame to PIL Image
+            from PIL import Image
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(rgb_frame)
             
-            if response_text:
+            # NEW: Single API call to Gemini 2.5 Flash TTS (image + prompt -> audio)
+            audio_path = self.gemini_tts.generate_speech_from_image(
+                image=pil_image,
+                prompt=enhanced_prompt,
+                save_to_file=True
+            )
+            
+            if audio_path:
                 self.response_text.delete('1.0', "end")
-                self.response_text.insert("end", response_text)
-                self.status_queue.put("Status: Response received")
-                self.debug_print("✅ Layer 2 response received")
-                self.update_handler_status("gemini", "active")
+                self.response_text.insert("end", f"✅ Audio generated from Gemini 2.5 Flash TTS\n")
+                self.response_text.insert("end", f"🔊 Playing response...\n")
+                self.status_queue.put("Status: Playing audio")
+                self.debug_print(f"✅ Layer 2 TTS audio saved: {audio_path}")
+                self.update_handler_status("gemini-tts", "active")
                 
-                # Layer 3 (Guide) - Generate TTS from response
-                self.generate_tts(response_text)
+                # Play audio immediately
+                self.last_tts_file = audio_path
+                self.play_audio(audio_path)
             else:
                 self.response_text.delete('1.0', "end")
                 self.response_text.insert("end", "❌ No response from Gemini")
@@ -957,6 +1210,10 @@ class ProjectCortexGUI:
         """Graceful shutdown."""
         logger.info("🛑 Shutting down Project-Cortex GUI")
         self.debug_print("👋 Closing application...")
+        
+        # Stop voice activation if active
+        if self.vad_listening:
+            self.stop_voice_activation()
         
         self.stop_event.set()
         
