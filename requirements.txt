@@ -17,16 +17,26 @@ torchvision==0.16.0           # Vision utilities
 pillow==10.1.0                # Image manipulation
 
 # ===== Cloud AI APIs =====
-google-generativeai==0.3.1   # Google Gemini API
+google-generativeai>=0.7.0    # Google Gemini API (Updated for 1.5 Flash)
+google-genai>=1.0.0           # NEW: Google Gen AI SDK for Gemini 2.5 Flash TTS
 openai==1.3.5                 # OpenAI GPT-4 Vision (fallback)
 requests==2.31.0              # HTTP requests
 gradio-client==0.7.1          # Hugging Face API client (Whisper STT)
+
+# ===== Local AI Models =====
+openai-whisper                # Local Whisper STT
+kokoro>=0.3.4                 # Local Kokoro TTS
+misaki[en]                    # G2P for Kokoro
+phonemizer                    # Phoneme support
+espeakng-loader               # eSpeak NG loader
 
 # ===== Audio Processing =====
 pygame==2.5.2                 # Audio playback
 sounddevice==0.4.6            # Audio recording
 scipy==1.11.4                 # Audio file I/O
-# murf==1.0.0                 # Murf AI TTS (optional, install if using)
+pydub==0.25.1                 # Audio manipulation
+pyaudio>=0.2.11               # Real-time microphone capture (for VAD)
+silero-vad>=4.0.0             # Silero VAD for voice activity detection
 
 # ===== GUI (Development) =====
 # Tkinter comes with Python standard library
