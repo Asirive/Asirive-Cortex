@@ -16,13 +16,17 @@ Key Features:
 Author: Haziq (@IRSPlays)
 Project: Cortex v2.0 - YIA 2026
 Date: November 20, 2025
+
+HYBRID TTS ARCHITECTURE:
+- Primary: Gemini 2.5 Flash Preview TTS (cloud, high quality)
+- Fallback: Kokoro-82M (local, unlimited, when all API keys exhausted)
 """
 
 import logging
 import os
 import wave
 import time
-from typing import Optional
+from typing import Optional, Tuple
 from pathlib import Path
 import base64
 
@@ -30,13 +34,23 @@ import numpy as np
 from PIL import Image
 from dotenv import load_dotenv
 
+# Import Kokoro TTS for fallback (local TTS when Gemini rate-limited)
+try:
+    from layer1_reflex.kokoro_handler import KokoroTTS
+    KOKORO_AVAILABLE = True
+except ImportError:
+    KOKORO_AVAILABLE = False
+    logging.info("ℹ️ Kokoro TTS not available for fallback")
+
 # Import NEW Google Gen AI SDK (not google.generativeai)
 try:
     from google import genai
     from google.genai import types
+    from google.genai import errors as genai_errors  # For proper error handling
     GENAI_AVAILABLE = True
 except ImportError:
     GENAI_AVAILABLE = False
+    genai_errors = None  # Fallback for import error
     logging.warning("⚠️ google-genai not installed. Run: pip install google-genai")
 
 logger = logging.getLogger(__name__)
@@ -86,16 +100,48 @@ class GeminiTTS:
                 "Install it with: pip install google-genai"
             )
         
-        logger.info("🎤 Initializing Gemini 2.5 Flash TTS Handler...")
+        logger.info("🎤 Initializing Gemini 2.5 Flash TTS Handler (Hybrid Mode)...")
         
-        # Get API key (try GEMINI_API_KEY first, then GOOGLE_API_KEY for compatibility)
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        # Kokoro TTS fallback (local TTS when all API keys exhausted)
+        self.kokoro_fallback: Optional[KokoroTTS] = None
+        self.kokoro_initialized = False
+        self.using_fallback = False  # Track if currently using fallback
         
-        if not self.api_key:
+        # API Key Rotation Pool (6 backup keys for rate limit fallback)
+        self.api_key_pool = [
+            api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"),
+            "AIzaSyBXVG2Tky2SaG1CTJBDUPhEEDFrjobLa60",
+            "AIzaSyBybuyQNzcIMgM1vnrgsFOYJPLLQIC5UU0",
+            "AIzaSyAq6Ptnnc2kkffYJiciWrPprCGuR1G7__Y",
+            "AIzaSyB2ScnKpE0n6Skg2tTKdl2Gn_tQaWroWZY",
+            "AIzaSyDW1_v-OKCybux0arOHr1aLWLAtyQmQBTQ"
+        ]
+        
+        # Remove None/empty keys from pool
+        self.api_key_pool = [key for key in self.api_key_pool if key]
+        
+        if not self.api_key_pool:
             raise ValueError(
-                "Google API key not found. Set GEMINI_API_KEY in .env file.\n"
+                "No API keys available. Set GEMINI_API_KEY in .env file.\n"
                 "Get your API key from: https://aistudio.google.com/app/apikey"
             )
+        
+        # API Key rotation state
+        self.current_key_index = 0
+        self.api_key = self.api_key_pool[0]
+        self.failed_keys = {}  # Track failed keys with timestamps
+        
+        logger.info(f"🔑 API Key Pool: {len(self.api_key_pool)} keys available")
+        logger.info(f"🔑 Active Key: #{self.current_key_index + 1} ({self.api_key[:12]}...{self.api_key[-4:]})")
+        
+        # Get API key (try GEMINI_API_KEY first, then GOOGLE_API_KEY for compatibility)
+        # self.api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        # 
+        # if not self.api_key:
+        #     raise ValueError(
+        #         "Google API key not found. Set GEMINI_API_KEY in .env file.\n"
+        #         "Get your API key from: https://aistudio.google.com/app/apikey"
+        #     )
         
         self.voice_name = voice_name
         self.output_dir = Path(output_dir)
@@ -114,7 +160,7 @@ class GeminiTTS:
         logger.info(f"   Model: gemini-2.5-flash-preview-tts")
         logger.info(f"   Voice: {voice_name}")
         logger.info(f"   Output Dir: {self.output_dir}")
-        logger.info(f"   API Key: {self.api_key[:12]}...{self.api_key[-4:]}")
+        # Removed duplicate API key logging (already shown above with pool info)
         
         self._initialized = True
     
@@ -131,9 +177,132 @@ class GeminiTTS:
             return float(match.group(1))
         return self.base_retry_delay
     
+    def rotate_to_next_key(self) -> bool:
+        """
+        Rotate to the next available API key in the pool.
+        
+        Returns:
+            True if successfully switched to new key, False if all keys exhausted
+        """
+        import time
+        
+        # Mark current key as failed
+        current_key = self.api_key_pool[self.current_key_index]
+        self.failed_keys[current_key] = time.time()
+        
+        logger.warning(f"❌ API Key #{self.current_key_index + 1} rate-limited")
+        
+        # Try to find next available key
+        attempts = 0
+        while attempts < len(self.api_key_pool):
+            self.current_key_index = (self.current_key_index + 1) % len(self.api_key_pool)
+            next_key = self.api_key_pool[self.current_key_index]
+            
+            # Check if this key was recently failed (within last 60 seconds)
+            if next_key in self.failed_keys:
+                time_since_fail = time.time() - self.failed_keys[next_key]
+                if time_since_fail < 60:  # Skip recently failed keys
+                    attempts += 1
+                    continue
+            
+            # Found available key
+            self.api_key = next_key
+            logger.info(f"🔄 Switching to API Key #{self.current_key_index + 1} ({self.api_key[:12]}...{self.api_key[-4:]})")
+            
+            # Reinitialize client with new key
+            try:
+                self.client = genai.Client(api_key=self.api_key)
+                logger.info(f"✅ Successfully switched to backup API key #{self.current_key_index + 1}")
+                return True
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize with key #{self.current_key_index + 1}: {e}")
+                self.failed_keys[next_key] = time.time()
+                attempts += 1
+        
+        logger.error("❌ All API keys exhausted or rate-limited")
+        return False
+    
+    def _initialize_kokoro_fallback(self) -> bool:
+        """
+        Initialize Kokoro TTS as fallback for when all Gemini API keys are exhausted.
+        
+        Returns:
+            True if Kokoro initialized successfully, False otherwise
+        """
+        if not KOKORO_AVAILABLE:
+            logger.warning("⚠️ Kokoro TTS not available for fallback")
+            return False
+        
+        if self.kokoro_initialized:
+            return True
+        
+        try:
+            logger.info("🔄 Initializing Kokoro-82M as TTS fallback...")
+            self.kokoro_fallback = KokoroTTS(
+                lang_code="a",  # American English
+                default_voice="af_bella",  # Nice female voice for Layer 2
+                default_speed=1.0
+            )
+            if self.kokoro_fallback.load_pipeline():
+                self.kokoro_initialized = True
+                logger.info("✅ Kokoro-82M fallback ready (unlimited local TTS)")
+                return True
+            else:
+                logger.error("❌ Failed to load Kokoro pipeline")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize Kokoro fallback: {e}")
+            return False
+    
+    def _generate_with_kokoro_fallback(self, text: str, filename: Optional[str] = None) -> Optional[str]:
+        """
+        Generate speech using Kokoro-82M (local fallback).
+        
+        Args:
+            text: Text to convert to speech
+            filename: Optional output filename
+            
+        Returns:
+            Path to saved audio file, or None if failed
+        """
+        if not self._initialize_kokoro_fallback():
+            return None
+        
+        try:
+            logger.info(f"🔊 [FALLBACK] Generating speech with Kokoro-82M: '{text[:50]}...'")
+            self.using_fallback = True
+            
+            # Generate audio with Kokoro
+            audio_data = self.kokoro_fallback.generate_speech(text, log_latency=True)
+            
+            if audio_data is None:
+                logger.error("❌ [FALLBACK] Kokoro failed to generate audio")
+                return None
+            
+            # Save as WAV file
+            if filename is None:
+                filename = f"kokoro_fallback_{int(time.time())}.wav"
+            
+            output_path = self.output_dir / filename
+            
+            # Convert float32 [-1, 1] to int16 PCM
+            audio_int16 = (audio_data * 32767).astype(np.int16)
+            pcm_data = audio_int16.tobytes()
+            
+            self._save_wav_file(str(output_path), pcm_data)
+            
+            logger.info(f"✅ [FALLBACK] Kokoro audio saved to: {output_path}")
+            return str(output_path)
+            
+        except Exception as e:
+            logger.error(f"❌ [FALLBACK] Kokoro generation failed: {e}")
+            return None
+    
     def _retry_api_call(self, api_call_func, *args, **kwargs):
         """
-        Retry wrapper for Gemini API calls with exponential backoff.
+        Retry wrapper for Gemini API calls with exponential backoff and API key rotation.
+        
+        Uses proper google.genai error handling instead of string matching.
         
         Args:
             api_call_func: The API call function to retry
@@ -152,31 +321,66 @@ class GeminiTTS:
                 last_exception = e
                 error_str = str(e)
                 
-                # Check if it's a rate limit error (429 RESOURCE_EXHAUSTED)
-                if '429' in error_str and 'RESOURCE_EXHAUSTED' in error_str:
-                    # Extract retry delay from error message
-                    retry_delay = self._parse_retry_delay(error_str)
+                # Check if it's a rate limit (429) or service unavailable (503) error
+                # Use proper error code detection (google.genai.errors.APIError has .code attribute)
+                is_rate_limit_error = False
+                
+                # Method 1: Check if it's a proper genai APIError with .code attribute
+                if genai_errors and isinstance(e, genai_errors.APIError):
+                    if e.code in (429, 503):
+                        is_rate_limit_error = True
+                        logger.warning(f"⚠️ APIError detected: code={e.code}, message={e.message[:100]}...")
+                
+                # Method 2: Fallback to string matching for other exception types
+                # (Some errors may be wrapped differently)
+                if not is_rate_limit_error:
+                    if any(x in error_str for x in ['429', 'RESOURCE_EXHAUSTED', '503', 'UNAVAILABLE', 'Service Unavailable']):
+                        is_rate_limit_error = True
+                        logger.warning(f"⚠️ Rate limit detected via string match: {error_str[:150]}...")
+                
+                if is_rate_limit_error:
+                    logger.warning(
+                        f"⏳ Rate limit/unavailable hit on API Key #{self.current_key_index + 1} "
+                        f"(attempt {attempt + 1}/{self.max_retries})"
+                    )
                     
-                    if attempt < self.max_retries - 1:  # Don't retry on last attempt
-                        logger.warning(
-                            f"⏳ Rate limit hit (attempt {attempt + 1}/{self.max_retries}). "
-                            f"Retrying in {retry_delay:.1f}s..."
-                        )
-                        time.sleep(retry_delay)
+                    # Try to rotate to next API key
+                    if self.rotate_to_next_key():
+                        logger.info(f"🔄 Retrying with new API key...")
+                        continue  # Retry immediately with new key
                     else:
-                        logger.error(
-                            f"❌ Rate limit exceeded after {self.max_retries} attempts. "
-                            "Please wait and try again later."
-                        )
-                        raise  # Re-raise on final attempt
+                        # All keys exhausted, extract retry delay and wait
+                        retry_delay = self._parse_retry_delay(error_str)
+                        
+                        if attempt < self.max_retries - 1:
+                            logger.warning(
+                                f"⏳ All keys exhausted. Waiting {retry_delay:.1f}s before retry..."
+                            )
+                            time.sleep(retry_delay)
+                        else:
+                            logger.error(
+                                f"❌ Rate limit exceeded after {self.max_retries} attempts. "
+                                "All API keys exhausted."
+                            )
+                            raise
                 else:
                     # Non-rate-limit error, don't retry
+                    logger.error(f"❌ Non-retryable error: {error_str[:200]}")
                     raise
         
-        # If we get here, all retries failed
+        # If we get here, all retries failed - raise to trigger fallback
         if last_exception:
             raise last_exception
         return None
+    
+    def is_using_fallback(self) -> bool:
+        """Check if currently using Kokoro fallback instead of Gemini."""
+        return self.using_fallback
+    
+    def reset_fallback_status(self):
+        """Reset fallback status (call when API keys become available again)."""
+        self.using_fallback = False
+        logger.info("🔄 Fallback status reset, will try Gemini first")
     
     def initialize(self) -> bool:
         """
@@ -197,13 +401,9 @@ class GeminiTTS:
             
             logger.info("✅ Gemini TTS client initialized successfully")
             
-            # Test with a simple audio generation
-            logger.info("🔥 Running TTS connection test...")
-            test_audio_path = self.generate_speech_from_text("Testing Gemini TTS", save_to_file=False)
-            if test_audio_path:
-                logger.info(f"✅ Connection test passed")
-            else:
-                logger.warning("⚠️ Connection test returned no audio")
+            # Skip connection test - wastes quota and can hit rate limits
+            # Client initialization is sufficient validation
+            logger.info("✅ Skipping API test to preserve quota")
             
             return True
             
@@ -239,6 +439,9 @@ class GeminiTTS:
         if not self.client:
             if not self.initialize():
                 return None
+        
+        # Track text_description for potential fallback use
+        text_description = None
         
         try:
             logger.info(f"🎙️ Generating speech from image (2-step pipeline)...")
@@ -294,6 +497,14 @@ class GeminiTTS:
             return audio_path
             
         except Exception as e:
+            error_str = str(e)
+            logger.warning(f"⚠️ Gemini TTS failed: {error_str[:100]}...")
+            
+            # Check if all API keys exhausted AND we have text to speak - trigger Kokoro fallback
+            if text_description and any(x in error_str for x in ['429', 'RESOURCE_EXHAUSTED', '503', 'exhausted', 'rate limit']):
+                logger.info("🔄 All Gemini API keys exhausted → Switching to Kokoro-82M fallback")
+                return self._generate_with_kokoro_fallback(text_description)
+            
             logger.error(f"❌ Failed to generate speech from image: {e}")
             self.error_count += 1
             return None
@@ -323,21 +534,37 @@ class GeminiTTS:
             logger.info(f"🎙️ Generating speech from text: '{text[:50]}...'")
             self.request_count += 1
             
-            # Call Gemini 2.5 Flash TTS (text-only)
-            response = self.client.models.generate_content(
-                model='gemini-2.5-flash-preview-tts',
-                contents=text,
-                config=types.GenerateContentConfig(
-                    response_modalities=["AUDIO"],
-                    speech_config=types.SpeechConfig(
-                        voice_config=types.VoiceConfig(
-                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                voice_name=self.voice_name
+            # Call Gemini 2.5 Flash TTS (text-only) with retry/rotation wrapper
+            def _tts_api_call():
+                return self.client.models.generate_content(
+                    model='gemini-2.5-flash-preview-tts',
+                    contents=text,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["AUDIO"],
+                        speech_config=types.SpeechConfig(
+                            voice_config=types.VoiceConfig(
+                                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                    voice_name=self.voice_name
+                                )
                             )
                         )
                     )
                 )
-            )
+            
+            try:
+                response = self._retry_api_call(_tts_api_call)
+            except Exception as api_error:
+                error_str = str(api_error)
+                logger.warning(f"⚠️ Gemini TTS API exhausted: {error_str[:100]}...")
+                
+                # All API keys exhausted - use Kokoro fallback
+                if any(x in error_str for x in ['429', 'RESOURCE_EXHAUSTED', '503', 'exhausted', 'rate limit']):
+                    logger.info("🔄 Switching to Kokoro-82M fallback for TTS")
+                    return self._generate_with_kokoro_fallback(text, filename)
+                raise
+            
+            # Reset fallback status since Gemini worked
+            self.using_fallback = False
             
             # Extract audio data
             audio_data = response.candidates[0].content.parts[0].inline_data.data
@@ -382,11 +609,15 @@ class GeminiTTS:
             wf.writeframes(pcm_data)
     
     def get_stats(self) -> dict:
-        """Get usage statistics."""
+        """Get usage statistics including fallback status."""
         return {
             "requests": self.request_count,
             "errors": self.error_count,
-            "success_rate": (self.request_count - self.error_count) / max(self.request_count, 1) * 100
+            "success_rate": (self.request_count - self.error_count) / max(self.request_count, 1) * 100,
+            "current_api_key": self.current_key_index + 1,
+            "total_api_keys": len(self.api_key_pool),
+            "using_kokoro_fallback": self.using_fallback,
+            "kokoro_available": KOKORO_AVAILABLE and self.kokoro_initialized
         }
 
 
