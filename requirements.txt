@@ -37,6 +37,7 @@ scipy==1.11.4                 # Audio file I/O
 pydub==0.25.1                 # Audio manipulation
 pyaudio>=0.2.11               # Real-time microphone capture (for VAD)
 silero-vad>=4.0.0             # Silero VAD for voice activity detection
+PyOpenAL>=0.7.11a1            # 3D spatial audio with HRTF support
 
 # ===== GUI (Development) =====
 # Tkinter comes with Python standard library

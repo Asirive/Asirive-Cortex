@@ -1,0 +1,6 @@
+# Placeholder - Add proximity alert sound files here
+# Required files:
+# - notice.wav (soft awareness, > 2m)
+# - warning.wav (attention needed, 1-2m)
+# - danger.wav (caution required, 0.5-1m)
+# - critical.wav (immediate action, < 0.5m)

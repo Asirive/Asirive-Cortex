@@ -1,0 +1,12 @@
+# Placeholder - Add object-specific sound files here
+# Required files:
+# - person.wav (human presence indicator)
+# - vehicle.wav (car, truck, bus warning)
+# - bicycle.wav (cyclist indicator)
+# - furniture.wav (chair, table, couch)
+# - door.wav (doorway/passage indicator)
+# - stairs.wav (level change warning)
+# - animal.wav (pet indicator)
+# - electronic.wav (devices)
+# - traffic.wav (traffic lights, stop signs)
+# - generic.wav (default for unknown objects)
