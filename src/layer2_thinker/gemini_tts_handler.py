@@ -11,6 +11,7 @@ Key Features:
 - Built-in TTS with natural voice ("Kore" default)
 - No separate TTS pipeline needed
 - Uses new Google Gen AI SDK (google.genai)
+- Automatic retry with exponential backoff for rate limits
 
 Author: Haziq (@IRSPlays)
 Project: Cortex v2.0 - YIA 2026
@@ -20,6 +21,7 @@ Date: November 20, 2025
 import logging
 import os
 import wave
+import time
 from typing import Optional
 from pathlib import Path
 import base64
@@ -104,6 +106,10 @@ class GeminiTTS:
         self.request_count = 0
         self.error_count = 0
         
+        # Rate limiting
+        self.max_retries = 3
+        self.base_retry_delay = 1.0  # seconds
+        
         logger.info(f"📋 Gemini TTS Config:")
         logger.info(f"   Model: gemini-2.5-flash-preview-tts")
         logger.info(f"   Voice: {voice_name}")
@@ -111,6 +117,66 @@ class GeminiTTS:
         logger.info(f"   API Key: {self.api_key[:12]}...{self.api_key[-4:]}")
         
         self._initialized = True
+    
+    def _parse_retry_delay(self, error_message: str) -> float:
+        """
+        Extract retry delay from Gemini API error response.
+        
+        Example error: "Please retry in 12.904512739s."
+        Returns: 12.904512739
+        """
+        import re
+        match = re.search(r'retry in ([\d.]+)s', error_message)
+        if match:
+            return float(match.group(1))
+        return self.base_retry_delay
+    
+    def _retry_api_call(self, api_call_func, *args, **kwargs):
+        """
+        Retry wrapper for Gemini API calls with exponential backoff.
+        
+        Args:
+            api_call_func: The API call function to retry
+            *args, **kwargs: Arguments to pass to the function
+        
+        Returns:
+            Result from api_call_func or None if all retries failed
+        """
+        last_exception = None
+        
+        for attempt in range(self.max_retries):
+            try:
+                return api_call_func(*args, **kwargs)
+            
+            except Exception as e:
+                last_exception = e
+                error_str = str(e)
+                
+                # Check if it's a rate limit error (429 RESOURCE_EXHAUSTED)
+                if '429' in error_str and 'RESOURCE_EXHAUSTED' in error_str:
+                    # Extract retry delay from error message
+                    retry_delay = self._parse_retry_delay(error_str)
+                    
+                    if attempt < self.max_retries - 1:  # Don't retry on last attempt
+                        logger.warning(
+                            f"⏳ Rate limit hit (attempt {attempt + 1}/{self.max_retries}). "
+                            f"Retrying in {retry_delay:.1f}s..."
+                        )
+                        time.sleep(retry_delay)
+                    else:
+                        logger.error(
+                            f"❌ Rate limit exceeded after {self.max_retries} attempts. "
+                            "Please wait and try again later."
+                        )
+                        raise  # Re-raise on final attempt
+                else:
+                    # Non-rate-limit error, don't retry
+                    raise
+        
+        # If we get here, all retries failed
+        if last_exception:
+            raise last_exception
+        return None
     
     def initialize(self) -> bool:
         """
@@ -154,7 +220,12 @@ class GeminiTTS:
         filename: Optional[str] = None
     ) -> Optional[str]:
         """
-        Generate speech from image + prompt using Gemini 2.5 Flash TTS.
+        Generate speech from image + prompt using TWO-STEP PIPELINE:
+        Step 1: Use gemini-2.0-flash-exp (vision model) to generate text description
+        Step 2: Use gemini-2.5-flash-preview-tts (TTS model) to convert text to audio
+        
+        This is necessary because gemini-2.5-flash-preview-tts does NOT support
+        image input (it's a TTS-only model). We need vision + TTS in sequence.
         
         Args:
             image: PIL Image to analyze
@@ -170,7 +241,8 @@ class GeminiTTS:
                 return None
         
         try:
-            logger.info(f"🎙️ Generating speech from image...")
+            logger.info(f"🎙️ Generating speech from image (2-step pipeline)...")
+            logger.info(f"   Step 1: Vision model → text description")
             logger.info(f"   Prompt: '{prompt[:50]}...'")
             self.request_count += 1
             
@@ -189,41 +261,37 @@ class GeminiTTS:
                 types.Part.from_text(text=prompt)
             ]
             
-            # Call Gemini 2.5 Flash TTS
-            response = self.client.models.generate_content(
-                model='gemini-2.5-flash-preview-tts',
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    response_modalities=["AUDIO"],
-                    speech_config=types.SpeechConfig(
-                        voice_config=types.VoiceConfig(
-                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                voice_name=self.voice_name
-                            )
-                        )
+            # STEP 1: Use VISION model (gemini-2.5-flash) with retry on rate limits
+            # Official docs: gemini-2.5-flash is the stable flagship model (as of Nov 2025)
+            # Supports text, images, video, audio inputs with 1M token context
+            # See: https://ai.google.dev/gemini-api/docs/models/gemini
+            def _vision_api_call():
+                return self.client.models.generate_content(
+                    model='gemini-2.5-flash',  # Stable multimodal model (best price-performance)
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["TEXT"]  # Get text response (not audio)
                     )
                 )
+            
+            vision_response = self._retry_api_call(_vision_api_call)
+            
+            # Extract text description from vision model
+            text_description = vision_response.text
+            logger.info(f"   Step 1 ✅: Generated text ({len(text_description)} chars)")
+            logger.info(f"   Step 2: TTS model → audio from text")
+            
+            # STEP 2: Use TTS model to convert text to audio (also with retry)
+            audio_path = self.generate_speech_from_text(
+                text=text_description,
+                save_to_file=save_to_file,
+                filename=filename
             )
             
-            # Extract audio data from response
-            audio_data = response.candidates[0].content.parts[0].inline_data.data
+            if audio_path:
+                logger.info(f"✅ Two-step pipeline complete: Vision → TTS → Audio")
             
-            if save_to_file:
-                # Generate filename if not provided
-                if filename is None:
-                    import time
-                    filename = f"gemini_tts_{int(time.time())}.wav"
-                
-                output_path = self.output_dir / filename
-                
-                # Save as WAV file (PCM format, 24kHz, mono, 16-bit)
-                self._save_wav_file(str(output_path), audio_data)
-                
-                logger.info(f"✅ Audio saved to: {output_path}")
-                return str(output_path)
-            else:
-                logger.info("✅ Audio generated (not saved)")
-                return None
+            return audio_path
             
         except Exception as e:
             logger.error(f"❌ Failed to generate speech from image: {e}")
@@ -293,25 +361,25 @@ class GeminiTTS:
             self.error_count += 1
             return None
     
-    def _save_wav_file(self, filename: str, pcm_data: str, channels: int = 1, rate: int = 24000, sample_width: int = 2):
+    def _save_wav_file(self, filename: str, pcm_data: bytes, channels: int = 1, rate: int = 24000, sample_width: int = 2):
         """
         Save PCM audio data as WAV file.
         
         Args:
             filename: Output filename
-            pcm_data: Base64-encoded PCM audio data
+            pcm_data: Raw PCM audio bytes (already decoded, NOT base64)
             channels: Number of audio channels (1 = mono)
             rate: Sample rate in Hz (24000 for Gemini TTS)
             sample_width: Sample width in bytes (2 = 16-bit)
         """
-        # Decode base64 PCM data
-        pcm_bytes = base64.b64decode(pcm_data)
+        # pcm_data is already raw bytes from inline_data.data
+        # No base64 decoding needed
         
         with wave.open(filename, "wb") as wf:
             wf.setnchannels(channels)
             wf.setsampwidth(sample_width)
             wf.setframerate(rate)
-            wf.writeframes(pcm_bytes)
+            wf.writeframes(pcm_data)
     
     def get_stats(self) -> dict:
         """Get usage statistics."""

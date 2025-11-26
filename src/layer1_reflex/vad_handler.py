@@ -157,13 +157,18 @@ class VADHandler:
             return True
             
         try:
-            logger.info("⏳ Loading Silero VAD model...")
+            logger.info("⏳ Loading Silero VAD model from torch.hub...")
+            logger.info("📥 Model Source: snakers4/silero-vad")
             start_time = time.time()
             
             # Load Silero VAD model (downloads on first use)
             self.vad_model = load_silero_vad(onnx=False)
             
+            load_time = time.time() - start_time
+            logger.info(f"✅ Silero VAD model loaded in {load_time:.2f}s")
+            
             # Create VAD iterator for streaming
+            logger.info("🔄 Creating VADIterator for streaming mode...")
             self.vad_iterator = VADIterator(
                 self.vad_model,
                 sampling_rate=self.sample_rate,
@@ -171,8 +176,11 @@ class VADHandler:
                 min_silence_duration_ms=self.min_silence_duration_ms
             )
             
-            load_time = time.time() - start_time
-            logger.info(f"✅ Silero VAD model loaded in {load_time:.2f}s")
+            logger.info("📋 VADIterator Configuration:")
+            logger.info(f"   Sampling Rate: {self.sample_rate} Hz")
+            logger.info(f"   Threshold: {self.threshold}")
+            logger.info(f"   Min Silence Duration: {self.min_silence_duration_ms}ms")
+            logger.info("✅ VADIterator initialized successfully")
             
             return True
             
@@ -231,22 +239,40 @@ class VADHandler:
                 self.detection_times.append(detection_time)
                 self.total_chunks_processed += 1
                 
+                # DEBUG: Log chunk processing details
+                logger.debug(
+                    f"📊 Chunk #{self.total_chunks_processed}: "
+                    f"VAD latency={detection_time:.1f}ms, "
+                    f"Queue size={self.audio_queue.qsize()}, "
+                    f"Speech active={self.is_speech_active}, "
+                    f"Buffer size={len(self.speech_buffer)} chunks"
+                )
+                
                 # Manage padding buffer (for pre-speech audio)
                 self.padding_buffer.append(audio_chunk)
                 if len(self.padding_buffer) > padding_chunks:
                     self.padding_buffer.pop(0)
                 
-                # Check if speech detected
-                if speech_dict:
+                # VADIterator State Machine:
+                # - Returns None: Continue current state (speech or silence)
+                # - Returns {'start': timestamp}: Speech just started
+                # - Returns {'end': timestamp}: Speech just ended
+                
+                if speech_dict and 'start' in speech_dict:
+                    # SPEECH START EVENT
                     if not self.is_speech_active:
-                        # Speech started
                         self.is_speech_active = True
                         self.total_speech_segments += 1
                         
                         # Add padding from before speech started
                         self.speech_buffer.extend(self.padding_buffer)
                         
-                        logger.info(f"🗣️ Speech started (chunk {self.total_chunks_processed})")
+                        logger.info(
+                            f"🗣️ SPEECH START (Segment #{self.total_speech_segments}): "
+                            f"Chunk #{self.total_chunks_processed}, "
+                            f"Event: {speech_dict}, "
+                            f"Padding added: {len(self.padding_buffer)} chunks"
+                        )
                         
                         # Trigger callback
                         if self.on_speech_start:
@@ -254,43 +280,55 @@ class VADHandler:
                                 self.on_speech_start()
                             except Exception as e:
                                 logger.error(f"❌ Error in on_speech_start callback: {e}")
-                    
-                    # Add chunk to speech buffer
-                    self.speech_buffer.append(audio_chunk)
-                    
-                    # Log speech segment info
-                    logger.debug(f"🎤 Speech: {speech_dict}")
                 
-                elif self.is_speech_active:
-                    # Speech ended (silence detected)
-                    self.is_speech_active = False
-                    
-                    # Check if speech duration meets minimum
-                    speech_duration_ms = len(self.speech_buffer) * (self.chunk_size / self.sample_rate * 1000)
-                    
-                    if speech_duration_ms >= self.min_speech_duration_ms:
-                        # Valid speech segment
-                        speech_audio = np.concatenate(self.speech_buffer)
-                        
+                elif speech_dict and 'end' in speech_dict:
+                    # SPEECH END EVENT
+                    if self.is_speech_active:
                         logger.info(
-                            f"🎤 Speech ended: {speech_duration_ms:.0f}ms "
-                            f"({len(speech_audio)} samples)"
+                            f"🔇 SPEECH END DETECTED: "
+                            f"VAD triggered end event, "
+                            f"Buffer has {len(self.speech_buffer)} chunks"
                         )
+                        self.is_speech_active = False
                         
-                        # Trigger callback
-                        if self.on_speech_end:
-                            try:
-                                self.on_speech_end(speech_audio)
-                            except Exception as e:
-                                logger.error(f"❌ Error in on_speech_end callback: {e}")
-                    else:
-                        logger.debug(
-                            f"⏭️ Ignoring short speech segment: {speech_duration_ms:.0f}ms < "
-                            f"{self.min_speech_duration_ms}ms"
-                        )
-                    
-                    # Clear speech buffer
-                    self.speech_buffer = []
+                        # Check if speech duration meets minimum
+                        speech_duration_ms = len(self.speech_buffer) * (self.chunk_size / self.sample_rate * 1000)
+                        
+                        if speech_duration_ms >= self.min_speech_duration_ms:
+                            # Valid speech segment
+                            speech_audio = np.concatenate(self.speech_buffer)
+                            
+                            logger.info(
+                                f"✅ VALID SPEECH SEGMENT: "
+                                f"Duration={speech_duration_ms:.0f}ms, "
+                                f"Samples={len(speech_audio)}, "
+                                f"Min required={self.min_speech_duration_ms}ms, "
+                                f"Status=SENDING_TO_PIPELINE"
+                            )
+                            
+                            # Trigger callback
+                            if self.on_speech_end:
+                                try:
+                                    logger.info("📤 Calling on_speech_end callback...")
+                                    self.on_speech_end(speech_audio)
+                                    logger.info("✅ on_speech_end callback completed")
+                                except Exception as e:
+                                    logger.error(f"❌ Error in on_speech_end callback: {e}")
+                        else:
+                            logger.warning(
+                                f"⚠️ REJECTED SHORT SEGMENT: "
+                                f"Duration={speech_duration_ms:.0f}ms < "
+                                f"Minimum={self.min_speech_duration_ms}ms, "
+                                f"Status=DISCARDED"
+                            )
+                        
+                        # Clear speech buffer
+                        logger.debug(f"🧹 Clearing speech buffer ({len(self.speech_buffer)} chunks)")
+                        self.speech_buffer = []
+                
+                # Continue accumulating chunks if speech is active (even when speech_dict is None)
+                if self.is_speech_active:
+                    self.speech_buffer.append(audio_chunk)
                 
                 self.audio_queue.task_done()
                 
@@ -382,7 +420,9 @@ class VADHandler:
             
             # Reset VAD iterator
             if self.vad_iterator:
+                logger.info("🔄 Resetting VAD iterator states...")
                 self.vad_iterator.reset_states()
+                logger.info("✅ VAD iterator states reset complete")
             
             # Clear buffers
             self.speech_buffer = []
