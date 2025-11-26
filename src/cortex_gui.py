@@ -103,8 +103,8 @@ YOLO_CONFIDENCE = float(os.getenv('YOLO_CONFIDENCE', '0.5'))
 YOLO_DEVICE = os.getenv('YOLO_DEVICE', 'cuda')  # Use CUDA for GPU acceleration (auto-fallback to CPU if unavailable)
 
 # Temporary files
-AUDIO_FILE_FOR_WHISPER = "temp_mic_input.wav"
-TEMP_TTS_OUTPUT_FILE = "temp_tts_output.mp3"
+AUDIO_FILE_FOR_WHISPER = os.path.abspath("temp_mic_input.wav")
+TEMP_TTS_OUTPUT_FILE = os.path.abspath("temp_tts_output.wav")  # Fixed: Kokoro outputs WAV format
 
 # Camera source: 0 for webcam, will be configurable for RPi IMX415
 CAMERA_SOURCE = 0  # USB webcam
@@ -177,6 +177,14 @@ class ProjectCortexGUI:
         # --- Initialize Systems ---
         self.init_audio()
         self.init_yolo()
+        
+        # --- Initialize AI Handlers on Startup (TODO #1) ---
+        # Load all handlers immediately instead of lazy loading
+        # This ensures module indicators turn green on startup
+        self.init_whisper_stt()
+        self.init_kokoro_tts()
+        self.init_gemini_tts()
+        # Note: VAD is initialized when voice activation is enabled
         
         # --- Start Background Threads ---
         threading.Thread(target=self.video_capture_thread, daemon=True).start()
@@ -339,6 +347,13 @@ class ProjectCortexGUI:
         indicator = getattr(self, f"status_indicator_{handler}", None)
         if indicator:
             indicator.configure(text_color=color)
+    
+    def _safe_gui_update(self, callback):
+        """Thread-safe GUI update using .after() (TODO #3)."""
+        try:
+            self.window.after(0, callback)
+        except Exception as e:
+            logger.error(f"GUI update failed: {e}")
 
     def init_debug_console(self, parent_frame):
         """Initialize the debug console in the UI."""
@@ -467,13 +482,15 @@ class ProjectCortexGUI:
             self.status_queue.put(f"Status: YOLO ready ({device})")
             self.debug_print(f"✅ YOLO loaded: {os.path.basename(YOLO_MODEL_PATH)} on {device}")
             logger.info(f"✅ YOLO model loaded successfully on {device}")
-            self.update_handler_status("yolo", "active")
+            # Thread-safe GUI update
+            self._safe_gui_update(lambda: self.update_handler_status("yolo", "active"))
             
         except Exception as e:
             logger.error(f"❌ YOLO loading failed: {e}", exc_info=True)
             self.status_queue.put("Status: YOLO FAILED")
             self.debug_print(f"❌ ERROR: {e}")
-            self.update_handler_status("yolo", "error")
+            # Thread-safe GUI update
+            self._safe_gui_update(lambda: self.update_handler_status("yolo", "error"))
             self.model = None
     
     def video_capture_thread(self):
@@ -853,26 +870,56 @@ class ProjectCortexGUI:
     
     def on_vad_speech_start(self):
         """Callback when VAD detects speech start."""
-        self.debug_print("🗣️ Speech detected - Recording...")
-        self.status_queue.put("Status: LISTENING...")
+        self.debug_print("🗣️ VAD: Speech START detected - Recording audio...")
+        self.debug_print("⏺️ Recording State: ACTIVE")
+        self.status_queue.put("Status: 🎤 RECORDING SPEECH...")
         self.update_handler_status("vad", "processing")
     
     def on_vad_speech_end(self, audio_data):
         """Callback when VAD detects speech end."""
         try:
             duration_ms = len(audio_data) / 16000 * 1000
-            self.debug_print(f"🎤 Speech ended: {duration_ms:.0f}ms")
+            self.debug_print(f"🔇 VAD: Speech END detected")
+            self.debug_print(f"⏹️ Recording State: STOPPED")
+            self.debug_print(f"📊 Audio Stats: Duration={duration_ms:.0f}ms, Samples={len(audio_data)}")
             
             # Save audio to file for Whisper
             # Convert from float32 [-1, 1] to int16
             audio_int16 = (audio_data * 32767).astype(np.int16)
-            write_wav(AUDIO_FILE_FOR_WHISPER, 16000, audio_int16)
-            self.debug_print(f"💾 VAD audio saved: {AUDIO_FILE_FOR_WHISPER}")
+            
+            # Use absolute path to ensure file is found
+            import os
+            wav_file_path = os.path.abspath(AUDIO_FILE_FOR_WHISPER)
+            self.debug_print(f"💾 Saving audio to: {wav_file_path}")
+            
+            # Write WAV file
+            write_wav(wav_file_path, 16000, audio_int16)
+            
+            # Validate file was written correctly AND is readable
+            import time
+            time.sleep(0.05)  # Give filesystem time to flush (50ms)
+            
+            if not os.path.exists(wav_file_path):
+                self.debug_print(f"❌ ERROR: Audio file not found after write!")
+                self.update_handler_status("vad", "error")
+                return
+            
+            file_size = os.path.getsize(wav_file_path)
+            if file_size < 100:
+                self.debug_print(f"❌ ERROR: Audio file too small ({file_size} bytes)")
+                self.update_handler_status("vad", "error")
+                return
+            
+            self.debug_print(f"✅ Audio file saved: {file_size} bytes")
+            self.debug_print(f"📤 Sending to Whisper pipeline...")
             
             # Process audio through the same pipeline as manual recording
+            self.debug_print("🔄 Sending VAD audio to processing pipeline...")
+            self.debug_print(f"📋 Pipeline Entry Point: process_recorded_audio()")
             self.process_recorded_audio()
             
             # Reset VAD status
+            self.debug_print("✅ VAD audio sent to pipeline, waiting for next speech...")
             self.update_handler_status("vad", "active")
             self.status_queue.put("Status: VOICE-ACTIVATED MODE")
             
@@ -882,31 +929,51 @@ class ProjectCortexGUI:
             self.update_handler_status("vad", "error")
     
     def init_vad(self):
-        """Initialize VAD handler (lazy loading)."""
+        """Initialize VAD handler (eager loading on startup)."""
         if self.vad_handler is not None:
+            self.debug_print("ℹ️ VAD already initialized")
             return True
         
         try:
-            self.debug_print("⏳ Loading Silero VAD...")
+            self.debug_print("⏳ Initializing Silero VAD...")
             self.update_handler_status("vad", "loading")
+            
+            # VAD Configuration
+            vad_config = {
+                "sample_rate": 16000,
+                "chunk_size": 512,  # 32ms at 16kHz
+                "threshold": 0.5,   # Balanced sensitivity
+                "min_speech_duration_ms": 500,  # Minimum 0.5s of speech
+                "min_silence_duration_ms": 700,  # 0.7s silence to end
+                "padding_duration_ms": 300,  # 300ms padding before/after
+            }
+            
+            self.debug_print("📋 VAD Configuration:")
+            self.debug_print(f"   Sample Rate: {vad_config['sample_rate']} Hz")
+            self.debug_print(f"   Chunk Size: {vad_config['chunk_size']} samples ({vad_config['chunk_size']/vad_config['sample_rate']*1000:.1f}ms)")
+            self.debug_print(f"   Threshold: {vad_config['threshold']} (0.0=sensitive, 1.0=strict)")
+            self.debug_print(f"   Min Speech: {vad_config['min_speech_duration_ms']}ms")
+            self.debug_print(f"   Min Silence: {vad_config['min_silence_duration_ms']}ms (to end recording)")
+            self.debug_print(f"   Padding: {vad_config['padding_duration_ms']}ms (before/after speech)")
             
             # Create VAD handler with callbacks
             self.vad_handler = VADHandler(
-                sample_rate=16000,
-                chunk_size=512,  # 32ms at 16kHz
-                threshold=0.5,   # Balanced sensitivity
-                min_speech_duration_ms=500,  # Minimum 0.5s of speech
-                min_silence_duration_ms=700,  # 0.7s silence to end
-                padding_duration_ms=300,  # 300ms padding before/after
+                sample_rate=vad_config["sample_rate"],
+                chunk_size=vad_config["chunk_size"],
+                threshold=vad_config["threshold"],
+                min_speech_duration_ms=vad_config["min_speech_duration_ms"],
+                min_silence_duration_ms=vad_config["min_silence_duration_ms"],
+                padding_duration_ms=vad_config["padding_duration_ms"],
                 on_speech_start=self.on_vad_speech_start,
                 on_speech_end=self.on_vad_speech_end
             )
             
+            self.debug_print("🔄 Loading Silero VAD model...")
             if not self.vad_handler.load_model():
                 raise Exception("Failed to load VAD model")
             
             self.update_handler_status("vad", "inactive")
-            self.debug_print("✅ Silero VAD loaded")
+            self.debug_print("✅ Silero VAD initialized and ready")
             return True
             
         except Exception as e:
@@ -929,35 +996,49 @@ class ProjectCortexGUI:
         threading.Thread(target=self._process_audio_pipeline, daemon=True).start()
     
     def _process_audio_pipeline(self):
-        """Background pipeline: Whisper -> Router -> Layer Handler."""
+        """Background pipeline: Whisper -> Router -> Layer Handler (TODO #2 & #4)."""
         try:
-            # 1. Transcribe with Whisper
+            # === STAGE 1: Whisper Transcription ===
+            self.status_queue.put("Status: Whisper transcribing...")
+            self.debug_print("🎧 [PIPELINE] Stage 1: Whisper STT")
+            
             if not self.init_whisper_stt():
                 self.debug_print("❌ Whisper not available")
                 self.update_handler_status("whisper", "error")
                 return
             
-            self.debug_print("🔄 Transcribing...")
+            self.debug_print("🔄 Transcribing audio file...")
+            import time
+            start_time = time.time()
             transcribed_text = self.whisper_stt.transcribe_file(AUDIO_FILE_FOR_WHISPER)
+            whisper_latency = (time.time() - start_time) * 1000
             
             if not transcribed_text or not transcribed_text.strip():
                 self.debug_print("⚠️ Empty transcription")
-                self.status_queue.put("Status: Transcription empty")
+                self.status_queue.put("Status: No speech detected")
                 self.update_handler_status("whisper", "active")
                 return
 
-            self.debug_print(f"📝 User said: '{transcribed_text}'")
-            self.input_entry.delete(0, "end")
-            self.input_entry.insert(0, transcribed_text)
+            self.debug_print(f"✅ Whisper ({whisper_latency:.0f}ms): '{transcribed_text}'")
+            self._safe_gui_update(lambda: self.input_entry.delete(0, "end"))
+            self._safe_gui_update(lambda: self.input_entry.insert(0, transcribed_text))
             self.update_handler_status("whisper", "active")
             
-            # 2. Route Intent
+            # === STAGE 2: Intent Routing ===
+            self.status_queue.put("Status: Routing intent...")
+            self.debug_print("🧠 [PIPELINE] Stage 2: Intent Router")
+            
+            start_time = time.time()
             target_layer = self.router.route(transcribed_text)
+            router_latency = (time.time() - start_time) * 1000
+            
             layer_desc = self.router.get_layer_description(target_layer)
-            self.debug_print(f"🧠 Routing to {layer_desc}")
+            self.debug_print(f"✅ Router ({router_latency:.0f}ms): {layer_desc}")
             self.status_queue.put(f"Status: {layer_desc}")
             
-            # 3. Execute Layer Logic
+            # === STAGE 3: Layer Execution ===
+            self.debug_print(f"🚀 [PIPELINE] Stage 3: Executing {target_layer.upper()}")
+            
             if target_layer == "layer1":
                 self._execute_layer1_reflex(transcribed_text)
             elif target_layer == "layer2":
@@ -965,15 +1046,18 @@ class ProjectCortexGUI:
             elif target_layer == "layer3":
                 self._execute_layer3_guide(transcribed_text)
             
+            self.debug_print("✅ [PIPELINE] Complete")
+            
         except Exception as e:
             logger.error(f"Audio pipeline failed: {e}", exc_info=True)
-            self.debug_print(f"❌ Pipeline error: {e}")
-            self.status_queue.put("Status: Error")
+            self.debug_print(f"❌ [PIPELINE] ERROR: {e}")
+            self.status_queue.put("Status: Pipeline Error")
             self.update_handler_status("whisper", "error")
 
     def _execute_layer1_reflex(self, text):
-        """Layer 1: Local Object Detection Report."""
-        self.debug_print("⚡ Layer 1 (Reflex) Activated")
+        """Layer 1: Local Object Detection Report (TODO #4)."""
+        self.status_queue.put("Status: Layer 1 analyzing...")
+        self.debug_print("⚡ [LAYER 1] Reflex Mode: Local YOLO")
         
         # Get current detections
         detections = self.last_detections
@@ -985,8 +1069,13 @@ class ProjectCortexGUI:
             unique_items = set([i.split(" (")[0] for i in items])
             response = f"I see {', '.join(unique_items)}."
         
-        self.response_text.delete('1.0', "end")
-        self.response_text.insert("end", f"[Layer 1] {response}")
+        self.debug_print(f"🔍 [LAYER 1] Detection: {detections}")
+        self.debug_print(f"💬 [LAYER 1] Response: {response}")
+        
+        self._safe_gui_update(lambda: self.response_text.delete('1.0', "end"))
+        self._safe_gui_update(lambda: self.response_text.insert("end", f"[Layer 1] {response}"))
+        
+        self.status_queue.put("Status: Generating TTS...")
         self.generate_tts(response)
 
     def _execute_layer2_thinker(self, text):
@@ -1120,7 +1209,7 @@ Speak naturally and keep it short (under 30 words)."""
                 
                 # Play audio immediately
                 self.last_tts_file = audio_path
-                self.play_audio(audio_path)
+                self.play_audio_file(audio_path)
             else:
                 self.response_text.delete('1.0', "end")
                 self.response_text.insert("end", "❌ No response from Gemini")
@@ -1156,7 +1245,15 @@ Speak naturally and keep it short (under 30 words)."""
             audio_data = self.kokoro_tts.generate_speech(text)
             
             if audio_data is not None:
-                # Save to temp file
+                # CRITICAL FIX: Unload pygame music to release file lock (Windows requirement)
+                # pygame.mixer.music.load() locks the file until unload() is called
+                try:
+                    pygame.mixer.music.stop()     # Stop playback first
+                    pygame.mixer.music.unload()   # Release file handle (pygame v2.0.0+)
+                except:
+                    pass  # Ignore if nothing is loaded
+                
+                # Save to temp file (now safe to overwrite)
                 import scipy.io.wavfile as wavfile
                 wavfile.write(TEMP_TTS_OUTPUT_FILE, 24000, audio_data)
                 self.last_tts_file = TEMP_TTS_OUTPUT_FILE
@@ -1199,12 +1296,20 @@ Speak naturally and keep it short (under 30 words)."""
     def debug_print(self, msg):
         """Thread-safe debug console logging."""
         def _update():
-            timestamp = time.strftime('%H:%M:%S')
-            self.debug_text.insert("end", f"[{timestamp}] {msg}\n")
-            self.debug_text.see("end")
+            try:
+                timestamp = time.strftime('%H:%M:%S')
+                self.debug_text.insert("end", f"[{timestamp}] {msg}\n")
+                self.debug_text.see("end")
+            except Exception as e:
+                # Silently fail if GUI is not ready
+                logger.debug(f"Debug print failed: {e}")
         
-        if self.window.winfo_exists():
+        try:
+            # Always use .after() for thread safety
             self.window.after(0, _update)
+        except Exception:
+            # If .after() fails, just log to console
+            logger.info(msg)
     
     def on_closing(self):
         """Graceful shutdown."""

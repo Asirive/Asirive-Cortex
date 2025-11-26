@@ -237,8 +237,43 @@ class WhisperSTT:
         try:
             logger.info(f"📁 Transcribing file: {audio_path}")
             
-            # Load audio file (Whisper handles various formats)
-            audio = whisper.load_audio(audio_path)
+            # Load audio file
+            # For WAV files (our VAD output), load directly with scipy to avoid ffmpeg dependency
+            # For other formats, use whisper.load_audio (requires ffmpeg)
+            if audio_path.lower().endswith('.wav'):
+                logger.debug("📂 Loading WAV file with scipy (no ffmpeg needed)")
+                from scipy.io import wavfile
+                sample_rate, audio_data = wavfile.read(audio_path)
+                
+                # Convert to float32 mono as Whisper expects
+                if audio_data.dtype == np.int16:
+                    audio = audio_data.astype(np.float32) / 32768.0
+                elif audio_data.dtype == np.int32:
+                    audio = audio_data.astype(np.float32) / 2147483648.0
+                elif audio_data.dtype == np.uint8:
+                    audio = (audio_data.astype(np.float32) - 128.0) / 128.0
+                else:
+                    audio = audio_data.astype(np.float32)
+                
+                # Handle stereo -> mono conversion
+                if audio.ndim > 1:
+                    audio = audio.mean(axis=1)
+                
+                # Resample to 16kHz if needed (Whisper requirement)
+                if sample_rate != 16000:
+                    logger.warning(f"⚠️ Resampling from {sample_rate}Hz to 16kHz...")
+                    # Simple linear interpolation resampling
+                    duration = len(audio) / sample_rate
+                    new_length = int(duration * 16000)
+                    audio = np.interp(
+                        np.linspace(0, len(audio), new_length),
+                        np.arange(len(audio)),
+                        audio
+                    )
+            else:
+                # For non-WAV files, use whisper.load_audio (requires ffmpeg)
+                logger.debug("📂 Loading audio file with ffmpeg (whisper.load_audio)")
+                audio = whisper.load_audio(audio_path)
             
             return self.transcribe(audio)
             
