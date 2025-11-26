@@ -69,6 +69,16 @@ from layer1_reflex.vad_handler import VADHandler  # NEW: Voice Activity Detectio
 from layer2_thinker.gemini_tts_handler import GeminiTTS  # NEW: Gemini 2.5 Flash TTS (replaces old GeminiVision)
 from layer3_guide.router import IntentRouter
 
+# Import Spatial Audio Manager (3D Audio Navigation)
+try:
+    from layer3_guide.spatial_audio import SpatialAudioManager, print_navigation_notice
+    from layer3_guide.spatial_audio.manager import Detection as SpatialDetection
+    SPATIAL_AUDIO_AVAILABLE = True
+except ImportError as e:
+    SPATIAL_AUDIO_AVAILABLE = False
+    SpatialDetection = None
+    print(f"⚠️ Spatial Audio not available: {e}")
+
 # Suppress pygame deprecation warnings
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='pygame')
 
@@ -165,11 +175,21 @@ class ProjectCortexGUI:
         self.kokoro_tts = None   # Lazy load to avoid startup delay (kept for backward compatibility)
         self.gemini_tts = None   # NEW: Gemini 2.5 Flash TTS (image + prompt -> audio)
         self.vad_handler = None  # NEW: Voice Activity Detection handler
+        self.spatial_audio = None  # NEW: 3D Spatial Audio Manager
         
         # --- Voice Activation State ---
         self.voice_activation_enabled = ctk.BooleanVar(value=False)
+        self.vad_interrupt_enabled = ctk.BooleanVar(value=False)  # NEW: Allow VAD to interrupt TTS (off by default)
         self.vad_listening = False
         self.vad_speech_buffer = None
+        
+        # --- 3D Spatial Audio State ---
+        self.spatial_audio_enabled = ctk.BooleanVar(value=False)  # NEW: 3D Audio Navigation
+        
+        # --- TTS Playback State (for interrupt detection) ---
+        self.tts_playing = False  # Track if TTS audio is currently playing
+        self.TTS_END_EVENT = pygame.USEREVENT + 1  # Custom event for TTS completion
+        self.tts_interrupt_requested = False  # Thread-safe flag for VAD to request TTS interrupt
         
         # --- Build UI ---
         self.init_ui()
@@ -227,6 +247,7 @@ class ProjectCortexGUI:
         self.create_status_indicator("VAD", "#555555")  # NEW: Voice Activity Detection indicator
         self.create_status_indicator("GEMINI-TTS", "#555555")  # NEW: Gemini 2.5 TTS indicator
         self.create_status_indicator("KOKORO", "#555555")  # Kept for backward compatibility
+        self.create_status_indicator("3D-AUDIO", "#555555")  # NEW: 3D Spatial Audio indicator
 
         # --- Video Frame ---
         video_frame = ctk.CTkFrame(self.window, fg_color="black", corner_radius=0)
@@ -281,6 +302,26 @@ class ProjectCortexGUI:
             font=('Arial', 12, 'bold')
         )
         self.voice_activation_switch.pack(side="left", padx=5)
+        
+        # VAD Interrupt Toggle (allows interrupting TTS with voice)
+        self.vad_interrupt_switch = ctk.CTkSwitch(
+            audio_frame,
+            text="🔇 Interrupt TTS",
+            variable=self.vad_interrupt_enabled,
+            command=self.toggle_vad_interrupt,
+            font=('Arial', 11)
+        )
+        self.vad_interrupt_switch.pack(side="left", padx=5)
+        
+        # 3D Spatial Audio Toggle (enables 3D navigation sounds)
+        self.spatial_audio_switch = ctk.CTkSwitch(
+            audio_frame,
+            text="🔊 3D Audio",
+            variable=self.spatial_audio_enabled,
+            command=self.toggle_spatial_audio,
+            font=('Arial', 11)
+        )
+        self.spatial_audio_switch.pack(side="left", padx=5)
         
         self.record_btn = ctk.CTkButton(
             audio_frame, 
@@ -394,11 +435,17 @@ class ProjectCortexGUI:
         return self.whisper_stt is not None
     
     def init_kokoro_tts(self):
-        """Lazy initialize Kokoro TTS (called on first TTS request)."""
+        """Lazy initialize Kokoro TTS (called on first TTS request).
+        
+        NOTE: Kokoro works without eSpeak-NG. eSpeak is only used as a 
+        fallback for out-of-dictionary (OOD) words in English. If eSpeak 
+        is unavailable, Kokoro will simply skip OOD words.
+        """
         if self.kokoro_tts is None:
             try:
                 self.update_handler_status("kokoro", "processing")
                 self.debug_print("⏳ Loading Kokoro TTS...")
+                
                 self.kokoro_tts = KokoroTTS(lang_code="a", default_voice="af_alloy")
                 self.kokoro_tts.load_pipeline()
                 self.debug_print("✅ Kokoro TTS ready")
@@ -407,6 +454,7 @@ class ProjectCortexGUI:
             except Exception as e:
                 logger.error(f"❌ Kokoro TTS init failed: {e}")
                 self.debug_print(f"❌ Kokoro failed: {e}")
+                self.debug_print("   Gemini TTS will be used instead")
                 self.update_handler_status("kokoro", "error")
                 self.kokoro_tts = None
         return self.kokoro_tts is not None
@@ -446,8 +494,8 @@ class ProjectCortexGUI:
             if not os.path.exists(YOLO_MODEL_PATH):
                 logger.error(f"❌ Model not found: {YOLO_MODEL_PATH}")
                 self.status_queue.put(f"Status: ERROR - Model not found")
-                self.debug_print(f"❌ FATAL: {YOLO_MODEL_PATH} not found")
-                self.update_handler_status("yolo", "error")
+                self._safe_gui_update(lambda: self.debug_print(f"❌ FATAL: {YOLO_MODEL_PATH} not found"))
+                self._safe_gui_update(lambda: self.update_handler_status("yolo", "error"))
                 return
             
             # Verify CUDA availability and set device accordingly
@@ -581,6 +629,7 @@ class ProjectCortexGUI:
         """
         Layer 1 (Reflex): Real-time object detection with CPU inference.
         Processes frames with YOLO and puts annotated frames in queue.
+        Also feeds detections to 3D Spatial Audio for audio navigation.
         """
         while not self.stop_event.is_set():
             if self.model is None:
@@ -596,12 +645,31 @@ class ProjectCortexGUI:
                 
                 # Extract detections (only above confidence threshold)
                 detections = []
+                spatial_detections = []  # For 3D spatial audio
+                
                 for box in results[0].boxes:
                     confidence = float(box.conf)
                     if confidence > YOLO_CONFIDENCE:  # Explicit threshold check
                         class_id = int(box.cls)
                         class_name = self.classes[class_id]
                         detections.append(f"{class_name} ({confidence:.2f})")
+                        
+                        # Create spatial detection for 3D audio (if enabled)
+                        if self.spatial_audio and self.spatial_audio_enabled.get() and SpatialDetection:
+                            bbox = box.xyxy[0].tolist()  # Get (x1, y1, x2, y2)
+                            spatial_detections.append(SpatialDetection(
+                                class_name=class_name,
+                                confidence=confidence,
+                                bbox=tuple(bbox),
+                                object_id=f"{class_name}_{hash(tuple(bbox)) % 10000}"
+                            ))
+                
+                # Update 3D spatial audio with detections
+                if spatial_detections and self.spatial_audio:
+                    try:
+                        self.spatial_audio.update_detections(spatial_detections)
+                    except Exception as sa_err:
+                        logger.debug(f"Spatial audio update: {sa_err}")
                 
                 detections_str = ", ".join(sorted(set(detections))) or "nothing"
                 self.detection_queue.put(detections_str)
@@ -623,6 +691,9 @@ class ProjectCortexGUI:
     def update_video(self):
         """Gets an annotated frame from the queue and displays it on the canvas."""
         try:
+            # Poll pygame events for TTS playback completion
+            self.poll_pygame_events()
+            
             frame = self.processed_frame_queue.get_nowait()
             
             # Resize to fit canvas while maintaining aspect ratio
@@ -813,6 +884,72 @@ class ProjectCortexGUI:
         else:
             self.stop_voice_activation()
     
+    def toggle_vad_interrupt(self):
+        """Toggle VAD interrupt mode (allow voice to interrupt TTS playback)."""
+        if self.vad_interrupt_enabled.get():
+            self.debug_print("🔇 VAD Interrupt ENABLED - Voice can interrupt TTS playback")
+            logger.info("VAD interrupt mode enabled")
+        else:
+            self.debug_print("🔊 VAD Interrupt DISABLED - TTS will play to completion")
+            logger.info("VAD interrupt mode disabled")
+    
+    def toggle_spatial_audio(self):
+        """Toggle 3D Spatial Audio navigation on/off."""
+        if self.spatial_audio_enabled.get():
+            self.start_spatial_audio()
+        else:
+            self.stop_spatial_audio()
+    
+    def start_spatial_audio(self):
+        """Start 3D spatial audio navigation system."""
+        if not SPATIAL_AUDIO_AVAILABLE:
+            self.debug_print("❌ 3D Audio not available - Install PyOpenAL")
+            self.spatial_audio_enabled.set(False)
+            self.update_handler_status("3d-audio", "error")
+            return
+        
+        try:
+            self.debug_print("🔊 Starting 3D Spatial Audio...")
+            
+            # Initialize spatial audio manager if not already loaded
+            if self.spatial_audio is None:
+                self.spatial_audio = SpatialAudioManager(
+                    frame_width=self.canvas_width,
+                    frame_height=self.canvas_height
+                )
+            
+            # Start the audio system
+            if self.spatial_audio.start():
+                self.update_handler_status("3d-audio", "active")
+                self.debug_print("✅ 3D Spatial Audio ENABLED")
+                
+                # Print the body-relative navigation notice
+                print_navigation_notice()
+                self.debug_print("⚠️ IMPORTANT: Body-Relative Navigation")
+                self.debug_print("   Turn your TORSO to center sounds, not just your head!")
+            else:
+                self.spatial_audio_enabled.set(False)
+                self.debug_print("❌ Failed to start 3D audio")
+                self.update_handler_status("3d-audio", "error")
+                
+        except Exception as e:
+            logger.error(f"Spatial audio start failed: {e}")
+            self.debug_print(f"❌ 3D Audio error: {e}")
+            self.spatial_audio_enabled.set(False)
+            self.update_handler_status("3d-audio", "error")
+    
+    def stop_spatial_audio(self):
+        """Stop 3D spatial audio navigation system."""
+        try:
+            if self.spatial_audio:
+                self.spatial_audio.stop()
+                self.update_handler_status("3d-audio", "inactive")
+                self.debug_print("🛑 3D Spatial Audio DISABLED")
+                
+        except Exception as e:
+            logger.error(f"Spatial audio stop failed: {e}")
+            self.debug_print(f"❌ 3D Audio stop error: {e}")
+    
     def start_voice_activation(self):
         """Start voice activation mode using Silero VAD."""
         try:
@@ -870,6 +1007,17 @@ class ProjectCortexGUI:
     
     def on_vad_speech_start(self):
         """Callback when VAD detects speech start."""
+        # INTERRUPT: If TTS is currently playing AND interrupt is enabled, request stop
+        # NOTE: We set a flag instead of calling pygame directly because this callback
+        # runs in the VAD thread, and pygame isn't fully thread-safe
+        if self.tts_playing and self.vad_interrupt_enabled.get():
+            self.tts_interrupt_requested = True  # Will be handled by poll_pygame_events in main thread
+            self.debug_print("🛑 TTS INTERRUPT REQUESTED - stopping playback...")
+            logger.info("TTS playback interrupt requested by VAD speech detection")
+        elif self.tts_playing:
+            # TTS playing but interrupt disabled - just log it
+            self.debug_print("🔊 TTS playing (interrupt disabled, waiting for completion...)")
+        
         self.debug_print("🗣️ VAD: Speech START detected - Recording audio...")
         self.debug_print("⏺️ Recording State: ACTIVE")
         self.status_queue.put("Status: 🎤 RECORDING SPEECH...")
@@ -1084,12 +1232,47 @@ class ProjectCortexGUI:
         self.send_query()  # Re-use existing Gemini logic
 
     def _execute_layer3_guide(self, text):
-        """Layer 3: Navigation & Memory (Using Gemini TTS for spoken guidance)."""
+        """
+        Layer 3: Navigation, Memory & SPATIAL AUDIO (3D Object Localization).
+        
+        This layer handles:
+        1. GPS/Location queries ("where am I?")
+        2. Navigation ("go to the door")
+        3. SPATIAL AUDIO: Object localization ("where is the seat?")
+           → Uses 3D audio to guide user toward detected objects
+        """
         self.debug_print("🗺️ Layer 3 (Guide) Activated")
         
-        # For now, we use Gemini TTS for navigation guidance
-        # In the future, this would connect to GPS/Maps API
+        # Check if this is a SPATIAL AUDIO query (object localization)
+        text_lower = text.lower()
+        spatial_keywords = ["where is", "where's", "where are", "locate", "find the", 
+                           "guide me to", "lead me to", "point me to"]
         
+        is_spatial_query = any(kw in text_lower for kw in spatial_keywords)
+        
+        # Extract target object from query (e.g., "where is the seat" -> "seat")
+        target_object = None
+        if is_spatial_query:
+            # Try to extract the object name
+            for kw in spatial_keywords:
+                if kw in text_lower:
+                    # Get text after keyword
+                    parts = text_lower.split(kw)
+                    if len(parts) > 1:
+                        target_object = parts[1].strip().rstrip('?.,!')
+                        # Remove "the" prefix if present
+                        if target_object.startswith("the "):
+                            target_object = target_object[4:]
+                        break
+            
+            self.debug_print(f"🎯 Spatial Query: Looking for '{target_object}'")
+        
+        # If spatial audio is enabled and we have a target, use 3D audio
+        if is_spatial_query and target_object and self.spatial_audio_enabled.get() and self.spatial_audio:
+            self._execute_spatial_localization(text, target_object)
+            return
+        
+        # Fallback: Use Gemini TTS for navigation guidance
         if not self.init_gemini_tts():
             self.debug_print("❌ Gemini TTS not available for Layer 3")
             return
@@ -1100,6 +1283,7 @@ Current Visual Context: {self.last_detections}
 
 If the user asks for location, simulate a GPS response (e.g., "You are currently at your desk").
 If the user asks to go somewhere, provide general direction based on the visual context (e.g., "I see a door to your left").
+If the user asks where something is, describe its position relative to the user (left, right, center, far, near).
 Speak naturally and keep it short (under 30 words)."""
 
         self.status_queue.put("Status: Guide Thinking...")
@@ -1127,6 +1311,65 @@ Speak naturally and keep it short (under 30 words)."""
                 self.debug_print("❌ Layer 3 failed")
         else:
             self.debug_print("⚠️ No video frame for Layer 3 context")
+    
+    def _execute_spatial_localization(self, text: str, target_object: str):
+        """
+        Execute spatial audio localization for a target object.
+        Uses 3D audio to guide user toward the object.
+        """
+        self.debug_print(f"🔊 [SPATIAL] Searching for '{target_object}' in detections...")
+        
+        # Get current YOLO detections
+        detections = self.last_detections
+        if not detections or detections == "nothing":
+            self.debug_print(f"⚠️ No objects detected - cannot locate '{target_object}'")
+            # Speak a response using TTS
+            self._speak_spatial_response(f"I cannot see any {target_object} right now. Please point the camera around.")
+            return
+        
+        # Parse detections to find matching object
+        # Format: "person (0.85), chair (0.72), laptop (0.68)"
+        found = False
+        for detection in detections.split(", "):
+            obj_name = detection.split(" (")[0].lower()
+            if target_object.lower() in obj_name or obj_name in target_object.lower():
+                found = True
+                self.debug_print(f"✅ Found '{target_object}' in detections: {detection}")
+                
+                # The spatial audio manager is already tracking objects via process_detections
+                # Just speak confirmation and let the audio beacon guide them
+                self._speak_spatial_response(f"I see a {obj_name}. Listen for the sound to guide you.")
+                
+                # Could also set a specific beacon on this object
+                # self.spatial_audio.set_beacon(object_id, position)
+                break
+        
+        if not found:
+            self.debug_print(f"⚠️ '{target_object}' not found in current detections")
+            self._speak_spatial_response(f"I don't see any {target_object} right now. I can see: {detections}")
+    
+    def _speak_spatial_response(self, text: str):
+        """Speak a short response using available TTS (Kokoro preferred for speed)."""
+        try:
+            # Try Kokoro first (faster, local)
+            if self.kokoro_tts and hasattr(self.kokoro_tts, 'synthesize'):
+                audio_path = self.kokoro_tts.synthesize(text)
+                if audio_path:
+                    self.play_audio(audio_path)
+                    return
+            
+            # Fallback to Gemini TTS
+            if self.gemini_tts:
+                audio_path = self.gemini_tts.generate_speech_from_text(text, save_to_file=True)
+                if audio_path:
+                    self.play_audio(audio_path)
+                    return
+            
+            # Last resort: just log it
+            self.debug_print(f"💬 [Would say]: {text}")
+        except Exception as e:
+            logger.error(f"Spatial response TTS failed: {e}")
+            self.debug_print(f"⚠️ TTS failed: {e}")
 
     def _transcribe_thread(self):
         """Deprecated: Old transcription thread."""
@@ -1287,11 +1530,38 @@ Speak naturally and keep it short (under 30 words)."""
         """Play audio file using pygame."""
         try:
             pygame.mixer.music.load(file_path)
+            
+            # Set up TTS playback tracking
+            self.tts_playing = True
+            self.tts_interrupt_requested = False  # Clear any pending interrupt
+            pygame.mixer.music.set_endevent(self.TTS_END_EVENT)
+            
             pygame.mixer.music.play()
             self.debug_print(f"🔊 Playing: {file_path}")
         except Exception as e:
             logger.error(f"Audio playback failed: {e}")
             self.debug_print(f"❌ Playback error: {e}")
+            self.tts_playing = False
+    
+    def poll_pygame_events(self):
+        """Poll pygame events to detect TTS playback completion and handle interrupts."""
+        try:
+            # Handle TTS interrupt request from VAD thread (thread-safe)
+            if self.tts_interrupt_requested and self.tts_playing:
+                pygame.mixer.music.stop()
+                self.tts_playing = False
+                self.tts_interrupt_requested = False
+                self.debug_print("🛑 TTS INTERRUPTED by voice input")
+                logger.info("TTS playback interrupted successfully")
+            
+            for event in pygame.event.get():
+                if event.type == self.TTS_END_EVENT:
+                    self.tts_playing = False
+                    self.tts_interrupt_requested = False  # Clear any pending interrupt
+                    self.debug_print("✅ TTS playback finished naturally")
+                    logger.debug("TTS playback completed")
+        except Exception as e:
+            logger.debug(f"Pygame event polling error: {e}")
     
     def debug_print(self, msg):
         """Thread-safe debug console logging."""
@@ -1319,6 +1589,10 @@ Speak naturally and keep it short (under 30 words)."""
         # Stop voice activation if active
         if self.vad_listening:
             self.stop_voice_activation()
+        
+        # Stop spatial audio if active
+        if self.spatial_audio:
+            self.stop_spatial_audio()
         
         self.stop_event.set()
         

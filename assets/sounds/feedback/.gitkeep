@@ -1,0 +1,6 @@
+# Placeholder - Add system feedback sound files here
+# Required files:
+# - start.wav (system started)
+# - stop.wav (system stopped)
+# - error.wav (error occurred)
+# - confirm.wav (action confirmed)

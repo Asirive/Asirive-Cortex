@@ -1,0 +1,331 @@
+# ============================================================
+# Project-Cortex v2.0 - Spatial Audio Configuration
+# ============================================================
+# 3D Spatial Audio Navigation System for Visually Impaired Users
+# Uses PyOpenAL with HRTF for binaural audio output
+# ============================================================
+
+# Audio Engine Settings
+audio:
+  # Sample rate in Hz (44100 recommended for quality)
+  sample_rate: 44100
+  # Stereo output for binaural HRTF
+  channels: 2
+  # Buffer size (lower = less latency, higher = more stable)
+  buffer_size: 4096
+  # Enable HRTF (Head-Related Transfer Function)
+  enable_hrtf: true
+
+# ============================================================
+# Position Mapping (YOLO bbox → 3D coordinates)
+# ============================================================
+position:
+  # Camera frame dimensions (pixels)
+  frame_width: 1920
+  frame_height: 1080
+  
+  # Focal length in pixels (estimate for IMX415 sensor)
+  focal_length: 1500
+  
+  # Distance range (meters)
+  min_distance: 0.5   # Closest detectable distance
+  max_distance: 10.0  # Farthest meaningful distance
+  
+  # Position smoothing (0 = no smoothing, 1 = full smoothing)
+  smoothing_alpha: 0.3
+
+# ============================================================
+# Audio Beacon Settings (Navigation Guidance)
+# ============================================================
+beacon:
+  enabled: true
+  
+  # Sound files
+  sounds:
+    ping: "assets/sounds/beacons/ping.wav"
+    success: "assets/sounds/beacons/success.wav"
+    searching: "assets/sounds/beacons/searching.wav"
+  
+  # Ping rates at different distances (Hz)
+  ping_rates:
+    far: 1.0           # > 5m: slow pings
+    medium: 2.0        # 2-5m: medium pings
+    close: 4.0         # 1-2m: faster pings
+    very_close: 8.0    # < 1m: rapid pings
+  
+  # Distance thresholds (meters)
+  thresholds:
+    far: 5.0
+    medium: 2.0
+    close: 1.0
+    reached: 0.5       # Target considered "reached"
+  
+  # Volume scaling
+  volume:
+    min: 0.3
+    max: 1.0
+  
+  # Pitch variation (higher when closer)
+  pitch:
+    far: 0.9
+    close: 1.2
+
+# ============================================================
+# Proximity Alert Settings (Obstacle Warnings)
+# ============================================================
+proximity:
+  enabled: true
+  
+  # Sound files for each alert level
+  sounds:
+    notice: "assets/sounds/alerts/notice.wav"
+    warning: "assets/sounds/alerts/warning.wav"
+    danger: "assets/sounds/alerts/danger.wav"
+    critical: "assets/sounds/alerts/critical.wav"
+  
+  # Distance thresholds (meters)
+  thresholds:
+    notice: 3.0        # Ambient awareness
+    warning: 2.0       # Attention needed
+    danger: 1.0        # Caution required
+    critical: 0.5      # Immediate action
+  
+  # Repeat intervals per level (seconds)
+  repeat_intervals:
+    notice: 3.0        # Every 3 seconds
+    warning: 1.5       # Every 1.5 seconds
+    danger: 0.5        # Every 0.5 seconds
+    critical: 0.2      # Rapid (5 per second)
+  
+  # Volume per level
+  volumes:
+    notice: 0.3
+    warning: 0.5
+    danger: 0.8
+    critical: 1.0
+  
+  # Minimum time between level changes (debounce)
+  level_change_debounce: 0.3
+
+# ============================================================
+# Object Sound Mapping (Per-Class Audio Signatures)
+# ============================================================
+objects:
+  enabled: true
+  
+  # Maximum simultaneous audio sources
+  max_sources: 5
+  
+  # Stale object timeout (seconds)
+  stale_timeout: 1.0
+  
+  # Default sound for unknown objects
+  default_sound: "assets/sounds/objects/generic.wav"
+  
+  # Object class → sound mappings
+  # Format: class_name: {sound, volume, pitch, priority, loop}
+  # Priority: 1 = highest (safety-critical), 10 = lowest
+  mappings:
+    # === PEOPLE ===
+    person:
+      sound: "assets/sounds/objects/person.wav"
+      volume: 0.6
+      pitch: 1.0
+      priority: 3
+      loop: true
+      category: "people"
+    
+    # === VEHICLES (High Priority - Safety) ===
+    car:
+      sound: "assets/sounds/objects/vehicle.wav"
+      volume: 0.8
+      pitch: 1.0
+      priority: 1
+      loop: true
+      category: "vehicle"
+    
+    truck:
+      sound: "assets/sounds/objects/vehicle.wav"
+      volume: 0.9
+      pitch: 0.8
+      priority: 1
+      loop: true
+      category: "vehicle"
+    
+    bus:
+      sound: "assets/sounds/objects/vehicle.wav"
+      volume: 0.9
+      pitch: 0.7
+      priority: 1
+      loop: true
+      category: "vehicle"
+    
+    motorcycle:
+      sound: "assets/sounds/objects/vehicle.wav"
+      volume: 0.8
+      pitch: 1.1
+      priority: 1
+      loop: true
+      category: "vehicle"
+    
+    bicycle:
+      sound: "assets/sounds/objects/bicycle.wav"
+      volume: 0.6
+      pitch: 1.0
+      priority: 2
+      loop: true
+      category: "vehicle"
+    
+    # === NAVIGATION (Medium-High Priority) ===
+    door:
+      sound: "assets/sounds/objects/door.wav"
+      volume: 0.6
+      pitch: 1.0
+      priority: 4
+      loop: true
+      category: "navigation"
+    
+    stairs:
+      sound: "assets/sounds/objects/stairs.wav"
+      volume: 0.7
+      pitch: 1.0
+      priority: 2
+      loop: true
+      category: "navigation"
+    
+    traffic light:
+      sound: "assets/sounds/objects/traffic.wav"
+      volume: 0.7
+      pitch: 1.0
+      priority: 2
+      loop: true
+      category: "navigation"
+    
+    stop sign:
+      sound: "assets/sounds/objects/traffic.wav"
+      volume: 0.7
+      pitch: 0.9
+      priority: 2
+      loop: true
+      category: "navigation"
+    
+    # === FURNITURE (Medium Priority) ===
+    chair:
+      sound: "assets/sounds/objects/furniture.wav"
+      volume: 0.5
+      pitch: 1.0
+      priority: 6
+      loop: true
+      category: "furniture"
+    
+    couch:
+      sound: "assets/sounds/objects/furniture.wav"
+      volume: 0.5
+      pitch: 0.9
+      priority: 6
+      loop: true
+      category: "furniture"
+    
+    bed:
+      sound: "assets/sounds/objects/furniture.wav"
+      volume: 0.5
+      pitch: 0.8
+      priority: 6
+      loop: true
+      category: "furniture"
+    
+    dining table:
+      sound: "assets/sounds/objects/furniture.wav"
+      volume: 0.5
+      pitch: 0.95
+      priority: 6
+      loop: true
+      category: "furniture"
+    
+    # === ANIMALS ===
+    dog:
+      sound: "assets/sounds/objects/animal.wav"
+      volume: 0.6
+      pitch: 1.0
+      priority: 4
+      loop: true
+      category: "animal"
+    
+    cat:
+      sound: "assets/sounds/objects/animal.wav"
+      volume: 0.5
+      pitch: 1.2
+      priority: 5
+      loop: true
+      category: "animal"
+    
+    # === ELECTRONICS ===
+    cell phone:
+      sound: "assets/sounds/objects/electronic.wav"
+      volume: 0.5
+      pitch: 1.1
+      priority: 6
+      loop: true
+      category: "electronic"
+    
+    laptop:
+      sound: "assets/sounds/objects/electronic.wav"
+      volume: 0.5
+      pitch: 1.0
+      priority: 6
+      loop: true
+      category: "electronic"
+    
+    tv:
+      sound: "assets/sounds/objects/electronic.wav"
+      volume: 0.5
+      pitch: 0.9
+      priority: 6
+      loop: true
+      category: "electronic"
+
+# ============================================================
+# Known Object Sizes (for distance estimation)
+# ============================================================
+# Real-world width in meters for pinhole camera model
+# Distance = (Known_Width × Focal_Length) / Bbox_Width
+object_sizes:
+  person: 0.5          # Shoulder width
+  car: 1.8             # Average car width
+  truck: 2.4           # Truck width
+  bus: 2.5             # Bus width
+  motorcycle: 0.8      # Motorcycle width
+  bicycle: 0.6         # Handlebar width
+  chair: 0.5           # Chair width
+  door: 0.9            # Standard door width
+  stairs: 1.0          # Staircase width
+  dog: 0.3             # Dog body width
+  cat: 0.2             # Cat body width
+  tv: 1.0              # TV width
+  laptop: 0.35         # Laptop width
+  cell phone: 0.07     # Phone width
+  traffic light: 0.4   # Traffic light width
+  stop sign: 0.75      # Standard stop sign
+
+# ============================================================
+# Head Tracking (Future Feature)
+# ============================================================
+head_tracking:
+  enabled: false
+  # Source options: "bluetooth_hid", "imu_sensor", "none"
+  source: "none"
+  # Update rate in Hz
+  update_rate: 30
+  # Smoothing for orientation changes
+  smoothing: 0.2
+
+# ============================================================
+# Performance Settings
+# ============================================================
+performance:
+  # Target frame rate for audio updates
+  audio_update_rate: 30
+  # Skip frames if behind schedule
+  allow_frame_skip: true
+  # Maximum CPU usage for audio (percentage)
+  max_cpu_percent: 15

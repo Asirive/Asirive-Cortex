@@ -143,6 +143,92 @@ layer1:
 
 ---
 
+## 🔊 3D Spatial Audio Navigation System
+
+Project-Cortex features a **binaural 3D spatial audio system** that helps visually impaired users navigate their environment using audio cues. This system converts YOLO object detections into positioned audio sources, creating an "audio map" of the surroundings.
+
+### Features
+
+| Feature | Description |
+|---------|-------------|
+| **Audio Beacons** | Continuous directional sounds that guide users to targets (e.g., "lead me to the door") |
+| **Proximity Alerts** | Distance-based warnings that intensify as obstacles approach |
+| **Object Tracking** | Real-time 3D audio sources for each detected object |
+| **Distance Estimation** | Calculate real-world distance using known object sizes |
+| **Object-Specific Sounds** | Distinct audio signatures for different object classes (car vs person vs chair) |
+| **HRTF Support** | Head-Related Transfer Function for realistic binaural audio on headphones |
+
+### How It Works
+
+```
+YOLO Detection → Position Calculator → OpenAL 3D Audio → Headphones
+     │                   │                    │
+     ▼                   ▼                    ▼
+  [bbox]    →    [x, y, z coords]    →   [Binaural audio]
+```
+
+**Position Mapping Algorithm:**
+- **X-axis (Left/Right):** Bbox horizontal center → audio pan
+- **Y-axis (Up/Down):** Bbox vertical center → audio elevation  
+- **Z-axis (Distance):** Bbox size → audio volume/distance
+
+### Quick Start
+
+```python
+from src.layer3_guide.spatial_audio import SpatialAudioManager, Detection
+
+# Initialize spatial audio
+audio = SpatialAudioManager()
+audio.start()
+
+# Update with YOLO detections
+detections = [
+    Detection("chair_1", "chair", 0.92, (100, 200, 300, 600)),
+    Detection("person_1", "person", 0.87, (1400, 100, 1800, 900)),
+]
+audio.update_detections(detections)
+
+# Start navigation beacon to guide user
+audio.start_beacon("chair")  # "Follow the sound to the chair"
+
+# Stop when done
+audio.stop()
+```
+
+### Configuration
+
+Edit `config/spatial_audio.yaml` to customize:
+- Distance thresholds for proximity alerts
+- Object-specific sound mappings
+- Ping rates and volumes for beacons
+- Known object sizes for distance estimation
+
+### Components
+
+| Module | File | Purpose |
+|--------|------|---------|
+| `SpatialAudioManager` | `manager.py` | Central orchestrator for all spatial audio |
+| `PositionCalculator` | `position_calculator.py` | YOLO bbox → 3D coordinates |
+| `AudioBeacon` | `audio_beacon.py` | Navigation guidance pings |
+| `ProximityAlertSystem` | `proximity_alert.py` | Distance-based warnings |
+| `ObjectSoundMapper` | `object_sounds.py` | Object class → sound mapping |
+| `ObjectTracker` | `object_tracker.py` | Multi-object audio management |
+
+### Requirements
+
+```bash
+pip install PyOpenAL numpy PyYAML
+```
+
+**Linux/Raspberry Pi:**
+```bash
+sudo apt-get install libopenal-dev libopenal1
+```
+
+📖 **Full documentation:** [docs/SPATIAL_AUDIO_IMPLEMENTATION.md](docs/SPATIAL_AUDIO_IMPLEMENTATION.md)
+
+---
+
 ## 🧪 Testing
 
 Run unit tests:
@@ -180,7 +266,7 @@ pytest tests/integration/ --hardware
 
 ### Phase 2: Feature Development
 - [ ] GPS navigation module
-- [ ] 3D spatial audio engine
+- [x] 3D spatial audio engine ✅ **IMPLEMENTED**
 - [ ] Caregiver web dashboard
 - [ ] Power optimization
 

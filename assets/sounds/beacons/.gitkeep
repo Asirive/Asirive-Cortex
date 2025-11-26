@@ -1,0 +1,5 @@
+# Placeholder - Add beacon sound files here
+# Required files:
+# - ping.wav (navigation ping, ~200-500ms)
+# - success.wav (target reached chime)
+# - searching.wav (looking for target indicator)
