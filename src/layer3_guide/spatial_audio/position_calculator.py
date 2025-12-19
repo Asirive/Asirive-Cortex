@@ -47,10 +47,22 @@ DEFAULT_OBJECT_SIZES: Dict[str, float] = {
 
 @dataclass
 class Position3D:
-    """3D position in OpenAL coordinate space."""
-    x: float  # Left (-) to Right (+)
-    y: float  # Down (-) to Up (+)
-    z: float  # Behind (+) to Front (-), user faces -Z
+    """
+    3D position in OpenAL coordinate space.
+    
+    OpenAL Coordinate System (Right-Handed):
+    - X-axis: Left (-) to Right (+)
+    - Y-axis: Down (-) to Up (+)
+    - Z-axis: Behind (+) to Front (-), User faces -Z direction
+    
+    CRITICAL FOR HRTF SPATIALIZATION:
+    Position values should represent approximate METERS for realistic
+    binaural audio. Small values (-1 to +1 normalized) produce weak
+    spatial effects. We scale X to be more perceivable for left/right.
+    """
+    x: float  # Left (-) to Right (+) - in METERS for HRTF
+    y: float  # Down (-) to Up (+) - in METERS for HRTF  
+    z: float  # Behind (+) to Front (-), user faces -Z - in METERS for HRTF
     distance_meters: Optional[float] = None  # Estimated real-world distance
     
     def as_tuple(self) -> Tuple[float, float, float]:
@@ -73,7 +85,17 @@ class PositionCalculator:
     
     For more accurate distance, known object sizes can be used with
     the pinhole camera model: Distance = (Real_Width × Focal_Length) / Bbox_Width
+    
+    CRITICAL FOR HRTF SPATIALIZATION:
+    Position values are scaled to represent approximate METERS.
+    The X-axis is scaled by 'spatial_width_meters' to create perceivable
+    left/right separation (default: 3m wide sound field).
     """
+    
+    # Spatial scaling for perceivable HRTF
+    # This determines the "virtual width" of the sound field
+    # A value of 3.0 means objects at screen edges are ~1.5m left/right
+    SPATIAL_WIDTH_METERS: float = 3.0
     
     def __init__(
         self,
@@ -83,7 +105,8 @@ class PositionCalculator:
         min_distance: float = 0.5,
         max_distance: float = 10.0,
         object_sizes: Optional[Dict[str, float]] = None,
-        smoothing_alpha: float = 0.3
+        smoothing_alpha: float = 0.3,
+        spatial_width_meters: float = 3.0
     ):
         """
         Initialize the position calculator.
@@ -96,6 +119,7 @@ class PositionCalculator:
             max_distance: Maximum distance in meters (farthest)
             object_sizes: Dict of object class → real-world width in meters
             smoothing_alpha: Smoothing factor for position interpolation (0-1)
+            spatial_width_meters: Width of virtual sound field in meters (for HRTF)
         """
         self.frame_width = frame_width
         self.frame_height = frame_height
@@ -104,6 +128,7 @@ class PositionCalculator:
         self.max_distance = max_distance
         self.object_sizes = object_sizes or DEFAULT_OBJECT_SIZES.copy()
         self.smoothing_alpha = smoothing_alpha
+        self.spatial_width_meters = spatial_width_meters
         
         # Position history for smoothing (object_id → last_position)
         self._position_history: Dict[str, Position3D] = {}
@@ -122,6 +147,9 @@ class PositionCalculator:
         """
         Convert a bounding box to 3D audio position.
         
+        IMPORTANT: Output positions are in METERS for proper HRTF spatialization.
+        Small normalized values (-1 to +1) don't produce perceivable binaural cues.
+        
         Args:
             bbox: Bounding box as (x1, y1, x2, y2) in pixels or normalized [0-1]
             object_class: Class name for distance estimation (optional)
@@ -129,7 +157,7 @@ class PositionCalculator:
             apply_smoothing: Whether to smooth position changes
             
         Returns:
-            Position3D with x, y, z coordinates and optional distance estimate
+            Position3D with x, y, z coordinates in METERS and optional distance estimate
         """
         x1, y1, x2, y2 = bbox
         
@@ -149,16 +177,34 @@ class PositionCalculator:
         height = y2 - y1
         area = width * height  # Normalized area
         
-        # === HORIZONTAL POSITION (X-axis) ===
-        # Map [0, 1] → [-1, +1] (left to right)
-        x = (center_x - 0.5) * 2.0
+        # === HORIZONTAL POSITION (X-axis) in METERS ===
+        # Map [0, 1] → [-spatial_width/2, +spatial_width/2] meters
+        # This creates perceivable left/right separation for HRTF
+        # 
+        # CRITICAL FOR HRTF PERCEPTION:
+        # OpenAL HRTF needs significant X displacement to be perceivable.
+        # Human ears are ~17cm apart, so sounds need to be >0.5m off-center
+        # to produce meaningful interaural time/level differences.
+        #
+        # Example: With spatial_width=5.0, objects at screen edge are 2.5m left/right
+        x_normalized = (center_x - 0.5) * 2.0  # -1 to +1
+        x = x_normalized * (self.spatial_width_meters / 2.0)  # Convert to meters
         
-        # === VERTICAL POSITION (Y-axis) ===
-        # Map [0, 1] → [+1, -1] (top of frame = up in 3D)
+        # Apply non-linear scaling to exaggerate positions away from center
+        # This makes left/right more obvious while center remains centered
+        # Using a gentle curve: x = sign(x) * |x|^0.8 * scale
+        if abs(x) > 0.1:  # Only apply to off-center sounds
+            sign = 1 if x >= 0 else -1
+            x = sign * (abs(x) ** 0.85) * 1.3  # Boost off-center by 30%
+        
+        # === VERTICAL POSITION (Y-axis) in METERS ===
+        # Map [0, 1] → [+height/2, -height/2] meters
         # Note: Image Y increases downward, OpenAL Y increases upward
-        y = (0.5 - center_y) * 2.0
+        # Use a smaller vertical spread (1.5m) since head doesn't tilt much
+        y_normalized = (0.5 - center_y) * 2.0  # +1 (top) to -1 (bottom)
+        y = y_normalized * 1.0  # ±1.0m vertical spread (increased from 0.75)
         
-        # === DEPTH POSITION (Z-axis) ===
+        # === DEPTH POSITION (Z-axis) in METERS ===
         # Try to use known object size for accurate distance
         distance_meters = None
         if object_class and object_class.lower() in self.object_sizes:
@@ -175,7 +221,7 @@ class PositionCalculator:
             # Estimate distance from Z
             distance_meters = abs(z)
         
-        # Create position
+        # Create position (all values now in METERS)
         position = Position3D(x=x, y=y, z=z, distance_meters=distance_meters)
         
         # Apply smoothing if enabled and we have history

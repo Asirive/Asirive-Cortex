@@ -657,11 +657,14 @@ class ProjectCortexGUI:
                         # Create spatial detection for 3D audio (if enabled)
                         if self.spatial_audio and self.spatial_audio_enabled.get() and SpatialDetection:
                             bbox = box.xyxy[0].tolist()  # Get (x1, y1, x2, y2)
+                            # NOTE: Do NOT set object_id here! Let manager.py generate
+                            # a STABLE ID from grid-snapped bbox center. Using hash(bbox)
+                            # creates a new ID every frame because YOLO bbox fluctuates.
                             spatial_detections.append(SpatialDetection(
                                 class_name=class_name,
                                 confidence=confidence,
                                 bbox=tuple(bbox),
-                                object_id=f"{class_name}_{hash(tuple(bbox)) % 10000}"
+                                object_id=None  # Let manager generate stable ID
                             ))
                 
                 # Update 3D spatial audio with detections
