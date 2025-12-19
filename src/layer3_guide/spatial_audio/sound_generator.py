@@ -98,11 +98,14 @@ class ProceduralSoundGenerator:
     }
     
     # Proximity alert configurations
+    # Higher frequency + more repeats = more urgent
     PROXIMITY_CONFIGS = {
         "notice": {"freq": 400, "duration_ms": 200, "repeats": 1},
         "warning": {"freq": 600, "duration_ms": 150, "repeats": 2},
         "danger": {"freq": 800, "duration_ms": 100, "repeats": 3},
-        "critical": {"freq": 1000, "duration_ms": 50, "repeats": 5},
+        "critical": {"freq": 1000, "duration_ms": 80, "repeats": 5},
+        # EMERGENCY: Distinct rapid beeping for imminent collision!
+        "emergency": {"freq": 1200, "duration_ms": 40, "repeats": 8},
     }
     
     def __init__(self, sample_rate: int = 44100):
