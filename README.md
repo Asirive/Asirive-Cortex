@@ -15,36 +15,49 @@ We aim to democratize assistive technology by disrupting the $4,000+ premium dev
 
 ---
 
-## 🏗️ Architecture Overview
+## 🏗️ Architecture Overview: Hybrid-Edge Computing
+
+**NEW in v2.0:** Server-assisted architecture for enterprise-grade navigation while maintaining edge safety guarantees.
 
 ### Hardware Platform
-- **Compute:** Raspberry Pi 5 (4GB/8GB RAM)
-- **Vision:** IMX415 8MP Low-Light Camera (MIPI CSI-2)
+
+#### Edge Unit (Raspberry Pi 5 - Wearable)
+- **Compute:** Raspberry Pi 5 (4GB RAM)
+- **Vision:** Camera Module 3 (IMX708, 11.9MP)
+- **Sensors:** BNO055 9-DOF IMU (head-tracking), GY-NEO6MV2 GPS
+- **Haptics:** PWM Vibration Motor (GPIO 18)
+- **Audio:** Bluetooth Headphones (low-latency codec)
 - **Power:** 30,000mAh USB-C PD Power Bank
 - **Cooling:** Official RPi 5 Active Cooler
-- **Audio:** USB Audio Interface + Bone Conduction Headphones
-- **Connectivity:** Mobile Hotspot (no dedicated SIM module)
 
-### The "3-Layer AI" Brain
+#### Compute Node (Laptop - Development Server)
+- **Role:** Heavy spatial computing (SLAM, VIO, pathfinding)
+- **Specs:** Dell Inspiron 15 (RTX 2050 CUDA)
+- **Communication:** WebSocket (8765) + REST API (8000)
 
-#### Layer 1: The Reflex (Local Inference)
-- **Purpose:** Instant safety-critical object detection
-- **Model:** YOLOv8n / TensorFlow Lite
-- **Latency:** <100ms
-- **Power:** 8-12W during inference
+### The "3-Layer Hybrid AI" Brain
+
+#### Layer 1: The Reflex (On Pi - Local Inference)
+- **Purpose:** Immediate physical safety (<100ms latency)
+- **Model:** YOLOv8n (INT8 quantized for ARM CPU)
+- **Output:** Direct GPIO → PWM Vibration Motor
+- **Reliability:** 100% offline, zero network dependency
 - **Location:** `src/layer1_reflex/`
 
-#### Layer 2: The Thinker (Cloud Intelligence)
-- **Purpose:** Complex scene analysis, OCR, natural language descriptions
-- **Model:** Google Gemini 1.5 Flash (via API)
-- **Fallback:** OpenAI GPT-4 Vision
-- **Latency:** ~1-3s (network dependent)
+#### Layer 2: The Thinker (On Pi - Cloud API)
+- **Purpose:** Vision intelligence & conversation
+- **Model:** Google Gemini 2.5 Flash Native Audio (Live API)
+- **Transport:** WebSocket (Direct Pi → Google Cloud)
+- **I/O:** Microphone PCM + Camera → PCM Audio via Bluetooth
+- **Latency:** ~500ms (includes Bluetooth)
 - **Location:** `src/layer2_thinker/`
 
-#### Layer 3: The Guide (Integration & UX)
-- **Features:** GPS navigation, 3D spatial audio, caregiver dashboard
-- **Tech Stack:** FastAPI (backend), React (dashboard), PyOpenAL (audio)
-- **Location:** `src/layer3_guide/`
+#### Layer 3: The Navigator (HYBRID: Server + Pi)
+- **Server:** SLAM (ORB-SLAM3), VIO, A* pathfinding
+- **Pi:** GPS/IMU fusion, 3D spatial audio rendering (PyOpenAL)
+- **Communication:** WebSocket @ 10Hz (target waypoints)
+- **Audio Priority:** Navigation pings auto-duck Gemini by -10dB
+- **Location:** `src/layer3_guide/` (Pi), `server/` (Laptop)
 
 ---
 
@@ -75,40 +88,112 @@ ProjectCortex/
 
 ## 🚀 Quick Start
 
-### Prerequisites
-- Raspberry Pi 5 (4GB+ RAM) with Raspberry Pi OS (64-bit)
-- IMX415 Camera Module (connected via CSI port)
-- Python 3.11+
-- Active internet connection (for Layer 2)
+### Development Modes
 
-### Installation
+**⚙️ Mode 1: Laptop-Assisted Development (Current Phase)**  
+Develop and test the full system on your laptop while waiting for hardware.
 
-1. **Clone the repository:**
+**🤖 Mode 2: Raspberry Pi 5 Deployment (Future)**  
+Deploy to wearable once parts arrive.
+
+---
+
+### Mode 1: Laptop Development Setup
+
+#### Prerequisites
+- **Laptop:** Windows 10/11, Python 3.11+, Git, Git LFS
+- **GPU (Optional):** NVIDIA RTX/GTX for faster YOLO testing
+- **Internet:** Required for Gemini API
+
+#### Installation
+
+1. **Clone the repository with Git LFS:**
    ```bash
-   git clone https://github.com/IRSPlays/ProjectCortex.git
-   cd ProjectCortex
+   git clone https://github.com/IRSPlays/ProjectCortexV2.git
+   cd ProjectCortexV2
+   git lfs pull  # Download large model files
    ```
 
 2. **Set up Python environment:**
    ```bash
-   python3.11 -m venv venv
-   source venv/bin/activate
+   python -m venv venv
+   venv\Scripts\activate  # Windows
    pip install --upgrade pip
    pip install -r requirements.txt
    ```
 
-3. **Configure environment variables:**
+3. **Configure API keys:**
+   ```bash
+   copy .env.example .env
+   notepad .env  # Add your GEMINI_API_KEY
+   ```
+
+4. **Test the GUI (Development Interface):**
+   ```bash
+   python src/cortex_gui.py
+   ```
+   - Uses USB webcam instead of Pi camera
+   - Full 3-layer AI functionality
+   - Voice activation with VAD
+   - 3D spatial audio testing
+
+5. **Run server components (Layer 3 - Future):**
+   ```bash
+   # When ready to test navigation
+   python server/slam_engine.py  # Start SLAM server
+   python server/pathfinder.py    # Start pathfinding API
+   ```
+
+---
+
+### Mode 2: Raspberry Pi 5 Deployment
+
+#### Prerequisites
+- Raspberry Pi 5 (4GB RAM) with Raspberry Pi OS (64-bit Lite)
+- Camera Module 3 (connected via CSI port)
+- BNO055 IMU (I2C), GY-NEO6MV2 GPS (UART)
+- Bluetooth headphones, vibration motor (GPIO 18)
+- Active internet connection (Wi-Fi)
+
+#### Installation
+
+1. **Install system dependencies:**
+   ```bash
+   sudo apt update && sudo apt install -y \
+     python3-pip python3-venv \
+     libcamera-apps \
+     i2c-tools \
+     bluetooth bluez pulseaudio-module-bluetooth
+   ```
+
+2. **Enable hardware interfaces:**
+   ```bash
+   sudo raspi-config
+   # Enable: Camera, I2C, Serial (GPS)
+   ```
+
+3. **Clone and setup:**
+   ```bash
+   git clone https://github.com/IRSPlays/ProjectCortexV2.git
+   cd ProjectCortexV2
+   python3 -m venv venv
+   source venv/bin/activate
+   pip install -r requirements.txt
+   pip install picamera2  # RPi-specific
+   ```
+
+4. **Configure `.env` file:**
    ```bash
    cp .env.example .env
-   nano .env  # Add your API keys (Gemini, Murf AI, etc.)
+   nano .env  # Add GEMINI_API_KEY, SERVER_IP (laptop IP)
    ```
 
-4. **Test camera module:**
+5. **Test camera:**
    ```bash
-   libcamera-hello --camera 0  # Should display camera preview
+   libcamera-hello --camera 0  # Should show preview
    ```
 
-5. **Run the application:**
+6. **Run the headless application:**
    ```bash
    python src/main.py
    ```
