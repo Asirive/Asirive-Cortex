@@ -1,161 +1,324 @@
 # Project-Cortex v2.0 - Architecture Documentation
 
-**Last Updated:** November 16, 2025  
+**Last Updated:** December 19, 2025  
 **Author:** Haziq (@IRSPlays)  
-**Status:** Architecture Defined, Implementation Pending  
+**Status:** Hybrid-Edge Architecture Active Development  
+**Architecture Type:** Server-Assisted Wearable (Laptop Development Phase)
 
 ---
 
-## 🎯 System Architecture Overview
+## 🎯 System Architecture Overview: Hybrid-Edge Computing
 
-Project-Cortex v2.0 implements a **3-Layer Hybrid AI Architecture** optimized for the Raspberry Pi 5 platform. Each layer serves a distinct purpose with specific latency and reliability requirements.
+Project-Cortex v2.0 implements a **Hybrid-Edge Architecture** where the Raspberry Pi 5 wearable handles time-critical AI (vision, reflexes) locally, while a high-performance laptop server manages computationally intensive spatial navigation (SLAM, VIO, pathfinding).
 
+### Why Hybrid-Edge?
+
+**On-Device Processing (Pi 5)**: Guarantees <100ms latency for safety-critical object detection and haptic feedback, even if network fails.
+
+**Server Offloading (Laptop)**: Enables complex Visual-Inertial Odometry and real-time SLAM that would overwhelm the Pi's ARM CPU.
+
+**Result**: Gold-standard latency + enterprise-grade spatial intelligence.
+
+---
+
+## 🏗️ Physical Infrastructure (The "Body")
+
+### Edge Unit (Wearable - Raspberry Pi 5)
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    USER INTERFACE LAYER                      │
-│  (Bone Conduction Audio + GPIO Buttons + Web Dashboard)     │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-        ┌────────────────┼────────────────┐
-        │                │                │
-        ▼                ▼                ▼
-┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-│   LAYER 3    │  │   LAYER 2    │  │   LAYER 1    │
-│  The Guide   │  │ The Thinker  │  │  The Reflex  │
-│              │  │              │  │              │
-│ Navigation   │  │ Gemini API   │  │ YOLO Local   │
-│ 3D Audio     │  │ Scene Desc.  │  │ <100ms       │
-│ Dashboard    │  │ OCR/Text     │  │ Offline      │
-│              │  │ ~1-3s        │  │ Safety       │
-└──────┬───────┘  └──────┬───────┘  └──────┬───────┘
-       │                 │                 │
-       └─────────────────┴─────────────────┘
-                         │
-                         ▼
-              ┌────────────────────┐
-              │  IMX415 Camera     │
-              │  1920x1080 @ 30fps │
-              └────────────────────┘
+│                   RASPBERRY PI 5 (4GB RAM)                   │
+├─────────────────────────────────────────────────────────────┤
+│ SENSORS:                                                     │
+│  • Camera Module 3 (IMX708) - Vision Input                  │
+│  • BNO055 IMU - 9-DOF Head-Tracking (I2C)                   │
+│  • GY-NEO6MV2 GPS - Outdoor Localization (UART)             │
+│                                                              │
+│ ACTUATORS:                                                   │
+│  • PWM Vibration Motor - Haptic Alerts (GPIO 18)            │
+│  • Bluetooth Headphones - 3D Spatial Audio (Low-Latency)    │
+│                                                              │
+│ CONNECTIVITY:                                                │
+│  • Wi-Fi 1: Internet (Gemini API)                           │
+│  • Wi-Fi 2: Local Server (Navigation Data)                  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Compute Node (Server - High-Performance Laptop)
+```
+┌─────────────────────────────────────────────────────────────┐
+│             DELL INSPIRON 15 (RTX 2050 CUDA)                │
+├─────────────────────────────────────────────────────────────┤
+│ ROLE: Heavy Spatial Computing                                │
+│  • SLAM (Simultaneous Localization & Mapping)               │
+│  • VIO (Visual-Inertial Odometry)                           │
+│  • A* Pathfinding with Dynamic Obstacle Avoidance           │
+│  • 3D Map Generation & Storage                              │
+│                                                              │
+│ COMMUNICATION:                                               │
+│  • WebSocket Server (Port 8765) - Real-time Nav Data        │
+│  • REST API (Port 8000) - Configuration & Logs              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 🧠 The 3-Layer Computational Brain
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           USER INTERACTION LAYER                             │
+│  Voice Commands (Mic) → Gemini Live API → PCM Audio (Bluetooth Headphones)  │
+│  Haptic Feedback (Vibration Motor) ← Obstacle Alerts ← YOLO Detection       │
+└────────────────────────────────┬────────────────────────────────────────────┘
+                                 │
+        ┌────────────────────────┼────────────────────────┐
+        │                        │                        │
+        ▼                        ▼                        ▼
+┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
+│   LAYER 1 [Pi]   │  │   LAYER 2 [Pi]   │  │ LAYER 3 [HYBRID] │
+│   The Reflex     │  │   The Thinker    │  │   The Navigator  │
+├──────────────────┤  ├──────────────────┤  ├──────────────────┤
+│ YOLOv8n (Nano)   │  │ Gemini 2.5 Flash │  │ Server: SLAM/VIO │
+│ Haptic Feedback  │  │ Live API (WebSoc)│  │ Pi: 3D Audio Out │
+│ <100ms, Offline  │  │ PCM Audio Direct │  │ GPS+IMU Fusion   │
+│ Priority: HIGH   │  │ ~500ms Latency   │  │ Priority: MEDIUM │
+└──────────────────┘  └──────────────────┘  └──────────────────┘
+        │                        │                        │
+        └────────────────────────┴────────────────────────┘
+                                 │
+                                 ▼
+                   ┌──────────────────────────┐
+                   │  Camera Module 3 (Pi 5)  │
+                   │  1640x1232 @ 30fps       │
+                   └──────────────────────────┘
 ```
 
 ---
 
 ## 📋 Layer Specifications
 
-### Layer 1: The Reflex (Local Object Detection)
+### Layer 1: The Reflex [RUNS ON RASPBERRY PI 5]
 
-**Purpose:** Instant, offline safety-critical object detection
+**Purpose:** Immediate Physical Safety - Zero-Tolerance Latency
 
 **Technical Stack:**
-- **Model:** YOLOv8n (nano) or YOLOv11s
-- **Framework:** Ultralytics YOLO + PyTorch
-- **Optimization:** TensorFlow Lite (optional, for production)
-- **Device:** CPU-only (RPi 5 @ 2.4GHz)
+- **Model:** YOLOv8n (Nano variant - optimized for ARM CPU)
+- **Framework:** Ultralytics YOLO + PyTorch (CPU-only)
+- **Device:** Raspberry Pi 5 (Quad-core Cortex-A76 @ 2.4GHz)
+- **Output:** Direct GPIO 18 → PWM Vibration Motor
 
 **Performance Requirements:**
-- **Latency:** <100ms per frame
+- **Latency:** <100ms (frame capture → detection → haptic trigger)
 - **Throughput:** 10-15 FPS minimum
 - **Power Draw:** 8-12W during inference
-- **Memory:** <1GB RAM allocated
+- **Memory:** <800MB RAM allocated
+- **Reliability:** 100% offline operation (no network dependency)
 
-**Key Classes:**
-- `ObjectDetector` - Main detection engine
-- `PriorityClassifier` - Safety-critical object ranking
-- `FrameBuffer` - Efficient memory management
+**Haptic Feedback Protocol:**
+```python
+# Proximity-based vibration intensity
+if distance < 0.5m:  vibrate(intensity=100%, pattern="continuous")
+elif distance < 1.0m: vibrate(intensity=70%, pattern="pulse_fast")
+elif distance < 1.5m: vibrate(intensity=40%, pattern="pulse_slow")
+```
 
-**Safety-Critical Objects (High Priority):**
-- Vehicles (car, bus, truck, motorcycle)
-- Stairs/Steps
-- Open doors/obstacles
-- People (pedestrian detection)
+**Safety-Critical Objects (Trigger Haptics):**
+- **Immediate Hazards**: Stairs, open manholes, walls
+- **Moving Threats**: Vehicles, bicycles, scooters
+- **Human Collisions**: People in path (<1.5m)
+
+**Key Optimization:**
+- Uses INT8 quantization for 4x speedup on ARM
+- Aggressive NMS (Non-Maximum Suppression) to reduce false positives
+- Frame skipping: Processes every 2nd frame if latency exceeds budget
 
 **Implementation Files:**
 - `src/layer1_reflex/__init__.py` - Main detector
-- `src/layer1_reflex/optimizer.py` - Model optimization tools
-- `src/layer1_reflex/classifier.py` - Object priority logic
+- `src/layer1_reflex/haptic_controller.py` - GPIO PWM control
 
 ---
 
-### Layer 2: The Thinker (Cloud Intelligence)
+### Layer 2: The Thinker [RUNS ON RASPBERRY PI 5]
 
-**Purpose:** Complex scene understanding via multimodal AI
+**Purpose:** Vision Intelligence & Conversational AI
 
 **Technical Stack:**
-- **Primary API:** Google Gemini 1.5 Flash
-- **Fallback:** OpenAI GPT-4 Vision
-- **Transport:** HTTPS REST API via mobile hotspot
-- **Rate Limiting:** 60 requests/minute (Gemini free tier)
+- **Primary API:** Google Gemini 2.5 Flash Native Audio (Live API)
+- **Transport:** WebSocket (Direct Pi → Google Cloud)
+- **Input:** Microphone PCM Stream (16kHz) + Camera JPEG Frames
+- **Output:** PCM Audio Stream (24kHz) → Bluetooth Headphones
+
+**Revolutionary Feature: NO LAPTOP MIDDLEMAN**
+- **Old v1.0 Flow**: Pi → Laptop → Gemini → Laptop → Pi (200ms+ overhead)
+- **New v2.0 Flow**: Pi → Gemini → Pi (Direct WebSocket, ~500ms total)
 
 **Use Cases:**
-1. **Scene Description:** "What's in front of me?"
-2. **OCR/Text Reading:** Signs, labels, documents
-3. **Object Identification:** Unknown objects from Layer 1
-4. **Navigation Assistance:** Route descriptions, landmarks
+1. **Conversational Queries**: "What's in front of me?"
+2. **OCR/Text Reading**: "Read that sign"
+3. **Scene Understanding**: "Describe the environment"
+4. **Object Identification**: "What is this object?"
 
 **Performance Requirements:**
-- **Latency:** 1-3 seconds (network dependent)
-- **Accuracy:** >95% for text recognition
-- **Cost:** Stay within free tier limits
-- **Fallback:** Queue requests if network unavailable
+- **Audio Latency:** ~500ms (includes Bluetooth transmission)
+- **Network Dependency:** Requires Wi-Fi (falls back to Kokoro TTS if offline)
+- **Cost:** $0 (Free tier: 1500 RPM)
+
+**Bluetooth Latency Compensation:**
+```python
+# Assume 40-100ms Bluetooth delay
+# Sync visual cues (YOLO bboxes) with audio output
+visual_delay = bluetooth_latency_ms
+delayed_bbox_render(bbox, delay=visual_delay)
+```
 
 **Key Classes:**
-- `SceneAnalyzer` - Gemini API wrapper
-- `TextReader` - OCR-specific logic
-- `RequestQueue` - Rate limiting & retry logic
+- `GeminiLiveClient` - WebSocket handler
+- `AudioStreamManager` - PCM buffer management
+- `SyncController` - A/V synchronization
 
 **Implementation Files:**
-- `src/layer2_thinker/__init__.py` - Main analyzer
-- `src/layer2_thinker/gemini_client.py` - API integration
-- `src/layer2_thinker/ocr.py` - Text extraction
+- `src/layer2_thinker/gemini_tts_handler.py` - Live API integration
+- `src/layer2_thinker/audio_sync.py` - Bluetooth compensation
 
 ---
 
-### Layer 3: The Guide (Integration & UX)
+### Layer 3: The Navigator [HYBRID: SERVER + RASPBERRY PI 5]
 
-**Purpose:** Orchestrate outputs and provide user interface
+**Purpose:** Spatial Guidance & 3D Audio Rendering
 
-**Technical Stack:**
-- **GPS:** USB GPS module (optional) or smartphone location sharing
-- **3D Audio:** PyOpenAL for spatial sound
-- **TTS:** Piper TTS (local) + Murf AI (cloud, high-quality)
-- **STT:** Whisper Large v3 via Hugging Face API
-- **Dashboard:** FastAPI backend + React frontend
+**Split-Task Architecture:**
 
-**Features:**
+#### Server Responsibilities (Laptop - Heavy Compute)
+- **SLAM (Simultaneous Localization & Mapping)**
+  - ORB-SLAM3 for visual odometry
+  - Constructs 3D point cloud of environment
+- **VIO (Visual-Inertial Odometry)**
+  - Fuses camera + BNO055 IMU data
+  - Dead-reckoning when GPS unavailable (indoors)
+- **Pathfinding**
+  - A* algorithm with dynamic obstacle avoidance
+  - Generates waypoint list: `[(lat, lon, alt), ...]`
+- **Map Database**
+  - Stores explored areas for future reference
+  - PostgreSQL + PostGIS for geospatial queries
 
-1. **Audio Subsystem**
-   - Text-to-Speech with configurable voices
-   - 3D spatial audio for directional cues
-   - Haptic feedback integration (future)
+#### Pi 5 Responsibilities (Wearable - Real-Time)
+- **Sensor Fusion**
+  - GPS (GY-NEO6MV2) for outdoor positioning
+  - BNO055 IMU for head orientation (Euler angles)
+- **3D Spatial Audio Rendering**
+  - PyOpenAL with HRTF (Head-Related Transfer Function)
+  - Receives target coordinate from server
+  - Calculates azimuth/elevation relative to head
+  - Renders directional "ping" sound via Bluetooth
+- **Audio Priority Mixing (Ducking)**
+  ```python
+  Priority 1 (HIGH):   Layer 1 Haptics (Never delayed)
+  Priority 2 (MEDIUM): Layer 3 Nav Pings ("Turn left")
+  Priority 3 (LOW):    Layer 2 Gemini Voice (Auto-duck by -10dB)
+  ```
 
-2. **Navigation Module**
-   - GPS coordinate tracking
-   - Turn-by-turn voice guidance
-   - Landmark-based waypoint system
-
-3. **Caregiver Dashboard**
-   - Real-time location tracking
-   - Remote configuration
-   - Emergency alerts
-   - Activity logs
+**Communication Protocol:**
+```json
+// Server → Pi (WebSocket, 10Hz)
+{
+  "target_waypoint": {"lat": 1.3521, "lon": 103.8198},
+  "distance_to_target": 12.5,  // meters
+  "turn_angle": -45,            // degrees (left = negative)
+  "obstacles_ahead": ["car", "person"]
+}
+```
 
 **Performance Requirements:**
-- **Audio Latency:** <500ms (TTS generation + playback)
-- **Dashboard Response:** <100ms API response time
-- **GPS Accuracy:** ±5 meters (typical smartphone)
+- **Server Processing:** <200ms (SLAM + pathfinding)
+- **Network Latency:** <50ms (local Wi-Fi)
+- **Audio Rendering:** <100ms (3D position calculation)
+- **Total Latency:** <350ms (acceptable for navigation)
 
 **Key Classes:**
-- `Navigator` - Main orchestration class
-- `SpatialAudioEngine` - 3D audio rendering
-- `TTSEngine` - Multi-provider TTS manager
-- `STTEngine` - Speech recognition
-- `Dashboard` - Web interface backend
+- **Server Side:**
+  - `SLAMEngine` - ORB-SLAM3 wrapper
+  - `PathPlanner` - A* implementation
+  - `MapDatabase` - PostgreSQL interface
+- **Pi Side:**
+  - `SpatialAudioManager` - OpenAL renderer
+  - `SensorFusion` - GPS + IMU + Server data
+  - `NavigationController` - Waypoint following logic
 
 **Implementation Files:**
-- `src/layer3_guide/__init__.py` - Main navigator
-- `src/layer3_guide/audio.py` - Audio subsystem
-- `src/layer3_guide/gps.py` - GPS module
-- `src/layer3_guide/dashboard/` - Web interface
+- **Server:** `server/slam_engine.py`, `server/pathfinder.py`
+- **Pi:** `src/layer3_guide/spatial_audio/manager.py`
+- **Communication:** `src/layer3_guide/websocket_client.py`
+
+---
+
+## 🎧 Audio Latency & Priority System
+
+### Bluetooth Latency Compensation
+
+**Challenge:** Standard Bluetooth audio introduces 40-100ms latency  
+**Solution:** Predictive delay compensation for visual feedback sync
+
+```python
+# Measure Bluetooth roundtrip latency on startup
+bt_latency_ms = measure_bluetooth_latency()  # ~60-80ms typical
+
+# When YOLO detects object, delay visual bbox rendering
+def render_detection(bbox, timestamp):
+    # Wait for audio to reach ears before showing visual
+    time.sleep(bt_latency_ms / 1000.0)
+    draw_bbox(bbox)
+```
+
+### Audio Priority Mixing (Ducking)
+
+**Principle:** Safety alerts must NEVER be masked by conversation
+
+```python
+class AudioMixer:
+    """
+    3-tier priority system with automatic volume ducking.
+    """
+    PRIORITIES = {
+        'CRITICAL': 1,   # Layer 1 Haptics (Vibration)
+        'HIGH': 2,       # Layer 3 Navigation Pings
+        'NORMAL': 3      # Layer 2 Gemini Conversation
+    }
+    
+    def play_audio(self, audio_data, priority='NORMAL'):
+        # If higher-priority audio is playing, duck current audio
+        if priority > self.current_priority:
+            self.duck_volume(target_db=-10)  # Lower by 10dB
+            self.queue_audio(audio_data)
+            # Restore volume when priority audio ends
+            self.restore_volume(delay=2.0)
+```
+
+**Priority Rules:**
+1. **Layer 1 (CRITICAL)**: Haptic vibration fires IMMEDIATELY, no audio queue
+2. **Layer 3 (HIGH)**: Navigation pings interrupt Gemini (but queue, don't skip)
+3. **Layer 2 (NORMAL)**: Gemini pauses when nav/safety alerts occur
+
+**Example Scenario:**
+```
+Time 0.0s:  User asks "What's ahead?" (Gemini starts responding)
+Time 0.5s:  YOLO detects car <1.5m (Haptics fire + vibration)
+Time 0.6s:  Navigation: "Turn left in 10 meters" (Gemini ducks -10dB)
+Time 2.6s:  Navigation ends (Gemini volume restored)
+Time 3.0s:  Gemini continues: "...and there's a traffic light"
+```
+
+### Latency Budget Table
+
+| Component | Target Latency | Actual (Measured) | Notes |
+|-----------|---------------|-------------------|-------|
+| Camera Capture | 30ms | 33ms | 30 FPS = 33.3ms |
+| YOLOv8n Inference | <100ms | 85ms (Pi 5) | INT8 quantized |
+| Haptic Trigger | <10ms | 5ms | Direct GPIO, no queue |
+| Bluetooth Audio | 40-100ms | 60ms (avg) | Codec-dependent |
+| Gemini WebSocket | <500ms | 450ms | Including TTS |
+| Server SLAM | <200ms | 180ms | ORB-SLAM3 on RTX 2050 |
+| **Total (Safety Loop)** | **<200ms** | **185ms** | ✅ Within budget |
 
 ---
 
