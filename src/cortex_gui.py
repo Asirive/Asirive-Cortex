@@ -52,7 +52,7 @@ import traceback
 import numpy as np
 import torch
 from PIL import Image, ImageTk
-import google.generativeai as genai
+# Deprecated: google.generativeai (now using google-genai in GeminiTTS handler)
 import sounddevice as sd
 from scipy.io.wavfile import write as write_wav
 from gradio_client import Client as GradioClient, file as gradio_file
@@ -78,6 +78,14 @@ except ImportError as e:
     SPATIAL_AUDIO_AVAILABLE = False
     SpatialDetection = None
     print(f"⚠️ Spatial Audio not available: {e}")
+
+# Import Layer 4 Memory Manager
+try:
+    from layer4_memory import get_memory_manager, MEMORY_AVAILABLE
+    MEMORY_AVAILABLE = True
+except ImportError as e:
+    MEMORY_AVAILABLE = False
+    print(f"⚠️ Memory system not available: {e}")
 
 # Suppress pygame deprecation warnings
 warnings.filterwarnings('ignore', category=DeprecationWarning, module='pygame')
@@ -1206,21 +1214,55 @@ class ProjectCortexGUI:
             self.update_handler_status("whisper", "error")
 
     def _execute_layer1_reflex(self, text):
-        """Layer 1: Local Object Detection Report (TODO #4)."""
+        """Layer 1: Local Object Detection + Quick Memory Recall."""
         self.status_queue.put("Status: Layer 1 analyzing...")
         self.debug_print("⚡ [LAYER 1] Reflex Mode: Local YOLO")
         
-        # Get current detections
-        detections = self.last_detections
-        if not detections or detections == "nothing":
-            response = "I don't see anything specific right now."
-        else:
-            # Simple sentence structure logic
-            items = detections.split(", ")
-            unique_items = set([i.split(" (")[0] for i in items])
-            response = f"I see {', '.join(unique_items)}."
+        text_lower = text.lower()
         
-        self.debug_print(f"🔍 [LAYER 1] Detection: {detections}")
+        # Check if this is a memory recall query: "where is my [object]"
+        if any(kw in text_lower for kw in ["where is my", "find my", "show me my"]):
+            # Extract object name
+            for kw in ["where is my", "find my", "show me my"]:
+                if kw in text_lower:
+                    object_name = text_lower.split(kw)[1].strip().rstrip('?.,!')
+                    break
+            
+            self.debug_print(f"🔍 [LAYER 1] Memory recall: Looking for '{object_name}'")
+            
+            # Check if object is currently visible
+            if self.memory_manager:
+                is_visible = self.memory_manager.check_if_in_view(object_name, self.last_detections)
+                
+                if is_visible:
+                    response = f"I can see your {object_name} right now."
+                else:
+                    # Check memory for last known location
+                    memory = self.memory_manager.recall(object_name)
+                    if memory:
+                        location = memory.get('location_estimate', 'an unknown location')
+                        response = f"I don't see your {object_name} right now. I last saw it at {location}."
+                    else:
+                        response = f"I don't see your {object_name}, and I don't have any memory of it."
+            else:
+                response = f"Memory system not available. Looking for {object_name} in current view..."
+                is_visible = object_name in (self.last_detections or "").lower()
+                if is_visible:
+                    response = f"I can see your {object_name} right now."
+                else:
+                    response = f"I don't see your {object_name} right now."
+        else:
+            # Standard detection report
+            detections = self.last_detections
+            if not detections or detections == "nothing":
+                response = "I don't see anything specific right now."
+            else:
+                # Simple sentence structure logic
+                items = detections.split(", ")
+                unique_items = set([i.split(" (")[0] for i in items])
+                response = f"I see {', '.join(unique_items)}."
+        
+        self.debug_print(f"🔍 [LAYER 1] Detection: {self.last_detections}")
         self.debug_print(f"💬 [LAYER 1] Response: {response}")
         
         self._safe_gui_update(lambda: self.response_text.delete('1.0', "end"))
@@ -1241,13 +1283,24 @@ class ProjectCortexGUI:
         This layer handles:
         1. GPS/Location queries ("where am I?")
         2. Navigation ("go to the door")
-        3. SPATIAL AUDIO: Object localization ("where is the seat?")
+        3. MEMORY: Object storage/recall ("remember this wallet", "where is my keys?")
+        4. SPATIAL AUDIO: Object localization ("where is the seat?")
            → Uses 3D audio to guide user toward detected objects
         """
         self.debug_print("🗺️ Layer 3 (Guide) Activated")
         
-        # Check if this is a SPATIAL AUDIO query (object localization)
+        # Check if this is a MEMORY STORAGE command (Layer 3 handles storage, Layer 1 handles recall)
         text_lower = text.lower()
+        memory_storage_keywords = ["remember this", "save this", "memorize this", "store this",
+                                   "what do you remember", "list memories", "show saved"]
+        
+        is_memory_storage = any(kw in text_lower for kw in memory_storage_keywords)
+        
+        if is_memory_storage:
+            self._execute_memory_command(text)
+            return
+        
+        # Check if this is a SPATIAL AUDIO query (object localization)
         spatial_keywords = ["where is", "where's", "where are", "locate", "find the", 
                            "guide me to", "lead me to", "point me to"]
         
@@ -1350,6 +1403,141 @@ Speak naturally and keep it short (under 30 words)."""
         if not found:
             self.debug_print(f"⚠️ '{target_object}' not found in current detections")
             self._speak_spatial_response(f"I don't see any {target_object} right now. I can see: {detections}")
+    
+    def _execute_memory_command(self, text: str):
+        """
+        Execute memory storage/recall commands.
+        
+        Handles:
+        - "remember this wallet" → Store current frame + detections
+        - "where is my keys?" → Recall stored memory
+        - "what do you remember?" → List all memories
+        """
+        self.debug_print(f"💾 [MEMORY] Processing command: {text}")
+        text_lower = text.lower()
+        
+        try:
+            # Use Layer 4 Memory Manager
+            if not self.memory_manager:
+                self._speak_spatial_response("Memory system not initialized.")
+                return
+            
+            # Initialize if needed
+            if not self.memory_manager._initialized:
+                if not self.memory_manager.initialize():
+                    self._speak_spatial_response("Memory system initialization failed.")
+                    return
+            
+            memory = self.memory_manager
+            
+            # STORE command: "remember this [object]"
+            if any(kw in text_lower for kw in ["remember", "save this", "memorize", "store this"]):
+                # Extract object name
+                for kw in ["remember this", "save this", "memorize this", "store this", 
+                          "remember the", "save the", "memorize the", "store the"]:
+                    if kw in text_lower:
+                        parts = text_lower.split(kw)
+                        if len(parts) > 1:
+                            object_name = parts[1].strip().rstrip('?.,!').replace(" ", "_")
+                            break
+                else:
+                    # Fallback: use first detected object
+                    if self.last_detections and self.last_detections != "nothing":
+                        object_name = self.last_detections.split(",")[0].split("(")[0].strip().replace(" ", "_")
+                    else:
+                        self._speak_spatial_response("I don't see anything to remember right now.")
+                        return
+                
+                # Capture current frame
+                if self.latest_frame_for_gemini is None:
+                    self._speak_spatial_response("No video frame available to save.")
+                    return
+                
+                # Convert frame to bytes (JPEG)
+                import cv2
+                from io import BytesIO
+                _, buffer = cv2.imencode('.jpg', self.latest_frame_for_gemini, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                image_bytes = buffer.tobytes()
+                
+                # Prepare detections dict
+                detections_dict = {
+                    "detections": self.last_detections,
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+                }
+                
+                # Store in database using Layer 4 Memory Manager
+                success, memory_id, message = memory.store(
+                    object_name=object_name,
+                    image_data=image_bytes,
+                    detections=detections_dict,
+                    metadata={"query": text},
+                    location=None  # Could add GPS location here in future
+                )
+                
+                if success:
+                    self.debug_print(f"✅ Memory stored: {memory_id}")
+                    self._speak_spatial_response(f"Okay, I've remembered the {object_name.replace('_', ' ')}.")
+                else:
+                    self.debug_print(f"❌ Memory storage failed: {message}")
+                    self._speak_spatial_response("Sorry, I couldn't save that.")
+            
+            # RECALL command: "where is my [object]"
+            elif any(kw in text_lower for kw in ["where is my", "find my", "recall"]):
+                # Extract object name
+                for kw in ["where is my", "find my", "recall the", "recall my"]:
+                    if kw in text_lower:
+                        parts = text_lower.split(kw)
+                        if len(parts) > 1:
+                            object_name = parts[1].strip().rstrip('?.,!').replace(" ", "_")
+                            break
+                else:
+                    self._speak_spatial_response("What do you want me to find?")
+                    return
+                
+                # Recall from database using Layer 4 Memory Manager
+                memory_data = memory.recall(object_name, latest=True)
+                
+                if memory_data:
+                    location = memory_data.get('location_estimate', 'unknown location')
+                    timestamp = memory_data.get('timestamp', 'sometime')
+                    self.debug_print(f"✅ Memory recalled: {memory_data['memory_id']}")
+                    
+                    # Display image in GUI if possible
+                    self._safe_gui_update(lambda: self.response_text.delete('1.0', "end"))
+                    self._safe_gui_update(lambda: self.response_text.insert("end", f"[Memory] {object_name.replace('_', ' ')}\nLast seen: {timestamp}\nLocation: {location}\n"))
+                    
+                    self._speak_spatial_response(f"I last saw your {object_name.replace('_', ' ')} at {location}.")
+                else:
+                    self.debug_print(f"⚠️ Memory not found: {object_name}")
+                    self._speak_spatial_response(f"I don't have any memory of your {object_name.replace('_', ' ')}.")
+            
+            # LIST command: "what do you remember?"
+            elif any(kw in text_lower for kw in ["what do you remember", "show saved", "list memories"]):
+                memories = memory.list_all()
+                
+                if not memories:
+                    self._speak_spatial_response("I don't remember anything yet.")
+                    return
+                
+                # Build response
+                items = [m['object_name'].replace('_', ' ') for m in memories[:5]]  # Top 5
+                if len(memories) <= 3:
+                    response = f"I remember: {', '.join(items)}."
+                else:
+                    response = f"I remember {len(memories)} things, including: {', '.join(items[:3])}, and more."
+                
+                self.debug_print(f"📋 Memories: {len(memories)} items")
+                self._safe_gui_update(lambda: self.response_text.delete('1.0', "end"))
+                self._safe_gui_update(lambda: self.response_text.insert("end", f"[Memory] Stored items:\n"))
+                for m in memories:
+                    self._safe_gui_update(lambda m=m: self.response_text.insert("end", f"  - {m['object_name'].replace('_', ' ')} ({m['count']})\n"))
+                
+                self._speak_spatial_response(response)
+            
+        except Exception as e:
+            logger.error(f"Memory command failed: {e}", exc_info=True)
+            self.debug_print(f"❌ Memory error: {e}")
+            self._speak_spatial_response("Sorry, memory system error.")
     
     def _speak_spatial_response(self, text: str):
         """Speak a short response using available TTS (Kokoro preferred for speed)."""
