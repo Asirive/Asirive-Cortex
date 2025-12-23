@@ -22,6 +22,7 @@ google-genai>=1.0.0           # NEW: Google Gen AI SDK for Gemini 2.5 Flash TTS
 openai==1.3.5                 # OpenAI GPT-4 Vision (fallback)
 requests==2.31.0              # HTTP requests
 gradio-client==0.7.1          # Hugging Face API client (Whisper STT)
+zai-sdk                       # Z.ai GLM-4.6V official SDK (Tier 2 fallback)
 
 # ===== Local AI Models =====
 openai-whisper                # Local Whisper STT

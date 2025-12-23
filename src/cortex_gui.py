@@ -66,7 +66,10 @@ import warnings
 from layer1_reflex.whisper_handler import WhisperSTT
 from layer1_reflex.kokoro_handler import KokoroTTS
 from layer1_reflex.vad_handler import VADHandler  # NEW: Voice Activity Detection
-from layer2_thinker.gemini_tts_handler import GeminiTTS  # NEW: Gemini 2.5 Flash TTS (replaces old GeminiVision)
+from layer2_thinker.gemini_tts_handler import GeminiTTS  # Gemini 2.5 Flash TTS (Tier 1 fallback)
+from layer2_thinker.gemini_live_handler import GeminiLiveManager  # Gemini Live API (Tier 0 - WebSocket)
+from layer2_thinker.streaming_audio_player import StreamingAudioPlayer  # Real-time PCM audio playback
+from layer2_thinker.glm4v_handler import GLM4VHandler  # GLM-4.6V Z.ai API (Tier 2 fallback)
 from layer3_guide.router import IntentRouter
 
 # Import Spatial Audio Manager (3D Audio Navigation)
@@ -181,9 +184,21 @@ class ProjectCortexGUI:
         # --- AI Handler Instances ---
         self.whisper_stt = None  # Lazy load to avoid startup delay
         self.kokoro_tts = None   # Lazy load to avoid startup delay (kept for backward compatibility)
-        self.gemini_tts = None   # NEW: Gemini 2.5 Flash TTS (image + prompt -> audio)
-        self.vad_handler = None  # NEW: Voice Activity Detection handler
-        self.spatial_audio = None  # NEW: 3D Spatial Audio Manager
+        self.gemini_tts = None   # Gemini 2.5 Flash TTS (Tier 1 - HTTP vision+TTS)
+        self.gemini_live = None  # Gemini Live API (Tier 0 - WebSocket audio-to-audio)
+        self.glm4v = None  # GLM-4.6V Z.ai API (Tier 2 - final fallback)
+        self.streaming_player = None  # Real-time PCM audio player (for Live API)
+        self.vad_handler = None  # Voice Activity Detection handler
+        self.spatial_audio = None  # 3D Spatial Audio Manager
+        
+        # --- Cascading Fallback State (3-Tier System) ---
+        self.active_api = "Live API"  # Current active API: "Live API", "Gemini TTS", "GLM-4.6V"
+        self.live_api_enabled = ctk.BooleanVar(value=True)  # Try Live API first
+        self.fallback_enabled = ctk.BooleanVar(value=True)  # Enable automatic fallback
+        self.selected_tier = ctk.StringVar(value="Testing (FREE)")  # Default to FREE tier for daily testing
+        self.video_streaming_enabled = ctk.BooleanVar(value=True)  # Send camera frames
+        self.last_video_frame_time = 0  # Track last frame sent (for 2-5 FPS limit)
+        self.video_frame_interval = 0.4  # Send frame every 400ms (2.5 FPS)
         
         # --- Voice Activation State ---
         self.voice_activation_enabled = ctk.BooleanVar(value=False)
@@ -211,8 +226,10 @@ class ProjectCortexGUI:
         # This ensures module indicators turn green on startup
         self.init_whisper_stt()
         self.init_kokoro_tts()
-        self.init_gemini_tts()
-        # Note: VAD is initialized when voice activation is enabled
+        self.init_gemini_tts()  # Tier 1: Gemini 2.5 Flash TTS (HTTP)
+        self.init_gemini_live()  # Tier 0: Gemini Live API (WebSocket)
+        self.init_streaming_player()  # For Live API audio playback
+        self.init_glm4v()  # Tier 2: GLM-4.6V Z.ai (final fallback)
         
         # --- Start Background Threads ---
         threading.Thread(target=self.video_capture_thread, daemon=True).start()
@@ -253,7 +270,8 @@ class ProjectCortexGUI:
         self.create_status_indicator("YOLO", "#00ff00")
         self.create_status_indicator("WHISPER", "#555555")
         self.create_status_indicator("VAD", "#555555")  # NEW: Voice Activity Detection indicator
-        self.create_status_indicator("GEMINI-TTS", "#555555")  # NEW: Gemini 2.5 TTS indicator
+        self.create_status_indicator("LIVE-API", "#555555")  # NEW: Gemini Live API indicator
+        self.create_status_indicator("GEMINI-TTS", "#555555")  # NEW: Gemini 2.5 TTS indicator (fallback)
         self.create_status_indicator("KOKORO", "#555555")  # Kept for backward compatibility
         self.create_status_indicator("3D-AUDIO", "#555555")  # NEW: 3D Spatial Audio indicator
 
@@ -330,6 +348,24 @@ class ProjectCortexGUI:
             font=('Arial', 11)
         )
         self.spatial_audio_switch.pack(side="left", padx=5)
+        
+        # Layer 2 Tier Selection Dropdown
+        ctk.CTkLabel(audio_frame, text="AI Tier:", font=('Arial', 11)).pack(side="left", padx=(10, 5))
+        self.tier_selector = ctk.CTkOptionMenu(
+            audio_frame,
+            variable=self.selected_tier,
+            values=[
+                "Testing (FREE)",           # Tier 1 only - for daily testing ($0)
+                "Demo Mode (PAID)",         # Tier 0 - for competitions ($1/hour)
+                "Auto (Cascading)",         # Smart fallback
+                "Tier 0 (Live API)",        # Force Tier 0
+                "Tier 1 (Gemini TTS)"       # Force Tier 1
+            ],
+            command=self.on_tier_selection_changed,
+            font=('Arial', 10),
+            width=170
+        )
+        self.tier_selector.pack(side="left", padx=5)
         
         self.record_btn = ctk.CTkButton(
             audio_frame, 
@@ -453,18 +489,50 @@ class ProjectCortexGUI:
             try:
                 self.update_handler_status("kokoro", "processing")
                 self.debug_print("⏳ Loading Kokoro TTS...")
+                logger.info("🔊 Initializing Kokoro TTS handler...")
                 
+                # Step 1: Create KokoroTTS object
+                logger.info("   Step 1/3: Creating KokoroTTS instance...")
                 self.kokoro_tts = KokoroTTS(lang_code="a", default_voice="af_alloy")
-                self.kokoro_tts.load_pipeline()
+                logger.info("   ✅ KokoroTTS instance created")
+                
+                # Step 2: Load pipeline (downloads model from HuggingFace if needed)
+                logger.info("   Step 2/3: Loading Kokoro pipeline...")
+                logger.info("      This may take 30-60s on first run (downloading ~312MB model)")
+                pipeline_loaded = self.kokoro_tts.load_pipeline()
+                
+                if not pipeline_loaded:
+                    logger.error("   ❌ Pipeline loading failed - see logs above for details")
+                    self.debug_print("❌ Kokoro pipeline failed to load")
+                    self.update_handler_status("kokoro", "error")
+                    self.kokoro_tts = None
+                    return False
+                
+                logger.info("   ✅ Pipeline loaded successfully")
+                
+                # Step 3: Verify pipeline is ready
+                logger.info("   Step 3/3: Verifying pipeline readiness...")
+                if self.kokoro_tts.pipeline is None:
+                    logger.error("   ❌ Pipeline is None after load_pipeline() returned True")
+                    self.debug_print("❌ Kokoro pipeline verification failed")
+                    self.update_handler_status("kokoro", "error")
+                    self.kokoro_tts = None
+                    return False
+                
+                logger.info("   ✅ Pipeline verified")
+                
                 self.debug_print("✅ Kokoro TTS ready")
-                logger.info("✅ Kokoro TTS initialized")
+                logger.info("✅ Kokoro TTS initialized successfully")
                 self.update_handler_status("kokoro", "active")
             except Exception as e:
-                logger.error(f"❌ Kokoro TTS init failed: {e}")
+                logger.error(f"❌ Kokoro TTS init failed: {e}", exc_info=True)
                 self.debug_print(f"❌ Kokoro failed: {e}")
                 self.debug_print("   Gemini TTS will be used instead")
                 self.update_handler_status("kokoro", "error")
                 self.kokoro_tts = None
+        else:
+            logger.debug("♻️ Kokoro TTS already initialized, skipping")
+        
         return self.kokoro_tts is not None
     
     def init_gemini_tts(self):
@@ -484,6 +552,121 @@ class ProjectCortexGUI:
                 self.update_handler_status("gemini-tts", "error")
                 self.gemini_tts = None
         return self.gemini_tts is not None
+    
+    def init_gemini_live(self):
+        """Initialize Gemini Live API WebSocket handler (NEW)."""
+        if self.gemini_live is None and GOOGLE_API_KEY:
+            try:
+                self.update_handler_status("live-api", "processing")
+                self.debug_print("⏳ Initializing Gemini Live API...")
+                
+                # Create Live API manager with audio callback
+                self.gemini_live = GeminiLiveManager(
+                    api_key=GOOGLE_API_KEY,
+                    audio_callback=self._on_live_api_audio
+                )
+                
+                # Start background thread
+                self.gemini_live.start()
+                
+                self.debug_print("✅ Gemini Live API ready")
+                logger.info("✅ Gemini Live API initialized")
+                self.update_handler_status("live-api", "active")
+                
+            except Exception as e:
+                logger.error(f"❌ Gemini Live API init failed: {e}")
+                self.debug_print(f"❌ Live API failed: {e}")
+                self.debug_print("   Falling back to Gemini TTS (HTTP API)")
+                self.update_handler_status("live-api", "error")
+                self.gemini_live = None
+        return self.gemini_live is not None
+    
+    def init_streaming_player(self):
+        """Initialize streaming audio player for Live API (NEW)."""
+        if self.streaming_player is None:
+            try:
+                self.debug_print("⏳ Initializing streaming audio player...")
+                
+                # Create streaming player (24kHz PCM from Gemini Live API)
+                self.streaming_player = StreamingAudioPlayer(
+                    sample_rate=24000,
+                    channels=1,
+                    dtype='int16'
+                )
+                
+                # Set playback callbacks
+                self.streaming_player.set_callbacks(
+                    on_start=lambda: self._on_audio_playback_start(),
+                    on_stop=lambda: self._on_audio_playback_stop(),
+                    on_interrupt=lambda: self._on_audio_playback_interrupt()
+                )
+                
+                self.debug_print("✅ Streaming audio player ready")
+                logger.info("✅ Streaming audio player initialized")
+                
+            except Exception as e:
+                logger.error(f"❌ Streaming player init failed: {e}")
+                self.debug_print(f"❌ Streaming player failed: {e}")
+                self.streaming_player = None
+        return self.streaming_player is not None
+    
+    def _on_live_api_audio(self, audio_bytes: bytes):
+        """Callback for streaming audio from Live API (NEW)."""
+        if self.streaming_player and self.streaming_player.is_playing:
+            self.streaming_player.add_audio_chunk(audio_bytes)
+            logger.debug(f"📥 Received {len(audio_bytes)} bytes from Live API")
+    
+    def _on_audio_playback_start(self):
+        """Callback when audio playback starts (NEW)."""
+        self.tts_playing = True
+        self.debug_print("🔊 Audio playback started")
+    
+    def _on_audio_playback_stop(self):
+        """Callback when audio playback stops (NEW)."""
+        self.tts_playing = False
+        self.debug_print("🛑 Audio playback stopped")
+        self.status_queue.put("Status: Ready")
+    
+    def _on_audio_playback_interrupt(self):
+        """Callback when audio playback is interrupted by VAD (NEW)."""
+        self.tts_playing = False
+        self.debug_print("⚠️ Audio playback interrupted by voice")
+    
+    def init_glm4v(self):
+        """Initialize GLM-4.6V Z.ai handler (Fallback Tier 2) - DISABLED (requires API credits)."""
+        zai_key = os.getenv("ZAI_API_KEY")
+        
+        # NOTE: Z.ai Coding Plan quota is ONLY for IDE tools (Cursor, Claude Code, etc.)
+        # Direct API calls require separate balance top-up at https://open.bigmodel.cn/pricing
+        # Keeping this disabled to avoid error messages. Use Gemini APIs (Tier 0/1) instead.
+        
+        if False:  # Disabled - requires API credits
+            zai_base_url = os.getenv("ZAI_BASE_URL")
+            
+            if self.glm4v is None and zai_key:
+                try:
+                    self.debug_print("⏳ Initializing GLM-4.7 (Z.ai)...")
+                    
+                    self.glm4v = GLM4VHandler(
+                        api_key=zai_key,
+                        model="glm-4.6v-flashx",
+                        api_base=zai_base_url,
+                        temperature=0.7,
+                        max_retries=5
+                    )
+                    
+                    self.debug_print("✅ GLM-4.7 ready (Tier 2)")
+                    logger.info("✅ GLM-4.7 initialized")
+                    
+                except Exception as e:
+                    logger.error(f"❌ GLM-4.7 init failed: {e}")
+                    self.debug_print(f"❌ GLM-4.7 failed: {e}")
+                    self.glm4v = None
+        
+        # Z.ai Tier 2 is disabled - using Gemini APIs only
+        if self.glm4v is None:
+            self.debug_print("ℹ️ ZAI_API_KEY not found - GLM-4.6V unavailable")
+            logger.info("ℹ️ ZAI_API_KEY not set - skipping GLM-4.6V initialization")
     
     def on_canvas_resize(self, event):
         """Handles canvas resize for video scaling."""
@@ -911,6 +1094,47 @@ class ProjectCortexGUI:
         else:
             self.stop_spatial_audio()
     
+    def on_tier_selection_changed(self, selected_tier: str):
+        """Callback when user changes Layer 2 tier selection.
+        
+        Args:
+            selected_tier: One of:
+                - "Testing (FREE)" - Tier 1 only for daily testing ($0)
+                - "Demo Mode (PAID)" - Tier 0 for competitions ($1/hour)
+                - "Auto (Cascading)" - Use all tiers with auto-fallback
+                - "Tier 0 (Live API)" - Force Gemini Live API only
+                - "Tier 1 (Gemini TTS)" - Force Gemini 2.5 Flash TTS only
+        """
+        tier_map = {
+            "Testing (FREE)": "Gemini TTS",
+            "Demo Mode (PAID)": "Live API",
+            "Auto (Cascading)": "Auto",
+            "Tier 0 (Live API)": "Live API",
+            "Tier 1 (Gemini TTS)": "Gemini TTS"
+        }
+        
+        tier_name = tier_map.get(selected_tier, "Auto")
+        
+        if tier_name == "Auto":
+            self.debug_print("🔄 AI Tier: AUTO (cascading fallback enabled)")
+            self.fallback_enabled.set(True)
+        elif tier_name == "Gemini TTS":
+            cost_info = " [💰 FREE]" if "FREE" in selected_tier else ""
+            self.debug_print(f"🎯 AI Tier: {tier_name} ONLY{cost_info}")
+            self.fallback_enabled.set(False)
+            self.active_api = tier_name
+        elif tier_name == "Live API":
+            cost_info = " [💰 ~$1/hour]" if "PAID" in selected_tier else ""
+            self.debug_print(f"🎯 AI Tier: {tier_name} ONLY{cost_info}")
+            self.fallback_enabled.set(False)
+            self.active_api = tier_name
+        else:
+            self.debug_print(f"🎯 AI Tier: {tier_name} ONLY")
+            self.fallback_enabled.set(False)
+            self.active_api = tier_name
+        
+        logger.info(f"Layer 2 tier selection changed: {selected_tier}")
+    
     def start_spatial_audio(self):
         """Start 3D spatial audio navigation system."""
         if not SPATIAL_AUDIO_AVAILABLE:
@@ -1272,9 +1496,289 @@ class ProjectCortexGUI:
         self.generate_tts(response)
 
     def _execute_layer2_thinker(self, text):
-        """Layer 2: Cloud Gemini Vision."""
+        """
+        Layer 2: 3-Tier Cascading Fallback System
+        
+        Supports 2 modes:
+        1. AUTO MODE: Cascading fallback across all tiers
+        2. MANUAL MODE: Force specific tier only
+        
+        Tier 0 (Best): Gemini Live API - WebSocket audio-to-audio (<500ms)
+        Tier 1 (Good): Gemini 2.5 Flash TTS - HTTP vision+TTS (~1-2s)  
+        Tier 2 (Backup): GLM-4.6V - Z.ai vision API (~1-2s)
+        """
         self.debug_print("☁️ Layer 2 (Thinker) Activated")
-        self.send_query()  # Re-use existing Gemini logic
+        
+        # Check user's tier selection
+        selected_tier = self.selected_tier.get()
+        
+        # MANUAL MODE: Force specific tier
+        if selected_tier == "Tier 0 (Live API)":
+            self.debug_print("🎯 MANUAL MODE: Tier 0 only")
+            self._execute_layer2_live_api(text)
+            return
+        
+        elif selected_tier == "Tier 1 (Gemini TTS)":
+            self.debug_print("🎯 MANUAL MODE: Tier 1 only")
+            self._execute_layer2_gemini_tts(text)
+            return
+        
+        elif selected_tier == "Tier 2 (GLM-4.6V)":
+            self.debug_print("🎯 MANUAL MODE: Tier 2 only")
+            self._execute_layer2_glm4v(text)
+            return
+        
+        # AUTO MODE: Cascading fallback (default)
+        self.debug_print("🔄 AUTO MODE: 3-tier cascading fallback")
+        
+        # Attempt Tier 0: Gemini Live API (WebSocket)
+        if self.gemini_live and self.live_api_enabled.get() and not hasattr(self.gemini_live.handler, 'quota_exceeded'):
+            self.debug_print(f"🔌 Using {self.active_api} (Tier 0 - WebSocket)")
+            success = self._execute_layer2_live_api(text)
+            
+            # Check if quota exceeded
+            if not success and hasattr(self.gemini_live.handler, 'quota_exceeded') and self.gemini_live.handler.quota_exceeded:
+                self.debug_print("⚠️ Live API quota exceeded - falling back to Tier 1")
+                self.active_api = "Gemini TTS"
+                # Continue to Tier 1
+            elif success:
+                return
+        
+        # Attempt Tier 1: Gemini 2.5 Flash TTS (HTTP)
+        if self.gemini_tts and not getattr(self.gemini_tts, 'using_fallback', False):
+            self.debug_print(f"📡 Using {self.active_api} (Tier 1 - HTTP)")
+            success = self._execute_layer2_gemini_tts(text)
+            
+            # Check if all Gemini keys exhausted
+            if not success or getattr(self.gemini_tts, 'using_fallback', False):
+                self.debug_print("⚠️ All Gemini keys exhausted - falling back to Tier 2")
+                self.active_api = "GLM-4.6V"
+                # Continue to Tier 2
+            elif success:
+                return
+        
+        # Attempt Tier 2: GLM-4.6V Z.ai (Final fallback)
+        if self.glm4v:
+            self.debug_print(f"🌐 Using {self.active_api} (Tier 2 - Z.ai)")
+            success = self._execute_layer2_glm4v(text)
+            
+            if not success:
+                self.debug_print("❌ All API tiers failed - check API keys and quotas")
+                self.status_queue.put("Status: All AI APIs unavailable")
+            return
+        
+        # No APIs available
+        self.debug_print("❌ No AI APIs available - check configuration")
+        self.status_queue.put("Status: No AI APIs configured")
+    
+    def _execute_layer2_live_api(self, text) -> bool:
+        """
+        Execute Layer 2 using Gemini Live API (WebSocket) - Tier 0.
+        
+        Features:
+        - Real-time audio-to-audio streaming
+        - Video frame streaming (2-5 FPS)
+        - <500ms latency
+        - Stateful conversation
+        
+        Returns:
+            bool: True if successful, False if failed
+        """
+        if not self.gemini_live:
+            self.debug_print("❌ Live API not initialized")
+            return False
+        
+        try:
+            # Start streaming audio player
+            if self.streaming_player and not self.streaming_player.is_playing:
+                self.streaming_player.start()
+            
+            # Send text prompt
+            self.status_queue.put("Status: Sending query to Live API...")
+            self.update_handler_status("live-api", "processing")
+            
+            self.gemini_live.send_text(text)
+            self.debug_print(f"📤 Sent query: {text}")
+            
+            # Send current video frame (if available and enabled)
+            if self.video_streaming_enabled.get() and self.latest_frame_for_gemini is not None:
+                current_time = time.time()
+                
+                # Limit to 2-5 FPS (send frame every 400ms)
+                if current_time - self.last_video_frame_time >= self.video_frame_interval:
+                    # Convert numpy array to PIL Image
+                    frame_rgb = cv2.cvtColor(self.latest_frame_for_gemini, cv2.COLOR_BGR2RGB)
+                    pil_image = Image.fromarray(frame_rgb)
+                    
+                    # Send to Live API
+                    self.gemini_live.send_video(pil_image)
+                    self.last_video_frame_time = current_time
+                    self.debug_print(f"📷 Sent video frame ({pil_image.width}x{pil_image.height})")
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Live API execution failed: {e}")
+            self.debug_print(f"❌ Live API error: {e}")
+            return False
+    
+    def _execute_layer2_gemini_tts(self, text) -> bool:
+        """
+        Execute Layer 2 using Gemini 2.5 Flash TTS (HTTP) - Tier 1.
+        
+        Features:
+        - Vision + TTS in single API
+        - ~1-2s latency
+        - Multiple API key rotation
+        - Kokoro fallback when all keys exhausted
+        
+        Returns:
+            bool: True if successful, False if failed
+        """
+        if not self.gemini_tts:
+            self.debug_print("❌ Gemini TTS not initialized")
+            return False
+        
+        try:
+            self.status_queue.put("Status: Generating speech from image (Gemini TTS)...")
+            self.update_handler_status("gemini-tts", "processing")
+            
+            # Get current video frame
+            if self.latest_frame_for_gemini is not None:
+                # Convert numpy array to PIL Image
+                frame_rgb = cv2.cvtColor(self.latest_frame_for_gemini, cv2.COLOR_BGR2RGB)
+                pil_image = Image.fromarray(frame_rgb)
+                
+                # Generate speech from image + text
+                audio_file = self.gemini_tts.generate_speech_from_image(
+                    image=pil_image,
+                    prompt=text,
+                    save_to_file=True
+                )
+                
+                if audio_file and os.path.exists(audio_file):
+                    self.debug_print(f"✅ Audio generated: {audio_file}")
+                    # Play audio
+                    self.play_audio_file(audio_file)
+                    return True
+                else:
+                    self.debug_print("❌ Audio generation failed")
+                    return False
+            else:
+                self.debug_print("⚠️ No video frame available for Gemini TTS")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Gemini TTS execution failed: {e}")
+            self.debug_print(f"❌ Gemini TTS error: {e}")
+            return False
+    
+    def _execute_layer2_glm4v(self, text) -> bool:
+        """
+        Execute Layer 2 using GLM-4.6V Z.ai API - Tier 2 (Final Fallback).
+        
+        Features:
+        - 128K context length
+        - Native multimodal tool use
+        - ~1-2s latency
+        - OpenAI-compatible API
+        
+        Returns:
+            bool: True if successful, False if failed
+        """
+        if not self.glm4v:
+            self.debug_print("❌ GLM-4.6V not initialized")
+            return False
+        
+        try:
+            self.status_queue.put("Status: Generating response (GLM-4.6V Z.ai)...")
+            
+            # Get current video frame
+            if self.latest_frame_for_gemini is not None:
+                # Convert numpy array to PIL Image
+                frame_rgb = cv2.cvtColor(self.latest_frame_for_gemini, cv2.COLOR_BGR2RGB)
+                pil_image = Image.fromarray(frame_rgb)
+                
+                # Generate text response from GLM-4.6V
+                response_text = self.glm4v.generate_content(
+                    text=text,
+                    image=pil_image
+                )
+                
+                if response_text:
+                    self.debug_print(f"✅ GLM-4.6V response: {response_text[:100]}...")
+                    
+                    # Use Kokoro TTS for speech output (since GLM-4.6V is text-only)
+                    if self.kokoro_tts or self.init_kokoro_tts():
+                        audio_file = self.kokoro_tts.generate_audio(
+                            text=response_text,
+                            save_to_file=True
+                        )
+                        if audio_file:
+                            self.play_audio_file(audio_file)
+                    else:
+                        # No TTS available, just display text
+                        self.debug_print(f"📝 Response (text-only): {response_text}")
+                    
+                    return True
+                else:
+                    self.debug_print("❌ GLM-4.6V response failed")
+                    return False
+            else:
+                self.debug_print("⚠️ No video frame available for GLM-4.6V")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ GLM-4.6V execution failed: {e}")
+            self.debug_print(f"❌ GLM-4.6V error: {e}")
+            return False
+    
+    def _execute_layer2_live_api_old(self, text):
+        """
+        OLD VERSION - kept for reference.
+        Execute Layer 2 using Gemini Live API (WebSocket).
+        
+        Features:
+        - Real-time audio-to-audio streaming
+        - Video frame streaming (2-5 FPS)
+        - <500ms latency
+        - Stateful conversation
+        """
+        if not self.gemini_live:
+            self.debug_print("❌ Live API not initialized")
+            return
+        
+        # Start streaming audio player
+        if self.streaming_player and not self.streaming_player.is_playing:
+            self.streaming_player.start()
+        
+        # Send text prompt
+        self.status_queue.put("Status: Sending query to Live API...")
+        self.update_handler_status("live-api", "processing")
+        
+        self.gemini_live.send_text(text)
+        self.debug_print(f"📤 Sent query: {text}")
+        
+        # Send current video frame (if available and enabled)
+        if self.video_streaming_enabled.get() and self.latest_frame_for_gemini is not None:
+            current_time = time.time()
+            
+            # Limit to 2-5 FPS (send frame every 400ms)
+            if current_time - self.last_video_frame_time >= self.video_frame_interval:
+                # Convert numpy array to PIL Image
+                frame_rgb = cv2.cvtColor(self.latest_frame_for_gemini, cv2.COLOR_BGR2RGB)
+                pil_image = Image.fromarray(frame_rgb)
+                
+                # Send to Live API
+                self.gemini_live.send_video(pil_image)
+                self.last_video_frame_time = current_time
+                self.debug_print(f"📷 Sent video frame ({pil_image.width}x{pil_image.height})")
+        
+        # Update response area
+        self._safe_gui_update(lambda: self.response_text.delete('1.0', "end"))
+        self._safe_gui_update(lambda: self.response_text.insert("end", f"[Live API] Processing (audio streaming)..."))
+        
+        self.status_queue.put("Status: Streaming audio response...")
 
     def _execute_layer3_guide(self, text):
         """
