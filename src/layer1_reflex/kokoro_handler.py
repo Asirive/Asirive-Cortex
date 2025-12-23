@@ -101,34 +101,129 @@ class KokoroTTS:
         Returns:
             True if pipeline loaded successfully, False otherwise
         """
+        logger.info("🔊 load_pipeline() called")
+        
         if self.pipeline is not None:
-            logger.info("✅ Kokoro pipeline already loaded")
+            logger.info("✅ Kokoro pipeline already loaded (pipeline object exists)")
+            logger.info(f"   Pipeline type: {type(self.pipeline)}")
+            logger.info(f"   Current voice: {self.pipeline.voice if hasattr(self.pipeline, 'voice') else 'unknown'}")
             return True
             
         try:
+            # Check if kokoro-onnx is installed
+            logger.info("📦 Checking kokoro-onnx availability...")
             if not KOKORO_AVAILABLE:
-                logger.error("❌ kokoro-onnx not installed. Install with: pip install kokoro-onnx")
+                logger.error("❌ kokoro-onnx not installed")
+                logger.error("   Install command: pip install kokoro-onnx")
+                logger.error("   Or: pip install kokoro>=0.3.4")
                 return False
             
-            logger.info(f"⏳ Loading Kokoro pipeline for lang='{self.lang_code}'...")
+            logger.info("✅ kokoro-onnx is available")
+            logger.info(f"   Kokoro class: {Kokoro}")
+            
+            logger.info(f"⏳ Initializing Kokoro pipeline...")
+            logger.info(f"   Language code: '{self.lang_code}'")
+            logger.info(f"   Default voice: '{self.default_voice}'")
+            logger.info(f"   Speed: {self.default_speed}x")
             start_time = time.time()
             
             # Initialize pipeline (auto-downloads model from HuggingFace)
-            self.pipeline = Kokoro(lang=self.lang_code, voice=self.default_voice)
+            logger.info("📥 Creating Kokoro instance...")
+            logger.info("   Using kokoro-onnx API v0.4+ (requires model files)")
+            
+            # NEW API (v0.4+): Requires model_path and voices_path
+            # Files must be downloaded from GitHub releases first
+            import os
+            import urllib.request
+            from pathlib import Path
+            
+            # Use user's cache directory for models
+            cache_dir = Path.home() / ".cache" / "kokoro-onnx"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Model files (v1.0 is latest stable)
+            model_path = cache_dir / "kokoro-v1.0.onnx"
+            voices_path = cache_dir / "voices-v1.0.bin"
+            
+            logger.info(f"   Model path: {model_path}")
+            logger.info(f"   Voices path: {voices_path}")
+            
+            # Download URLs
+            model_url = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
+            voices_url = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
+            
+            # Download model if not exists
+            if not model_path.exists():
+                logger.info(f"   📥 Downloading model (~312MB) from {model_url}...")
+                logger.info("      This may take 2-5 minutes on first run...")
+                try:
+                    urllib.request.urlretrieve(model_url, model_path)
+                    logger.info("   ✅ Model downloaded successfully")
+                except Exception as e:
+                    logger.error(f"   ❌ Model download failed: {e}")
+                    return False
+            
+            # Download voices if not exists
+            if not voices_path.exists():
+                logger.info(f"   📥 Downloading voices (~500KB) from {voices_url}...")
+                try:
+                    urllib.request.urlretrieve(voices_url, voices_path)
+                    logger.info("   ✅ Voices downloaded successfully")
+                except Exception as e:
+                    logger.error(f"   ❌ Voices download failed: {e}")
+                    return False
+            
+            # Create Kokoro instance with file paths
+            self.pipeline = Kokoro(
+                model_path=str(model_path),
+                voices_path=str(voices_path)
+            )
+            
+            if self.pipeline is None:
+                logger.error("❌ Kokoro() returned None instead of pipeline object")
+                return False
             
             load_time = time.time() - start_time
-            logger.info(f"✅ Kokoro pipeline loaded in {load_time:.2f}s")
+            logger.info(f"✅ Kokoro pipeline created in {load_time:.2f}s")
+            logger.info(f"   Pipeline type: {type(self.pipeline)}")
+            logger.info(f"   Pipeline methods: {[m for m in dir(self.pipeline) if not m.startswith('_')]}")
             
             # Warm-up generation for accurate latency measurement
-            logger.info("🔥 Running warm-up generation...")
+            logger.info("🔥 Running warm-up generation to test pipeline...")
             warmup_text = "Cortex initialized"
-            _ = self.pipeline.create(warmup_text)
-            logger.info("✅ Warm-up complete")
+            logger.info(f"   Warm-up text: '{warmup_text}'")
+            logger.info(f"   Warm-up voice: '{self.default_voice}'")
+            
+            warmup_start = time.time()
+            # NEW API: create(text, voice, speed, lang)
+            warmup_audio, sample_rate = self.pipeline.create(
+                warmup_text,
+                voice=self.default_voice,
+                speed=self.default_speed,
+                lang="en-us"  # English US
+            )
+            warmup_time = time.time() - warmup_start
+            
+            if warmup_audio is None:
+                logger.error("❌ Warm-up generation returned None")
+                return False
+            
+            logger.info(f"✅ Warm-up complete in {warmup_time:.2f}s")
+            logger.info(f"   Warm-up audio shape: {warmup_audio.shape if hasattr(warmup_audio, 'shape') else 'N/A'}")
+            logger.info(f"   Warm-up audio type: {type(warmup_audio)}")
+            logger.info(f"   Sample rate: {sample_rate} Hz")
             
             return True
             
+        except ImportError as e:
+            logger.error(f"❌ Import error loading Kokoro: {e}")
+            logger.error("   Make sure kokoro-onnx is installed: pip install kokoro-onnx")
+            logger.error("   Full traceback:", exc_info=True)
+            return False
         except Exception as e:
             logger.error(f"❌ Failed to load Kokoro pipeline: {e}")
+            logger.error("   Error type: " + type(e).__name__)
+            logger.error("   Full traceback:", exc_info=True)
             return False
     
     def generate_speech(
@@ -152,9 +247,16 @@ class KokoroTTS:
         Returns:
             Audio data as numpy array (24kHz sample rate), or None if failed
         """
+        logger.debug(f"🔊 generate_speech() called with text: '{text[:50]}...'")
+        
         if self.pipeline is None:
             logger.error("❌ Pipeline not loaded. Call load_pipeline() first.")
+            logger.error("   Current pipeline state: None")
+            logger.error("   Initialized flag: " + str(self._initialized))
+            logger.error("   KOKORO_AVAILABLE: " + str(KOKORO_AVAILABLE))
             return None
+        
+        logger.debug(f"✅ Pipeline exists: {type(self.pipeline)}")
         
         if not text or text.strip() == "":
             logger.warning("⚠️ Empty text provided, skipping TTS")
@@ -167,42 +269,35 @@ class KokoroTTS:
             voice = voice or self.default_voice
             speed = speed or self.default_speed
             
-            # Update voice if different from current
-            if voice != self.pipeline.voice:
-                self.pipeline.voice = voice
+            logger.debug(f"   Voice: {voice}")
+            logger.debug(f"   Speed: {speed}x")
             
-            # Generate audio (kokoro-onnx returns numpy array directly)
-            audio_data = self.pipeline.create(text, speed=speed)
+            # NEW API: create(text, voice, speed, lang) returns (audio, sample_rate)
+            audio_data, sample_rate = self.pipeline.create(
+                text,
+                voice=voice,
+                speed=speed,
+                lang="en-us",  # American English
+                trim=True  # Trim silence
+            )
             
             if audio_data is None or len(audio_data) == 0:
                 logger.warning("⚠️ No audio generated")
                 return None
             
-            # Ensure audio is numpy array
+            # Ensure audio is float32 numpy array
             if not isinstance(audio_data, np.ndarray):
                 audio_data = np.array(audio_data, dtype=np.float32)
-            
-            # kokoro-onnx returns audio as single array, not chunks
-            audio_tensors = [audio_data]
-            
-            if not audio_tensors:
-                logger.error("❌ No valid audio data extracted from chunks")
-                return None
-            
-            # Concatenate all audio segments
-            if len(audio_tensors) == 1:
-                audio_data = audio_tensors[0]
-            else:
-                audio_data = np.concatenate(audio_tensors)
             
             generation_time = (time.time() - start_time) * 1000  # Convert to ms
             self.generation_times.append(generation_time)
             
             if log_latency:
-                audio_duration = len(audio_data) / 24000  # 24kHz sample rate
+                audio_duration = len(audio_data) / sample_rate
                 logger.info(
-                    f"🔊 TTS: '{text[:50]}...' → {len(audio_chunks)} chunks, "
-                    f"{audio_duration:.2f}s audio (latency: {generation_time:.0f}ms)"
+                    f"🔊 TTS: '{text[:50]}...' → "
+                    f"{audio_duration:.2f}s audio (latency: {generation_time:.0f}ms, "
+                    f"voice={voice})"
                 )
                 
                 # Check if we're meeting latency targets

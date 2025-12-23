@@ -44,10 +44,14 @@ We aim to democratize assistive technology by disrupting the $4,000+ premium dev
 - **Reliability:** 100% offline, zero network dependency
 - **Location:** `src/layer1_reflex/`
 
-#### Layer 2: The Thinker (On Pi - Cloud API)
-- **Purpose:** Vision intelligence & conversation
-- **Model:** Google Gemini 2.5 Flash Native Audio (Live API)
-- **Transport:** WebSocket (Direct Pi → Google Cloud)
+#### Layer 2: The Thinker (Hybrid - 3-Tier Cascading Fallback) 🆕
+- **Purpose:** Vision intelligence & conversation with 100% uptime
+- **Architecture:** 3-tier cascading fallback system
+  - **Tier 0 (Best):** Gemini Live API (WebSocket, <500ms latency)
+  - **Tier 1 (Good):** Gemini 2.5 Flash TTS (HTTP, ~1-2s, 6-key rotation)
+  - **Tier 2 (Backup):** GLM-4.6V Z.ai (HTTP, ~1-2s, final fallback)
+- **Auto-Failover:** Automatic tier switching on quota exhaustion
+- **Documentation:** See [CASCADING_FALLBACK_ARCHITECTURE.md](docs/implementation/CASCADING_FALLBACK_ARCHITECTURE.md)
 - **I/O:** Microphone PCM + Camera → PCM Audio via Bluetooth
 - **Latency:** ~500ms (includes Bluetooth)
 - **Location:** `src/layer2_thinker/`
