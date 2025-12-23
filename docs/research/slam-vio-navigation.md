@@ -720,15 +720,19 @@ Developing VIO on laptop webcam (narrow FOV, no distortion) will **fail catastro
 ```
 
 **WHY THIS WORKS:**
-1. **EuRoC format is device-agnostic**: RPi records data, laptop consumes it
+1. **EuRoC format is device-agnostic**: RPi records data, laptop processes it
 2. **Same fisheye distortion**: Algorithms trained on RPi images work on RPi camera
 3. **Fast iteration**: No RPi reboots, no SSH delays, full debug tools (matplotlib, pdb)
 4. **Reproducibility**: Same dataset validates VIO changes
+5. **RPi Resource Savings**: VIO/SLAM requires 1GB+ RAM - offload to laptop
 
 **IMPLEMENTATION:**
 - **Data Recorder**: See [data-recorder-architecture.md](../implementation/data-recorder-architecture.md)
 - **Python Library**: `pip install evo` (loads EuRoC datasets)
 - **RPi Recording**: 5 minutes = 9,000 images + 30,000 IMU samples (~500MB)
+- **Server Processing**: Laptop runs VIO/SLAM, returns map to RPi (REST API)
+- **Latency**: Post-processing only (5-10 seconds per session, NOT real-time)
+- **Note**: VIO/SLAM does NOT run on RPi. Layer 3 spatial memory uses pre-built maps from server.
 
 ---
 

@@ -701,19 +701,22 @@ WHERE quality_flags & 2 = 2;  -- bit 1 set
 
 ---
 
-### Phase 4: Deployment (RPi) (Week 6)
-**Goal:** Run VIO **live** on RPi 5.
+### Phase 4: VIO/SLAM Server Processing (Laptop) (Week 6)
+**Goal:** Process recorded EuRoC datasets on laptop server for map building.
 
 **Tasks:**
-1. Replace `EuRoCDatasetLoader` with `LiveSensorReader`
-2. Test real-time performance (latency <200ms)
-3. Validate memory usage (<2GB RAM)
-4. Integrate with Layer 3 navigation
+1. Upload EuRoC dataset from RPi to laptop (HTTP POST or SCP)
+2. Run VIO/SLAM algorithm on laptop (OpenVINS, ORB-SLAM3, etc.)
+3. Generate map keyframes and GPS anchors
+4. Return processed map to RPi via REST API
+5. RPi stores map in SQLite (slam_maps, map_anchors tables)
 
 **Success Criteria:**
-- ✅ VIO runs @ 10Hz on RPi 5
-- ✅ Position estimates match recorded data (±10% error)
-- ✅ No thermal throttling during 15-minute session
+- ✅ 5-minute session processes in <1 minute on laptop
+- ✅ Map data returned to RPi successfully
+- ✅ RPi can query map for spatial memory
+
+**Note:** VIO/SLAM is NOT real-time on RPi. It is post-processing only.
 
 ---
 
