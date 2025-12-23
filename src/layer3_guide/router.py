@@ -26,14 +26,16 @@ class IntentRouter:
     """
     
     def __init__(self):
-        # Layer 1: Object detection patterns (YOLO)
+        # Layer 1: Object detection patterns (YOLO) + Quick memory recall
         self.layer1_patterns = [
             "what is this", "what's this", "whats this",
             "what do you see", "what u see", "what you see", 
             "what do u see", "what can you see",
             "look", "watch out", "stop", "careful", 
             "hazard", "obstacle", "in front", "ahead",
-            "identify", "detect", "count"
+            "identify", "detect", "count",
+            # Memory recall (quick): "where is my [object]" - checks if visible
+            "where is my", "find my", "show me my"
         ]
         
         # Layer 2: Deep analysis patterns (Gemini Vision)
@@ -105,10 +107,13 @@ class IntentRouter:
         # =================================================================
         layer2_priority_keywords = ["explain", "describe", "detail", "analyze", "tell me about", "read this", "what does it say"]
         
-        # Layer 3 priority: Navigation + SPATIAL AUDIO localization
+        # Layer 3 priority: Navigation + SPATIAL AUDIO + Memory storage
         layer3_priority_keywords = [
             # Navigation/GPS
-            "where am i", "navigate", "take me to", "go to", "remember this", "save this",
+            "where am i", "navigate", "take me to", "go to",
+            # Memory storage: "remember this [object]"
+            "remember this", "save this", "memorize this", "store this",
+            "what do you remember", "list memories", "show saved",
             # SPATIAL AUDIO: Object localization (triggers 3D audio response)
             "where is the", "where's the", "where are the", "locate the", "find the",
             "guide me to the", "lead me to the", "point me to the",

@@ -18,7 +18,12 @@ import logging
 import time
 from typing import Optional, List, Generator
 import numpy as np
-from kokoro import KPipeline
+try:
+    from kokoro_onnx import Kokoro
+    KOKORO_AVAILABLE = True
+except ImportError:
+    KOKORO_AVAILABLE = False
+    Kokoro = None
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +106,15 @@ class KokoroTTS:
             return True
             
         try:
+            if not KOKORO_AVAILABLE:
+                logger.error("❌ kokoro-onnx not installed. Install with: pip install kokoro-onnx")
+                return False
+            
             logger.info(f"⏳ Loading Kokoro pipeline for lang='{self.lang_code}'...")
             start_time = time.time()
             
             # Initialize pipeline (auto-downloads model from HuggingFace)
-            self.pipeline = KPipeline(lang_code=self.lang_code)
+            self.pipeline = Kokoro(lang=self.lang_code, voice=self.default_voice)
             
             load_time = time.time() - start_time
             logger.info(f"✅ Kokoro pipeline loaded in {load_time:.2f}s")
@@ -113,11 +122,7 @@ class KokoroTTS:
             # Warm-up generation for accurate latency measurement
             logger.info("🔥 Running warm-up generation...")
             warmup_text = "Cortex initialized"
-            _ = list(self.pipeline(
-                warmup_text,
-                voice=self.default_voice,
-                speed=self.default_speed
-            ))
+            _ = self.pipeline.create(warmup_text)
             logger.info("✅ Warm-up complete")
             
             return True
@@ -162,42 +167,23 @@ class KokoroTTS:
             voice = voice or self.default_voice
             speed = speed or self.default_speed
             
-            # Generate audio (returns generator of audio chunks)
-            audio_generator = self.pipeline(
-                text,
-                voice=voice,
-                speed=speed
-            )
+            # Update voice if different from current
+            if voice != self.pipeline.voice:
+                self.pipeline.voice = voice
             
-            # Collect all audio chunks into single array
-            audio_chunks = list(audio_generator)
+            # Generate audio (kokoro-onnx returns numpy array directly)
+            audio_data = self.pipeline.create(text, speed=speed)
             
-            if not audio_chunks:
+            if audio_data is None or len(audio_data) == 0:
                 logger.warning("⚠️ No audio generated")
                 return None
             
-            # Extract audio data from chunks
-            # Kokoro generator yields tuples: (graphemes, phonemes, audio)
-            audio_tensors = []
-            for chunk in audio_chunks:
-                # Check if chunk is a tuple (gs, ps, audio)
-                if isinstance(chunk, tuple) and len(chunk) == 3:
-                    _, _, audio_data = chunk
-                # Check if chunk has .output.audio (Result object)
-                elif hasattr(chunk, 'output') and hasattr(chunk.output, 'audio'):
-                    audio_data = chunk.output.audio
-                # Direct audio data
-                else:
-                    audio_data = chunk
-                
-                # Convert to numpy if needed
-                if hasattr(audio_data, 'cpu'):  # PyTorch tensor
-                    audio_np = audio_data.cpu().numpy()
-                elif hasattr(audio_data, 'numpy'):  # NumPy-compatible
-                    audio_np = audio_data.numpy() if callable(audio_data.numpy) else audio_data
-                else:
-                    audio_np = np.array(audio_data, dtype=np.float32)
-                audio_tensors.append(audio_np)
+            # Ensure audio is numpy array
+            if not isinstance(audio_data, np.ndarray):
+                audio_data = np.array(audio_data, dtype=np.float32)
+            
+            # kokoro-onnx returns audio as single array, not chunks
+            audio_tensors = [audio_data]
             
             if not audio_tensors:
                 logger.error("❌ No valid audio data extracted from chunks")
