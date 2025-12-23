@@ -390,3 +390,37 @@ pyaudio>=0.2.11
 
 **APPROVED FOR IMPLEMENTATION**  
 *Let's build this, Co-Founder.* 🚀
+
+---
+
+## 🖥️ DEPLOYMENT ARCHITECTURE (Updated Dec 2025)
+
+**Layer 1 Reflex is 100% LOCAL on RPi.**
+
+**Why Local?**
+1. **Safety-Critical**: Object detection must work offline (navigation hazards)
+2. **Latency-Sensitive**: <100ms required for real-time safety alerts
+3. **Privacy**: Video never leaves device
+4. **Reliability**: No network dependency (works anywhere)
+
+**Model Choice:**
+- **Default**: `yolo11x.pt` (2.5GB RAM, 500-800ms inference)
+- **RAM Constrained**: `yolo11n.pt` (6MB RAM, 100ms inference)
+  - Trade accuracy for memory: 11 layers vs 53 layers
+  - Still acceptable for safety detection (person, car, door, etc.)
+
+**Voice Pipeline (All Local):**
+- **VAD**: Silero VAD (50MB RAM, <10ms detection)
+- **STT**: Whisper base (800MB RAM, 500ms transcription)
+- **TTS**: Kokoro TTS (500MB RAM, 500ms synthesis)
+- **Object Detection**: YOLO local (2.5GB RAM, 800ms inference)
+
+**No Server Offloading:**
+- Layer 1 Reflex does NOT use Redis pub/sub
+- Layer 1 Reflex does NOT query laptop server
+- Layer 1 Reflex runs standalone on RPi
+
+---
+
+**End of Implementation Plan**  
+*Next Step: Begin Phase 1 - YOLO Testing* 🚀
