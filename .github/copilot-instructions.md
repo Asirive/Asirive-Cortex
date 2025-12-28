@@ -32,10 +32,10 @@ We are currently building **Version 2.0 - Edge-Server Hybrid Architecture**. You
 
 ### Hardware:
 * **Compute Core:** **Raspberry Pi 5 (4GB)** running Raspberry Pi OS (64-bit Lite)
-* **Vision Input:** **IMX415 8MP Low-Light Camera** (CSI/MIPI)
+* **Vision Input:** **Raspberry Pi 5 Camera Module 3 (Wide)** (CSI/MIPI)
 * **Power System:** 30,000mAh USB-C PD Power Bank (using `usb_max_current_enable=1` override)
 * **Cooling:** Official RPi 5 Active Cooler (MANDATORY)
-* **Server:** Dell Inspiron 15 (RTX 2050) for VIO/SLAM post-processing
+* **Server:** Acer Nitro V15 (RTX 2050) for VIO/SLAM post-processing
 
 ### The 4-Layer AI Brain:
 
@@ -55,7 +55,7 @@ We are currently building **Version 2.0 - Edge-Server Hybrid Architecture**. You
 * **VAD:** Silero VAD (50MB RAM, <10ms) - RUNS LOCAL on RPi
 
 **Revolutionary Feature: Native Audio-to-Audio Streaming**
-* **Protocol:** WebSocket (`gemini-2.0-flash-exp` model)
+* **Protocol:** WebSocket (`models/gemini-2.5-flash-native-audio-preview-12-2025`)
 * **Input:** 16kHz PCM audio (direct from mic) + JPEG frames (2-5 FPS)
 * **Output:** 24kHz PCM audio (direct to Bluetooth headphones)
 * **Latency:** <500ms (vs 2-3s HTTP API) = 83% improvement

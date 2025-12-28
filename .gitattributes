@@ -7,19 +7,16 @@
 *.onnx filter=lfs diff=lfs merge=lfs -text
 *.engine filter=lfs diff=lfs merge=lfs -text
 *.tflite filter=lfs diff=lfs merge=lfs -text
-
 # === Whisper Models ===
 models/whisper/** filter=lfs diff=lfs merge=lfs -text
-
 # === Kokoro TTS Models ===
 TTS[[:space:]]Model/*.pt filter=lfs diff=lfs merge=lfs -text
 TTS[[:space:]]Model/*.txt filter=lfs diff=lfs merge=lfs -text
-
 # === Audio Files (Spatial Audio Assets) ===
 *.wav filter=lfs diff=lfs merge=lfs -text
 *.mp3 filter=lfs diff=lfs merge=lfs -text
 *.ogg filter=lfs diff=lfs merge=lfs -text
-
 # === Large Datasets ===
 *.zip filter=lfs diff=lfs merge=lfs -text
 *.tar.gz filter=lfs diff=lfs merge=lfs -text
+mobileclip_blt.ts filter=lfs diff=lfs merge=lfs -text
