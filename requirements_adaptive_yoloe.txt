@@ -1,0 +1,19 @@
+# Project-Cortex v2.0 - Adaptive YOLOE Dependencies
+# Additional packages for Layer 0 + Layer 1 dual-model cascade
+
+# YOLOE support (includes YOLO)
+ultralytics>=8.3.0
+
+# NLP for noun extraction (Gemini → YOLOE prompt learning)
+spacy>=3.7.0
+
+# Performance monitoring
+psutil>=5.9.0
+
+# Existing dependencies (from original requirements.txt)
+# Note: Ensure these are already installed
+# opencv-python
+# numpy
+# torch
+# pillow
+# etc.

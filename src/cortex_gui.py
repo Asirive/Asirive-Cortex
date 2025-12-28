@@ -62,6 +62,9 @@ import logging
 import sys
 import warnings
 
+# Import Dual YOLO Handler (Layer 0 Guardian + Layer 1 Learner)
+from dual_yolo_handler import DualYOLOHandler
+
 # Import our custom AI handlers
 from layer1_reflex.whisper_handler import WhisperSTT
 from layer1_reflex.kokoro_handler import KokoroTTS
@@ -151,9 +154,11 @@ class ProjectCortexGUI:
         self.window.geometry("1280x850")
         
         # --- Core State ---
-        self.model = None  # YOLO model
+        self.model = None  # Legacy YOLO (replaced by dual_yolo)
+        self.dual_yolo = None  # Dual YOLO Handler (Layer 0 + Layer 1)
         self.classes = {}  # YOLO class names
         self.last_detections = "nothing detected"
+        self.last_learner_detections = []  # Layer 1 adaptive detections
         self.latest_frame_for_gemini = None
         self.cap = None  # Video capture object
         self.picamera2 = None  # RPi camera (when available)
@@ -226,10 +231,12 @@ class ProjectCortexGUI:
         # This ensures module indicators turn green on startup
         self.init_whisper_stt()
         self.init_kokoro_tts()
-        self.init_gemini_tts()  # Tier 1: Gemini 2.5 Flash TTS (HTTP)
-        self.init_gemini_live()  # Tier 0: Gemini Live API (WebSocket)
+        # DISABLED: Gemini API calls to avoid quota limits at startup
+        logger.info("⚠️ Skipping Gemini TTS/Live API initialization (quota limits prevention)")
+        # self.init_gemini_tts()  # Tier 1: Gemini 2.5 Flash TTS (HTTP)
+        # self.init_gemini_live()  # Tier 0: Gemini Live API (WebSocket)
         self.init_streaming_player()  # For Live API audio playback
-        self.init_glm4v()  # Tier 2: GLM-4.6V Z.ai (final fallback)
+        # self.init_glm4v()  # Tier 2: GLM-4.6V Z.ai (final fallback)
         
         # --- Start Background Threads ---
         threading.Thread(target=self.video_capture_thread, daemon=True).start()
@@ -304,6 +311,18 @@ class ProjectCortexGUI:
             width=100
         )
         self.send_query_btn.pack(side="right", padx=5)
+        
+        # 🆕 Adaptive Learning: Learn from Maps POI
+        self.learn_maps_btn = ctk.CTkButton(
+            query_frame, 
+            text="🗺️ POI", 
+            command=self.learn_from_maps,
+            font=('Arial', 12, 'bold'),
+            width=80,
+            fg_color="#2e7d32",
+            hover_color="#1b5e20"
+        )
+        self.learn_maps_btn.pack(side="right", padx=5)
         
         # Response Section
         ctk.CTkLabel(controls_frame, text="🤖 Gemini's Response:", font=('Arial', 12, 'bold')).pack(anchor="w", padx=15)
@@ -680,15 +699,8 @@ class ProjectCortexGUI:
         threading.Thread(target=self._init_yolo_thread, daemon=True).start()
     
     def _init_yolo_thread(self):
-        """Background YOLO model loading with forced CPU inference."""
+        """Background Dual YOLO loading (Layer 0 Guardian + Layer 1 Learner)."""
         try:
-            if not os.path.exists(YOLO_MODEL_PATH):
-                logger.error(f"❌ Model not found: {YOLO_MODEL_PATH}")
-                self.status_queue.put(f"Status: ERROR - Model not found")
-                self._safe_gui_update(lambda: self.debug_print(f"❌ FATAL: {YOLO_MODEL_PATH} not found"))
-                self._safe_gui_update(lambda: self.update_handler_status("yolo", "error"))
-                return
-            
             # Verify CUDA availability and set device accordingly
             import torch
             if YOLO_DEVICE == 'cuda':
@@ -705,31 +717,36 @@ class ProjectCortexGUI:
             else:
                 device = YOLO_DEVICE  # Use configured device (cpu, mps, etc.)
             
-            logger.info(f"Loading YOLO on device: {device}")
-            self.debug_print(f"🔄 Loading YOLO {os.path.basename(YOLO_MODEL_PATH)} on {device}...")
+            logger.info(f"🚀 Loading Dual YOLO Handler on {device}...")
+            self.debug_print(f"🔄 Loading Layer 0 (Guardian) + Layer 1 (Learner) on {device}...")
             
-            # Load model with explicit device specification
-            self.model = YOLO(YOLO_MODEL_PATH)
-            self.yolo_device = device  # Store actual device for inference
-            # Note: Ultralytics automatically uses specified device during inference
-            self.classes = self.model.names
+            # Initialize Dual YOLO Handler (parallel inference)
+            self.dual_yolo = DualYOLOHandler(
+                guardian_model_path=YOLO_MODEL_PATH,  # yolo11x.pt (static 80 classes)
+                learner_model_path="models/yoloe-11s-seg.pt",  # yoloe-11s-seg.pt (lighter model)
+                device=device,
+                max_workers=2  # Parallel inference
+            )
+            self.yolo_device = device
             
-            # Run warm-up inference to verify model works and load to GPU memory
-            dummy = np.zeros((640, 640, 3), dtype=np.uint8)
-            self.model(dummy, verbose=False, device=device)
+            # Legacy compatibility (for old code paths)
+            self.model = self.dual_yolo.guardian
+            self.classes = self.dual_yolo.guardian.model.names
             
-            self.status_queue.put(f"Status: YOLO ready ({device})")
-            self.debug_print(f"✅ YOLO loaded: {os.path.basename(YOLO_MODEL_PATH)} on {device}")
-            logger.info(f"✅ YOLO model loaded successfully on {device}")
+            self.status_queue.put(f"Status: Dual YOLO ready ({device})")
+            self.debug_print(f"✅ Layer 0 Guardian: Static safety detection (80 classes)")
+            self.debug_print(f"✅ Layer 1 Learner: Adaptive context ({self.dual_yolo.learner.prompt_manager.get_class_count()} classes)")
+            logger.info(f"✅ Dual YOLO Handler loaded successfully on {device}")
             # Thread-safe GUI update
             self._safe_gui_update(lambda: self.update_handler_status("yolo", "active"))
             
         except Exception as e:
-            logger.error(f"❌ YOLO loading failed: {e}", exc_info=True)
-            self.status_queue.put("Status: YOLO FAILED")
+            logger.error(f"❌ Dual YOLO loading failed: {e}", exc_info=True)
+            self.status_queue.put("Status: Dual YOLO FAILED")
             self.debug_print(f"❌ ERROR: {e}")
             # Thread-safe GUI update
             self._safe_gui_update(lambda: self.update_handler_status("yolo", "error"))
+            self.dual_yolo = None
             self.model = None
     
     def video_capture_thread(self):
@@ -818,45 +835,88 @@ class ProjectCortexGUI:
     
     def yolo_processing_thread(self):
         """
-        Layer 1 (Reflex): Real-time object detection with CPU inference.
-        Processes frames with YOLO and puts annotated frames in queue.
-        Also feeds detections to 3D Spatial Audio for audio navigation.
+        Layer 0 + Layer 1: Dual YOLO parallel inference.
+        - Layer 0 (Guardian): Static safety detection (80 classes, haptic feedback)
+        - Layer 1 (Learner): Adaptive context detection (15-100 classes, learns from Gemini/Maps)
+        Processes frames and feeds detections to 3D Spatial Audio.
         """
         while not self.stop_event.is_set():
-            if self.model is None:
+            if self.dual_yolo is None:
                 time.sleep(0.5)
                 continue
             
             try:
                 frame = self.frame_queue.get(timeout=1)
+                logger.debug(f"🎬 [YOLO Thread] Got frame from queue, shape: {frame.shape}")
                 
-                # Run YOLO inference with verified device
-                results = self.model(frame, conf=YOLO_CONFIDENCE, verbose=False, device=self.yolo_device)
-                annotated_frame = results[0].plot()
+                # Run parallel inference (Layer 0 + Layer 1)
+                logger.debug(f"🔄 [YOLO Thread] Starting dual inference...")
+                guardian_results, learner_results = self.dual_yolo.process_frame(
+                    frame, 
+                    confidence=YOLO_CONFIDENCE
+                )
+                logger.debug(f"✅ [YOLO Thread] Inference complete. Guardian: {type(guardian_results)}, Learner: {type(learner_results)}")
                 
-                # Extract detections (only above confidence threshold)
-                detections = []
+                # Create annotated frame with BOTH models
+                annotated_frame = frame.copy()
+                
+                # Draw Layer 0 (Guardian) detections in RED
+                guardian_detections = []
                 spatial_detections = []  # For 3D spatial audio
                 
-                for box in results[0].boxes:
-                    confidence = float(box.conf)
-                    if confidence > YOLO_CONFIDENCE:  # Explicit threshold check
-                        class_id = int(box.cls)
-                        class_name = self.classes[class_id]
-                        detections.append(f"{class_name} ({confidence:.2f})")
-                        
-                        # Create spatial detection for 3D audio (if enabled)
-                        if self.spatial_audio and self.spatial_audio_enabled.get() and SpatialDetection:
-                            bbox = box.xyxy[0].tolist()  # Get (x1, y1, x2, y2)
-                            # NOTE: Do NOT set object_id here! Let manager.py generate
-                            # a STABLE ID from grid-snapped bbox center. Using hash(bbox)
-                            # creates a new ID every frame because YOLO bbox fluctuates.
-                            spatial_detections.append(SpatialDetection(
-                                class_name=class_name,
-                                confidence=confidence,
-                                bbox=tuple(bbox),
-                                object_id=None  # Let manager generate stable ID
-                            ))
+                if guardian_results and hasattr(guardian_results, 'boxes') and guardian_results.boxes is not None and len(guardian_results.boxes) > 0:
+                    logger.debug(f"🛡️ [Guardian] Processing {len(guardian_results.boxes)} detections")
+                    for box in guardian_results.boxes:
+                        confidence = float(box.conf)
+                        if confidence > YOLO_CONFIDENCE:
+                            class_id = int(box.cls)
+                            class_name = self.classes[class_id]
+                            guardian_detections.append(f"{class_name} ({confidence:.2f})")
+                            
+                            # Draw red bounding box for guardian detections
+                            bbox = box.xyxy[0].cpu().numpy().astype(int)
+                            x1, y1, x2, y2 = bbox
+                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 2)  # RED for safety
+                            label = f"[G] {class_name} {confidence:.2f}"
+                            cv2.putText(annotated_frame, label, (x1, y1 - 10), 
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                            
+                            # Create spatial detection for 3D audio
+                            if self.spatial_audio and self.spatial_audio_enabled.get() and SpatialDetection:
+                                spatial_detections.append(SpatialDetection(
+                                    class_name=class_name,
+                                    confidence=confidence,
+                                    bbox=tuple(bbox),
+                                    object_id=None  # Let manager generate stable ID
+                                ))
+                
+                # Draw Layer 1 (Learner) detections in GREEN
+                learner_detections = []
+                if learner_results and hasattr(learner_results, 'boxes') and learner_results.boxes is not None and len(learner_results.boxes) > 0:
+                    logger.debug(f"🎯 [Learner] Processing {len(learner_results.boxes)} detections")
+                    for box in learner_results.boxes:
+                        confidence = float(box.conf)
+                        if confidence > YOLO_CONFIDENCE:
+                            class_id = int(box.cls)
+                            class_name = learner_results.names[class_id] if hasattr(learner_results, 'names') else f"class_{class_id}"
+                            learner_detections.append(f"{class_name} ({confidence:.2f})")
+                            
+                            # Draw green bounding box for learner detections
+                            bbox = box.xyxy[0].cpu().numpy().astype(int)
+                            x1, y1, x2, y2 = bbox
+                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)  # GREEN for adaptive
+                            label = f"[L] {class_name} {confidence:.2f}"
+                            cv2.putText(annotated_frame, label, (x1, max(y2 + 20, y1 - 10)), 
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                
+                # Add legend to frame
+                cv2.putText(annotated_frame, "[G] Guardian (Safety)", (10, 30), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                cv2.putText(annotated_frame, "[L] Learner (Context)", (10, 60), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                
+                # Store learner detections for Gemini context
+                self.last_learner_detections = learner_detections
                 
                 # Update 3D spatial audio with detections
                 if spatial_detections and self.spatial_audio:
@@ -865,7 +925,8 @@ class ProjectCortexGUI:
                     except Exception as sa_err:
                         logger.debug(f"Spatial audio update: {sa_err}")
                 
-                detections_str = ", ".join(sorted(set(detections))) or "nothing"
+                # Update detection string (Guardian only for safety focus)
+                detections_str = ", ".join(sorted(set(guardian_detections))) or "nothing"
                 self.detection_queue.put(detections_str)
                 
                 # Put annotated frame for UI (clear old frames if queue is full)
@@ -879,7 +940,7 @@ class ProjectCortexGUI:
             except queue.Empty:
                 continue
             except Exception as e:
-                logger.error(f"YOLO processing error: {e}")
+                logger.error(f"Dual YOLO processing error: {e}")
                 time.sleep(1)
     
     def update_video(self):
@@ -2275,6 +2336,35 @@ Speak naturally and keep it short (under 30 words)."""
         except Exception:
             # If .after() fails, just log to console
             logger.info(msg)
+    
+    def learn_from_maps(self):
+        """🗺️ Adaptive Learning: Manually add POI objects to Layer 1 vocabulary."""
+        if not self.dual_yolo:
+            self.debug_print("❌ Dual YOLO not initialized")
+            return
+        
+        # Prompt user for POI type
+        from tkinter import simpledialog
+        poi_input = simpledialog.askstring(
+            "Learn from Maps",
+            "Enter place types (comma-separated):\nExamples: Starbucks, Bank, Hospital, Restaurant"
+        )
+        
+        if not poi_input:
+            return
+        
+        try:
+            poi_list = [poi.strip() for poi in poi_input.split(",")]
+            learned_objects = self.dual_yolo.add_maps_objects(poi_list)
+            
+            if learned_objects:
+                self.debug_print(f"🗺️ Learned from Maps: {', '.join(learned_objects)}")
+                self.debug_print(f"   Total vocabulary: {self.dual_yolo.learner.prompt_manager.get_class_count()} classes")
+            else:
+                self.debug_print("⚠️ No new objects learned (already in vocabulary)")
+        except Exception as e:
+            logger.error(f"Maps learning error: {e}")
+            self.debug_print(f"❌ Maps learning failed: {e}")
     
     def on_closing(self):
         """Graceful shutdown."""
