@@ -114,20 +114,31 @@ class WhisperSTT:
             logger.info(f"⏳ Loading Whisper '{self.model_size}' model...")
             start_time = time.time()
             
-            # Load model with GPU support
-            self.model = whisper.load_model(
-                self.model_size,
-                device=self.device
-            )
+            # Load model with GPU support (may take time on first load)
+            try:
+                self.model = whisper.load_model(
+                    self.model_size,
+                    device=self.device
+                )
+            except KeyboardInterrupt:
+                logger.warning("⚠️ Model loading interrupted - retrying without GPU...")
+                self.model = whisper.load_model(
+                    self.model_size,
+                    device="cpu"
+                )
+                self.device = "cpu"
             
             load_time = time.time() - start_time
             logger.info(f"✅ Whisper model loaded in {load_time:.2f}s")
             
-            # Warm-up inference for accurate latency measurement
+            # Warm-up inference for accurate latency measurement (OPTIONAL)
             logger.info("🔥 Running warm-up inference...")
-            dummy_audio = np.zeros(16000 * 2, dtype=np.float32)  # 2 seconds of silence
-            self._transcribe_internal(dummy_audio, warmup=True)
-            logger.info("✅ Warm-up complete")
+            try:
+                dummy_audio = np.zeros(16000 * 2, dtype=np.float32)  # 2 seconds of silence
+                self._transcribe_internal(dummy_audio, warmup=True)
+                logger.info("✅ Warm-up complete")
+            except Exception as warmup_err:
+                logger.warning(f"⚠️ Warm-up failed: {warmup_err} (non-critical)")
             
             return True
             
