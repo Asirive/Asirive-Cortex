@@ -1,0 +1,136 @@
+{
+  "dynamic_prompts": {
+    "coffee shop sign": {
+      "source": "maps",
+      "timestamp": "2025-12-28T00:57:20.842567",
+      "use_count": 1,
+      "metadata": {
+        "poi": "Starbucks"
+      }
+    },
+    "menu board": {
+      "source": "maps",
+      "timestamp": "2025-12-28T00:57:20.842578",
+      "use_count": 1,
+      "metadata": {
+        "poi": "Starbucks"
+      }
+    },
+    "coffee cup": {
+      "source": "maps",
+      "timestamp": "2025-12-28T00:57:20.842581",
+      "use_count": 1,
+      "metadata": {
+        "poi": "Starbucks"
+      }
+    },
+    "atm sign": {
+      "source": "maps",
+      "timestamp": "2025-12-28T00:57:20.842592",
+      "use_count": 1,
+      "metadata": {
+        "poi": "Bank of America"
+      }
+    },
+    "bank sign": {
+      "source": "maps",
+      "timestamp": "2025-12-28T00:57:20.842594",
+      "use_count": 1,
+      "metadata": {
+        "poi": "Bank of America"
+      }
+    },
+    "pharmacy sign": {
+      "source": "maps",
+      "timestamp": "2025-12-28T00:57:20.842601",
+      "use_count": 1,
+      "metadata": {
+        "poi": "CVS Pharmacy"
+      }
+    },
+    "prescription counter": {
+      "source": "maps",
+      "timestamp": "2025-12-28T00:57:20.842603",
+      "use_count": 1,
+      "metadata": {
+        "poi": "CVS Pharmacy"
+      }
+    },
+    "brown leather wallet": {
+      "source": "memory",
+      "timestamp": "2025-12-28T00:57:22.731027",
+      "use_count": 1,
+      "metadata": {
+        "color": "brown",
+        "material": "leather"
+      }
+    },
+    "a red fire extinguisher": {
+      "source": "gemini",
+      "timestamp": "2025-12-28T17:27:13.922336",
+      "use_count": 1,
+      "metadata": {}
+    },
+    "a water fountain": {
+      "source": "gemini",
+      "timestamp": "2025-12-28T17:27:13.922350",
+      "use_count": 1,
+      "metadata": {}
+    },
+    "exit signs": {
+      "source": "gemini",
+      "timestamp": "2025-12-28T17:27:13.922356",
+      "use_count": 1,
+      "metadata": {}
+    },
+    "the doors": {
+      "source": "gemini",
+      "timestamp": "2025-12-28T17:27:13.922362",
+      "use_count": 1,
+      "metadata": {}
+    },
+    "fire": {
+      "source": "gemini",
+      "timestamp": "2025-12-28T17:27:13.922366",
+      "use_count": 1,
+      "metadata": {}
+    },
+    "extinguisher": {
+      "source": "gemini",
+      "timestamp": "2025-12-28T17:27:13.922370",
+      "use_count": 1,
+      "metadata": {}
+    },
+    "water": {
+      "source": "gemini",
+      "timestamp": "2025-12-28T17:27:13.922374",
+      "use_count": 1,
+      "metadata": {}
+    },
+    "fountain": {
+      "source": "gemini",
+      "timestamp": "2025-12-28T17:27:13.922378",
+      "use_count": 1,
+      "metadata": {}
+    },
+    "exit": {
+      "source": "gemini",
+      "timestamp": "2025-12-28T17:27:13.922381",
+      "use_count": 1,
+      "metadata": {}
+    },
+    "signs": {
+      "source": "gemini",
+      "timestamp": "2025-12-28T17:27:13.922385",
+      "use_count": 1,
+      "metadata": {}
+    },
+    "doors": {
+      "source": "gemini",
+      "timestamp": "2025-12-28T17:27:13.922388",
+      "use_count": 1,
+      "metadata": {}
+    }
+  },
+  "last_updated": "2025-12-28T17:27:13.923359"
+}
