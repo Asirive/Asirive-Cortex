@@ -26,6 +26,16 @@ class IntentRouter:
     """
     
     def __init__(self):
+        # Layer 1 PRIORITY KEYWORDS: These force Layer 1 routing WITHOUT fuzzy matching
+        # These are IMMEDIATE object listing queries that should be <150ms (not 1-2s cloud AI)
+        self.layer1_priority_keywords = [
+            "what do you see", "what u see", "what can you see",
+            "what you see", "what do u see",
+            "what's in front", "what's ahead", "whats in front", "whats ahead",
+            "see", "look", "show me", "list objects", "what objects",
+            "identify", "detect", "count", "how many"
+        ]
+        
         # Layer 1: Object detection patterns (YOLOE LEARNER) - USE FOR MOST QUERIES
         # This is the PRIMARY layer for object identification - fast, offline, adaptive
         self.layer1_patterns = [
@@ -46,7 +56,7 @@ class IntentRouter:
             "where is my", "find my", "show me my"
         ]
         
-        # Layer 2: Deep analysis patterns (GEMINI 2.5 FLASH) - RESERVE FOR COMPLEX ANALYSIS ONLY
+        # Layer 2: Deep analysis patterns (GEMINI 3 FLASH) - RESERVE FOR COMPLEX ANALYSIS ONLY
         # Only use when Layer 1 cannot provide sufficient context
         self.layer2_patterns = [
             "describe the entire scene", "describe the room", "describe the area",
@@ -56,11 +66,11 @@ class IntentRouter:
             # Text reading (OCR required)
             "read", "read text", "read this", "what does it say",
             "text", "sign", "label", "writing", "words",
-            # Deep understanding
-            "tell me about", "what am i looking at",
+            # Deep understanding (removed "what am i looking at" - too ambiguous)
+            "tell me about", "explain this scene",
             "is this safe to", "should i", "can i",
             # Scene understanding
-            "what kind of place", "what kind of room", "where am i"
+            "what kind of place", "what kind of room"
         ]
         
         # Layer 3: Navigation + SPATIAL AUDIO patterns
@@ -116,17 +126,19 @@ class IntentRouter:
         text = text.lower().strip()
         
         # =================================================================
-        # PHASE 1: KEYWORD PRIORITY OVERRIDE
-        # Layer 2 is ONLY for deep analysis (scene description, OCR, reasoning)
-        # Simple queries should go to Layer 1 (faster, offline, adaptive)
+        # PHASE 1: KEYWORD PRIORITY OVERRIDE (CRITICAL FIX: CHECK MOST SPECIFIC FIRST)
+        # Order matters! Check Layer 2/3 keywords BEFORE Layer 1 to prevent false matches.
+        # Example: "explain what you see" should match "explain" (L2) not "what you see" (L1)
         # =================================================================
+        
+        # Layer 2 priority keywords (deep analysis, OCR, reasoning) - CHECK FIRST
         layer2_priority_keywords = [
             "describe the scene", "describe the room", "describe everything",
             "analyze", "read this", "read text", "what does it say",
-            "explain", "explain what's happening", "is this safe", "should i"  # ✅ FIXED: Added "explain"
+            "explain", "explain what's happening", "is this safe", "should i"
         ]
         
-        # Layer 3 priority: Navigation + SPATIAL AUDIO + Memory storage
+        # Layer 3 priority: Navigation + SPATIAL AUDIO + Memory storage - CHECK SECOND
         layer3_priority_keywords = [
             # Navigation/GPS
             "where am i", "navigate", "take me to", "go to",
@@ -139,17 +151,23 @@ class IntentRouter:
             "which direction is the", "which way is the", "how do i get to the"
         ]
         
-        # Check for Layer 2 priority keywords FIRST (before fuzzy matching)
+        # ✅ CRITICAL: Check Layer 2 priority keywords FIRST (most specific)
         for kw in layer2_priority_keywords:
             if kw in text:
-                logger.debug(f"🎯 Layer 2 priority keyword found: '{kw}' → Forcing Layer 2")
+                logger.info(f"🎯 [ROUTER] Layer 2 priority: '{kw}' → Forcing Layer 2 (Thinker)")
                 return "layer2"
         
-        # Check for Layer 3 priority keywords
+        # ✅ Check Layer 3 priority keywords SECOND
         for kw in layer3_priority_keywords:
             if kw in text:
-                logger.debug(f"🎯 Layer 3 priority keyword found: '{kw}' → Forcing Layer 3")
+                logger.info(f"🎯 [ROUTER] Layer 3 priority: '{kw}' → Forcing Layer 3 (Guide)")
                 return "layer3"
+        
+        # ✅ Check Layer 1 priority keywords LAST (most general, fallback)
+        for kw in self.layer1_priority_keywords:
+            if kw in text:
+                logger.info(f"🎯 [ROUTER] Layer 1 priority: '{kw}' → Forcing Layer 1 (Reflex)")
+                return "layer1"
         
         # =================================================================
         # PHASE 2: FUZZY MATCHING (for ambiguous queries without priority keywords)
@@ -159,18 +177,21 @@ class IntentRouter:
         layer3_score = max([self.fuzzy_match(text, p) for p in self.layer3_patterns])
         
         # Log fuzzy scores for debugging
-        logger.debug(f"Fuzzy scores: L1={layer1_score:.2f}, L2={layer2_score:.2f}, L3={layer3_score:.2f}")
+        logger.info(f"📊 [ROUTER] Fuzzy scores: L1={layer1_score:.2f}, L2={layer2_score:.2f}, L3={layer3_score:.2f} (threshold={self.fuzzy_threshold})")
         
         # Route to highest scoring layer (must exceed threshold)
         if layer3_score >= self.fuzzy_threshold and layer3_score >= max(layer1_score, layer2_score):
+            logger.info(f"🎯 [ROUTER] Fuzzy match: Layer 3 (Navigation) - score={layer3_score:.2f}")
             return "layer3"
         elif layer2_score >= layer1_score and layer2_score >= self.fuzzy_threshold:
+            logger.info(f"🎯 [ROUTER] Fuzzy match: Layer 2 (Thinker) - score={layer2_score:.2f}")
             return "layer2"
         elif layer1_score >= self.fuzzy_threshold:
+            logger.info(f"🎯 [ROUTER] Fuzzy match: Layer 1 (Reflex) - score={layer1_score:.2f}")
             return "layer1"
         
         # Default to Layer 1 if no clear match (faster, offline)
-        logger.debug(f"No clear match (all scores < {self.fuzzy_threshold}), defaulting to Layer 1")
+        logger.info(f"⚠️ [ROUTER] No clear match (all scores < {self.fuzzy_threshold}), defaulting to Layer 1 (offline fallback)")
         return "layer1"
     
     def get_recommended_mode(self, query: str, current_detections: str = "") -> str:
