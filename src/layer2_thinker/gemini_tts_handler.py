@@ -1,8 +1,8 @@
 """
-Layer 2: Gemini 3 Flash TTS Handler - Multimodal Vision + TTS
+Layer 2: Gemini 3 Flash Preview TTS Handler - Multimodal Vision + TTS
 
 This module sends images + prompts to Gemini 3 Flash Preview and receives
-AUDIO responses directly (not text). This is the new Gemini model that combines
+AUDIO responses directly (not text). This is the most intelligent Gemini model that combines
 vision understanding with text-to-speech in a single API call.
 
 Key Features:
@@ -18,7 +18,7 @@ Project: Cortex v2.0 - YIA 2026
 Date: December 30, 2025
 
 HYBRID TTS ARCHITECTURE:
-- Primary: Gemini 3 Flash Preview (cloud, high quality, cutting-edge)
+- Primary: Gemini 3 Flash Preview (cloud, most intelligent model, Jan 2025)
 - Fallback: Kokoro-82M (local, unlimited, when all API keys exhausted)
 """
 
@@ -157,7 +157,7 @@ class GeminiTTS:
         self.base_retry_delay = 1.0  # seconds
         
         logger.info(f"📋 Gemini TTS Config:")
-        logger.info(f"   Model: gemini-2.5-flash-preview-tts")
+        logger.info(f"   Model: gemini-3-flash-preview")
         logger.info(f"   Voice: {voice_name}")
         logger.info(f"   Output Dir: {self.output_dir}")
         # Removed duplicate API key logging (already shown above with pool info)
@@ -422,9 +422,9 @@ class GeminiTTS:
         """
         Generate speech from image + prompt using TWO-STEP PIPELINE:
         Step 1: Use gemini-2.0-flash-exp (vision model) to generate text description
-        Step 2: Use gemini-2.5-flash-preview-tts (TTS model) to convert text to audio
+        Step 2: Use gemini-2.0-flash-exp (same model) with audio output for TTS
         
-        This is necessary because gemini-2.5-flash-preview-tts does NOT support
+        Note: Gemini 2.0 Flash supports both vision AND audio output in one model
         image input (it's a TTS-only model). We need vision + TTS in sequence.
         
         Args:
@@ -465,7 +465,7 @@ class GeminiTTS:
             ]
             
             # STEP 1: Use VISION model (gemini-3-flash-preview) with retry on rate limits
-            # Official docs: gemini-3-flash-preview is the most intelligent model (Dec 2025)
+            # Official docs: gemini-3-flash-preview is the most intelligent model (Jan 2025)
             # Supports text, images, video, audio inputs with enhanced capabilities
             # See: https://ai.google.dev/gemini-api/docs/models/gemini
             def _vision_api_call():
