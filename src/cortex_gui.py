@@ -67,6 +67,9 @@ from dual_yolo_handler import DualYOLOHandler
 from layer1_learner import YOLOEMode
 from layer1_learner import YOLOEMode  # NEW: Three detection modes
 
+# Import Detection Aggregator (Layer 0 + Layer 1 composition)
+from layer1_reflex.detection_aggregator import DetectionAggregator
+
 # Import our custom AI handlers
 from layer1_reflex.whisper_handler import WhisperSTT
 from layer1_reflex.kokoro_handler import KokoroTTS
@@ -168,9 +171,6 @@ class ProjectCortexGUI:
         self.cap = None  # Video capture object
         self.picamera2 = None  # RPi camera (when available)
         
-        # --- YOLOE Mode State ---
-        self.yoloe_mode = ctk.StringVar(value="Text Prompts")  # StringVar for dropdown
-        
         # --- Threading ---
         self.stop_event = threading.Event()
         self.frame_queue = queue.Queue(maxsize=2)
@@ -207,6 +207,9 @@ class ProjectCortexGUI:
         # Detection router for context-aware routing (Phase 1 + 2)
         self.detection_router = DetectionRouter()  # Smart detection confidence routing
         
+        # Detection aggregator for merging Guardian + Learner (NEW)
+        self.detection_aggregator = DetectionAggregator()  # Combines Layer 0 + Layer 1 detections
+        
         # --- Cascading Fallback State (3-Tier System) ---
         self.active_api = "Live API"  # Current active API: "Live API", "Gemini TTS", "GLM-4.6V"
         self.live_api_enabled = ctk.BooleanVar(value=True)  # Try Live API first
@@ -224,11 +227,6 @@ class ProjectCortexGUI:
         
         # --- 3D Spatial Audio State ---
         self.spatial_audio_enabled = ctk.BooleanVar(value=False)  # NEW: 3D Audio Navigation
-        
-        # --- YOLOE Mode State (Layer 1 Three-Mode System) ---
-        self.yoloe_mode = ctk.StringVar(value="Text Prompts")  # "Prompt-Free", "Text Prompts", "Visual Prompts"
-        self.visual_prompts_mode_active = False  # Track if visual prompts mode is enabled
-        self.visual_prompt_boxes = []  # Store user-drawn bounding boxes
         
         # --- YOLOE Mode State (Layer 1 Three-Mode System) ---
         self.yoloe_mode = ctk.StringVar(value="Text Prompts")  # "Prompt-Free", "Text Prompts", "Visual Prompts"
@@ -1018,6 +1016,9 @@ class ProjectCortexGUI:
                 # Store learner detections for Gemini context
                 self.last_learner_detections = learner_detections
                 
+                # ✅ NEW: Store Guardian detections for composition
+                self.last_guardian_detections = guardian_detections
+                
                 # Update 3D spatial audio with detections
                 if spatial_detections and self.spatial_audio:
                     try:
@@ -1255,56 +1256,6 @@ class ProjectCortexGUI:
         else:
             self.stop_spatial_audio()
     
-    def on_yoloe_mode_changed(self, selected_mode: str):
-        """Handle YOLOE mode change from dropdown."""
-        logger.info(f"🔄 YOLOE Mode changed: {selected_mode}")
-        
-        # Update info label
-        if selected_mode == "Prompt-Free":
-            self.mode_info_label.configure(
-                text="🔍 4,585+ built-in classes (zero setup, discovery mode)"
-            )
-            self.visual_prompt_btn.pack_forget()
-        elif selected_mode == "Text Prompts":
-            self.mode_info_label.configure(
-                text="🧠 15-100 adaptive classes (learns from Gemini/Maps/Memory)"
-            )
-            self.visual_prompt_btn.pack_forget()
-        elif selected_mode == "Visual Prompts":
-            self.mode_info_label.configure(
-                text="👁️ User-defined classes (mark your specific objects)"
-            )
-            self.visual_prompt_btn.pack(side="left", padx=10)
-        
-        # Switch mode in DualYOLOHandler
-        if self.dual_yolo is not None:
-            try:
-                mode_map = {
-                    "Prompt-Free": YOLOEMode.PROMPT_FREE,
-                    "Text Prompts": YOLOEMode.TEXT_PROMPTS,
-                    "Visual Prompts": YOLOEMode.VISUAL_PROMPTS
-                }
-                new_mode = mode_map[selected_mode]
-                
-                # Switch mode in learner
-                if hasattr(self.dual_yolo, 'learner'):
-                    self.dual_yolo.learner.switch_mode(new_mode)
-                    self.debug_print(f"✅ Switched to {selected_mode} mode")
-                    
-                    # Update handler status indicator
-                    if selected_mode == "Prompt-Free":
-                        self.update_handler_status("YOLO", "#00aaff")  # Blue for prompt-free
-                    elif selected_mode == "Text Prompts":
-                        self.update_handler_status("YOLO", "#00ff00")  # Green for text prompts
-                    else:  # Visual Prompts
-                        self.update_handler_status("YOLO", "#ff00ff")  # Purple for visual prompts
-                
-            except Exception as e:
-                logger.error(f"❌ Failed to switch YOLOE mode: {e}")
-                self.debug_print(f"❌ Mode switch failed: {e}")
-        else:
-            self.debug_print("⚠️ YOLO not initialized yet")
-    
     def toggle_visual_prompts_mode(self):
         """Toggle visual prompts marking mode (draw bounding boxes)."""
         self.visual_prompts_mode_active = not self.visual_prompts_mode_active
@@ -1317,89 +1268,6 @@ class ProjectCortexGUI:
         else:
             self.visual_prompt_btn.configure(fg_color="#1f538d", text="📦 Mark Objects")
             self.debug_print("Visual Prompts Mode: OFF")
-    
-    def on_yoloe_mode_changed(self, selected_mode: str):
-        """Handle YOLOE mode change from dropdown."""
-        logger.info(f"🔄 YOLOE Mode changed: {selected_mode}")
-        
-        # Update info label
-        if selected_mode == "Prompt-Free":
-            self.mode_info_label.configure(
-                text="🔍 4,585+ built-in classes (zero setup, discovery mode)"
-            )
-        elif selected_mode == "Text Prompts":
-            self.mode_info_label.configure(
-                text="🧠 15-100 adaptive classes (learns from Gemini/Maps/Memory)"
-            )
-        elif selected_mode == "Visual Prompts":
-            self.mode_info_label.configure(
-                text="👁️ User-defined classes (mark your specific objects)"
-            )
-        
-        # Switch mode in DualYOLOHandler
-        if self.dual_yolo is not None:
-            try:
-                mode_map = {
-                    "Prompt-Free": YOLOEMode.PROMPT_FREE,
-                    "Text Prompts": YOLOEMode.TEXT_PROMPTS,
-                    "Visual Prompts": YOLOEMode.VISUAL_PROMPTS
-                }
-                new_mode = mode_map[selected_mode]
-                
-                # Switch mode in learner
-                if hasattr(self.dual_yolo, 'learner'):
-                    self.dual_yolo.learner.switch_mode(new_mode)
-                    self.debug_print(f"✅ Switched to {selected_mode} mode")
-                    
-                    # Update handler status indicator color
-                    if selected_mode == "Prompt-Free":
-                        self._safe_gui_update(lambda: self.update_handler_status("yolo", "active"))
-                        self.debug_print("   🔍 4,585+ classes available instantly")
-                    elif selected_mode == "Text Prompts":
-                        self._safe_gui_update(lambda: self.update_handler_status("yolo", "active"))
-                        self.debug_print(f"   🧠 {len(self.dual_yolo.learner.get_classes())} adaptive classes")
-                    else:  # Visual Prompts
-                        self._safe_gui_update(lambda: self.update_handler_status("yolo", "active"))
-                        self.debug_print("   👁️ Ready for personal object marking")
-                
-            except Exception as e:
-                logger.error(f"❌ Failed to switch YOLOE mode: {e}")
-                self.debug_print(f"❌ Mode switch failed: {e}")
-        else:
-            self.debug_print("⚠️ YOLO not initialized yet")
-    
-    def on_yoloe_mode_changed(self, selected_mode: str):
-        """Handle YOLOE mode selection change."""
-        mode_map = {
-            "Prompt-Free": YOLOEMode.PROMPT_FREE,
-            "Text Prompts": YOLOEMode.TEXT_PROMPTS,
-            "Visual Prompts": YOLOEMode.VISUAL_PROMPTS
-        }
-        
-        new_mode = mode_map.get(selected_mode, YOLOEMode.TEXT_PROMPTS)
-        
-        if self.dual_yolo and self.dual_yolo.learner:
-            try:
-                old_mode = self.dual_yolo.learner.mode
-                self.dual_yolo.learner.switch_mode(new_mode)
-                self.yoloe_mode = new_mode
-                
-                # Update info label
-                mode_info = {
-                    YOLOEMode.PROMPT_FREE: "🔍 4585+ classes (zero setup, discovery mode)",
-                    YOLOEMode.TEXT_PROMPTS: "🧠 15-100 adaptive classes (learns from Gemini/Maps/Memory)",
-                    YOLOEMode.VISUAL_PROMPTS: "👁️ User-defined (mark personal objects with boxes)"
-                }
-                self.mode_info_label.configure(text=mode_info[new_mode])
-                
-                logger.info(f"✅ YOLOE mode switched: {old_mode.value} → {new_mode.value}")
-                self.debug_print(f"🔄 Layer 1 mode: {old_mode.value} → {new_mode.value}")
-            except Exception as e:
-                logger.error(f"❌ Failed to switch YOLOE mode: {e}")
-                self.debug_print(f"❌ Mode switch failed: {e}")
-        else:
-            logger.warning("⚠️ Dual YOLO not initialized, mode will be applied on init")
-            self.yoloe_mode = new_mode
     
     def on_yoloe_mode_changed(self, selected_mode: str):
         """Handle YOLOE mode selection change."""
@@ -1892,18 +1760,21 @@ class ProjectCortexGUI:
                     response = f"I don't see your {object_name} right now."
         else:
             # Standard detection report
-            # ✅ FIXED: Use Learner detections (YOLOE-11m adaptive classes, not Guardian)
-            detections = self.last_learner_detections
-            if not detections or detections == "nothing":
+            # ✅ NEW: Merge Guardian + Learner detections for complete response
+            merged_detections = self.detection_aggregator.merge_detections(
+                getattr(self, 'last_guardian_detections', []) or [],
+                self.last_learner_detections or []
+            )
+            
+            if not merged_detections or merged_detections == "nothing":
                 response = "I don't see anything specific right now."
             else:
-                # Simple sentence structure logic
-                items = detections.split(", ")
-                unique_items = set([i.split(" (")[0] for i in items])
-                response = f"I see {', '.join(unique_items)}."
+                response = f"I see {merged_detections}."
         
-        # \u2705 FIXED: Debug print shows Learner detections
-        self.debug_print(f"🔍 [LAYER 1] Learner Detections: {self.last_learner_detections}")
+        # ✅ NEW: Debug print shows merged Guardian + Learner detections
+        self.debug_print(f"🛡️ [LAYER 0] Guardian: {getattr(self, 'last_guardian_detections', [])}")
+        self.debug_print(f"🔍 [LAYER 1] Learner: {self.last_learner_detections}")
+        self.debug_print(f"🔀 [MERGED] Combined: {merged_detections if 'merged_detections' in locals() else response}")
         self.debug_print(f"💬 [LAYER 1] Response: {response}")
         
         self._safe_gui_update(lambda: self.response_text.delete('1.0', "end"))
@@ -2511,12 +2382,39 @@ Speak naturally and keep it short (under 30 words)."""
         pass
     
     def send_query(self):
-        """Layer 2 (Thinker): Send query to Gemini 2.5 Flash TTS with video frame (image + prompt -> audio)."""
+        """Route text query through Intent Router to determine appropriate layer (Layer 1/2/3)."""
         query = self.input_entry.get().strip()
         if not query:
             messagebox.showwarning("Input Error", "Please enter a query")
             return
         
+        # === STAGE 1: Intent Routing (same as voice pipeline) ===
+        self.status_queue.put("Status: Routing intent...")
+        self.debug_print(f"🧠 [TEXT PIPELINE] Stage 1: Intent Router")
+        self.debug_print(f"   Query: '{query}'")
+        
+        start_time = time.time()
+        target_layer = self.router.route(query)
+        router_latency = (time.time() - start_time) * 1000
+        
+        layer_desc = self.router.get_layer_description(target_layer)
+        self.debug_print(f"✅ Router ({router_latency:.0f}ms): {layer_desc}")
+        self.status_queue.put(f"Status: {layer_desc}")
+        
+        # === STAGE 2: Layer Execution ===
+        self.debug_print(f"🚀 [TEXT PIPELINE] Stage 2: Executing {target_layer.upper()}")
+        
+        if target_layer == "layer1":
+            self._execute_layer1_reflex(query)
+        elif target_layer == "layer2":
+            self._execute_layer2_thinker_text(query)
+        elif target_layer == "layer3":
+            self._execute_layer3_guide(query)
+        
+        self.debug_print("✅ [TEXT PIPELINE] Complete")
+    
+    def _execute_layer2_thinker_text(self, query):
+        """Execute Layer 2 (Thinker) for text input: Gemini vision + TTS."""
         if not GOOGLE_API_KEY:
             messagebox.showerror("API Error", "GEMINI_API_KEY not set in .env file")
             return
