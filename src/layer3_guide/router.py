@@ -26,26 +26,41 @@ class IntentRouter:
     """
     
     def __init__(self):
-        # Layer 1: Object detection patterns (YOLO) + Quick memory recall
+        # Layer 1: Object detection patterns (YOLOE LEARNER) - USE FOR MOST QUERIES
+        # This is the PRIMARY layer for object identification - fast, offline, adaptive
         self.layer1_patterns = [
             "what is this", "what's this", "whats this",
             "what do you see", "what u see", "what you see", 
             "what do u see", "what can you see",
             "look", "watch out", "stop", "careful", 
             "hazard", "obstacle", "in front", "ahead",
-            "identify", "detect", "count",
+            "identify", "detect", "count", "list objects",
+            "show me objects", "what objects", "any objects",
+            # Object queries (YOLOE adaptive learning)
+            "is there a", "do you see a", "can you see",
+            "how many", "count the", "find a", "spot a",
+            # Quick identification
+            "what's in front", "what's ahead", "what's nearby",
+            "objects around me", "things around me",
             # Memory recall (quick): "where is my [object]" - checks if visible
             "where is my", "find my", "show me my"
         ]
         
-        # Layer 2: Deep analysis patterns (Gemini Vision)
+        # Layer 2: Deep analysis patterns (GEMINI 2.5 FLASH) - RESERVE FOR COMPLEX ANALYSIS ONLY
+        # Only use when Layer 1 cannot provide sufficient context
         self.layer2_patterns = [
-            "describe", "describe the scene", "describe what you see",
-            "detail", "explain", "explain what you see", 
-            "explain what ur seeing", "analyze", 
-            "read", "read text", "text", "sign", "label", "writing",
-            "what does it say", "scan", "tell me about",
-            "what am i looking at", "what is in the picture"
+            "describe the entire scene", "describe the room", "describe the area",
+            "describe everything", "full description", "complete description",
+            "analyze", "analyze the scene", "what's happening",
+            "explain what's happening", "context", "situation",
+            # Text reading (OCR required)
+            "read", "read text", "read this", "what does it say",
+            "text", "sign", "label", "writing", "words",
+            # Deep understanding
+            "tell me about", "what am i looking at",
+            "is this safe to", "should i", "can i",
+            # Scene understanding
+            "what kind of place", "what kind of room", "where am i"
         ]
         
         # Layer 3: Navigation + SPATIAL AUDIO patterns
@@ -102,10 +117,14 @@ class IntentRouter:
         
         # =================================================================
         # PHASE 1: KEYWORD PRIORITY OVERRIDE
-        # If query contains strong Layer 2 indicators, force Layer 2
-        # This prevents "Explain to me what u see" from going to Layer 1
+        # Layer 2 is ONLY for deep analysis (scene description, OCR, reasoning)
+        # Simple queries should go to Layer 1 (faster, offline, adaptive)
         # =================================================================
-        layer2_priority_keywords = ["explain", "describe", "detail", "analyze", "tell me about", "read this", "what does it say"]
+        layer2_priority_keywords = [
+            "describe the scene", "describe the room", "describe everything",
+            "analyze", "read this", "read text", "what does it say",
+            "explain", "explain what's happening", "is this safe", "should i"  # ✅ FIXED: Added "explain"
+        ]
         
         # Layer 3 priority: Navigation + SPATIAL AUDIO + Memory storage
         layer3_priority_keywords = [
@@ -150,9 +169,82 @@ class IntentRouter:
         elif layer1_score >= self.fuzzy_threshold:
             return "layer1"
         
-        # Default to Layer 2 if no clear match (safest for general queries)
-        logger.debug(f"No clear match (all scores < {self.fuzzy_threshold}), defaulting to Layer 2")
-        return "layer2"
+        # Default to Layer 1 if no clear match (faster, offline)
+        logger.debug(f"No clear match (all scores < {self.fuzzy_threshold}), defaulting to Layer 1")
+        return "layer1"
+    
+    def get_recommended_mode(self, query: str, current_detections: str = "") -> str:
+        """
+        Recommend YOLOE detection mode based on query intent.
+        
+        THREE DETECTION MODES:
+        1. PROMPT_FREE: Discovery queries ("show me everything", "scan area")
+           - Uses 4585+ built-in classes
+           - Confidence: 0.3-0.6 (expected for zero-shot)
+        
+        2. TEXT_PROMPTS: Learning queries ("what do you see", "identify this")
+           - Uses adaptive vocabulary (Gemini/Maps/Memory learned)
+           - Confidence: 0.7-0.9 (higher due to context)
+        
+        3. VISUAL_PROMPTS: Personal queries ("where's my wallet", "find my keys")
+           - Uses user-marked personal items
+           - Confidence: 0.6-0.95 (highest for personal items)
+        
+        Args:
+            query: User voice command (lowercase)
+            current_detections: Current detections string (for context)
+        
+        Returns:
+            Mode string: "PROMPT_FREE", "TEXT_PROMPTS", or "VISUAL_PROMPTS"
+        """
+        query_lower = query.lower().strip()
+        
+        # =================================================================
+        # PATTERN 1: PERSONAL QUERIES → VISUAL PROMPTS
+        # User asking about their specific items (requires memory recall)
+        # =================================================================
+        personal_patterns = [
+            "where's my", "where is my", "find my", "show me my",
+            "locate my", "guide me to my", "where are my"
+        ]
+        
+        for pattern in personal_patterns:
+            if pattern in query_lower:
+                logger.debug(f"🎯 [MODE DETECTION] Personal query detected: '{pattern}' → VISUAL_PROMPTS")
+                return "VISUAL_PROMPTS"
+        
+        # =================================================================
+        # PATTERN 2: DISCOVERY QUERIES → PROMPT-FREE
+        # User wants comprehensive scene scan (not targeted search)
+        # =================================================================
+        discovery_patterns = [
+            "everything", "all objects", "scan", "describe scene",
+            "what's around", "show me everything", "full scan",
+            "complete scan", "scan area", "scan the"
+        ]
+        
+        for pattern in discovery_patterns:
+            if pattern in query_lower:
+                logger.debug(f"🎯 [MODE DETECTION] Discovery query detected: '{pattern}' → PROMPT_FREE")
+                return "PROMPT_FREE"
+        
+        # =================================================================
+        # PATTERN 3: LEARNING/TARGETED QUERIES → TEXT PROMPTS (DEFAULT)
+        # Standard object identification using adaptive vocabulary
+        # =================================================================
+        learning_patterns = [
+            "what", "identify", "tell me", "is there", "do you see",
+            "can you see", "look for", "find a", "count"
+        ]
+        
+        for pattern in learning_patterns:
+            if pattern in query_lower:
+                logger.debug(f"🎯 [MODE DETECTION] Learning query detected: '{pattern}' → TEXT_PROMPTS")
+                return "TEXT_PROMPTS"
+        
+        # Default: Use text prompts for ambiguous queries
+        logger.debug(f"🎯 [MODE DETECTION] Ambiguous query → TEXT_PROMPTS (default)")
+        return "TEXT_PROMPTS"
 
     def get_layer_description(self, layer: str) -> str:
         if layer == "layer1":

@@ -31,7 +31,7 @@ from typing import Optional, Dict, List, Tuple, Any
 import numpy as np
 
 from layer0_guardian import YOLOGuardian
-from layer1_learner import YOLOELearner, AdaptivePromptManager
+from layer1_learner import YOLOELearner, AdaptivePromptManager, YOLOEMode
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ class DualYOLOHandler:
     Orchestrates parallel inference of Layer 0 (Guardian) and Layer 1 (Learner).
     
     Layer 0: YOLO11x (static, safety-critical, <100ms)
-    Layer 1: YOLOE-11s (adaptive, contextual, <150ms)
+    Layer 1: YOLOE-11s (adaptive, contextual, <150ms, THREE MODES)
     
     Both models process the same frame simultaneously via ThreadPoolExecutor.
     """
@@ -51,7 +51,8 @@ class DualYOLOHandler:
         guardian_model_path: str = "models/yolo11x.pt",
         learner_model_path: str = "models/yoloe-11s-seg.pt",
         device: str = "cpu",
-        max_workers: int = 2
+        max_workers: int = 2,
+        learner_mode: YOLOEMode = YOLOEMode.TEXT_PROMPTS  # NEW: Support three modes
     ):
         """
         Initialize dual-model system.
@@ -61,6 +62,7 @@ class DualYOLOHandler:
             learner_model_path: Path to YOLOE-11s weights (Layer 1)
             device: Inference device ('cpu' or 'cuda')
             max_workers: Number of parallel threads (default: 2)
+            learner_mode: YOLOE detection mode (PROMPT_FREE, TEXT_PROMPTS, VISUAL_PROMPTS)
         """
         logger.info("🧠 Initializing Dual YOLO Handler (Layer 0 + Layer 1)...")
         
@@ -71,11 +73,12 @@ class DualYOLOHandler:
             device=device
         )
         
-        # Initialize Layer 1: Learner (adaptive context model)
-        logger.info("🎯 Loading Layer 1 Learner (YOLOE-11s)...")
+        # Initialize Layer 1: Learner (adaptive context model with mode support)
+        logger.info(f"🎯 Loading Layer 1 Learner (YOLOE-11s, mode: {learner_mode.value})...")
         self.learner = YOLOELearner(
             model_path=learner_model_path,
-            device=device
+            device=device,
+            mode=learner_mode  # Pass mode to learner
         )
         
         # Initialize adaptive prompt manager
