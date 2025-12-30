@@ -250,12 +250,11 @@ class ProjectCortexGUI:
         # This ensures module indicators turn green on startup
         self.init_whisper_stt()
         self.init_kokoro_tts()
-        # DISABLED: Gemini API calls to avoid quota limits at startup
-        logger.info("⚠️ Skipping Gemini TTS/Live API initialization (quota limits prevention)")
-        # self.init_gemini_tts()  # Tier 1: Gemini 2.5 Flash TTS (HTTP)
-        # self.init_gemini_live()  # Tier 0: Gemini Live API (WebSocket)
+        # Initialize Gemini APIs for Layer 2 (Thinker)
+        self.init_gemini_tts()  # Tier 1: Gemini 3 Flash Preview TTS (HTTP) - Tests API connectivity
+        # self.init_gemini_live()  # Tier 0: Gemini Live API (WebSocket) - Skip startup init, lazy load on demand
         self.init_streaming_player()  # For Live API audio playback
-        # self.init_glm4v()  # Tier 2: GLM-4.6V Z.ai (final fallback)
+        self.init_glm4v()  # Tier 2: GLM-4.6V Z.ai (final fallback)
         
         # --- Start Background Threads ---
         threading.Thread(target=self.video_capture_thread, daemon=True).start()
@@ -630,15 +629,15 @@ class ProjectCortexGUI:
         return self.kokoro_tts is not None
     
     def init_gemini_tts(self):
-        """Lazy initialize Gemini 2.5 Flash TTS (NEW: image + prompt -> audio)."""
+        """Lazy initialize Gemini 3 Flash Preview TTS (image + prompt -> audio)."""
         if self.gemini_tts is None:
             try:
                 self.update_handler_status("gemini-tts", "processing")
-                self.debug_print("⏳ Loading Gemini 2.5 Flash TTS...")
+                self.debug_print("⏳ Loading Gemini 3 Flash Preview TTS...")
                 self.gemini_tts = GeminiTTS(api_key=GOOGLE_API_KEY, voice_name="Kore")
                 self.gemini_tts.initialize()
                 self.debug_print("✅ Gemini TTS ready")
-                logger.info("✅ Gemini TTS initialized")
+                logger.info("✅ Gemini 3 Flash Preview TTS initialized")
                 self.update_handler_status("gemini-tts", "active")
             except Exception as e:
                 logger.error(f"❌ Gemini TTS init failed: {e}")
