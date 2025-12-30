@@ -1,12 +1,12 @@
 """
-Layer 2: Gemini 2.5 Flash TTS Handler - Multimodal Vision + TTS
+Layer 2: Gemini 3 Flash TTS Handler - Multimodal Vision + TTS
 
-This module sends images + prompts to Gemini 2.5 Flash Preview TTS and receives
+This module sends images + prompts to Gemini 3 Flash Preview and receives
 AUDIO responses directly (not text). This is the new Gemini model that combines
 vision understanding with text-to-speech in a single API call.
 
 Key Features:
-- Send image + prompt to gemini-2.5-flash-preview-tts
+- Send image + prompt to gemini-3-flash-preview
 - Receive PCM audio at 24kHz sample rate
 - Built-in TTS with natural voice ("Kore" default)
 - No separate TTS pipeline needed
@@ -15,10 +15,10 @@ Key Features:
 
 Author: Haziq (@IRSPlays)
 Project: Cortex v2.0 - YIA 2026
-Date: November 20, 2025
+Date: December 30, 2025
 
 HYBRID TTS ARCHITECTURE:
-- Primary: Gemini 2.5 Flash Preview TTS (cloud, high quality)
+- Primary: Gemini 3 Flash Preview (cloud, high quality, cutting-edge)
 - Fallback: Kokoro-82M (local, unlimited, when all API keys exhausted)
 """
 
@@ -464,13 +464,13 @@ class GeminiTTS:
                 types.Part.from_text(text=prompt)
             ]
             
-            # STEP 1: Use VISION model (gemini-2.5-flash) with retry on rate limits
-            # Official docs: gemini-2.5-flash is the stable flagship model (as of Nov 2025)
-            # Supports text, images, video, audio inputs with 1M token context
+            # STEP 1: Use VISION model (gemini-3-flash-preview) with retry on rate limits
+            # Official docs: gemini-3-flash-preview is the most intelligent model (Dec 2025)
+            # Supports text, images, video, audio inputs with enhanced capabilities
             # See: https://ai.google.dev/gemini-api/docs/models/gemini
             def _vision_api_call():
                 return self.client.models.generate_content(
-                    model='gemini-2.5-flash',  # Stable multimodal model (best price-performance)
+                    model='gemini-3-flash-preview',  # Most intelligent Gemini model
                     contents=contents,
                     config=types.GenerateContentConfig(
                         response_modalities=["TEXT"]  # Get text response (not audio)
@@ -506,6 +506,67 @@ class GeminiTTS:
                 return self._generate_with_kokoro_fallback(text_description)
             
             logger.error(f"❌ Failed to generate speech from image: {e}")
+            self.error_count += 1
+            return None
+    
+    def generate_text_from_image(
+        self,
+        image: Image.Image,
+        prompt: str = "Describe what you see in this image"
+    ) -> Optional[str]:
+        """
+        Generate TEXT ONLY from image + prompt (no TTS).
+        Used when you want Gemini vision analysis but will use a different TTS engine.
+        
+        Args:
+            image: PIL Image to analyze
+            prompt: Text prompt to guide the description
+        
+        Returns:
+            Text description from Gemini vision model, or None if failed
+        """
+        if not self.client:
+            if not self.initialize():
+                return None
+        
+        try:
+            logger.info(f"👁️ Generating text from image (vision only)...")
+            logger.info(f"   Prompt: '{prompt[:50]}...'")
+            self.request_count += 1
+            
+            # Convert PIL Image to base64
+            import io
+            buffered = io.BytesIO()
+            image.save(buffered, format="PNG")
+            image_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+            
+            # Create parts: image + prompt
+            contents = [
+                types.Part.from_bytes(
+                    data=base64.b64decode(image_base64),
+                    mime_type='image/png'
+                ),
+                types.Part.from_text(text=prompt)
+            ]
+            
+            # Use VISION model (gemini-3-flash-preview) with retry on rate limits
+            def _vision_api_call():
+                return self.client.models.generate_content(
+                    model='gemini-3-flash-preview',  # Most intelligent Gemini model
+                    contents=contents,
+                    config=types.GenerateContentConfig(
+                        response_modalities=["TEXT"]  # Get text response only
+                    )
+                )
+            
+            vision_response = self._retry_api_call(_vision_api_call)
+            text_description = vision_response.text
+            
+            logger.info(f"✅ Text generated ({len(text_description)} chars)")
+            return text_description
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to generate text from image: {e}")
             self.error_count += 1
             return None
     
