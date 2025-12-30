@@ -17,6 +17,13 @@
       },
       "gallery": "https://api.mcp.github.com",
       "version": "1.0.31"
+    },
+    "sequentialthinking": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ]
     }
   }
 }
