@@ -64,15 +64,20 @@ import warnings
 
 # Import Dual YOLO Handler (Layer 0 Guardian + Layer 1 Learner)
 from dual_yolo_handler import DualYOLOHandler
+from layer1_learner import YOLOEMode
+from layer1_learner import YOLOEMode  # NEW: Three detection modes
 
 # Import our custom AI handlers
 from layer1_reflex.whisper_handler import WhisperSTT
 from layer1_reflex.kokoro_handler import KokoroTTS
 from layer1_reflex.vad_handler import VADHandler  # NEW: Voice Activity Detection
-from layer2_thinker.gemini_tts_handler import GeminiTTS  # Gemini 2.5 Flash TTS (Tier 1 fallback)
+from layer2_thinker.gemini_tts_handler import GeminiTTS  # Gemini 2.5 Flash Vision (Tier 1 - now uses Kokoro TTS)
 from layer2_thinker.gemini_live_handler import GeminiLiveManager  # Gemini Live API (Tier 0 - WebSocket)
 from layer2_thinker.streaming_audio_player import StreamingAudioPlayer  # Real-time PCM audio playback
 from layer2_thinker.glm4v_handler import GLM4VHandler  # GLM-4.6V Z.ai API (Tier 2 fallback)
+
+# Import routing logic
+from layer3_guide.detection_router import DetectionRouter  # Smart detection confidence routing
 from layer3_guide.router import IntentRouter
 
 # Import Spatial Audio Manager (3D Audio Navigation)
@@ -163,6 +168,9 @@ class ProjectCortexGUI:
         self.cap = None  # Video capture object
         self.picamera2 = None  # RPi camera (when available)
         
+        # --- YOLOE Mode State ---
+        self.yoloe_mode = ctk.StringVar(value="Text Prompts")  # StringVar for dropdown
+        
         # --- Threading ---
         self.stop_event = threading.Event()
         self.frame_queue = queue.Queue(maxsize=2)
@@ -189,12 +197,15 @@ class ProjectCortexGUI:
         # --- AI Handler Instances ---
         self.whisper_stt = None  # Lazy load to avoid startup delay
         self.kokoro_tts = None   # Lazy load to avoid startup delay (kept for backward compatibility)
-        self.gemini_tts = None   # Gemini 2.5 Flash TTS (Tier 1 - HTTP vision+TTS)
+        self.gemini_tts = None   # Gemini 2.5 Flash Vision (Tier 1 - HTTP vision → Kokoro TTS)
         self.gemini_live = None  # Gemini Live API (Tier 0 - WebSocket audio-to-audio)
         self.glm4v = None  # GLM-4.6V Z.ai API (Tier 2 - final fallback)
         self.streaming_player = None  # Real-time PCM audio player (for Live API)
         self.vad_handler = None  # Voice Activity Detection handler
         self.spatial_audio = None  # 3D Spatial Audio Manager
+        
+        # Detection router for context-aware routing (Phase 1 + 2)
+        self.detection_router = DetectionRouter()  # Smart detection confidence routing
         
         # --- Cascading Fallback State (3-Tier System) ---
         self.active_api = "Live API"  # Current active API: "Live API", "Gemini TTS", "GLM-4.6V"
@@ -213,6 +224,16 @@ class ProjectCortexGUI:
         
         # --- 3D Spatial Audio State ---
         self.spatial_audio_enabled = ctk.BooleanVar(value=False)  # NEW: 3D Audio Navigation
+        
+        # --- YOLOE Mode State (Layer 1 Three-Mode System) ---
+        self.yoloe_mode = ctk.StringVar(value="Text Prompts")  # "Prompt-Free", "Text Prompts", "Visual Prompts"
+        self.visual_prompts_mode_active = False  # Track if visual prompts mode is enabled
+        self.visual_prompt_boxes = []  # Store user-drawn bounding boxes
+        
+        # --- YOLOE Mode State (Layer 1 Three-Mode System) ---
+        self.yoloe_mode = ctk.StringVar(value="Text Prompts")  # "Prompt-Free", "Text Prompts", "Visual Prompts"
+        self.visual_prompts_mode_active = False  # Track if visual prompts mode is enabled
+        self.visual_prompt_boxes = []  # Store user-drawn bounding boxes
         
         # --- TTS Playback State (for interrupt detection) ---
         self.tts_playing = False  # Track if TTS audio is currently playing
@@ -372,6 +393,62 @@ class ProjectCortexGUI:
         ctk.CTkLabel(audio_frame, text="AI Tier:", font=('Arial', 11)).pack(side="left", padx=(10, 5))
         self.tier_selector = ctk.CTkOptionMenu(
             audio_frame,
+            values=["Production (PAID)", "Testing (FREE)", "Experimental (MIXED)"],
+            command=self.on_tier_selection_changed,
+            variable=self.selected_tier,
+            font=('Arial', 11),
+            width=180
+        )
+        self.tier_selector.pack(side="left", padx=5)
+        
+        # --- YOLOE Mode Selection (Layer 1 Three-Mode System) ---
+        mode_frame = ctk.CTkFrame(controls_frame, fg_color="transparent")
+        mode_frame.pack(fill="x", pady=5, padx=10)
+        
+        ctk.CTkLabel(mode_frame, text="🎯 Layer 1 Mode:", font=('Arial', 12, 'bold')).pack(side="left", padx=5)
+        
+        self.mode_dropdown = ctk.CTkOptionMenu(
+            mode_frame,
+            values=["Prompt-Free", "Text Prompts", "Visual Prompts"],
+            command=self.on_yoloe_mode_changed,
+            variable=self.yoloe_mode,
+            font=('Arial', 11),
+            width=140
+        )
+        self.mode_dropdown.pack(side="left", padx=10)
+        
+        # Mode selector (YOLOE detection mode)
+        ctk.CTkLabel(mode_frame, text="Layer 1 Mode:", font=('Arial', 12, 'bold')).pack(side="left", padx=5)
+        self.mode_selector = ctk.CTkOptionMenu(
+            mode_frame,
+            variable=self.yoloe_mode,
+            values=[
+                "Prompt-Free",    # 4585+ classes, zero setup
+                "Text Prompts",   # Adaptive learning (default)
+                "Visual Prompts"  # Personal objects
+            ],
+            command=self.on_yoloe_mode_changed,
+            font=('Arial', 10),
+            width=140
+        )
+        self.mode_selector.pack(side="left", padx=5)
+        
+        # Mode info label
+        self.mode_info_label = ctk.CTkLabel(
+            mode_frame,
+            text="🧠 15-100 adaptive classes (learns from Gemini/Maps/Memory)",
+            font=('Arial', 10),
+            text_color="#888888"
+        )
+        self.mode_info_label.pack(side="left", padx=10)
+        
+        # Tier selector (for Layer 2 cascading fallback)
+        tier_frame = ctk.CTkFrame(controls_frame, fg_color="transparent")
+        tier_frame.pack(fill="x", pady=5, padx=10)
+        
+        ctk.CTkLabel(tier_frame, text="🎚️ Layer 2 Tier:", font=('Arial', 12, 'bold')).pack(side="left", padx=5)
+        self.tier_selector = ctk.CTkOptionMenu(
+            tier_frame,
             variable=self.selected_tier,
             values=[
                 "Testing (FREE)",           # Tier 1 only - for daily testing ($0)
@@ -696,10 +773,22 @@ class ProjectCortexGUI:
         """Loads YOLO model in background thread."""
         self.status_queue.put("Status: Loading YOLO model...")
         self.update_handler_status("yolo", "processing")
-        threading.Thread(target=self._init_yolo_thread, daemon=True).start()
+        
+        # Read GUI state in main thread BEFORE spawning background thread
+        initial_mode_str = self.yoloe_mode.get()
+        
+        threading.Thread(
+            target=self._init_yolo_thread, 
+            args=(initial_mode_str,),  # Pass mode as argument
+            daemon=True
+        ).start()
     
-    def _init_yolo_thread(self):
-        """Background Dual YOLO loading (Layer 0 Guardian + Layer 1 Learner)."""
+    def _init_yolo_thread(self, initial_mode_str: str):
+        """Background Dual YOLO loading (Layer 0 Guardian + Layer 1 Learner).
+        
+        Args:
+            initial_mode_str: YOLOE mode from GUI ("Prompt-Free", "Text Prompts", "Visual Prompts")
+        """
         try:
             # Verify CUDA availability and set device accordingly
             import torch
@@ -720,12 +809,23 @@ class ProjectCortexGUI:
             logger.info(f"🚀 Loading Dual YOLO Handler on {device}...")
             self.debug_print(f"🔄 Loading Layer 0 (Guardian) + Layer 1 (Learner) on {device}...")
             
+            # Determine learner model based on initial mode (passed from main thread)
+            if initial_mode_str == "Prompt-Free":
+                learner_model = "models/yoloe-11m-seg-pf.pt"  # Prompt-free medium model (4585+ classes)
+                learner_mode = YOLOEMode.PROMPT_FREE
+                self.debug_print("🔍 Loading prompt-free medium model (4585+ classes)")
+            else:
+                learner_model = "models/yoloe-11m-seg.pt"  # Standard medium model (text/visual prompts)
+                learner_mode = YOLOEMode.TEXT_PROMPTS  # Default to text prompts
+                self.debug_print("🧠 Loading medium text prompts model (adaptive learning)")
+            
             # Initialize Dual YOLO Handler (parallel inference)
             self.dual_yolo = DualYOLOHandler(
                 guardian_model_path=YOLO_MODEL_PATH,  # yolo11x.pt (static 80 classes)
-                learner_model_path="models/yoloe-11s-seg.pt",  # yoloe-11s-seg.pt (lighter model)
+                learner_model_path=learner_model,  # yoloe-11s-seg*.pt (adaptive)
                 device=device,
-                max_workers=2  # Parallel inference
+                max_workers=2,  # Parallel inference
+                learner_mode=learner_mode  # Set initial mode
             )
             self.yolo_device = device
             
@@ -1155,6 +1255,183 @@ class ProjectCortexGUI:
         else:
             self.stop_spatial_audio()
     
+    def on_yoloe_mode_changed(self, selected_mode: str):
+        """Handle YOLOE mode change from dropdown."""
+        logger.info(f"🔄 YOLOE Mode changed: {selected_mode}")
+        
+        # Update info label
+        if selected_mode == "Prompt-Free":
+            self.mode_info_label.configure(
+                text="🔍 4,585+ built-in classes (zero setup, discovery mode)"
+            )
+            self.visual_prompt_btn.pack_forget()
+        elif selected_mode == "Text Prompts":
+            self.mode_info_label.configure(
+                text="🧠 15-100 adaptive classes (learns from Gemini/Maps/Memory)"
+            )
+            self.visual_prompt_btn.pack_forget()
+        elif selected_mode == "Visual Prompts":
+            self.mode_info_label.configure(
+                text="👁️ User-defined classes (mark your specific objects)"
+            )
+            self.visual_prompt_btn.pack(side="left", padx=10)
+        
+        # Switch mode in DualYOLOHandler
+        if self.dual_yolo is not None:
+            try:
+                mode_map = {
+                    "Prompt-Free": YOLOEMode.PROMPT_FREE,
+                    "Text Prompts": YOLOEMode.TEXT_PROMPTS,
+                    "Visual Prompts": YOLOEMode.VISUAL_PROMPTS
+                }
+                new_mode = mode_map[selected_mode]
+                
+                # Switch mode in learner
+                if hasattr(self.dual_yolo, 'learner'):
+                    self.dual_yolo.learner.switch_mode(new_mode)
+                    self.debug_print(f"✅ Switched to {selected_mode} mode")
+                    
+                    # Update handler status indicator
+                    if selected_mode == "Prompt-Free":
+                        self.update_handler_status("YOLO", "#00aaff")  # Blue for prompt-free
+                    elif selected_mode == "Text Prompts":
+                        self.update_handler_status("YOLO", "#00ff00")  # Green for text prompts
+                    else:  # Visual Prompts
+                        self.update_handler_status("YOLO", "#ff00ff")  # Purple for visual prompts
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to switch YOLOE mode: {e}")
+                self.debug_print(f"❌ Mode switch failed: {e}")
+        else:
+            self.debug_print("⚠️ YOLO not initialized yet")
+    
+    def toggle_visual_prompts_mode(self):
+        """Toggle visual prompts marking mode (draw bounding boxes)."""
+        self.visual_prompts_mode_active = not self.visual_prompts_mode_active
+        
+        if self.visual_prompts_mode_active:
+            self.visual_prompt_btn.configure(fg_color="#ff5555", text="✅ Marking ON")
+            self.debug_print("📦 Visual Prompts Mode: Click and drag on video to mark objects")
+            self.debug_print("   Press 'Enter' when done to set prompts")
+            # TODO: Add canvas click handlers for bounding box drawing
+        else:
+            self.visual_prompt_btn.configure(fg_color="#1f538d", text="📦 Mark Objects")
+            self.debug_print("Visual Prompts Mode: OFF")
+    
+    def on_yoloe_mode_changed(self, selected_mode: str):
+        """Handle YOLOE mode change from dropdown."""
+        logger.info(f"🔄 YOLOE Mode changed: {selected_mode}")
+        
+        # Update info label
+        if selected_mode == "Prompt-Free":
+            self.mode_info_label.configure(
+                text="🔍 4,585+ built-in classes (zero setup, discovery mode)"
+            )
+        elif selected_mode == "Text Prompts":
+            self.mode_info_label.configure(
+                text="🧠 15-100 adaptive classes (learns from Gemini/Maps/Memory)"
+            )
+        elif selected_mode == "Visual Prompts":
+            self.mode_info_label.configure(
+                text="👁️ User-defined classes (mark your specific objects)"
+            )
+        
+        # Switch mode in DualYOLOHandler
+        if self.dual_yolo is not None:
+            try:
+                mode_map = {
+                    "Prompt-Free": YOLOEMode.PROMPT_FREE,
+                    "Text Prompts": YOLOEMode.TEXT_PROMPTS,
+                    "Visual Prompts": YOLOEMode.VISUAL_PROMPTS
+                }
+                new_mode = mode_map[selected_mode]
+                
+                # Switch mode in learner
+                if hasattr(self.dual_yolo, 'learner'):
+                    self.dual_yolo.learner.switch_mode(new_mode)
+                    self.debug_print(f"✅ Switched to {selected_mode} mode")
+                    
+                    # Update handler status indicator color
+                    if selected_mode == "Prompt-Free":
+                        self._safe_gui_update(lambda: self.update_handler_status("yolo", "active"))
+                        self.debug_print("   🔍 4,585+ classes available instantly")
+                    elif selected_mode == "Text Prompts":
+                        self._safe_gui_update(lambda: self.update_handler_status("yolo", "active"))
+                        self.debug_print(f"   🧠 {len(self.dual_yolo.learner.get_classes())} adaptive classes")
+                    else:  # Visual Prompts
+                        self._safe_gui_update(lambda: self.update_handler_status("yolo", "active"))
+                        self.debug_print("   👁️ Ready for personal object marking")
+                
+            except Exception as e:
+                logger.error(f"❌ Failed to switch YOLOE mode: {e}")
+                self.debug_print(f"❌ Mode switch failed: {e}")
+        else:
+            self.debug_print("⚠️ YOLO not initialized yet")
+    
+    def on_yoloe_mode_changed(self, selected_mode: str):
+        """Handle YOLOE mode selection change."""
+        mode_map = {
+            "Prompt-Free": YOLOEMode.PROMPT_FREE,
+            "Text Prompts": YOLOEMode.TEXT_PROMPTS,
+            "Visual Prompts": YOLOEMode.VISUAL_PROMPTS
+        }
+        
+        new_mode = mode_map.get(selected_mode, YOLOEMode.TEXT_PROMPTS)
+        
+        if self.dual_yolo and self.dual_yolo.learner:
+            try:
+                old_mode = self.dual_yolo.learner.mode
+                self.dual_yolo.learner.switch_mode(new_mode)
+                self.yoloe_mode = new_mode
+                
+                # Update info label
+                mode_info = {
+                    YOLOEMode.PROMPT_FREE: "🔍 4585+ classes (zero setup, discovery mode)",
+                    YOLOEMode.TEXT_PROMPTS: "🧠 15-100 adaptive classes (learns from Gemini/Maps/Memory)",
+                    YOLOEMode.VISUAL_PROMPTS: "👁️ User-defined (mark personal objects with boxes)"
+                }
+                self.mode_info_label.configure(text=mode_info[new_mode])
+                
+                logger.info(f"✅ YOLOE mode switched: {old_mode.value} → {new_mode.value}")
+                self.debug_print(f"🔄 Layer 1 mode: {old_mode.value} → {new_mode.value}")
+            except Exception as e:
+                logger.error(f"❌ Failed to switch YOLOE mode: {e}")
+                self.debug_print(f"❌ Mode switch failed: {e}")
+        else:
+            logger.warning("⚠️ Dual YOLO not initialized, mode will be applied on init")
+            self.yoloe_mode = new_mode
+    
+    def on_yoloe_mode_changed(self, selected_mode: str):
+        """Handle YOLOE mode selection change."""
+        mode_map = {
+            "Prompt-Free": YOLOEMode.PROMPT_FREE,
+            "Text Prompts": YOLOEMode.TEXT_PROMPTS,
+            "Visual Prompts": YOLOEMode.VISUAL_PROMPTS
+        }
+        
+        new_mode = mode_map.get(selected_mode, YOLOEMode.TEXT_PROMPTS)
+        
+        if self.dual_yolo and self.dual_yolo.learner:
+            try:
+                old_mode = self.dual_yolo.learner.mode
+                self.dual_yolo.learner.switch_mode(new_mode)
+                
+                # Update info label
+                mode_info = {
+                    YOLOEMode.PROMPT_FREE: "🔍 4585+ classes (zero setup, discovery mode)",
+                    YOLOEMode.TEXT_PROMPTS: "🧠 15-100 adaptive classes (learns from Gemini/Maps/Memory)",
+                    YOLOEMode.VISUAL_PROMPTS: "👁️ User-defined (mark personal objects with boxes)"
+                }
+                self.mode_info_label.configure(text=mode_info[new_mode])
+                
+                logger.info(f"✅ YOLOE mode switched: {old_mode.value} → {new_mode.value}")
+                self.debug_print(f"🔄 Layer 1 mode: {old_mode.value} → {new_mode.value}")
+            except Exception as e:
+                logger.error(f"❌ Failed to switch YOLOE mode: {e}")
+                self.debug_print(f"❌ Mode switch failed: {e}")
+        else:
+            logger.warning("⚠️ Dual YOLO not initialized, mode will be applied on init")
+    
     def on_tier_selection_changed(self, selected_tier: str):
         """Callback when user changes Layer 2 tier selection.
         
@@ -1498,10 +1775,86 @@ class ProjectCortexGUI:
             self.status_queue.put("Status: Pipeline Error")
             self.update_handler_status("whisper", "error")
 
+    def _switch_yoloe_mode(self, target_mode: str, memory_id: str = None):
+        """
+        Switch YOLOE Learner to specified detection mode.
+        
+        Implements zero-overhead mode switching with comprehensive logging.
+        
+        Args:
+            target_mode: Target mode string ("PROMPT_FREE", "TEXT_PROMPTS", "VISUAL_PROMPTS")
+            memory_id: Memory ID for VISUAL_PROMPTS mode (e.g., "wallet_003")
+        """
+        if not hasattr(self, 'yoloe_learner') or self.yoloe_learner is None:
+            logger.warning("⚠️ [MODE SWITCH] YOLOE Learner not initialized, skipping mode switch")
+            return
+        
+        start_time = time.time()
+        current_mode = self.yoloe_learner.mode.value if hasattr(self.yoloe_learner.mode, 'value') else str(self.yoloe_learner.mode)
+        
+        # Check if already in target mode
+        if current_mode.upper() == target_mode.upper():
+            logger.debug(f"🔄 [MODE SWITCH] Already in {target_mode} mode, skipping")
+            return
+        
+        logger.info(f"🔄 [MODE SWITCH] {current_mode.upper()} → {target_mode.upper()}")
+        
+        try:
+            if target_mode == "VISUAL_PROMPTS":
+                if memory_id:
+                    logger.debug(f"   Loading visual prompts for memory_id: {memory_id}")
+                    self.yoloe_learner.load_visual_prompts_from_memory(memory_id)
+                else:
+                    logger.warning("   No memory_id provided for VISUAL_PROMPTS mode")
+            
+            elif target_mode == "TEXT_PROMPTS":
+                self.yoloe_learner.load_text_prompts()
+            
+            elif target_mode == "PROMPT_FREE":
+                self.yoloe_learner.switch_to_prompt_free()
+            
+            else:
+                logger.error(f"❌ [MODE SWITCH] Unknown target mode: {target_mode}")
+                return
+            
+            # Track mode switch overhead
+            switch_time = (time.time() - start_time) * 1000  # ms
+            logger.info(f"✅ [MODE SWITCH] Mode switch completed in {switch_time:.1f}ms")
+            
+            if switch_time > 50:
+                logger.warning(f"⚠️ [PERFORMANCE] Mode switch exceeded 50ms target ({switch_time:.1f}ms)")
+        
+        except Exception as e:
+            logger.error(f"❌ [MODE SWITCH] Failed to switch mode: {e}", exc_info=True)
+            self.debug_print(f"❌ [MODE SWITCH] Error: {e}")
+    
     def _execute_layer1_reflex(self, text):
-        """Layer 1: Local Object Detection + Quick Memory Recall."""
+        """Layer 1: Local Object Detection + Quick Memory Recall with Intelligent Mode Switching."""
         self.status_queue.put("Status: Layer 1 analyzing...")
-        self.debug_print("⚡ [LAYER 1] Reflex Mode: Local YOLO")
+        self.debug_print("⚡ [LAYER 1] Reflex Mode: Adaptive YOLOE")
+        
+        text_lower = text.lower()
+        
+        # ✅ INTELLIGENT MODE SWITCHING: Detect optimal YOLOE mode from query
+        if hasattr(self, 'intent_router') and self.intent_router:
+            recommended_mode = self.intent_router.get_recommended_mode(text_lower, self.last_learner_detections or "")
+            self.debug_print(f"🎯 [MODE] Recommended: {recommended_mode}")
+            
+            # Extract memory_id for personal queries
+            memory_id = None
+            if recommended_mode == "VISUAL_PROMPTS":
+                # Extract object name from query (e.g., "where's my wallet" → "wallet")
+                for kw in ["where is my", "where's my", "find my", "show me my"]:
+                    if kw in text_lower:
+                        object_name = text_lower.split(kw)[1].strip().rstrip('?.,!').split()[0]
+                        # TODO: Query Layer 4 for actual memory_id (e.g., "wallet_003")
+                        # For now, use object name as placeholder
+                        memory_id = f"{object_name}_001"  # Placeholder
+                        self.debug_print(f"🔍 [MEMORY] Searching for: {object_name} (id: {memory_id})")
+                        break
+            
+            # Switch YOLOE mode
+            self._switch_yoloe_mode(recommended_mode, memory_id)
         
         text_lower = text.lower()
         
@@ -1517,7 +1870,8 @@ class ProjectCortexGUI:
             
             # Check if object is currently visible
             if self.memory_manager:
-                is_visible = self.memory_manager.check_if_in_view(object_name, self.last_detections)
+                # ✅ FIXED: Use Learner detections (YOLOE-11m adaptive classes)
+                is_visible = self.memory_manager.check_if_in_view(object_name, self.last_learner_detections)
                 
                 if is_visible:
                     response = f"I can see your {object_name} right now."
@@ -1538,7 +1892,8 @@ class ProjectCortexGUI:
                     response = f"I don't see your {object_name} right now."
         else:
             # Standard detection report
-            detections = self.last_detections
+            # ✅ FIXED: Use Learner detections (YOLOE-11m adaptive classes, not Guardian)
+            detections = self.last_learner_detections
             if not detections or detections == "nothing":
                 response = "I don't see anything specific right now."
             else:
@@ -1547,7 +1902,8 @@ class ProjectCortexGUI:
                 unique_items = set([i.split(" (")[0] for i in items])
                 response = f"I see {', '.join(unique_items)}."
         
-        self.debug_print(f"🔍 [LAYER 1] Detection: {self.last_detections}")
+        # \u2705 FIXED: Debug print shows Learner detections
+        self.debug_print(f"🔍 [LAYER 1] Learner Detections: {self.last_learner_detections}")
         self.debug_print(f"💬 [LAYER 1] Response: {response}")
         
         self._safe_gui_update(lambda: self.response_text.delete('1.0', "end"))
@@ -1685,13 +2041,13 @@ class ProjectCortexGUI:
     
     def _execute_layer2_gemini_tts(self, text) -> bool:
         """
-        Execute Layer 2 using Gemini 2.5 Flash TTS (HTTP) - Tier 1.
+        Execute Layer 2 using Gemini 2.5 Flash Vision + Kokoro TTS (HTTP) - Tier 1.
         
         Features:
-        - Vision + TTS in single API
-        - ~1-2s latency
+        - Gemini 2.5 Flash for vision analysis (text response)
+        - Kokoro TTS for speech output (offline, fast)
+        - ~1-2s latency total
         - Multiple API key rotation
-        - Kokoro fallback when all keys exhausted
         
         Returns:
             bool: True if successful, False if failed
@@ -1701,7 +2057,7 @@ class ProjectCortexGUI:
             return False
         
         try:
-            self.status_queue.put("Status: Generating speech from image (Gemini TTS)...")
+            self.status_queue.put("Status: Analyzing scene (Gemini Vision)...")
             self.update_handler_status("gemini-tts", "processing")
             
             # Get current video frame
@@ -1710,28 +2066,51 @@ class ProjectCortexGUI:
                 frame_rgb = cv2.cvtColor(self.latest_frame_for_gemini, cv2.COLOR_BGR2RGB)
                 pil_image = Image.fromarray(frame_rgb)
                 
-                # Generate speech from image + text
-                audio_file = self.gemini_tts.generate_speech_from_image(
+                # Generate TEXT response from Gemini 2.5 Flash Vision (no TTS)
+                # Using the underlying vision API without TTS
+                response_text = self.gemini_tts.generate_text_from_image(
                     image=pil_image,
-                    prompt=text,
-                    save_to_file=True
+                    prompt=text
                 )
                 
-                if audio_file and os.path.exists(audio_file):
-                    self.debug_print(f"✅ Audio generated: {audio_file}")
-                    # Play audio
-                    self.play_audio_file(audio_file)
-                    return True
+                if response_text:
+                    self.debug_print(f"✅ Gemini response: {response_text[:100]}...")
+                    
+                    # Use Kokoro TTS for speech output (offline, fast, consistent voice)
+                    if self.kokoro_tts or self.init_kokoro_tts():
+                        self.status_queue.put("Status: Generating speech (Kokoro TTS)...")
+                        audio_file = self.kokoro_tts.generate_audio(
+                            text=response_text,
+                            save_to_file=True
+                        )
+                        if audio_file and os.path.exists(audio_file):
+                            self.debug_print(f"✅ Audio generated: {audio_file}")
+                            self.play_audio_file(audio_file)
+                            
+                            # Record Gemini learning for DetectionRouter (Phase 2)
+                            if hasattr(self, 'detection_router') and self.last_guardian_detections:
+                                self.detection_router.record_gemini_learning(
+                                    response_text,
+                                    self.last_guardian_detections + self.last_learner_detections
+                                )
+                            
+                            return True
+                        else:
+                            self.debug_print("❌ Kokoro TTS audio generation failed")
+                            return False
+                    else:
+                        self.debug_print("❌ Kokoro TTS not available")
+                        return False
                 else:
-                    self.debug_print("❌ Audio generation failed")
+                    self.debug_print("❌ Gemini vision analysis failed")
                     return False
             else:
-                self.debug_print("⚠️ No video frame available for Gemini TTS")
+                self.debug_print("⚠️ No video frame available for Gemini Vision")
                 return False
                 
         except Exception as e:
-            logger.error(f"❌ Gemini TTS execution failed: {e}")
-            self.debug_print(f"❌ Gemini TTS error: {e}")
+            logger.error(f"❌ Gemini Vision + Kokoro TTS execution failed: {e}")
+            self.debug_print(f"❌ Layer 2 error: {e}")
             return False
     
     def _execute_layer2_glm4v(self, text) -> bool:

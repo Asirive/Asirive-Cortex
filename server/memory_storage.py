@@ -64,7 +64,7 @@ class MemoryStorage:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Memories table
+        # Memories table (enhanced with visual prompts support)
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS memories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -76,6 +76,9 @@ class MemoryStorage:
                 metadata_json TEXT,
                 location_estimate TEXT,
                 confidence REAL,
+                visual_prompt_bbox TEXT,
+                visual_embedding_path TEXT,
+                slam_coordinates TEXT,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
