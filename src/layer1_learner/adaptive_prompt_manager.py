@@ -192,8 +192,11 @@ class AdaptivePromptManager:
                     added.append(noun)
             
             if added:
-                logger.info(f"📝 Learned from Gemini: {added}")
+                logger.info(f"🧠 [LAYER 2] Learned new classes from Gemini: {added}")
+                logger.debug(f"📝 [ADAPTIVE] Saved {len(added)} new classes to {self.storage_path}")
                 self._save_prompts()
+            else:
+                logger.debug(f"🔄 [ADAPTIVE] No new classes extracted (all already known)")
             
             return added
         
@@ -237,8 +240,11 @@ class AdaptivePromptManager:
                     added.append(generic_object)
         
         if added:
-            logger.info(f"🗺️ Learned from Maps: {added}")
+            logger.info(f"🗺️ [MAPS] Learned new classes from Maps POI: {added}")
+            logger.debug(f"📝 [ADAPTIVE] Saved {len(added)} new classes to {self.storage_path}")
             self._save_prompts()
+        else:
+            logger.debug(f"🔄 [ADAPTIVE] No new classes from Maps (all already known)")
         
         return added
     
@@ -264,8 +270,11 @@ class AdaptivePromptManager:
         added = self._add_prompt(object_name, source="memory", metadata=metadata)
         
         if added:
-            logger.info(f"🧠 Learned from Memory: {object_name}")
+            logger.info(f"🧠 [MEMORY] Learned new class from Layer 4: {object_name}")
+            logger.debug(f"📝 [ADAPTIVE] Saved 1 new class to {self.storage_path}")
             self._save_prompts()
+        else:
+            logger.debug(f"🔄 [ADAPTIVE] Class '{object_name}' already in vocabulary")
         
         return added
     
@@ -296,6 +305,7 @@ class AdaptivePromptManager:
         if prompt in self.dynamic_prompts:
             # Increment use count
             self.dynamic_prompts[prompt]['use_count'] += 1
+            logger.debug(f"🔄 [ADAPTIVE] Duplicate skipped: '{prompt}' (use_count: {self.dynamic_prompts[prompt]['use_count']})")
             return False
         
         # Check if list is full
