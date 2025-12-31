@@ -30,7 +30,15 @@ from typing import List, Dict, Optional
 from collections import deque
 from nicegui import ui, app, context
 
+# Enhanced logging for debugging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
 # Import Core Handlers (Reusing existing logic)
+from camera_handler import CameraHandler  # Unified camera interface (Picamera2 + OpenCV)
 from layer1_reflex.whisper_handler import WhisperSTT
 from layer1_reflex.kokoro_handler import KokoroTTS
 from layer2_thinker.gemini_tts_handler import GeminiTTS
@@ -143,15 +151,39 @@ class CortexHardwareManager:
             self.add_log(f"❌ [REFLEX] Load failed: {e}")
             logger.exception("Failed to load YOLO/Whisper")
 
-        # Camera
+        # Camera with Picamera2/OpenCV auto-detection
         try:
-            self.add_log("📹 [VIDEO] Connecting to Camera 0...")
-            self.cap = cv2.VideoCapture(0)
+            camera_index = int(os.getenv('CAMERA_INDEX', '0'))  # PiCamera Module 3 Wide on /dev/video0 (CSI)
+            logger.debug(f"[CAMERA DEBUG] Attempting to open camera index: {camera_index}")
+            self.add_log(f"📹 [VIDEO] Connecting to Camera {camera_index}...")
+            
+            # Use unified camera handler (auto-detects Picamera2 or OpenCV)
+            self.cap = CameraHandler(camera_index=camera_index, width=640, height=480, fps=30)
+            logger.debug(f"[CAMERA DEBUG] CameraHandler initialized")
+            
             if not self.cap.isOpened():
-                raise Exception("Camera not found")
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            self.add_log("✅ [VIDEO] Camera connected (640x480)")
+                logger.error(f"[CAMERA DEBUG] Camera {camera_index} failed to open")
+                raise Exception(f"Camera {camera_index} not found")
+            
+            # Get camera properties
+            backend = self.cap.getBackendName()
+            actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            
+            logger.debug(f"[CAMERA DEBUG] Camera properties:")
+            logger.debug(f"  - Resolution: {actual_width}x{actual_height}")
+            logger.debug(f"  - Backend: {backend}")
+            
+            # Test frame capture
+            ret, test_frame = self.cap.read()
+            if ret:
+                logger.debug(f"[CAMERA DEBUG] Test frame captured successfully: shape={test_frame.shape}")
+                self.state['camera_status'] = f'✅ Active ({actual_width}x{actual_height}, {backend})'
+            else:
+                logger.error(f"[CAMERA DEBUG] Test frame capture failed")
+                self.state['camera_status'] = '❌ Capture Failed'
+                
+            self.add_log(f"✅ [VIDEO] Camera {camera_index} connected ({actual_width}x{actual_height}, {backend} backend)")
         except Exception as e:
             self.add_log(f"❌ [VIDEO] Connection failed: {e}")
             logger.exception("Camera init failed")
@@ -684,9 +716,60 @@ class CortexDashboard:
         # Main Layout (3 columns)
         with ui.row().classes('w-full p-6 no-wrap gap-6 items-stretch'):
             
-            # Left Column: Neural Layers
+            # Left Column: System Monitoring + Neural Layers
             with ui.column().classes('w-1/4 gap-4'):
-                ui.label('NEURAL ARCHITECTURE').classes('text-[10px] font-black text-slate-500 tracking-[0.2em] mb-2')
+                # === SYSTEM MONITOR ===
+                ui.label('SYSTEM MONITOR').classes('text-[10px] font-black text-slate-500 tracking-[0.2em] mb-2')
+                with ui.card().classes('w-full bg-slate-900/60 backdrop-blur-md border border-cyan-500/20 p-4'):
+                    ui.label('🖥️ Raspberry Pi 5').classes('text-sm font-bold text-cyan-400 mb-3')
+                    
+                    # CPU Usage
+                    with ui.row().classes('w-full items-center gap-2 mb-2'):
+                        ui.label('CPU').classes('text-xs text-slate-400 w-16')
+                        self.cpu_progress = ui.linear_progress(value=0).props('color=blue size=8px').classes('flex-grow')
+                        self.cpu_value = ui.label('0%').classes('text-xs text-blue-400 w-12 text-right')
+                    
+                    # Temperature
+                    with ui.row().classes('w-full items-center gap-2 mb-2'):
+                        ui.label('TEMP').classes('text-xs text-slate-400 w-16')
+                        self.temp_progress = ui.linear_progress(value=0).props('color=orange size=8px').classes('flex-grow')
+                        self.temp_value = ui.label('0°C').classes('text-xs text-orange-400 w-12 text-right')
+                    
+                    # Memory
+                    with ui.row().classes('w-full items-center gap-2 mb-2'):
+                        ui.label('RAM').classes('text-xs text-slate-400 w-16')
+                        self.ram_progress = ui.linear_progress(value=0).props('color=purple size=8px').classes('flex-grow')
+                        self.ram_value = ui.label('0 MB').classes('text-xs text-purple-400 w-12 text-right')
+                    
+                    # Disk
+                    with ui.row().classes('w-full items-center gap-2 mb-2'):
+                        ui.label('DISK').classes('text-xs text-slate-400 w-16')
+                        self.disk_progress = ui.linear_progress(value=0).props('color=emerald size=8px').classes('flex-grow')
+                        self.disk_value = ui.label('0%').classes('text-xs text-emerald-400 w-12 text-right')
+                    
+                    ui.separator().classes('my-3 bg-slate-700/50')
+                    
+                    # Camera Status
+                    with ui.row().classes('w-full items-center gap-2 mb-1'):
+                        ui.label('📹 Camera').classes('text-xs text-slate-400')
+                        self.camera_status_label = ui.label('Initializing...').classes('text-xs text-cyan-400 ml-auto')
+                    
+                    # Frame Counter
+                    with ui.row().classes('w-full items-center gap-2 mb-1'):
+                        ui.label('🎞️ Frames').classes('text-xs text-slate-400')
+                        self.frame_count_label = ui.label('0').classes('text-xs text-slate-300 ml-auto font-mono')
+                    
+                    # Network Stats
+                    with ui.row().classes('w-full items-center gap-2 mb-1'):
+                        ui.label('⬆️ Upload').classes('text-xs text-slate-400')
+                        self.net_sent_label = ui.label('0 KB/s').classes('text-xs text-green-400 ml-auto font-mono')
+                    
+                    with ui.row().classes('w-full items-center gap-2'):
+                        ui.label('⬇️ Download').classes('text-xs text-slate-400')
+                        self.net_recv_label = ui.label('0 KB/s').classes('text-xs text-blue-400 ml-auto font-mono')
+                
+                # === NEURAL ARCHITECTURE ===
+                ui.label('NEURAL ARCHITECTURE').classes('text-[10px] font-black text-slate-500 tracking-[0.2em] mb-2 mt-4')
                 self.cards['reflex'] = NeuralCard('Layer 0+1: Reflex', '⚡', '#10b981')
                 self.cards['thinker'] = NeuralCard('Layer 2: Thinker', '☁️', '#3b8ed0')
                 self.cards['guide'] = NeuralCard('Layer 3: Guide', '🧭', '#f59e0b')
@@ -789,11 +872,32 @@ async def main_page():
             if state['last_frame']:
                 dashboard.image_view.set_source(state['last_frame'])
             
-            # Update Performance Metrics
+            # Update Top Bar Performance Metrics
             dashboard.latency_label.set_text(f"Latency: {state['latency']:.1f} ms")
             dashboard.fps_label.set_text(f"FPS: {state['fps']:.1f}")
+            dashboard.cpu_label.set_text(f"CPU: {state['cpu_usage']:.1f}%")
+            dashboard.temp_label.set_text(f"Temp: {state['cpu_temp']:.1f}°C")
             dashboard.ram_label.set_text(f"RAM: {state['ram_usage']:.0f} MB")
+            dashboard.camera_label.set_text(f"Cam: {state['frame_count']}f")
             dashboard.detection_badge.set_text(state['detections'])
+            
+            # Update System Monitor Sidebar
+            dashboard.cpu_progress.set_value(state['cpu_usage'] / 100.0)
+            dashboard.cpu_value.set_text(f"{state['cpu_usage']:.1f}%")
+            
+            dashboard.temp_progress.set_value(min(state['cpu_temp'] / 85.0, 1.0))  # Max 85°C
+            dashboard.temp_value.set_text(f"{state['cpu_temp']:.1f}°C")
+            
+            dashboard.ram_progress.set_value(state['ram_usage'] / 3900.0)  # 4GB RPi 5
+            dashboard.ram_value.set_text(f"{state['ram_usage']:.0f} MB")
+            
+            dashboard.disk_progress.set_value(state['disk_usage'] / 100.0)
+            dashboard.disk_value.set_text(f"{state['disk_usage']:.1f}%")
+            
+            dashboard.camera_status_label.set_text(state['camera_status'])
+            dashboard.frame_count_label.set_text(str(state['frame_count']))
+            dashboard.net_sent_label.set_text(f"{state['network_sent']:.1f} KB/s")
+            dashboard.net_recv_label.set_text(f"{state['network_recv']:.1f} KB/s")
             
             # Update Mode Label
             if dashboard.mode_label:
