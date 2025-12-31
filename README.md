@@ -53,7 +53,7 @@ Commercial devices like OrCam MyEye cost **$4,000+**, making them inaccessible t
 
 ### 1. Adaptive Dual-Model Vision (Layer 0 + Layer 1)
 Unlike traditional systems that use a single static model, Cortex uses a **parallel cascade**:
-*   **Layer 0 (Guardian):** Static **YOLO11x** for safety-critical hazards (cars, stairs). Runs 100% offline, <100ms latency.
+*   **Layer 0 (Guardian):** Static **YOLO11n-NCNN** for safety-critical hazards (cars, stairs). Runs 100% offline, **80.7ms latency** ✅ (4.8x faster than PyTorch).
 *   **Layer 1 (Learner):** Adaptive **YOLOE-11s** that *learns new objects in real-time* from Gemini descriptions and Google Maps POI data.
 
 ### 2. Native Audio-to-Audio Conversation (Layer 2)
@@ -75,7 +75,7 @@ Our architecture is divided into four specialized layers to balance **safety, in
 
 | Layer | Name | Function | Technology | Latency |
 |:---|:---|:---|:---|:---|
-| **L0** | **The Guardian** | **Safety-Critical Detection** | YOLO11x (Local) | **<100ms** ⚡ |
+| **L0** | **The Guardian** | **Safety-Critical Detection** | YOLO11n-NCNN (Local) | **80.7ms** ✅ |
 | **L1** | **The Learner** | **Adaptive Context** | YOLOE-11s (Local) | ~120ms |
 | **L2** | **The Thinker** | **Deep Reasoning & QA** | Gemini Live (Cloud) | <500ms |
 | **L3** | **The Guide** | **Navigation & 3D Audio** | PyOpenAL + VIO/SLAM | Real-time |
