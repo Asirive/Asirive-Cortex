@@ -99,8 +99,8 @@ class YOLOGuardian:
         logger.info(f"📦 Loading YOLO11n-NCNN from {model_path}...")
         try:
             self.model = YOLO(model_path, task='detect')
-            self.model.to(device)
-            logger.info(f"✅ YOLO11n-NCNN loaded on {device} (80.7ms avg latency)")
+            # Note: NCNN models are inference-only, .to(device) not supported
+            logger.info(f"✅ YOLO11n-NCNN loaded for inference (80.7ms avg latency)")
         except Exception as e:
             logger.error(f"❌ Failed to load YOLO11n-NCNN: {e}")
             raise

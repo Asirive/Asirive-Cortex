@@ -1,0 +1,48 @@
+2025-12-31 17:03:18,968 - INFO - 🔍 Checking prerequisites...
+2025-12-31 17:03:18,968 - INFO - ✅ Ultralytics installed
+2025-12-31 17:03:18,969 - INFO - ✅ Prerequisites met
+2025-12-31 17:03:18,969 - INFO - ✅ [HIGH] Already converted: models/yolo11n_ncnn_model
+2025-12-31 17:03:18,969 - INFO - ✅ [MEDIUM] Already converted: models/yolo11s_ncnn_model
+2025-12-31 17:03:18,969 - INFO - ✅ [LOW] Already converted: models/yolo11x_ncnn_model
+2025-12-31 17:03:18,969 - INFO - 
+======================================================================
+2025-12-31 17:03:18,969 - INFO - 🔄 [HIGH] Converting: models/yoloe-11s-seg.pt
+2025-12-31 17:03:18,969 - INFO -     YOLOE-11s Text/Visual Prompts (222ms)
+2025-12-31 17:03:18,969 - INFO - ======================================================================
+2025-12-31 17:03:18,969 - INFO - 📦 Loading PyTorch model...
+2025-12-31 17:03:19,258 - INFO -     Setting 80 COCO classes for YOLOE export...
+
+======================================================================
+PROJECT CORTEX V2.0 - YOLO MODEL CONVERSION TO NCNN
+======================================================================
+
+🎯 Goal: 4-5x faster inference on Raspberry Pi 5
+📊 Benchmark: YOLO11n 388ms → 94ms (PyTorch → NCNN)
+
+
+[31m[1mrequirements:[0m Ultralytics requirement ['git+https://github.com/ultralytics/CLIP.git'] not found, attempting AutoUpdate...
+WARNING ⚠️ Retry 1/2 failed: Command 'pip install --no-cache-dir "git+https://github.com/ultralytics/CLIP.git" ' returned non-zero exit status 1.
+WARNING ⚠️ Retry 2/2 failed: Command 'pip install --no-cache-dir "git+https://github.com/ultralytics/CLIP.git" ' returned non-zero exit status 1.
+WARNING ⚠️ [31m[1mrequirements:[0m ❌ Command 'pip install --no-cache-dir "git+https://github.com/ultralytics/CLIP.git" ' returned non-zero exit status 1.
+2025-12-31 17:03:22,259 - ERROR - ❌ Error converting models/yoloe-11s-seg.pt: No module named 'clip'
+2025-12-31 17:03:22,262 - INFO - 
+======================================================================
+2025-12-31 17:03:22,262 - INFO - 🔄 [MEDIUM] Converting: models/yoloe-11m-seg.pt
+2025-12-31 17:03:22,262 - INFO -     YOLOE-11m Text/Visual Prompts (more accurate)
+2025-12-31 17:03:22,262 - INFO - ======================================================================
+2025-12-31 17:03:22,262 - INFO - 📦 Loading PyTorch model...
+2025-12-31 17:03:23,225 - INFO -     Setting 80 COCO classes for YOLOE export...
+[31m[1mrequirements:[0m Ultralytics requirement ['git+https://github.com/ultralytics/CLIP.git'] not found, attempting AutoUpdate...
+WARNING ⚠️ Retry 1/2 failed: Command 'pip install --no-cache-dir "git+https://github.com/ultralytics/CLIP.git" ' returned non-zero exit status 1.
+WARNING ⚠️ Retry 2/2 failed: Command 'pip install --no-cache-dir "git+https://github.com/ultralytics/CLIP.git" ' returned non-zero exit status 1.
+WARNING ⚠️ [31m[1mrequirements:[0m ❌ Command 'pip install --no-cache-dir "git+https://github.com/ultralytics/CLIP.git" ' returned non-zero exit status 1.
+2025-12-31 17:03:26,115 - ERROR - ❌ Error converting models/yoloe-11m-seg.pt: No module named 'clip'
+2025-12-31 17:03:26,119 - INFO - 
+======================================================================
+2025-12-31 17:03:26,119 - INFO - 🔄 [HIGH] Converting: models/yoloe-11s-seg-pf.pt
+2025-12-31 17:03:26,120 - INFO -     YOLOE-11s Prompt-Free (4585+ classes)
+2025-12-31 17:03:26,120 - INFO - ======================================================================
+2025-12-31 17:03:26,120 - INFO - 📦 Loading PyTorch model...
+2025-12-31 17:03:26,402 - INFO -     Setting 80 COCO classes for YOLOE export...
+[31m[1mrequirements:[0m Ultralytics requirement ['git+https://github.com/ultralytics/CLIP.git'] not found, attempting AutoUpdate...
+WARNING ⚠️ Retry 1/2 failed: Command 'pip install --no-cache-dir "git+https://github.com/ultralytics/CLIP.git" ' returned non-zero exit status 1.
