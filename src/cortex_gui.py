@@ -238,6 +238,10 @@ class ProjectCortexGUI:
         self.TTS_END_EVENT = pygame.USEREVENT + 1  # Custom event for TTS completion
         self.tts_interrupt_requested = False  # Thread-safe flag for VAD to request TTS interrupt
         
+        # --- WebSocket Client for Laptop Server ---
+        self.ws_client = None  # WebSocket client (initialized after GUI setup)
+        self._ws_frame_counter = 0  # Frame counter for video throttling
+        
         # --- Build UI ---
         self.init_ui()
         
@@ -267,6 +271,9 @@ class ProjectCortexGUI:
         
         # --- Graceful Shutdown ---
         self.window.protocol("WM_DELETE_WINDOW", self.on_closing)
+        
+        # Initialize WebSocket client for laptop server communication
+        self._init_websocket_client()
         
         logger.info("🚀 Project-Cortex GUI initialized")
     
@@ -953,6 +960,31 @@ class ProjectCortexGUI:
                     confidence=YOLO_CONFIDENCE
                 )
                 logger.debug(f"✅ [YOLO Thread] Inference complete. Guardian: {type(guardian_results)}, Learner: {type(learner_results)}")
+                
+                # Send video frame to laptop (throttled to 10 FPS)
+                if self.ws_client and self.ws_client.connected:
+                    self._ws_frame_counter += 1
+                    # Send every 3rd frame (10 FPS if processing at 30 FPS)
+                    if self._ws_frame_counter % 3 == 0:
+                        try:
+                            # Resize to reduce bandwidth (640x480)
+                            frame_to_send = cv2.resize(frame, (640, 480))
+                            
+                            # Encode to JPEG (75% quality for balance of size/quality)
+                            _, buffer = cv2.imencode(
+                                '.jpg',
+                                frame_to_send,
+                                [cv2.IMWRITE_JPEG_QUALITY, 75]
+                            )
+                            
+                            # Convert to base64
+                            import base64
+                            frame_b64 = base64.b64encode(buffer).decode('utf-8')
+                            
+                            # Send to laptop
+                            self.ws_client.send_video_frame(frame_b64)
+                        except Exception as e:
+                            logger.error(f"Failed to send video frame: {e}")
                 
                 # Create annotated frame with BOTH models
                 annotated_frame = frame.copy()
@@ -2642,6 +2674,73 @@ Speak naturally and keep it short (under 30 words)."""
             logger.error(f"Maps learning error: {e}")
             self.debug_print(f"❌ Maps learning failed: {e}")
     
+    def _handle_laptop_command(self, command: str, params: dict):
+        """Handle commands from laptop server (via WebSocket)."""
+        logger.info(f"📩 Received command from laptop: {command}")
+        
+        try:
+            if command == "toggle_voice_activation":
+                if self.vad_listening:
+                    self.window.after(0, self.stop_voice_activation)
+                else:
+                    self.window.after(0, self.start_voice_activation)
+            
+            elif command == "toggle_interrupt_tts":
+                current = self.vad_interrupt_enabled.get()
+                self.window.after(0, lambda: self.vad_interrupt_enabled.set(not current))
+                self.debug_print(f"🔇 Interrupt TTS: {'ON' if not current else 'OFF'}")
+            
+            elif command == "toggle_spatial_audio":
+                if self.spatial_audio_enabled.get():
+                    self.window.after(0, self.stop_spatial_audio)
+                else:
+                    self.window.after(0, self.start_spatial_audio)
+            
+            elif command == "change_layer":
+                layer = params.get("layer", "Layer 1 Learner")
+                self.debug_print(f"🔄 Layer switch requested: {layer}")
+                # TODO: Implement layer switching logic (for future multi-layer architecture)
+            
+            elif command == "change_tier":
+                tier = params.get("tier", "Testing (FREE)")
+                self.window.after(0, lambda: self.selected_tier.set(tier))
+                self.window.after(0, lambda: self.on_tier_selection_changed(tier))
+                self.debug_print(f"🎛️ Switched to tier: {tier}")
+            
+            elif command == "start_recording":
+                if not self.recording_active:
+                    self.window.after(0, self.start_recording)
+            
+            elif command == "stop_recording":
+                if self.recording_active:
+                    self.window.after(0, self.stop_recording)
+            
+            elif command == "replay_tts":
+                self.window.after(0, self.replay_last_tts)
+            
+            elif command == "mark_poi":
+                self.window.after(0, self.learn_from_maps)
+            
+            elif command == "save_memory":
+                self.debug_print("💾 Memory save requested from laptop")
+                # TODO: Implement memory save dialog
+            
+            elif command == "navigate":
+                self.debug_print("🗺️ Navigation mode requested from laptop")
+                # TODO: Implement navigation mode
+            
+            elif command == "open_settings":
+                self.debug_print("⚙️ Settings requested from laptop")
+                # TODO: Implement settings dialog
+            
+            else:
+                logger.warning(f"Unknown command: {command}")
+                self.debug_print(f"⚠️ Unknown command: {command}")
+        
+        except Exception as e:
+            logger.error(f"Command handling error: {e}", exc_info=True)
+            self.debug_print(f"❌ Command error: {e}")
+    
     def on_closing(self):
         """Graceful shutdown."""
         logger.info("🛑 Shutting down Project-Cortex GUI")
@@ -2654,6 +2753,10 @@ Speak naturally and keep it short (under 30 words)."""
         # Stop spatial audio if active
         if self.spatial_audio:
             self.stop_spatial_audio()
+        
+        # Stop WebSocket client
+        if self.ws_client:
+            self.ws_client.stop()
         
         self.stop_event.set()
         
