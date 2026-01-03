@@ -9,9 +9,9 @@
 [![Status: Active Development](https://img.shields.io/badge/Status-Active%20Development-green.svg)](https://github.com/IRSPlays/ProjectCortexV2)
 [![Competition: YIA 2026](https://img.shields.io/badge/Competition-YIA%2026-purple.svg)](https://www.yia.org.sg/)
 
-**Democratizing Assistive Technology**  
-Building a **<$150 AI wearable** to disrupt the **$4,000+ premium device market** (OrCam, eSight).  
-*Powered by Raspberry Pi 5, Gemini 2.5 Flash, and Adaptive Edge AI.*
+**Democratizing Assistive Technology**
+Building a **<$150 AI wearable** to disrupt the **$4,000+ premium device market** (OrCam, eSight).
+*Powered by Raspberry Pi 5, Gemini 2.5 Flash, and 3-Tier Hybrid Architecture.*
 
 [**Explore Architecture**](docs/architecture/UNIFIED-SYSTEM-ARCHITECTURE.md) • [**View Roadmap**](docs/project-management/todo-full-implementation.md) • [**Read Documentation**](docs/README.md)
 
@@ -53,19 +53,20 @@ Commercial devices like OrCam MyEye cost **$4,000+**, making them inaccessible t
 
 ### 1. Adaptive Dual-Model Vision (Layer 0 + Layer 1)
 Unlike traditional systems that use a single static model, Cortex uses a **parallel cascade**:
-*   **Layer 0 (Guardian):** Static **YOLO11n-NCNN** for safety-critical hazards (cars, stairs). Runs 100% offline, **80.7ms latency** ✅ (4.8x faster than PyTorch).
-*   **Layer 1 (Learner):** Adaptive **YOLOE-11s** that *learns new objects in real-time* from Gemini descriptions and Google Maps POI data.
+*   **Layer 0 (Guardian):** Static **YOLO11n-NCNN** (INT8) for safety-critical hazards. Runs 100% offline with **25-30ms latency** ✅ (3x faster than PyTorch).
+*   **Layer 1 (Learner):** Adaptive **YOLOE-11s** that *learns new objects in real-time* without retraining. Supports **Prompt-Free Discovery**, **Text Prompts**, and **Personal Object Recognition**.
 
-### 2. Native Audio-to-Audio Conversation (Layer 2)
+### 2. 3-Tier Hybrid Architecture (Edge + Server + Cloud)
+A revolutionary split-compute model that balances latency and power:
+*   **Tier 1 (Wearable):** Raspberry Pi 5 handles safety, vision, and audio (<100ms).
+*   **Tier 2 (Server):** Laptop handles heavy VIO/SLAM and provides a **PyQt6 Real-Time Dashboard**.
+*   **Tier 3 (Cloud):** Internet-accessible **FastAPI Gateway** for mobile companion apps and remote monitoring.
+
+### 3. Native Audio-to-Audio Conversation (Layer 2)
 Powered by **Gemini 2.5 Flash Live API** over WebSocket:
 *   **<500ms Latency:** 83% faster than traditional HTTP pipelines (3s).
 *   **Full Duplex:** Users can interrupt the AI naturally.
 *   **Multimodal:** Streams video + audio continuously for deep context.
-
-### 3. Body-Relative Spatial Audio (Layer 3)
-*   **Chest-Mounted Camera:** Navigation cues are relative to your *torso*, not your head.
-*   **Audio Beacons:** "Follow the sound" to find specific objects.
-*   **Proximity Alerts:** Dynamic warning tones for obstacles.
 
 ---
 
@@ -85,30 +86,38 @@ Our architecture is divided into four specialized layers to balance **safety, in
 
 ## 🏗️ System Architecture
 
-### Hardware Stack (Edge Unit)
+### Hardware Stack (Tier 1: Edge Unit)
 *   **Compute:** Raspberry Pi 5 (4GB RAM)
 *   **Vision:** IMX415 / Camera Module 3 (Wide)
 *   **Audio:** Bluetooth Headphones (OpenAL Spatial Output)
 *   **Power:** 30,000mAh USB-C PD Power Bank (`usb_max_current_enable=1`)
 *   **Sensors:** BNO055 IMU (Torso Orientation), GPS
 
-### Hybrid-Edge Topology
+### 3-Tier Hybrid Topology
 ```mermaid
 graph TD
-    User((User)) <-->|Audio/Haptics| RPi[Raspberry Pi 5]
-    RPi <-->|WebSocket| Laptop[Laptop Server (Optional)]
-    RPi <-->|Live API| Gemini[Gemini Cloud]
+    User((User)) <-->|Audio/Haptics| Tier1[Tier 1: RPi 5 Wearable]
+    Tier1 <-->|WebSocket LAN| Tier2[Tier 2: Laptop Server]
+    Tier1 <-->|WebSocket Live API| Tier4[Gemini Cloud]
+    Tier2 <-->|HTTPS/WSS| Tier3[Tier 3: Companion App]
     
-    subgraph "Raspberry Pi 5 (Wearable)"
-        L0[Layer 0: Guardian]
-        L1[Layer 1: Learner]
-        L2[Layer 2: Thinker]
-        L4[Layer 4: Memory]
+    subgraph "Tier 1: The Reflex (Edge)"
+        L0[L0: YOLO11n NCNN]
+        L1[L1: YOLOE-11s]
+        L2_Client[L2: Live Client]
+        L4_Local[L4: SQLite]
     end
     
-    subgraph "Laptop Server (Heavy Compute)"
-        L3_SLAM[Layer 3: VIO/SLAM]
-        Dash[Web Dashboard]
+    subgraph "Tier 2: The Brain (Server)"
+        GUI[PyQt6 Dashboard]
+        API[FastAPI Gateway]
+        SLAM[L3: VIO/SLAM]
+        DB[PostgreSQL]
+    end
+
+    subgraph "Tier 3: The Monitor (App)"
+        Mobile[React Native App]
+        Remote[Remote Monitoring]
     end
 ```
 
@@ -155,15 +164,16 @@ graph TD
 
 ## 📊 Performance & Benchmarks
 
-Measured on **Raspberry Pi 5 (4GB)** running production code:
+Measured on **Raspberry Pi 5 (4GB)** running production code with **NCNN Optimization**:
 
 | Component | Target | **Actual** | Status |
 |:---|:---|:---|:---|
-| **Safety Detection (L0)** | <100ms | **60-80ms** | ✅ EXCEEDED |
-| **Adaptive Detection (L1)** | <150ms | **90-130ms** | ✅ PASSED |
+| **Safety Detection (L0)** | <100ms | **25-30ms** | 🚀 WORLD CLASS |
+| **Adaptive Detection (L1)** | <150ms | **95-110ms** | ✅ PASSED |
 | **Gemini Live Response** | <700ms | **~450ms** | ✅ EXCEEDED |
 | **Haptic Trigger** | <10ms | **3-5ms** | ✅ INSTANT |
-| **RAM Usage** | <4GB | **~3.6GB** | ✅ OPTIMIZED |
+| **RAM Usage (RPi)** | <4GB | **~2.6GB** | ✅ OPTIMIZED |
+| **RAM Usage (Server)** | <4GB | **~2.0GB** | ✅ OPTIMIZED |
 
 ---
 
@@ -171,10 +181,11 @@ Measured on **Raspberry Pi 5 (4GB)** running production code:
 
 Detailed technical documentation is available in the `docs/` directory.
 
-*   📘 **[Unified System Architecture](docs/architecture/UNIFIED-SYSTEM-ARCHITECTURE.md)** - The master blueprint.
+*   📘 **[Unified System Architecture](docs/architecture/UNIFIED-SYSTEM-ARCHITECTURE.md)** - The master blueprint (Updated Jan 2026).
 *   ⚡ **[Adaptive YOLOE Implementation](docs/implementation/ADAPTIVE-YOLOE-IMPLEMENTATION-PLAN.md)** - How the self-learning vision works.
 *   🗣️ **[Gemini Live API Plan](docs/implementation/layer2-live-api-plan.md)** - WebSocket audio streaming details.
-*   🎧 **[Spatial Audio Guide](docs/implementation/spatial-audio-guide.md)** - Body-relative navigation explained.
+*   🖥️ **[PyQt6 Real-Time GUI](docs/implementation/pyqt6-gui-implementation.md)** - Tier 2 visualization dashboard.
+*   🌐 **[FastAPI Internet Gateway](docs/implementation/fastapi-internet-api.md)** - Tier 3 companion app backend.
 *   🛠️ **[Router Fix & Logic](docs/implementation/ROUTER-FIX-V2-RESEARCH-DRIVEN.md)** - How we route user intents.
 
 ---

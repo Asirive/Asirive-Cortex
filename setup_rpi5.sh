@@ -157,6 +157,9 @@ install_system_deps() {
     sudo apt install -y \
         espeak-ng \
         libespeak-ng1
+
+    log_info "Installing uv (fast Python package installer)..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
     
     log_info "✅ System dependencies installed"
 }
