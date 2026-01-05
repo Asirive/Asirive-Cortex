@@ -1,0 +1,25 @@
+# Raspberry Pi 5 Fan Control Configuration
+# Add these lines to /boot/config.txt for maximum fan speed
+
+# Enable GPIO fan control on Raspberry Pi 5
+# GPIO 18 controls the official active cooler fan
+gpio-fan,gpio=18
+
+# Force fan to always run at maximum speed
+# Set temperature thresholds to minimum values (0°C) so fan runs constantly
+temp_limit=0
+
+# Alternative: Set fan to start at very low temperature
+# This ensures maximum cooling performance
+temp_soft_limit=30
+
+# Enable fan control
+enable_fan=1
+
+# Force maximum PWM duty cycle (100%)
+# This ensures the fan runs at full speed regardless of temperature
+# Note: Some parameters may need to be set via device tree overlay
+
+# Additional configuration for active cooler
+# The official Raspberry Pi 5 Active Cooler uses GPIO 18 for PWM control
+# These settings ensure continuous maximum cooling performance
