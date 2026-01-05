@@ -1,0 +1,15 @@
+# Flask Dashboard Dependencies
+# Add these to requirements.txt or install separately
+
+# === Web Framework ===
+Flask==3.0.0
+Werkzeug==3.0.1
+
+# === Production WSGI Server ===
+gunicorn==21.2.0
+
+# === Already in requirements.txt (verify) ===
+# opencv-python>=4.8.0
+# ultralytics>=8.0.0
+# numpy>=1.24.0
+# picamera2>=0.3.0 (RPi only)

@@ -1,0 +1,25 @@
+[Unit]
+Description=Cortex Flask Dashboard
+After=network.target
+
+[Service]
+Type=notify
+User=cortex
+Group=cortex
+WorkingDirectory=/home/cortex/cortex/src
+Environment="PATH=/home/cortex/cortex/.venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PYTHONPATH=/home/cortex/cortex/src"
+Environment="FLASK_HOST=0.0.0.0"
+Environment="FLASK_PORT=5000"
+ExecStart=/home/cortex/cortex/.venv/bin/gunicorn -c gunicorn_config.py run_flask_dashboard:app
+ExecReload=/bin/kill -s HUP $MAINPID
+KillMode=mixed
+KillSignal=SIGQUIT
+TimeoutStopSec=30
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

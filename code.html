@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1.0" name="viewport"/>
+<title>Project Cortex - Combined Organic Dashboard</title>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@300;400;500;600;700&amp;family=Space+Mono:ital,wght@0,400;0,700;1,400&amp;display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<script>
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              bio: {
+                base: "#011618", // Very deep teal/black
+                dark: "#042124", // Deep forest background
+                panel: "rgba(10, 48, 51, 0.6)", // Glassy dark teal
+                border: "#134e4a", // Teal-900
+                highlight: "#115e59", // Teal-800
+                text: "#ccfbf1", // Teal-100
+                muted: "#5eead4", // Teal-300
+              },
+              accent: {
+                teal: "#2dd4bf", // Teal-400
+                amber: "#fbbf24", // Amber-400
+                rose: "#fb7185", // Rose-400 for alerts
+                indigo: "#818cf8", // Indigo-400 for depth
+              }
+            },
+            fontFamily: {
+              sans: ["Quicksand", "sans-serif"],
+              mono: ["Space Mono", "monospace"],
+            },
+            borderRadius: {
+              'organic': '1.5rem',
+              'bubble': '2rem',
+            },
+            boxShadow: {
+                'glow': '0 0 15px rgba(45, 212, 191, 0.15)',
+                'glow-amber': '0 0 15px rgba(251, 191, 36, 0.15)',
+            },
+            backgroundImage: {
+                'organic-gradient': 'radial-gradient(circle at top right, #0f766e 0%, #042f2e 25%, #011618 100%)',
+            }
+          },
+        },
+      };
+    </script>
+<style>
+        body {
+            background-color: #011618;
+            color: #ccfbf1;
+        }::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent; 
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #115e59; 
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #2dd4bf; 
+        }
+        .glass-panel {
+            background: rgba(8, 40, 42, 0.65);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(45, 212, 191, 0.1);
+        }
+        .scanline {
+            width: 100%;
+            height: 100px;
+            z-index: 10;
+            background: linear-gradient(0deg, rgba(0,0,0,0) 0%, rgba(45, 212, 191, 0.1) 50%, rgba(0,0,0,0) 100%);
+            opacity: 0.1;
+            background-size: 100% 100%;
+            animation: scanline 8s linear infinite;
+            position: absolute;
+            pointer-events: none;
+        }
+        @keyframes scanline {
+            0% { top: -100px; }
+            100% { top: 100%; }
+        }
+        .breathing-glow {
+            animation: breathe 4s ease-in-out infinite;
+        }
+        @keyframes breathe {
+            0%, 100% { box-shadow: 0 0 5px rgba(45, 212, 191, 0.2); }
+            50% { box-shadow: 0 0 20px rgba(45, 212, 191, 0.5); }
+        }
+    </style>
+</head>
+<body class="bg-bio-base bg-organic-gradient min-h-screen font-sans selection:bg-accent-teal selection:text-bio-base overflow-hidden flex flex-col antialiased">
+<header class="h-20 px-8 flex items-center justify-between z-20 shrink-0">
+<div class="flex items-center gap-4">
+<div class="w-12 h-12 rounded-full bg-gradient-to-tr from-accent-teal to-blue-600 flex items-center justify-center shadow-glow breathing-glow">
+<span class="material-symbols-outlined text-white text-3xl">psychology_alt</span>
+</div>
+<div>
+<h1 class="text-2xl font-bold tracking-tight text-white drop-shadow-sm">Project Cortex</h1>
+<div class="flex items-center gap-2">
+<span class="text-xs font-mono text-accent-teal uppercase tracking-widest opacity-80">Biotech Interface v2.4</span>
+<span class="w-1.5 h-1.5 rounded-full bg-accent-amber animate-pulse"></span>
+</div>
+</div>
+</div>
+<div class="glass-panel px-6 py-2 rounded-full flex items-center gap-6 text-xs font-mono text-bio-muted shadow-lg">
+<div class="flex items-center gap-2">
+<span class="material-symbols-outlined text-sm">network_check</span>
+<span>LAT: <span class="text-white">12ms</span></span>
+</div>
+<div class="w-px h-4 bg-bio-border"></div>
+<div>FPS: <span class="text-white">60.0</span></div>
+<div class="w-px h-4 bg-bio-border"></div>
+<div>MEM: <span class="text-accent-amber">4.2 TB</span></div>
+<button class="ml-2 hover:text-white transition-colors">
+<span class="material-symbols-outlined text-lg">refresh</span>
+</button>
+</div>
+</header>
+<main class="flex-1 grid grid-cols-12 gap-6 p-8 pt-2 overflow-hidden h-[calc(100vh-80px)]">
+<aside class="col-span-12 lg:col-span-3 flex flex-col gap-6 overflow-y-auto pr-2 pb-10 custom-scrollbar">
+<section class="glass-panel rounded-organic p-6 relative overflow-hidden group shadow-lg">
+<div class="absolute top-0 right-0 w-32 h-32 bg-accent-teal/5 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none"></div>
+<h2 class="text-xs font-bold text-accent-teal uppercase tracking-widest mb-6 flex items-center gap-2">
+<span class="material-symbols-outlined text-lg">vital_signs</span> System Vitals
+                </h2>
+<div class="space-y-6 font-mono text-xs">
+<div class="group/bar">
+<div class="flex justify-between mb-2 text-bio-text/70 group-hover/bar:text-white transition-colors">
+<span>NEURAL_CPU</span>
+<span>12%</span>
+</div>
+<div class="w-full bg-bio-dark rounded-full h-3 overflow-hidden border border-bio-border/50">
+<div class="bg-gradient-to-r from-teal-800 to-accent-teal h-full rounded-full w-[12%] shadow-[0_0_10px_rgba(45,212,191,0.4)]"></div>
+</div>
+</div>
+<div class="group/bar">
+<div class="flex justify-between mb-2 text-bio-text/70 group-hover/bar:text-white transition-colors">
+<span>CORE_TEMP</span>
+<span class="text-accent-amber">42°C</span>
+</div>
+<div class="w-full bg-bio-dark rounded-full h-3 overflow-hidden border border-bio-border/50">
+<div class="bg-gradient-to-r from-yellow-800 to-accent-amber h-full rounded-full w-[42%] shadow-[0_0_10px_rgba(251,191,36,0.4)]"></div>
+</div>
+</div>
+<div class="group/bar">
+<div class="flex justify-between mb-2 text-bio-text/70 group-hover/bar:text-white transition-colors">
+<span>SYNAPTIC_MEM</span>
+<span class="text-accent-indigo">2.4 GB</span>
+</div>
+<div class="w-full bg-bio-dark rounded-full h-3 overflow-hidden border border-bio-border/50">
+<div class="bg-gradient-to-r from-indigo-900 to-accent-indigo h-full rounded-full w-[30%] shadow-[0_0_10px_rgba(129,140,248,0.4)]"></div>
+</div>
+</div>
+</div>
+<div class="mt-8 grid grid-cols-2 gap-3">
+<div class="bg-bio-dark/50 rounded-2xl p-3 border border-bio-border/30 text-center">
+<span class="material-symbols-outlined text-accent-teal text-xl mb-1">upload</span>
+<div class="text-[10px] text-bio-text/50 uppercase">Upstream</div>
+<div class="text-xs font-mono font-bold text-white">12.5 MB/s</div>
+</div>
+<div class="bg-bio-dark/50 rounded-2xl p-3 border border-bio-border/30 text-center">
+<span class="material-symbols-outlined text-accent-indigo text-xl mb-1">download</span>
+<div class="text-[10px] text-bio-text/50 uppercase">Downstream</div>
+<div class="text-xs font-mono font-bold text-white">1.2 GB/s</div>
+</div>
+</div>
+</section>
+<section class="space-y-4">
+<h2 class="text-xs font-bold text-accent-teal uppercase tracking-widest pl-2">Cortex Layers</h2>
+<div class="group relative bg-bio-panel hover:bg-bio-highlight/20 border border-bio-border/30 rounded-bubble p-4 transition-all duration-300 hover:scale-[1.02] cursor-pointer hover:shadow-glow hover:border-accent-teal/30">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 rounded-full bg-bio-dark flex items-center justify-center border border-bio-border text-accent-amber">
+<span class="material-symbols-outlined">bolt</span>
+</div>
+<div>
+<h3 class="font-semibold text-white text-sm">Reflex Layer</h3>
+<p class="text-[10px] text-accent-teal font-mono mt-0.5">STATUS: ACTIVE</p>
+</div>
+</div>
+<span class="w-2 h-2 rounded-full bg-accent-teal shadow-[0_0_8px_rgba(45,212,191,1)]"></span>
+</div>
+</div>
+<div class="group relative bg-bio-panel hover:bg-bio-highlight/20 border border-bio-border/30 rounded-bubble p-4 transition-all duration-300 hover:scale-[1.02] cursor-pointer hover:border-accent-indigo/30">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 rounded-full bg-bio-dark flex items-center justify-center border border-bio-border text-accent-indigo">
+<span class="material-symbols-outlined">psychology</span>
+</div>
+<div>
+<h3 class="font-semibold text-white text-sm">Cognition Layer</h3>
+<p class="text-[10px] text-bio-text/50 font-mono mt-0.5">STATUS: IDLE</p>
+</div>
+</div>
+<span class="w-2 h-2 rounded-full bg-bio-border"></span>
+</div>
+</div>
+<div class="group relative bg-bio-panel hover:bg-bio-highlight/20 border border-bio-border/30 rounded-bubble p-4 transition-all duration-300 hover:scale-[1.02] cursor-pointer hover:border-accent-rose/30">
+<div class="flex items-center justify-between">
+<div class="flex items-center gap-4">
+<div class="w-10 h-10 rounded-full bg-bio-dark flex items-center justify-center border border-bio-border text-accent-rose">
+<span class="material-symbols-outlined">memory</span>
+</div>
+<div>
+<h3 class="font-semibold text-white text-sm">Memory Core</h3>
+<p class="text-[10px] text-bio-text/50 font-mono mt-0.5">STATUS: OFFLINE</p>
+</div>
+</div>
+<span class="w-2 h-2 rounded-full bg-bio-border"></span>
+</div>
+</div>
+</section>
+<section class="glass-panel rounded-organic p-5 mt-auto">
+<div class="flex justify-between items-center mb-4">
+<h2 class="text-xs font-bold text-accent-teal uppercase tracking-widest">Protocol Override</h2>
+<span class="material-symbols-outlined text-accent-amber text-sm animate-spin-slow">settings</span>
+</div>
+<div class="space-y-3">
+<label class="flex items-center justify-between p-2 rounded-xl hover:bg-bio-highlight/10 cursor-pointer transition-colors">
+<span class="text-sm font-medium text-bio-text">Autonomous Mode</span>
+<div class="relative inline-flex items-center cursor-pointer">
+<input checked="" class="sr-only peer" type="checkbox" value=""/>
+<div class="w-9 h-5 bg-bio-dark border border-bio-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-gray-400 after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent-teal peer-checked:after:bg-white peer-checked:border-accent-teal"></div>
+</div>
+</label>
+<label class="flex items-center justify-between p-2 rounded-xl hover:bg-bio-highlight/10 cursor-pointer transition-colors">
+<span class="text-sm font-medium text-bio-text">Voice Synthesis</span>
+<div class="relative inline-flex items-center cursor-pointer">
+<input class="sr-only peer" type="checkbox" value=""/>
+<div class="w-9 h-5 bg-bio-dark border border-bio-border peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-gray-400 after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-accent-teal peer-checked:after:bg-white peer-checked:border-accent-teal"></div>
+</div>
+</label>
+</div>
+</section>
+</aside>
+<section class="col-span-12 lg:col-span-7 flex flex-col gap-6 h-full">
+<div class="flex-grow bg-black rounded-organic border border-bio-border relative overflow-hidden shadow-2xl flex items-center justify-center group ring-1 ring-white/5">
+<div class="scanline"></div>
+<div class="absolute top-4 left-4 w-32 h-32 border-l border-t border-accent-teal/30 rounded-tl-3xl"></div>
+<div class="absolute bottom-4 right-4 w-32 h-32 border-r border-b border-accent-teal/30 rounded-br-3xl"></div>
+<div class="absolute inset-0 bg-[radial-gradient(circle_at_center,_transparent_0%,_#000000_120%)] pointer-events-none"></div>
+<div class="text-center relative z-10 opacity-60 group-hover:opacity-100 transition-opacity duration-500">
+<div class="w-24 h-24 rounded-full border-2 border-dashed border-bio-border mx-auto mb-4 flex items-center justify-center animate-[spin_10s_linear_infinite]">
+<span class="material-symbols-outlined text-4xl text-bio-muted/50">videocam_off</span>
+</div>
+<p class="font-mono text-sm tracking-[0.2em] text-accent-teal/70">OPTICAL FEED OFFLINE</p>
+<p class="font-mono text-[10px] text-bio-text/30 mt-2">SEARCHING FOR SIGNAL...</p>
+</div>
+<div class="absolute bottom-6 left-8 flex items-center gap-3">
+<span class="flex items-center gap-2 px-3 py-1 rounded-full bg-accent-rose/10 border border-accent-rose/30 text-accent-rose text-[10px] font-bold shadow-glow">
+<span class="w-1.5 h-1.5 rounded-full bg-accent-rose animate-pulse"></span> LIVE CORE
+                    </span>
+<span class="px-3 py-1 rounded-full bg-bio-dark/80 text-bio-text backdrop-blur-md border border-bio-border text-[10px] font-mono">
+                        SCAN_MODE: ACTIVE
+                    </span>
+</div>
+<div class="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-10 pointer-events-none mix-blend-overlay"></div>
+</div>
+<div class="h-[35%] glass-panel rounded-organic flex flex-col shadow-lg overflow-hidden border border-bio-border/50">
+<div class="px-6 py-3 border-b border-bio-border/30 bg-bio-dark/30 flex justify-between items-center backdrop-blur-sm">
+<h2 class="text-xs font-bold text-accent-teal uppercase tracking-widest flex items-center gap-2">
+<span class="material-symbols-outlined text-sm">terminal</span> Neural Stream
+                    </h2>
+<div class="flex gap-1.5">
+<span class="w-2.5 h-2.5 rounded-full bg-bio-border border border-bio-highlight"></span>
+<span class="w-2.5 h-2.5 rounded-full bg-bio-border border border-bio-highlight"></span>
+</div>
+</div>
+<div class="flex-grow p-6 font-mono text-sm overflow-y-auto space-y-3 custom-scrollbar">
+<div class="text-bio-text/30 text-[10px] text-center mb-4 tracking-widest">-- STREAM INITIALIZED --</div>
+<div class="flex gap-3 group animate-fadeIn">
+<div class="w-6 h-6 rounded-full bg-accent-teal/20 flex items-center justify-center shrink-0 mt-0.5">
+<span class="text-accent-teal font-bold text-xs">C</span>
+</div>
+<div class="bg-bio-dark/60 rounded-r-xl rounded-bl-xl p-3 text-bio-text border border-bio-border/20 shadow-sm max-w-[80%]">
+<p class="leading-relaxed">System initialization complete. Cognitive functions are operating at 94% efficiency. Waiting for direct input.</p>
+</div>
+</div>
+<div class="flex gap-3 group animate-fadeIn">
+<div class="w-6 h-6 rounded-full bg-accent-teal/20 flex items-center justify-center shrink-0 mt-0.5">
+<span class="text-accent-teal font-bold text-xs">C</span>
+</div>
+<div class="bg-bio-dark/60 rounded-r-xl rounded-bl-xl p-3 text-bio-text border border-bio-border/20 shadow-sm max-w-[80%]">
+<p class="leading-relaxed">Connection to visual cortex established. Signal is intermittent.</p>
+</div>
+</div>
+</div>
+<div class="p-4 bg-bio-dark/40 flex items-center gap-3 border-t border-bio-border/30 backdrop-blur-md">
+<button class="w-10 h-10 rounded-full bg-bio-highlight/20 hover:bg-bio-highlight/40 text-accent-teal transition-colors flex items-center justify-center">
+<span class="material-symbols-outlined text-lg">mic</span>
+</button>
+<div class="flex-grow relative">
+<input class="w-full bg-bio-base/60 border border-bio-border/50 rounded-full px-5 py-2.5 text-sm focus:ring-2 focus:ring-accent-teal/50 focus:border-accent-teal text-white placeholder-bio-text/30 shadow-inner font-mono transition-all" placeholder="Enter command or query..." type="text"/>
+</div>
+<button class="w-10 h-10 rounded-full bg-accent-teal hover:bg-teal-300 text-bio-base shadow-glow transition-all transform hover:scale-105 flex items-center justify-center">
+<span class="material-symbols-outlined text-lg font-bold">arrow_upward</span>
+</button>
+</div>
+</div>
+</section>
+<aside class="col-span-12 lg:col-span-2 flex flex-col h-full overflow-hidden">
+<div class="flex items-center justify-between mb-6 px-2">
+<h2 class="text-xs font-bold text-accent-teal uppercase tracking-widest">
+                    Memory Recalls
+                </h2>
+<span class="text-[10px] bg-accent-amber/10 text-accent-amber px-2 py-0.5 rounded-full border border-accent-amber/20">5 Active</span>
+</div>
+<div class="flex-grow overflow-y-auto pr-2 space-y-5 custom-scrollbar pb-10">
+<div class="group relative rounded-bubble rounded-tr-sm overflow-hidden h-40 border border-bio-border/50 bg-bio-panel transition-all duration-300 hover:scale-[1.03] hover:-translate-y-1 hover:shadow-glow cursor-pointer">
+<img alt="Leopard in savannah" class="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-opacity duration-500 scale-110 group-hover:scale-100" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBB7DCAVO2GNvLqDhCgZkK9gS3l_pvrab9s7mWt2E9pQM5__tQIcKqFaXTleKh2-MXDrOKn83_A-8vnTa_DCZlVQ-w_eM5sPSjNek7lAG4BbjrFtO0-t3S60QEaT8_0QEFxEQMMkcAHW766k-4MCy0jnV5-UGgQ2_Yz2zfACjj6F4Qwk05d4ZTP5bAYoP_M9e2rct8pcczX7st4O5LwLDcKOynkr8hsdZS2v0ALVx1DZwC3wkrPCDdOIwUlxAsCCOH-da_05hM8Q3Bb"/>
+<div class="absolute inset-0 bg-gradient-to-t from-bio-base via-transparent to-transparent opacity-90"></div>
+<div class="absolute bottom-0 w-full p-4">
+<div class="flex justify-between items-end">
+<div>
+<span class="text-[10px] font-mono text-accent-amber block mb-1">RECALL_NODE_00</span>
+<span class="text-sm font-semibold text-white leading-tight">Fauna Pattern</span>
+</div>
+<span class="material-symbols-outlined text-white text-lg opacity-0 group-hover:opacity-100 transition-all transform translate-y-2 group-hover:translate-y-0">open_in_new</span>
+</div>
+</div>
+</div>
+<div class="group relative rounded-bubble rounded-bl-sm overflow-hidden h-48 border border-bio-border/50 bg-bio-panel transition-all duration-300 hover:scale-[1.03] hover:-translate-y-1 hover:shadow-glow cursor-pointer">
+<img alt="Urban city architecture" class="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-opacity duration-500 scale-110 group-hover:scale-100" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDP6ywuV_PwOaFD7FRXoNuACJAkhrZ6Qr1nWpsP-uj__lucq5EbvRNdolX1MZlSsNJ8e8I_q2q0Fd5Jh1xvrMYOKIfj-gEOR9JVW1Yu8D7MFFxFFNjaMOQ9WObtiw5VgWf7ymY94kpNFXxO-JjFzU8GNlWsgiVGvugrr2dHpHu-HPIMPxuluZnksOAUAvYUhCQN0OjxJ7a9imxG_DxJ-TtsjrEZQfdnjmCnGBqkwyyGYpion1_BFVMrumohI0WhO2EENA8Eo5CMYQdI"/>
+<div class="absolute inset-0 bg-gradient-to-t from-bio-base via-transparent to-transparent opacity-90"></div>
+<div class="absolute bottom-0 w-full p-4">
+<div class="flex justify-between items-end">
+<div>
+<span class="text-[10px] font-mono text-accent-teal block mb-1">RECALL_NODE_01</span>
+<span class="text-sm font-semibold text-white leading-tight">Urban Grid</span>
+</div>
+</div>
+</div>
+</div>
+<div class="group relative rounded-bubble rounded-tl-sm overflow-hidden h-36 border border-bio-border/50 bg-bio-panel transition-all duration-300 hover:scale-[1.03] hover:-translate-y-1 hover:shadow-glow cursor-pointer">
+<img alt="Headphones setup" class="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-opacity duration-500 scale-110 group-hover:scale-100" src="https://lh3.googleusercontent.com/aida-public/AB6AXuDi8AAe0gPLpHGmsQJmXe3_U3ydydLGWtOYDglG6c2_K2wUYi0CYZ7xi9TUxFR26xp7fCcY4TYQE9m8bVcWsIJXqMC0duHOM5fxdn_DF5GSogHnbIAaia3KhJcmv2AZDLvNyN6yEJZb7SpA_M9NeDukGWR8K8xDHjRwefekY-I8UkIqrRLvD7MxZkxiB8DYWL_7fM9qN9-rAspl0QsTAU7Lse465NX36b0ga5u3u5kvhrkvwf2rYKJm0jAozAGS1IjcWbfAP92bqtY_"/>
+<div class="absolute inset-0 bg-gradient-to-t from-bio-base via-transparent to-transparent opacity-90"></div>
+<div class="absolute bottom-0 w-full p-4">
+<div class="flex justify-between items-end">
+<div>
+<span class="text-[10px] font-mono text-accent-indigo block mb-1">RECALL_NODE_02</span>
+<span class="text-sm font-semibold text-white leading-tight">Audio Input</span>
+</div>
+</div>
+</div>
+</div>
+<div class="group relative rounded-bubble rounded-br-sm overflow-hidden h-44 border border-bio-border/50 bg-bio-panel transition-all duration-300 hover:scale-[1.03] hover:-translate-y-1 hover:shadow-glow cursor-pointer">
+<img alt="Mountain hiking" class="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-opacity duration-500 scale-110 group-hover:scale-100" src="https://lh3.googleusercontent.com/aida-public/AB6AXuBbXKj-5s0-tpVhZ65lpT_tujHs1NaYwPemYDMYJBnatVkVEsnS6KumYUYYRT-wrge150UaKgDFQS882HfFPUYLeZ5ypMk5_jjdnhZ9lsVVJX1J8h3z8xBsnVzB9QtoHSlyGNbGZ2BCpJCM2T2ma2Df9fqzEAYcl4M-Ll5iJyoBU8_GC6x_9amzDMXn1rEA8MG3SgpQLWeJDmD-kcYlWhjAApIU1Xuu8hjq_piiPp1cUOQU98B4SJdeMo3g_VhQyLxcaoATBs0Sqtjd"/>
+<div class="absolute inset-0 bg-gradient-to-t from-bio-base via-transparent to-transparent opacity-90"></div>
+<div class="absolute bottom-0 w-full p-4">
+<div class="flex justify-between items-end">
+<div>
+<span class="text-[10px] font-mono text-accent-rose block mb-1">RECALL_NODE_03</span>
+<span class="text-sm font-semibold text-white leading-tight">Terrain Data</span>
+</div>
+</div>
+</div>
+</div>
+<div class="group relative rounded-bubble rounded-tl-sm overflow-hidden h-32 border border-bio-border/50 bg-bio-panel transition-all duration-300 hover:scale-[1.03] hover:-translate-y-1 hover:shadow-glow cursor-pointer">
+<img alt="Coffee shop aesthetic" class="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-opacity duration-500 scale-110 group-hover:scale-100" src="https://lh3.googleusercontent.com/aida-public/AB6AXuD0F44zup-7ZXmc8_MzZfHCB6kL6bXpUdojBiI7C2fGke52i80EjhvQ_j7Zrfw6Wkt7qf0UpUAK0Uac1cgTFQWC0nKtFygnmkU8WH-4w4_UZ4rmnqFuR2f8M4k3faHA-a27gPBvPW-o4X2En5GUt0md4vMOwp0REcj4qAv-n-8HcRL7LKOCqIfw92JU-BeNjg5NpqjZLS3kSLwXvOxQZPbz56Hs05_aDemSugFBPtyQRn8VEo_GMGc4ytJQ4XTA2XxrlslqKQ3Xx2t-"/>
+<div class="absolute inset-0 bg-gradient-to-t from-bio-base via-transparent to-transparent opacity-90"></div>
+<div class="absolute bottom-0 w-full p-4">
+<div class="flex justify-between items-end">
+<div>
+<span class="text-[10px] font-mono text-accent-amber block mb-1">RECALL_NODE_04</span>
+<span class="text-sm font-semibold text-white leading-tight">Social Hub</span>
+</div>
+</div>
+</div>
+</div>
+</div>
+</aside>
+</main>
+
+</body></html>
