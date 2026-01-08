@@ -13,7 +13,23 @@
       "Bash(find:*)",
       "Bash(git lfs:*)",
       "Bash(ls:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "mcp__plugin_context7_context7__resolve-library-id",
+      "mcp__plugin_context7_context7__query-docs",
+      "mcp__web-search-prime__webSearchPrime",
+      "mcp__plugin_supabase_supabase__execute_sql",
+      "mcp__zread__search_doc",
+      "WebSearch",
+      "Bash(unzip:*)",
+      "Bash(python:*)",
+      "Bash(pip install:*)",
+      "Bash(pip:*)",
+      "Bash(reg query:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:www.raspberrypi.com)",
+      "WebFetch(domain:forums.raspberrypi.com)"
     ]
   }
 }

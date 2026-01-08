@@ -19,3 +19,6 @@ TTS[[:space:]]Model/*.txt filter=lfs diff=lfs merge=lfs -text
 *.zip filter=lfs diff=lfs merge=lfs -text
 *.tar.gz filter=lfs diff=lfs merge=lfs -text
 mobileclip_blt.ts filter=lfs diff=lfs merge=lfs -text
+models/**/*.ncnn.bin filter=lfs diff=lfs merge=lfs -text
+models/**/*.pt filter=lfs diff=lfs merge=lfs -text
+models/**/*.onnx filter=lfs diff=lfs merge=lfs -text
