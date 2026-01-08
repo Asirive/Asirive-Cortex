@@ -60,11 +60,12 @@ class GeminiLiveHandler:
         temperature: float = 0.7,
         max_retries: int = 5,
         initial_delay: float = 1.0,
-        max_delay: float = 60.0
+        max_delay: float = 60.0,
+        memory_manager: Optional['HybridMemoryManager'] = None
     ):
         """
         Initialize Gemini Live API handler.
-        
+
         Args:
             api_key: Google API key (GEMINI_API_KEY env var)
             model: Live API model name (gemini-2.0-flash-exp)
@@ -74,30 +75,36 @@ class GeminiLiveHandler:
             max_retries: Max reconnection attempts (5)
             initial_delay: Initial retry delay seconds (1.0)
             max_delay: Max retry delay seconds (60.0)
+            memory_manager: HybridMemoryManager for cloud storage (optional)
         """
         self.client = genai.Client(api_key=api_key)
         self.model = model
         self.system_instruction = system_instruction or self._default_system_instruction()
         self.response_modalities = response_modalities or ['AUDIO', 'TEXT']
         self.temperature = temperature
-        
+
         # Reconnection parameters (exponential backoff)
         self.max_retries = max_retries
         self.initial_delay = initial_delay
         self.max_delay = max_delay
-        
+
         # Session state
         self.session: Optional[genai.live.AsyncSession] = None
         self.is_connected = False
         self.session_handle: Optional[str] = None  # For resumption
         self.interrupted = False
-        
+
         # Audio output queue (thread-safe)
         self.audio_queue = asyncio.Queue()
-        
+
         # Callback for status updates (optional)
         self.status_callback: Optional[Callable[[str], None]] = None
-        
+
+        # Memory manager (optional, for cloud storage)
+        self.memory_manager = memory_manager
+        self._last_query = None  # Track last query for response logging
+        self._query_start_time = None  # Track query latency
+
         logger.info(f"✅ GeminiLiveHandler initialized (model={model})")
     
     @staticmethod
@@ -231,15 +238,50 @@ class GeminiLiveHandler:
                 # Handle text response
                 if hasattr(response, 'text') and response.text:
                     logger.debug(f"💬 Text response: {response.text[:100]}...")
+
+                    # Store query/response to memory manager
+                    if self.memory_manager and self._last_query:
+                        latency_ms = (time.time() - self._query_start_time) * 1000 if self._query_start_time else 0
+                        try:
+                            asyncio.create_task(self.memory_manager.store_query(
+                                user_query=self._last_query,
+                                transcribed_text=self._last_query,
+                                routed_layer='layer2',
+                                routing_confidence=1.0,
+                                ai_response=response.text,
+                                response_latency_ms=latency_ms,
+                                tier_used='gemini_live'
+                            ))
+                            logger.debug(f"💾 Stored query/response to memory manager")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Failed to store to memory manager: {e}")
+
                     # Text responses are informational, not used for TTS
                     continue
-                
+
                 # Handle audio response (PRIMARY OUTPUT)
                 if hasattr(response, 'data') and response.data:
                     audio_bytes = response.data
                     logger.debug(f"📥 Received {len(audio_bytes)} bytes of audio")
                     # Add to audio queue for playback
                     await self.audio_queue.put(audio_bytes)
+
+                    # Store query to memory manager (audio response)
+                    if self.memory_manager and self._last_query:
+                        latency_ms = (time.time() - self._query_start_time) * 1000 if self._query_start_time else 0
+                        try:
+                            asyncio.create_task(self.memory_manager.store_query(
+                                user_query=self._last_query,
+                                transcribed_text=self._last_query,
+                                routed_layer='layer2',
+                                routing_confidence=1.0,
+                                ai_response="[Audio response]",
+                                response_latency_ms=latency_ms,
+                                tier_used='gemini_live_audio'
+                            ))
+                            logger.debug(f"💾 Stored query/audio response to memory manager")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Failed to store to memory manager: {e}")
                     
         except asyncio.CancelledError:
             logger.info("🛑 Receive loop cancelled")
@@ -251,18 +293,18 @@ class GeminiLiveHandler:
     async def send_audio_chunk(self, audio_bytes: bytes, sample_rate: int = 16000) -> bool:
         """
         Send PCM audio chunk to Gemini Live API.
-        
+
         Args:
             audio_bytes: Raw PCM audio bytes (mono)
             sample_rate: Audio sample rate (16000 Hz recommended)
-        
+
         Returns:
             bool: True if sent successfully, False otherwise
         """
         if not self.is_connected or not self.session:
             logger.error("❌ Not connected to Live API")
             return False
-        
+
         try:
             await self.session.send_realtime_input(
                 audio=types.Blob(
@@ -271,8 +313,13 @@ class GeminiLiveHandler:
                 )
             )
             logger.debug(f"📤 Sent {len(audio_bytes)} bytes of audio")
+
+            # Track query for memory logging
+            if not self._query_start_time:
+                self._query_start_time = time.time()
+
             return True
-            
+
         except Exception as e:
             logger.error(f"❌ Failed to send audio: {e}")
             self.is_connected = False
@@ -306,22 +353,27 @@ class GeminiLiveHandler:
     async def send_text(self, text: str) -> bool:
         """
         Send text input to Gemini Live API (for testing/debugging).
-        
+
         Args:
             text: Text prompt
-        
+
         Returns:
             bool: True if sent successfully, False otherwise
         """
         if not self.is_connected or not self.session:
             logger.error("❌ Not connected to Live API")
             return False
-        
+
         try:
             await self.session.send_realtime_input(text=text)
             logger.debug(f"📤 Sent text: {text[:50]}...")
+
+            # Track query for memory logging
+            self._last_query = text
+            self._query_start_time = time.time()
+
             return True
-            
+
         except Exception as e:
             logger.error(f"❌ Failed to send text: {e}")
             self.is_connected = False

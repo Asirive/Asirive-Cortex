@@ -1,0 +1,306 @@
+# =====================================================
+# ProjectCortex v2.0 - Configuration File
+# 3-Tier Hybrid Architecture with Supabase Integration
+# =====================================================
+# Author: Haziq (@IRSPlays)
+# Date: January 8, 2026
+# =====================================================
+
+# =====================================================
+# SUPABASE CONFIGURATION
+# =====================================================
+supabase:
+  # Project Credentials (from https://supabase.com/dashboard/project/ziarxgoansbhesdypfic)
+  url: "https://ziarxgoansbhesdypfic.supabase.co"
+  anon_key: "sb_publishable_ErFxooa2JFiE8eXtd4hx3Q_Yll74lv_"
+  device_id: "rpi5-cortex-001"  # Unique device ID (change per device)
+
+  # Sync Settings
+  sync_interval_seconds: 60  # Batch upload every 60s
+  batch_size: 100  # Max rows per batch upload
+  enable_offline_queue: true  # Queue when WiFi disconnected
+
+  # Local Cache Settings
+  local_cache_size: 1000  # Keep last 1000 detections locally
+  local_db_path: "local_cortex.db"  # Path to local SQLite database
+  cleanup_old_rows: true  # Auto-cleanup old local rows
+
+# =====================================================
+# LAYER 0: THE GUARDIAN (Safety-Critical Detection)
+# =====================================================
+layer0:
+  model_path: "models/yolo11n_ncnn_model"
+  framework: "ncnn"  # NCNN - ARM-optimized for RPi5
+  device: "cpu"  # Options: 'cpu' (RPi), 'cuda' (laptop with GPU)
+  confidence: 0.5  # Detection confidence threshold
+  enable_haptic: true  # Enable GPIO haptic feedback (RPi)
+  gpio_pin: 18  # GPIO pin for vibration motor (BCM numbering)
+
+  # Proximity thresholds for haptic feedback
+  proximity_thresholds:
+    immediate: 0.3  # >30% of frame = DANGER (continuous vibration)
+    near: 0.15      # >15% of frame = WARNING (fast pulse)
+    far: 0.05        # >5% of frame = NOTICE (slow pulse)
+
+# =====================================================
+# LAYER 1: THE LEARNER (Adaptive Context-Aware Detection)
+# =====================================================
+layer1:
+  # Standard YOLOE (Text/Visual prompts) - NCNN format for best RPi5 performance
+  ncnn_model_path: "models/yoloe-11s-seg_ncnn_model"
+  # Prompt-free YOLOE - ONNX format (NCNN incompatible with LRPCHead)
+  onnx_model_path: "models/yoloe-11s-seg-pf.onnx"
+
+  device: "cpu"
+  confidence: 0.25
+  mode: "TEXT_PROMPTS"  # Options: PROMPT_FREE, TEXT_PROMPTS, VISUAL_PROMPTS
+
+  # Framework configuration
+  framework:
+    ncnn_enabled: true   # Best for standard YOLOE (text/visual prompts)
+    onnx_enabled: true   # Required for prompt-free models
+
+  # Prompt-free mode configuration (uses ONNX Runtime)
+  prompt_free:
+    model_path: "models/yoloe-11s-seg-pf.onnx"
+    framework: "onnx"  # ONNX Runtime required - NCNN incompatible
+
+  text_prompts:
+    base_vocabulary:
+      - "person"
+      - "car"
+      - "phone"
+      - "wallet"
+      - "keys"
+      - "door"
+      - "stairs"
+      - "chair"
+      - "table"
+      - "bottle"
+      - "cup"
+      - "book"
+      - "laptop"
+      - "bag"
+      - "glasses"
+    max_classes: 100  # Maximum dynamic classes
+
+  visual_prompts:
+    reference_image_path: "visual_prompts/"  # Store reference images
+
+# =====================================================
+# LAYER 2: THE THINKER (Deep AI Reasoning)
+# =====================================================
+layer2:
+  # Gemini API Configuration
+  gemini_api_key: "YOUR_GEMINI_API_KEY"  # TODO: Add your API key
+  model: "gemini-2.0-flash-exp"  # Model for Gemini Live API
+
+  # Live API (WebSocket)
+  enable_live_api: true  # Use Gemini Live API (audio-to-audio)
+  live_api_config:
+    response_modalities: ["AUDIO", "TEXT"]  # Response types
+    input_audio_transcription:
+      enabled: true  # Transcribe input audio
+
+  # Fallback Tiers
+  tier_0:  # Gemini Live API (primary)
+    enabled: true
+    timeout_ms: 5000  # 5 second timeout
+
+  tier_1:  # Gemini TTS (HTTP fallback)
+    enabled: true
+    api_keys:  # 6-key rotation
+      - "YOUR_GEMINI_KEY_1"
+      - "YOUR_GEMINI_KEY_2"
+      - "YOUR_GEMINI_KEY_3"
+      - "YOUR_GEMINI_KEY_4"
+      - "YOUR_GEMINI_KEY_5"
+      - "YOUR_GEMINI_KEY_6"
+
+  tier_2:  # GLM-4.6V Z.ai (final fallback)
+    enabled: true
+    api_key: "YOUR_GLM_KEY"
+    base_url: "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+
+  # Text-to-Speech
+  tts:
+    engine: "kokoro"  # Options: 'kokoro' (offline), 'gemini' (online)
+    kokoro_model_path: "models/kokoro-v0_19.pth"
+    sample_rate: 24000
+
+# =====================================================
+# LAYER 3: THE ROUTER (Intent Routing & Detection)
+# =====================================================
+layer3:
+  # Intent Router Configuration
+  intent_router:
+    priority_keywords_enabled: true  # Enable priority keyword override
+    fuzzy_matching_enabled: true     # Enable fuzzy matching
+    fuzzy_threshold: 0.6             # Fuzzy match threshold (0-1)
+
+  # Detection Router Configuration
+  detection_router:
+    aggregation_enabled: true   # Aggregate Layer 0 + Layer 1 detections
+    deduplication_enabled: true  # Remove duplicate detections
+    dedup_threshold: 0.5         # IoU threshold for deduplication (0-1)
+
+# =====================================================
+# CAMERA CONFIGURATION
+# =====================================================
+camera:
+  device_id: 0  # Camera device ID (0 = /dev/video0)
+  use_picamera: true  # True for RPi5 (Picamera2), False for laptop (OpenCV)
+  resolution: [1920, 1080]  # Width, Height
+  fps: 30  # Target FPS
+  format: "RGBX"  # Pixel format (Picamera2)
+
+  # Auto-exposure settings
+  auto_exposure:
+    enabled: true
+    mode: "auto"  # Options: 'auto', 'manual'
+
+# =====================================================
+# AUDIO CONFIGURATION
+# =====================================================
+audio:
+  # Input (Microphone)
+  input_device:
+    sample_rate: 16000  # Whisper STT sample rate
+    channels: 1  # Mono
+
+  # Output (Bluetooth Headphones)
+  output_device:
+    sample_rate: 24000  # Kokoro TTS sample rate
+    channels: 1  # Mono
+    latency_ms: 40  # Target latency
+
+  # Voice Activity Detection (VAD)
+  vad:
+    enabled: true
+    model: "silero"  # Options: 'silero' (offline), 'webrtc' (online)
+    threshold: 0.5  # Speech probability threshold (0-1)
+    frame_duration_ms: 30  # Frame duration for VAD
+
+# =====================================================
+# SPATIAL AUDIO CONFIGURATION
+# =====================================================
+spatial_audio:
+  enabled: true
+  engine: "pyopenal"  # Options: 'pyopenal' (3D), 'stereo' (2D)
+
+  # Beacon Sounds
+  beacon:
+    enabled: true
+    frequency: 440  # Hz (A4 note)
+    duration: 0.3  # Seconds
+
+  # Proximity Alerts
+  proximity_alert:
+    enabled: true
+    immediate_distance: 0.5  # Meters (continuous sound)
+    near_distance: 1.0        # Meters (fast pulse)
+    far_distance: 1.5         # Meters (slow pulse)
+
+# =====================================================
+# GPS/IMU CONFIGURATION
+# =====================================================
+sensors:
+  # GPS (NEO6MV2)
+  gps:
+    enabled: true
+    device: "/dev/ttyACM0"  # UART device
+    baudrate: 9600
+    timeout: 5  # Seconds
+
+  # IMU (BNO055)
+  imu:
+    enabled: true
+    device: "/dev/i2c-1"  # I2C bus
+    address: 0x28  # I2C address
+    mode: "NDOF"  # 9-DOF fusion mode
+
+# =====================================================
+# DATA RECORDER CONFIGURATION
+# =====================================================
+data_recorder:
+  enabled: true
+  output_format: "euroc"  # Options: 'euroc', 'cortex'
+  output_path: "recordings/"
+  max_file_size_mb: 500  # Split recordings every 500MB
+
+  # Sensors to record
+  record_camera: true
+  record_imu: true
+  record_gps: true
+  record_detections: true
+
+# =====================================================
+# LOGGING CONFIGURATION
+# =====================================================
+logging:
+  level: "INFO"  # Options: 'DEBUG', 'INFO', 'WARNING', 'ERROR'
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+  # File logging
+  file_logging:
+    enabled: true
+    path: "logs/cortex.log"
+    max_size_mb: 100
+    backup_count: 5  # Keep 5 backup logs
+
+  # Supabase logging (upload ERROR logs)
+  supabase_logging:
+    enabled: true
+    level: "ERROR"  # Only upload ERROR and above
+    batch_size: 10  # Batch upload 10 logs at once
+
+# =====================================================
+# PERFORMANCE CONFIGURATION
+# =====================================================
+performance:
+  # Thread pool size for parallel inference
+  thread_pool_size: 2
+
+  # Frame queue size
+  frame_queue_size: 2
+
+  # Memory limits
+  max_memory_mb: 3900  # Alert if memory usage > 3.9GB (RPi5 has 4GB)
+
+  # CPU temperature limits
+  max_cpu_temp_c: 80  # Alert if CPU temp > 80°C
+
+# =====================================================
+# DEVELOPMENT/DEBUGGING
+# =====================================================
+development:
+  # Debug mode (verbose logging, save intermediate results)
+  debug_mode: false
+
+  # Save annotated frames (for debugging)
+  save_annotated_frames: false
+  annotated_frames_path: "debug/frames/"
+
+  # Profiling (measure performance)
+  profiling_enabled: false
+  profiling_output: "debug/profiles/"
+
+# =====================================================
+# HARDWARE SPECIFIC CONFIGURATIONS
+# =====================================================
+# Automatically detected at runtime, but can override here
+hardware:
+  # Raspberry Pi 5 specific
+  rpi5:
+    usb_max_current_enable: 1  # Enable USB-C PD power (1 = enabled)
+    gpu_mem_mb: 256  # GPU memory split
+    force_turbo: 0  # Force turbo mode (1 = enabled, 0 = auto)
+
+  # Laptop specific
+  laptop:
+    cuda_device: 0  # CUDA device ID (if multiple GPUs)
+    cpu_threads: -1  # -1 = auto (use all cores)
+
+# =====================================================
+# END OF CONFIGURATION
+# =====================================================

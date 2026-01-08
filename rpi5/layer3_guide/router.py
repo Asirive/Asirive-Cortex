@@ -24,8 +24,17 @@ class IntentRouter:
     Decides which AI layer should handle a user command.
     Uses fuzzy matching to handle variations (e.g., 'what u see', 'what do you see').
     """
-    
-    def __init__(self):
+
+    def __init__(self, memory_manager=None):
+        """
+        Initialize Intent Router.
+
+        Args:
+            memory_manager: HybridMemoryManager for cloud storage (optional)
+        """
+        # Memory manager (optional, for logging routing decisions)
+        self.memory_manager = memory_manager
+
         # Layer 1 PRIORITY KEYWORDS: These force Layer 1 routing WITHOUT fuzzy matching
         # These are IMMEDIATE object listing queries that should be <150ms (not 1-2s cloud AI)
         self.layer1_priority_keywords = [
@@ -155,18 +164,48 @@ class IntentRouter:
         for kw in layer2_priority_keywords:
             if kw in text:
                 logger.info(f"🎯 [ROUTER] Layer 2 priority: '{kw}' → Forcing Layer 2 (Thinker)")
+                # Log routing decision to memory manager
+                if self.memory_manager:
+                    self.memory_manager.store_detection({
+                        'layer': 'router',
+                        'class_name': 'layer2_routing',
+                        'confidence': 1.0,
+                        'bbox_area': 0.0,
+                        'source': 'priority_keyword',
+                        'detection_mode': f'keyword:{kw}'
+                    })
                 return "layer2"
-        
+
         # ✅ Check Layer 3 priority keywords SECOND
         for kw in layer3_priority_keywords:
             if kw in text:
                 logger.info(f"🎯 [ROUTER] Layer 3 priority: '{kw}' → Forcing Layer 3 (Guide)")
+                # Log routing decision to memory manager
+                if self.memory_manager:
+                    self.memory_manager.store_detection({
+                        'layer': 'router',
+                        'class_name': 'layer3_routing',
+                        'confidence': 1.0,
+                        'bbox_area': 0.0,
+                        'source': 'priority_keyword',
+                        'detection_mode': f'keyword:{kw}'
+                    })
                 return "layer3"
-        
+
         # ✅ Check Layer 1 priority keywords LAST (most general, fallback)
         for kw in self.layer1_priority_keywords:
             if kw in text:
                 logger.info(f"🎯 [ROUTER] Layer 1 priority: '{kw}' → Forcing Layer 1 (Reflex)")
+                # Log routing decision to memory manager
+                if self.memory_manager:
+                    self.memory_manager.store_detection({
+                        'layer': 'router',
+                        'class_name': 'layer1_routing',
+                        'confidence': 1.0,
+                        'bbox_area': 0.0,
+                        'source': 'priority_keyword',
+                        'detection_mode': f'keyword:{kw}'
+                    })
                 return "layer1"
         
         # =================================================================
@@ -182,16 +221,56 @@ class IntentRouter:
         # Route to highest scoring layer (must exceed threshold)
         if layer3_score >= self.fuzzy_threshold and layer3_score >= max(layer1_score, layer2_score):
             logger.info(f"🎯 [ROUTER] Fuzzy match: Layer 3 (Navigation) - score={layer3_score:.2f}")
+            # Log routing decision to memory manager
+            if self.memory_manager:
+                self.memory_manager.store_detection({
+                    'layer': 'router',
+                    'class_name': 'layer3_routing',
+                    'confidence': float(layer3_score),
+                    'bbox_area': 0.0,
+                    'source': 'fuzzy_match',
+                    'detection_mode': f'scores:L1={layer1_score:.2f},L2={layer2_score:.2f},L3={layer3_score:.2f}'
+                })
             return "layer3"
         elif layer2_score >= layer1_score and layer2_score >= self.fuzzy_threshold:
             logger.info(f"🎯 [ROUTER] Fuzzy match: Layer 2 (Thinker) - score={layer2_score:.2f}")
+            # Log routing decision to memory manager
+            if self.memory_manager:
+                self.memory_manager.store_detection({
+                    'layer': 'router',
+                    'class_name': 'layer2_routing',
+                    'confidence': float(layer2_score),
+                    'bbox_area': 0.0,
+                    'source': 'fuzzy_match',
+                    'detection_mode': f'scores:L1={layer1_score:.2f},L2={layer2_score:.2f},L3={layer3_score:.2f}'
+                })
             return "layer2"
         elif layer1_score >= self.fuzzy_threshold:
             logger.info(f"🎯 [ROUTER] Fuzzy match: Layer 1 (Reflex) - score={layer1_score:.2f}")
+            # Log routing decision to memory manager
+            if self.memory_manager:
+                self.memory_manager.store_detection({
+                    'layer': 'router',
+                    'class_name': 'layer1_routing',
+                    'confidence': float(layer1_score),
+                    'bbox_area': 0.0,
+                    'source': 'fuzzy_match',
+                    'detection_mode': f'scores:L1={layer1_score:.2f},L2={layer2_score:.2f},L3={layer3_score:.2f}'
+                })
             return "layer1"
-        
+
         # Default to Layer 1 if no clear match (faster, offline)
         logger.info(f"⚠️ [ROUTER] No clear match (all scores < {self.fuzzy_threshold}), defaulting to Layer 1 (offline fallback)")
+        # Log routing decision to memory manager
+        if self.memory_manager:
+            self.memory_manager.store_detection({
+                'layer': 'router',
+                'class_name': 'layer1_routing',
+                'confidence': 0.0,
+                'bbox_area': 0.0,
+                'source': 'default_fallback',
+                'detection_mode': f'no_match:L1={layer1_score:.2f},L2={layer2_score:.2f},L3={layer3_score:.2f}'
+            })
         return "layer1"
     
     def get_recommended_mode(self, query: str, current_detections: str = "") -> str:
