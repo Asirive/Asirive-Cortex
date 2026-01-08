@@ -1,0 +1,11 @@
+# Raspberry Pi 5 Fan Configuration
+# Add this to /boot/firmware/config.txt or /boot/config.txt
+
+# Enable fan control overlay
+dtoverlay=gpio-fan,gpio=12,temp=40000
+
+# Alternative: Fan always at max speed
+# dtoverlay=gpio-fan,gpio=12,temp=60000
+
+# gpio=12 = GPIO pin 12 (physical pin 32) controls the fan
+# temp=40000 = fan starts at 40°C (change to higher value if you want)

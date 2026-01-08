@@ -1,15 +1,15 @@
 description: Ultralytics YOLO11n model trained on /usr/src/ultralytics/ultralytics/cfg/datasets/coco.yaml
 author: Ultralytics
-date: '2025-12-31T16:58:11.932439'
-version: 8.3.243
+date: '2026-01-08T20:09:09.285905'
+version: 8.3.249
 license: AGPL-3.0 License (https://ultralytics.com/license)
 docs: https://docs.ultralytics.com
 stride: 32
 task: detect
 batch: 1
 imgsz:
-- 640
-- 640
+- 256
+- 256
 names:
   0: person
   1: bicycle

@@ -74,17 +74,19 @@ class YOLOGuardian:
         device: str = "cpu",
         confidence: float = 0.5,
         enable_haptic: bool = True,
-        gpio_pin: int = 18
+        gpio_pin: int = 18,
+        memory_manager: Optional['HybridMemoryManager'] = None
     ):
         """
         Initialize Layer 0 Guardian.
-        
+
         Args:
             model_path: Path to YOLO11n-NCNN model directory
             device: Inference device ('cpu' for RPi, 'cuda' for laptop with GPU)
             confidence: Detection confidence threshold
             enable_haptic: Enable GPIO haptic feedback (True for RPi, False for laptop)
             gpio_pin: GPIO pin for vibration motor (default: 18)
+            memory_manager: Optional HybridMemoryManager for cloud storage
         """
         logger.info("🛡️ Initializing Layer 0 Guardian (YOLO11n-NCNN)...")
         
@@ -110,7 +112,10 @@ class YOLOGuardian:
             enabled=enable_haptic,
             gpio_pin=gpio_pin
         )
-        
+
+        # Memory manager (optional, for cloud storage)
+        self.memory_manager = memory_manager
+
         # Performance tracking
         self.inference_times = []
         
@@ -199,7 +204,7 @@ class YOLOGuardian:
                         
                         # Only include safety-critical classes
                         if class_name in self.SAFETY_CLASSES:
-                            detections.append({
+                            detection = {
                                 'class': class_name,
                                 'confidence': conf_score,
                                 'bbox': bbox.tolist(),
@@ -212,8 +217,24 @@ class YOLOGuardian:
                                 'bbox_area': bbox_area,
                                 'proximity': proximity,
                                 'priority': priority,
-                                'layer': 'guardian'  # Identify source
-                            })
+                                'layer': 'guardian'
+                            }
+                            detections.append(detection)
+
+                            # Store to memory manager (Supabase + local SQLite)
+                            if self.memory_manager:
+                                self.memory_manager.store_detection({
+                                    'layer': 'guardian',
+                                    'class_name': class_name,
+                                    'confidence': float(conf_score),
+                                    'bbox_x1': float(bbox[0] / frame_width),
+                                    'bbox_y1': float(bbox[1] / frame_height),
+                                    'bbox_x2': float(bbox[2] / frame_width),
+                                    'bbox_y2': float(bbox[3] / frame_height),
+                                    'bbox_area': float(bbox_area),
+                                    'detection_mode': None,
+                                    'source': 'base'
+                                })
             
             # Track performance
             latency = (time.time() - start_time) * 1000  # Convert to ms

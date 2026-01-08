@@ -76,27 +76,32 @@ class YOLOELearner:
         device: str = "cpu",
         confidence: float = 0.25,
         mode: YOLOEMode = YOLOEMode.TEXT_PROMPTS,
-        prompt_manager: Optional[AdaptivePromptManager] = None
+        prompt_manager: Optional[AdaptivePromptManager] = None,
+        memory_manager: Optional['HybridMemoryManager'] = None
     ):
         """
         Initialize Layer 1 Learner.
-        
+
         Args:
             model_path: Path to YOLOE weights (use *-pf.pt for prompt-free mode)
             device: Inference device ('cpu' for RPi, 'cuda' for laptop with GPU)
             confidence: Detection confidence threshold
             mode: Detection mode (PROMPT_FREE, TEXT_PROMPTS, VISUAL_PROMPTS)
             prompt_manager: Adaptive prompt manager (created if None)
+            memory_manager: HybridMemoryManager for cloud storage (optional)
         """
         logger.info(f"🎯 Initializing Layer 1 Learner (Mode: {mode.value})...")
-        
+
         if not YOLOE_AVAILABLE:
             raise ImportError("ultralytics YOLOE not installed. Install with: pip install ultralytics")
-        
+
         self.model_path = model_path
         self.device = device
         self.confidence = confidence
         self.mode = mode
+
+        # Memory manager (optional, for cloud storage)
+        self.memory_manager = memory_manager
         
         # Detect mode from model filename if not explicitly set
         if "-pf.pt" in model_path and mode != YOLOEMode.PROMPT_FREE:
@@ -355,7 +360,22 @@ class YOLOELearner:
                             'mode': self.mode.value,
                             'layer': 'learner'
                         })
-            
+
+                        # Store to memory manager (local + cloud)
+                        if self.memory_manager:
+                            self.memory_manager.store_detection({
+                                'layer': 'learner',
+                                'class_name': class_name,
+                                'confidence': float(conf_score),
+                                'bbox_x1': float(bbox[0] / frame_width),
+                                'bbox_y1': float(bbox[1] / frame_height),
+                                'bbox_x2': float(bbox[2] / frame_width),
+                                'bbox_y2': float(bbox[3] / frame_height),
+                                'bbox_area': float(bbox_area),
+                                'detection_mode': self.mode.value,
+                                'source': source
+                            })
+
             # Track performance
             latency = (time.time() - start_time) * 1000
             self.inference_times.append(latency)
