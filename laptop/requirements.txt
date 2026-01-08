@@ -1,0 +1,12 @@
+# ProjectCortex Laptop Dashboard Requirements
+# Python 3.10+
+
+# Core dependencies
+PyQt6==6.6.1
+websockets==12.0
+
+# Optional: For future enhancements
+# pyqtgraph==0.13.3  # For real-time plotting
+# numpy==1.26.3      # For data processing
+# Pillow==10.2.0     # For image handling
+# supabase==2.3.4    # For historical data fetching
