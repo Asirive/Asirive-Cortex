@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git pull:*)",
+      "Bash(git merge:*)",
+      "Bash(git reset:*)",
+      "Bash(git fetch:*)",
+      "Bash(git rebase:*)",
+      "Bash(wc:*)",
+      "Bash(tree:*)",
+      "Skill(glm-plan-usage:usage-query-skill)",
+      "mcp__zread__get_repo_structure",
+      "Bash(find:*)",
+      "Bash(git lfs:*)",
+      "Bash(ls:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}
