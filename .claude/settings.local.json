@@ -29,7 +29,15 @@
       "Bash(reg query:*)",
       "WebFetch(domain:github.com)",
       "WebFetch(domain:www.raspberrypi.com)",
-      "WebFetch(domain:forums.raspberrypi.com)"
+      "WebFetch(domain:forums.raspberrypi.com)",
+      "Skill(superpowers:brainstorming)",
+      "Skill(superpowers:brainstorming:*)",
+      "Bash(git checkout:*)",
+      "Bash(dir:*)",
+      "Skill(superpowers:systematic-debugging)",
+      "Skill(superpowers:systematic-debugging:*)",
+      "Bash(du:*)",
+      "Bash(ssh-keygen:*)"
     ]
   }
 }

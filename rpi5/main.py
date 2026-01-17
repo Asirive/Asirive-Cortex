@@ -49,113 +49,64 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Add rpi5 to path
-sys.path.insert(0, str(Path(__file__).parent))
+PROJECT_ROOT = Path(__file__).parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 # =====================================================
 # IMPORT LAYERS
 # =====================================================
 try:
-    from layer0_guardian import YOLOGuardian
+    from rpi5.layer0_guardian import YOLOGuardian
 except ImportError:
-    logger.error("❌ Layer 0 (Guardian) not found")
+    logger.error("Layer 0 (Guardian) not found")
     YOLOGuardian = None
 
 try:
-    from layer1_learner import YOLOELearner, YOLOEMode
+    from rpi5.layer1_learner import YOLOELearner, YOLOEMode
 except ImportError:
-    logger.error("❌ Layer 1 (Learner) not found")
+    logger.error("Layer 1 (Learner) not found")
     YOLOELearner = None
     YOLOEMode = None
 
 try:
-    from layer2_thinker.gemini_live_handler import GeminiLiveHandler
+    from rpi5.layer2_thinker.gemini_live_handler import GeminiLiveHandler
 except ImportError:
-    logger.error("❌ Layer 2 (Thinker) not found")
+    logger.error("Layer 2 (Thinker) not found")
     GeminiLiveHandler = None
 
 try:
-    from layer3_guide.router import IntentRouter
-    from layer3_guide.detection_router import DetectionRouter
+    from rpi5.layer3_guide.router import IntentRouter
+    from rpi5.layer3_guide.detection_router import DetectionRouter
 except ImportError:
-    logger.error("❌ Layer 3 (Router) not found")
+    logger.error("Layer 3 (Router) not found")
     IntentRouter = None
     DetectionRouter = None
 
 try:
-    from layer4_memory.hybrid_memory_manager import HybridMemoryManager
+    from rpi5.layer4_memory.hybrid_memory_manager import HybridMemoryManager
 except ImportError:
-    logger.error("❌ Layer 4 (Memory) not found")
+    logger.error("Layer 4 (Memory) not found")
     HybridMemoryManager = None
 
 # =====================================================
 # IMPORT SUPPORTING MODULES
 # =====================================================
 try:
-    from rpi_websocket_client import RPiWebSocketClient
+    from rpi5.fastapi_client import CortexFastAPIClient
 except ImportError:
-    logger.warning("⚠️  RPi WebSocket client not found (laptop dashboard won't work)")
-    RPiWebSocketClient = None
-
-
-# =====================================================
-# CONFIGURATION LOADER
-# =====================================================
-def load_config(config_path: str = "rpi5/config/config.yaml") -> Dict[str, Any]:
-    """Load configuration from YAML file"""
-    default_config = {
-        'supabase': {
-            'url': os.getenv('SUPABASE_URL', ''),
-            'anon_key': os.getenv('SUPABASE_KEY', ''),
-            'device_id': os.getenv('DEVICE_ID', 'rpi5-cortex-001'),
-            'sync_interval_seconds': 60,
-            'batch_size': 100,
-            'local_cache_size': 1000,
-            'local_db_path': 'local_cortex.db'
-        },
-        'layer0': {
-            'model_path': 'models/yolo11n_ncnn_model',
-            'device': 'cpu',
-            'confidence': 0.5,
-            'enable_haptic': True,
-            'gpio_pin': 18
-        },
-        'layer1': {
-            'model_path': 'models/yoloe-11m-seg.pt',
-            'device': 'cpu',
-            'confidence': 0.25,
-            'mode': 'TEXT_PROMPTS'
-        },
-        'layer2': {
-            'gemini_api_key': os.getenv('GEMINI_API_KEY', ''),
-            'model': 'gemini-2.0-flash-exp',
-            'enable_live_api': True
-        },
-        'camera': {
-            'device_id': 0,
-            'use_picamera': True,
-            'resolution': [1920, 1080],
-            'fps': 30
-        },
-        'laptop_server': {
-            'host': os.getenv('LAPTOP_HOST', 'localhost'),
-            'port': int(os.getenv('LAPTOP_PORT', 8765))
-        }
-    }
-
+    logger.warning("FastAPI client not found, falling back to legacy")
     try:
-        with open(config_path) as f:
-            config = yaml.safe_load(f)
-            # Merge with defaults
-            for key in default_config:
-                if key not in config:
-                    config[key] = default_config[key]
-            return config
-    except FileNotFoundError:
-        logger.warning(f"⚠️  Config file not found: {config_path}, using defaults")
-        return default_config
-    except Exception as e:
-        logger.error(f"❌ Error loading config: {e}, using defaults")
-        return default_config
+        from rpi5.websocket_client import RPiWebSocketClient
+    except ImportError:
+        RPiWebSocketClient = None
+
+
+# =====================================================
+# CONFIGURATION
+# =====================================================
+# Use the config module
+from rpi5.config.config import get_config
 
 
 # =====================================================
@@ -289,11 +240,14 @@ class CortexSystem:
     7. Manage graceful shutdown
     """
 
-    def __init__(self, config_path: str = "rpi5/config/config.yaml"):
-        logger.info("🧠 Initializing ProjectCortex v2.0...")
+    def __init__(self, config_path: str = None):
+        logger.info("Initializing ProjectCortex v2.0...")
 
         # Load configuration
-        self.config = load_config(config_path)
+        if config_path:
+            self.config = load_config(config_path)
+        else:
+            self.config = get_config()
 
         # Initialize Layer 4: Memory Manager (Hybrid)
         if HybridMemoryManager:
@@ -380,16 +334,29 @@ class CortexSystem:
             fps=self.config['camera']['fps']
         )
 
-        # Initialize WebSocket Client (for laptop dashboard)
-        if RPiWebSocketClient:
-            logger.info("🌐 Initializing WebSocket Client...")
-            self.ws_client = RPiWebSocketClient(
-                server_url=f"ws://{self.config['laptop_server']['host']}:{self.config['laptop_server']['port']}",
+        # Initialize WebSocket Client (for laptop dashboard) - Use FastAPI client
+        self.ws_client = None
+        if CortexFastAPIClient:
+            logger.info("🌐 Initializing FastAPI Client...")
+            self.ws_client = CortexFastAPIClient(
+                host=self.config['laptop_server']['host'],
+                port=self.config['laptop_server']['port'],
                 device_id=self.config['supabase']['device_id']
             )
+            logger.info("✅ FastAPI client initialized")
+        elif RPiWebSocketClient:
+            logger.info("🌐 Initializing legacy WebSocket Client...")
+            self.ws_client = RPiWebSocketClient(
+                host=self.config['laptop_server']['host'],
+                port=self.config['laptop_server']['port'],
+                device_id=self.config['supabase']['device_id']
+            )
+            logger.info("✅ Legacy WebSocket client initialized")
         else:
-            self.ws_client = None
-            logger.warning("⚠️  WebSocket client not available")
+            logger.warning("⚠️  No dashboard client available")
+
+        # Video streaming state
+        self.video_streaming_active = False
 
         # System state
         self.running = False
@@ -409,8 +376,8 @@ class CortexSystem:
         # Connect to laptop dashboard
         if self.ws_client:
             try:
-                self.ws_client.connect()
-                logger.info("✅ Connected to laptop dashboard")
+                self.ws_client.start()
+                logger.info("✅ Connected to laptop dashboard (FastAPI)")
             except Exception as e:
                 logger.warning(f"⚠️  Failed to connect to laptop: {e}")
 
@@ -503,32 +470,25 @@ class CortexSystem:
             return
 
         try:
-            # Send video frame
-            import io
-            is_success, buffer = cv2.imencode(".jpg", frame)
-            if is_success:
-                frame_bytes = buffer.tobytes()
-                self.ws_client.send_video_frame(frame_bytes)
-
-            # Send detections
-            detection_strings = []
+            # Prepare detection list with layer info
+            enriched_detections = []
             for det in detections:
-                layer = det.get('layer', 'unknown')
-                class_name = det.get('class', 'unknown')
-                confidence = det.get('confidence', 0.0)
-                detection_strings.append(f"{layer}: {class_name} ({confidence:.2f})")
+                enriched_detections.append({
+                    "class": det.get('class', 'unknown'),
+                    "confidence": det.get('confidence', 0.0),
+                    "x1": int(det.get('x1', 0)),
+                    "y1": int(det.get('y1', 0)),
+                    "x2": int(det.get('x2', 0)),
+                    "y2": int(det.get('y2', 0)),
+                    "layer": det.get('layer', 'layer0')
+                })
 
-            self.ws_client.send_detections("; ".join(detection_strings))
+            # Send video frame with detections (only if streaming enabled)
+            self.ws_client.send_video_frame(frame, enriched_detections)
 
-            # Send system metrics
-            self.ws_client.send_metrics(
-                fps=30.0,
-                latency_ms=100,
-                ram_mb=2048,
-                cpu_percent=45.2,
-                battery=85,
-                temperature=42.5
-            )
+            # Send individual detections
+            for det in enriched_detections:
+                self.ws_client.send_detection(det)
 
         except Exception as e:
             logger.debug(f"⚠️  Failed to send to laptop: {e}")
@@ -636,7 +596,7 @@ class CortexSystem:
 
         # Disconnect WebSocket
         if self.ws_client:
-            self.ws_client.disconnect()
+            self.ws_client.stop()
 
         # Stop sync worker
         if self.memory_manager:

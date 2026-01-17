@@ -1,7 +1,8 @@
 @echo off
-REM Quick sync to RPi5 (192.168.0.91)
+REM Quick sync to RPi5 (192.168.0.92)
 REM Use this for fast iteration during development
 REM Syncs: rpi5/, models/, TTS Model/, requirements.txt
+REM Uses Git Bash to ensure SSH keys are properly loaded
 
 echo.
 echo ============================================
@@ -17,80 +18,79 @@ set RPI_DIR=~/ProjectCortex
 echo Syncing to: %RPI_USER%@%RPI_HOST%
 echo.
 
-REM Find Git Bash's rsync (not in regular PATH)
-set RSYNC_EXE=
-for %%f in (rsync.exe) do set RSYNC_EXE=%%~$PATH:f
+REM Find Git Bash installation
+set GIT_BASH=
+set GIT_USR_BIN=
 
-REM If not in PATH, try Git installation paths
-if "%RSYNC_EXE%"=="" (
-    if exist "C:\Program Files\Git\usr\bin\rsync.exe" (
-        set "RSYNC_EXE=C:\Program Files\Git\usr\bin\rsync.exe"
-    ) else if exist "C:\Program Files (x86)\Git\usr\bin\rsync.exe" (
-        set "RSYNC_EXE=C:\Program Files (x86)\Git\usr\bin\rsync.exe"
-    ) else if exist "%USERPROFILE%\AppData\Local\Programs\Git\usr\bin\rsync.exe" (
-        set "RSYNC_EXE=%USERPROFILE%\AppData\Local\Programs\Git\usr\bin\rsync.exe"
-    )
+if exist "C:\Program Files\Git\bin\bash.exe" (
+    set "GIT_BASH=C:\Program Files\Git\bin\bash.exe"
+    set "GIT_USR_BIN=C:\Program Files\Git\usr\bin"
+) else if exist "C:\Program Files (x86)\Git\bin\bash.exe" (
+    set "GIT_BASH=C:\Program Files (x86)\Git\bin\bash.exe"
+    set "GIT_USR_BIN=C:\Program Files (x86)\Git\usr\bin"
+) else if exist "%USERPROFILE%\AppData\Local\Programs\Git\bin\bash.exe" (
+    set "GIT_BASH=%USERPROFILE%\AppData\Local\Programs\Git\bin\bash.exe"
+    set "GIT_USR_BIN=%USERPROFILE%\AppData\Local\Programs\Git\usr\bin"
 )
 
-if "%RSYNC_EXE%"=="" (
-    echo ERROR: rsync not found!
+if "%GIT_BASH%"=="" (
+    echo ERROR: Git Bash not found!
     echo.
-    echo Git Bash is installed but rsync cannot be located.
-    echo Please use Git Bash directly, or install Git for Windows from:
+    echo Please install Git for Windows from:
     echo https://git-scm.com/download/win
     echo.
     pause
     exit /b 1
 )
 
-echo Using rsync: %RSYNC_EXE%
+echo Using Git Bash: %GIT_BASH%
 echo.
 
-REM Create a temporary include/exclude file for rsync
-echo Syncing RPi5-specific folders...
+REM Get current directory in Unix format for rsync
+cd /d "%~dp0"
+for /f "delims=" %%i in ('powershell -Command "(Get-Location).Path -replace '\\\\','/'"') do set "CUR_DIR_UNIX=%%i"
+if "%CUR_DIR_UNIX:~-1%"=="/" set CUR_DIR_UNIX=%CUR_DIR_UNIX:~0,-1%
+
+REM Create temporary rsync filter file
+set FILTER_FILE=%TEMP%\rsync_filter_%RANDOM%.txt
+echo # Rsync filter rules > "%FILTER_FILE%"
+echo # Include directories >> "%FILTER_FILE%"
+echo + /rpi5/ >> "%FILTER_FILE%"
+echo + /rpi5/** >> "%FILTER_FILE%"
+echo + /models/ >> "%FILTER_FILE%"
+echo + /models/** >> "%FILTER_FILE%"
+echo + /models/**/*.ncnn_model/ >> "%FILTER_FILE%"
+echo + /models/*.onnx >> "%FILTER_FILE%"
+echo + /models/*.pt >> "%FILTER_FILE%"
+echo + /TTS\ Model/ >> "%FILTER_FILE%"
+echo + /TTS\ Model/** >> "%FILTER_FILE%"
+echo + /requirements.txt >> "%FILTER_FILE%"
+echo + /**.md >> "%FILTER_FILE%"
+echo # Exclude everything else >> "%FILTER_FILE%"
+echo - * >> "%FILTER_FILE%"
+echo # Exclude specific patterns >> "%FILTER_FILE%"
+echo - /**/__pycache__/** >> "%FILTER_FILE%"
+echo - /**.pyc >> "%FILTER_FILE%"
+echo - /**.pyo >> "%FILTER_FILE%"
+echo - /**.db >> "%FILTER_FILE%"
+echo - /**.db-journal >> "%FILTER_FILE%"
+echo - /**.log >> "%FILTER_FILE%"
+echo - /**/logs/** >> "%FILTER_FILE%"
+echo - /**/debug/** >> "%FILTER_FILE%"
+echo - /**/recordings/** >> "%FILTER_FILE%"
+
+echo Syncing via Git Bash (SSH keys will be loaded)...
 echo.
 
-REM Sync to RPi5
-"%RSYNC_EXE%" -avz --progress ^
-  --include="rpi5/" ^
-  --include="rpi5/**" ^
-  --include="models/" ^
-  --include="models/**" ^
-  --include="models/*.ncnn_model/" ^
-  --include="models/*.onnx" ^
-  --include="models/*.pt" ^
-  --include="TTS Model/" ^
-  --include="TTS Model/**" ^
-  --include="requirements.txt" ^
-  --exclude="__pycache__/" ^
-  --exclude="*.pyc" ^
-  --exclude=".git/" ^
-  --exclude=".git/**" ^
-  --exclude="*.db" ^
-  --exclude="*.db-journal" ^
-  --exclude="laptop/" ^
-  --exclude="laptop/**" ^
-  --exclude="tests/" ^
-  --exclude="tests/**" ^
-  --exclude="docs/" ^
-  --exclude="docs/**" ^
-  --exclude="examples/" ^
-  --exclude="examples/**" ^
-  --exclude="*.mp4" ^
-  --exclude="*.mov" ^
-  --exclude="*.zip" ^
-  --exclude="*.log" ^
-  --exclude="logs/**" ^
-  --exclude="debug/**" ^
-  --exclude="recordings/**" ^
-  --exclude="supabase/**" ^
-  --exclude="sync*.bat" ^
-  --exclude="sync*.ps1" ^
-  --exclude="sync*.sh" ^
-  --include="*.md" ^
-  . %RPI_USER%@%RPI_HOST%:%RPI_DIR%/
+REM Run rsync through Git Bash with SSH proper configuration
+"%GIT_BASH%" -c "export PATH='%GIT_USR_BIN%:\$PATH' && rsync -avz --progress --delete --filter='merge %FILTER_FILE%' '%CUR_DIR_UNIX%/' '%RPI_USER@%RPI_HOST:%RPI_DIR%/'"
 
-if %ERRORLEVEL% EQU 0 (
+set RSYNC_RESULT=%ERRORLEVEL%
+
+REM Clean up filter file
+del "%FILTER_FILE%" 2>nul
+
+if %RSYNC_RESULT% EQU 0 (
     echo.
     echo ============================================
     echo   Sync Complete!
@@ -111,7 +111,12 @@ if %ERRORLEVEL% EQU 0 (
     echo.
 ) else (
     echo.
-    echo ERROR: Sync failed!
+    echo ERROR: Sync failed (exit code: %RSYNC_RESULT%)!
+    echo.
+    echo Troubleshooting:
+    echo   1. Verify RPi5 is reachable: ping %RPI_HOST%
+    echo   2. Check SSH keys: ssh %RPI_USER%@%RPI_HOST% echo 'test'
+    echo   3. Verify Git Bash paths above
     echo.
 )
 
