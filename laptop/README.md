@@ -193,14 +193,23 @@ Typical resource usage:
 
 ```
 laptop/
-├── __init__.py              # Package init
+├── __init__.py              # Package init + exports
 ├── config.py                # Configuration
 ├── protocol.py              # Message protocol
-├── websocket_server.py      # WebSocket server
-├── cortex_dashboard.py      # PyQt6 GUI
-├── start_dashboard.py       # Main launcher
 ├── requirements.txt         # Dependencies
-└── README.md               # This file
+├── README.md                # This file
+├── gui/                     # PyQt6 GUI components
+│   ├── __init__.py
+│   ├── cortex_dashboard.py  # Main dashboard UI (basic)
+│   └── cortex_ui.py         # Dashboard UI (custom-ui version)
+├── server/                  # Server implementations
+│   ├── __init__.py
+│   ├── websocket_server.py  # Legacy WebSocket server
+│   ├── fastapi_server.py    # FastAPI + WebSocket server
+│   └── fastapi_integration.py  # FastAPI + PyQt6 integration
+└── cli/                     # CLI entry points
+    ├── __init__.py
+    └── start_dashboard.py   # Main launcher
 ```
 
 ## Next Steps
