@@ -25,11 +25,13 @@ sys.path.append(str(Path(__file__).parent.parent.parent / "server"))
 logger = logging.getLogger(__name__)
 
 # Import memory storage backend
+# NOTE: This MemoryManager class is legacy. Use HybridMemoryManager from hybrid_memory_manager.py instead.
+# The import below is kept for backwards compatibility but may fail if memory_storage module doesn't exist.
 try:
-    from memory_storage import get_memory_storage, MemoryStorage
+    from .memory_manager import get_memory_storage, MemoryStorage
     MEMORY_AVAILABLE = True
 except ImportError as e:
-    logger.warning(f"⚠️ Memory storage not available: {e}")
+    logger.warning(f"⚠️ Legacy memory storage not available: {e}")
     MEMORY_AVAILABLE = False
     MemoryStorage = None
 

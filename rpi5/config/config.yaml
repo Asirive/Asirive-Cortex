@@ -29,7 +29,7 @@ supabase:
 # LAYER 0: THE GUARDIAN (Safety-Critical Detection)
 # =====================================================
 layer0:
-  model_path: "models/yolo11n_ncnn_model"
+  model_path: "models/converted/yolo26n"  # YOLO v26n NCNN - safety-critical detection
   framework: "ncnn"  # NCNN - ARM-optimized for RPi5
   device: "cpu"  # Options: 'cpu' (RPi), 'cuda' (laptop with GPU)
   confidence: 0.5  # Detection confidence threshold
@@ -46,10 +46,10 @@ layer0:
 # LAYER 1: THE LEARNER (Adaptive Context-Aware Detection)
 # =====================================================
 layer1:
-  # Standard YOLOE (Text/Visual prompts) - NCNN format for best RPi5 performance
-  ncnn_model_path: "models/yoloe-11s-seg_ncnn_model"
-  # Prompt-free YOLOE - ONNX format (NCNN incompatible with LRPCHead)
-  onnx_model_path: "models/yoloe-11s-seg-pf.onnx"
+  # YOLO v26s-seg NCNN - Adaptive detection for RPi5 performance
+  model_path: "models/converted/yoloe_26s_seg"
+  # PyTorch fallback for full YOLOE features
+  pt_model_path: "models/yolo26s.pt"
 
   device: "cpu"
   confidence: 0.25
@@ -57,13 +57,9 @@ layer1:
 
   # Framework configuration
   framework:
-    ncnn_enabled: true   # Best for standard YOLOE (text/visual prompts)
-    onnx_enabled: true   # Required for prompt-free models
-
-  # Prompt-free mode configuration (uses ONNX Runtime)
-  prompt_free:
-    model_path: "models/yoloe-11s-seg-pf.onnx"
-    framework: "onnx"  # ONNX Runtime required - NCNN incompatible
+    ncnn_enabled: true   # Best for RPi5 performance
+    onnx_enabled: false  # Disabled (no ONNX models yet)
+    pytorch_enabled: true  # Enable PyTorch fallback
 
   text_prompts:
     base_vocabulary:
@@ -286,6 +282,13 @@ development:
   profiling_output: "debug/profiles/"
 
 # =====================================================
+# LAPTOP SERVER CONFIGURATION
+# =====================================================
+laptop_server:
+  host: "192.168.0.171"  # Laptop IP address - UPDATE THIS for your network
+  port: 8765
+
+# =====================================================
 # HARDWARE SPECIFIC CONFIGURATIONS
 # =====================================================
 # Automatically detected at runtime, but can override here
@@ -295,11 +298,6 @@ hardware:
     usb_max_current_enable: 1  # Enable USB-C PD power (1 = enabled)
     gpu_mem_mb: 256  # GPU memory split
     force_turbo: 0  # Force turbo mode (1 = enabled, 0 = auto)
-
-  # Laptop specific
-  laptop:
-    cuda_device: 0  # CUDA device ID (if multiple GPUs)
-    cpu_threads: -1  # -1 = auto (use all cores)
 
 # =====================================================
 # END OF CONFIGURATION

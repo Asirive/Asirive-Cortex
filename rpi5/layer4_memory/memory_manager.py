@@ -1,9 +1,17 @@
 """
-Layer 4: Memory - Persistent object context and recall.
+Layer 4: Memory - Legacy Module (Deprecated)
 
-This layer provides memory services to all other layers.
+This module is kept for backwards compatibility but is no longer used.
+Use rpi5.layer4_memory.hybrid_memory_manager instead.
 """
 
-from .memory_manager import MemoryManager, get_memory_manager, MEMORY_AVAILABLE
+import logging
 
-__all__ = ['MemoryManager', 'get_memory_manager', 'MEMORY_AVAILABLE']
+logger = logging.getLogger(__name__)
+
+# Legacy aliases to prevent import errors
+MemoryManager = None
+get_memory_manager = None
+MEMORY_AVAILABLE = False
+
+logger.warning("⚠️  Legacy rpi5.layer4_memory.memory_manager is deprecated. Use HybridMemoryManager.")

@@ -1,0 +1,178 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Project Cortex Configuration",
+  "description": "Unified configuration schema for RPi5 and Laptop",
+  "type": "object",
+  "required": ["device", "server"],
+  "properties": {
+    "device": {
+      "type": "object",
+      "required": ["id", "type", "name"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique device identifier"
+        },
+        "type": {
+          "type": "string",
+          "enum": ["rpi5", "laptop"],
+          "description": "Device type"
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable device name"
+        }
+      }
+    },
+    "server": {
+      "type": "object",
+      "required": ["host", "port"],
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "Server host IP address"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "description": "Server port"
+        },
+        "max_clients": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 5,
+          "description": "Maximum number of clients"
+        }
+      }
+    },
+    "camera": {
+      "type": "object",
+      "properties": {
+        "device_id": {
+          "type": "integer",
+          "default": 0,
+          "description": "Camera device ID"
+        },
+        "resolution": {
+          "type": "array",
+          "items": {
+            "type": "integer"
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "default": [1920, 1080],
+          "description": "Camera resolution [width, height]"
+        },
+        "fps": {
+          "type": "integer",
+          "default": 30,
+          "description": "Camera FPS"
+        },
+        "use_picamera": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use PiCamera on RPi5"
+        }
+      }
+    },
+    "models": {
+      "type": "object",
+      "properties": {
+        "guardian": {
+          "type": "object",
+          "properties": {
+            "model_path": {
+              "type": "string",
+              "description": "Path to Guardian model"
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.5,
+              "description": "Detection confidence threshold"
+            }
+          }
+        },
+        "learner": {
+          "type": "object",
+          "properties": {
+            "model_path": {
+              "type": "string",
+              "description": "Path to Learner model"
+            },
+            "confidence": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "default": 0.25,
+              "description": "Detection confidence threshold"
+            },
+            "mode": {
+              "type": "string",
+              "enum": ["PROMPT_FREE", "TEXT_PROMPTS", "VISUAL_PROMPTS"],
+              "default": "TEXT_PROMPTS",
+              "description": "Learner mode"
+            }
+          }
+        }
+      }
+    },
+    "audio": {
+      "type": "object",
+      "properties": {
+        "input_device": {
+          "type": "integer",
+          "description": "Audio input device ID"
+        },
+        "output_device": {
+          "type": "integer",
+          "description": "Audio output device ID"
+        },
+        "sample_rate": {
+          "type": "integer",
+          "default": 16000,
+          "description": "Sample rate for audio"
+        }
+      }
+    },
+    "supabase": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "Supabase project URL"
+        },
+        "anon_key": {
+          "type": "string",
+          "description": "Supabase anon key"
+        },
+        "device_id": {
+          "type": "string",
+          "description": "Device ID for Supabase"
+        },
+        "sync_interval": {
+          "type": "integer",
+          "default": 60,
+          "description": "Sync interval in seconds"
+        }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+          "default": "INFO",
+          "description": "Log level"
+        },
+        "file": {
+          "type": "string",
+          "description": "Log file path"
+        }
+      }
+    }
+  }
+}

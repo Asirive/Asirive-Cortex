@@ -53,6 +53,7 @@ class BaseMessage:
     type: str
     timestamp: str
     data: Dict[str, Any]
+    message_id: Optional[str] = None
 
     def to_json(self) -> str:
         """Convert to JSON string"""

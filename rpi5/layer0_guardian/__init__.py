@@ -37,7 +37,7 @@ except ImportError:
     YOLO_AVAILABLE = False
     logging.warning("⚠️ ultralytics not installed. Run: pip install ultralytics")
 
-from layer0_guardian.haptic_controller import HapticController
+from rpi5.layer0_guardian.haptic_controller import HapticController
 
 logger = logging.getLogger(__name__)
 

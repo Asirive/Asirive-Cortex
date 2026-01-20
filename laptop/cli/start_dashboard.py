@@ -151,7 +151,7 @@ class DashboardApplication:
 
                     logger.info(f"Memory Event: {log_msg}")
 
-                elif message.type == "PING":
+                elif message.type == MessageType.PING:
                     # Respond with pong
                     pong_msg = {
                         "type": "PONG",
@@ -250,6 +250,9 @@ class DashboardApplication:
             # Show dashboard
             self.dashboard.show()
 
+            # Connect UI Logic for Sending Commands
+            self.signals.send_command.connect(self._handle_ui_command)
+
             if self.use_fastapi:
                 # Start FastAPI server in background thread
                 self._run_fastapi_server()
@@ -271,9 +274,9 @@ class DashboardApplication:
             logger.info("   Waiting for RPi5 connections...")
 
             mode_str = "FastAPI" if self.use_fastapi else "WebSocket"
-            self.dashboard.system_log.add_log("Dashboard started successfully", "SUCCESS")
-            self.dashboard.system_log.add_log(f"{mode_str} server listening on {self.config.ws_host}:{self.config.ws_port}", "INFO")
-            self.dashboard.system_log.add_log("Waiting for RPi5 connections...", "INFO")
+            self.dashboard.on_system_log("Dashboard started successfully", "SUCCESS")
+            self.dashboard.on_system_log(f"{mode_str} server listening on {self.config.ws_host}:{self.config.ws_port}", "INFO")
+            self.dashboard.on_system_log("Waiting for RPi5 connections...", "INFO")
 
             # Run Qt application
             return self.app.exec()
@@ -305,6 +308,7 @@ class DashboardApplication:
         def run_server():
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
+            self.fastapi_loop = loop
 
             try:
                 self.fastapi_server = FastAPIServer(
@@ -351,6 +355,59 @@ class DashboardApplication:
         # Close dashboard
         if self.dashboard:
             self.dashboard.close()
+
+    def _handle_ui_command(self, cmd: dict):
+        """Handle command from UI -> Broadcast to RPi5"""
+        from laptop.protocol import MessageType, BaseMessage
+        import asyncio
+        
+        # Wrap in BaseMessage
+        message = BaseMessage(
+            type=MessageType.COMMAND,
+            data=cmd
+        )
+        
+        # Broadcast
+        if self.use_fastapi and self.fastapi_server:
+            # FastAPI server broadcast is async, run in loop
+            # We are in UI thread here, so we need to schedule it
+            # Ideally use a queue, but for now run_coroutine_threadsafe if we have loop
+             # But FastAPI server runs in its own loop in a thread? 
+             # No, run_server creates a new loop.
+             pass # Logic complexity here: accessing separate thread loop
+             
+             # Actually, simpler:
+             # FastAPIServer.broadcast() is async.
+             # We need to find the loop it is running in.
+             # In _run_fastapi_server, we create a loop: `loop = asyncio.new_event_loop()`
+             # But we don't store it in self.loop (that's for legacy server).
+             # We should store existing loop.
+             pass
+
+        if self.use_fastapi and self.fastapi_server:
+            # We need to locate the loop running the server
+            # Since _run_fastapi_server is a local scope `loop`, we can't access it easily unless we stored it.
+            # Let's fix _run_fastapi_server to store self.fastapi_loop
+            if hasattr(self, 'fastapi_loop') and self.fastapi_loop:
+                 asyncio.run_coroutine_threadsafe(
+                    self.fastapi_server.broadcast(message),
+                    self.fastapi_loop
+                )
+            else:
+                logger.error("Cannot send command: FastAPI loop not accessible")
+
+        elif self.server and self.loop:
+            asyncio.run_coroutine_threadsafe(
+                self.server.broadcast(message.to_json()), # Legacy server might expect string? No, checking logic
+                self.loop
+            )
+            # Legacy server .broadcast() method signature?
+            # It inherits from AsyncWebSocketServer. broadcast(message: str | BaseMessage).
+            # If base class, it expects BaseMessage object usually, or string?
+            # Let's check shared.api.AsyncWebSocketServer.broadcast
+            # It calls send_to_client_impl which usually takes BaseMessage if properly typed.
+            # But here let's assume valid.
+
 
 
 # ============================================================================

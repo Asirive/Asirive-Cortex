@@ -1,1446 +1,700 @@
 """
-ProjectCortex Dashboard - Clean UI with custom-ui-pyqt6
+ProjectCortex Dashboard v2.0 - Glassmorphic Production UI
+=========================================================
 
-A clean, minimal PyQt6 dashboard using custom-ui-pyqt6 components.
-Features:
-- Real-time video feed with detection overlays
-- System metrics monitoring (FPS, RAM, CPU, battery, temperature)
-- Layer control panel for testing all 4 layers
-- Text input for testing voice queries and workflows
-- Detection and system logs
-- Clean dark theme without gradient spam
+A complete redesign of the Cortex Dashboard featuring:
+- Glassmorphic Dark Theme (Deep Navy + Neon Accents)
+- Production Mode Control
+- Real-time Sparkline Metrics
+- Uptime Monitoring
+- Thread-safe WebSocket integration
+- Tabbed Interface (Overview, Testing, Logs)
 
 Author: Haziq (@IRSPlays)
-Date: January 8, 2026
+Date: January 18, 2026
 """
 
 import sys
 import os
+import asyncio
+import logging
+import json
+import time
+from collections import deque
+from datetime import datetime
+from typing import Dict, Any, Optional, List
 
-# Add project root to path so laptop module can be found
+# Add project root to path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-import asyncio
-import logging
-from datetime import datetime
-from typing import Dict, Any, Optional, List
-from enum import Enum
-
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QTextEdit, QScrollArea, QFrame, QSplitter,
-    QPushButton, QStatusBar, QComboBox, QSlider, QSpinBox, QDoubleSpinBox,
-    QCheckBox, QLineEdit, QTabWidget, QTableWidget, QTableWidgetItem,
-    QHeaderView, QProgressBar, QGridLayout, QStackedWidget, QDialog,
-    QDialogButtonBox, QFormLayout, QMessageBox, QFileDialog, QFrame,
-    QInputDialog, QLineEdit
+    QLabel, QTextEdit, QFrame, QPushButton, QProgressBar, 
+    QGridLayout, QScrollArea, QSizePolicy, QStackedWidget, QLineEdit,
+    QCheckBox, QComboBox
 )
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject, QThread, pyqtSlot, QMetaObject
-from PyQt6.QtGui import QPixmap, QImage, QPainter, QPalette, QColor, QFont, QIcon
-
-import base64
-import io
-import json
-import numpy as np
-
-# Setup debug logging BEFORE other imports that might use logger
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s [%(levelname)-8s] %(name)s: %(message)s',
-    datefmt='%H:%M:%S'
-)
-logger = logging.getLogger('CortexDashboard')
-
-try:
-    import websockets
-    WEBSOCKETS_AVAILABLE = True
-except ImportError:
-    WEBSOCKETS_AVAILABLE = False
-    logger.warning("websockets package not installed, WebSocket client disabled")
-
-# Custom UI components - clean, modern, no gradients
-from custom_ui_package import (
-    CustomCard, CustomTabWidget,
-    CustomInputBox, CustomTextArea, CustomDropdown,
-    CustomMainWindow, CustomTitleBar, CustomModal, CustomToast,
-    CustomProgressBar, CustomCheckBox, CustomRadioButton,
-    CustomSlider, CustomSpinner, CustomAccordion,
-    CustomMessageDialog
+from PyQt6.QtCore import Qt, pyqtSignal, QObject, QTimer, QSize
+from PyQt6.QtGui import (
+    QColor, QPainter, QBrush, QPen, QFont, QImage, QPixmap,
+    QRadialGradient, QLinearGradient, QPalette
 )
 
 from laptop.config import DashboardConfig
-from laptop.protocol import (
-    MessageType, BaseMessage, create_message, parse_message
-)
 
-# Setup debug logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s [%(levelname)-8s] %(name)s: %(message)s',
-    datefmt='%H:%M:%S'
-)
-logger.info("CortexDashboard module initialized")
-
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger('CortexUI')
 
 # ============================================================================
-# COLOR PALETTE (Clean, no gradients)
+# THEME & STYLES (Cyberpunk / Glassmorphism)
 # ============================================================================
 
-class CortexColors:
-    """Clean color palette for ProjectCortex"""
-
-    # Backgrounds
-    BG_PRIMARY = "#0f1419"
-    BG_SECONDARY = "#1a1f26"
-    BG_TERTIARY = "#242b33"
-    BG_CARD = "#1e252d"
-
-    # Accents - muted, professional
-    ACCENT = "#00b894"      # Teal green
-    ACCENT_SECONDARY = "#6c5ce7"  # Soft purple
-    WARNING = "#fdcb6e"     # Warm yellow
-    DANGER = "#e17055"      # Soft red
-    SUCCESS = "#00b894"     # Green
-
+class Theme:
+    # Deep Navy Backgrounds
+    BG_MAIN = "#0a0e17"
+    BG_GLASS = "rgba(30, 35, 45, 0.7)"
+    BG_GLASS_HOVER = "rgba(40, 45, 60, 0.8)"
+    
+    # Neon Accents
+    NEON_CYAN = "#00f2ea"
+    NEON_PURPLE = "#7000ff"
+    NEON_GREEN = "#00ff9d"
+    NEON_RED = "#ff0055"
+    NEON_YELLOW = "#ffee00"
+    
     # Text
-    TEXT_PRIMARY = "#eceff4"
-    TEXT_SECONDARY = "#abb2bf"
-    TEXT_MUTED = "#5c6370"
+    TEXT_WHITE = "#ffffff"
+    TEXT_GRAY = "#8b9bb4"
+    
+    FONT_MAIN = "Segoe UI"
+    FONT_MONO = "Consolas"
 
-    # Layer colors
-    LAYER_0 = "#e17055"     # Guardian - coral
-    LAYER_1 = "#fdcb6e"     # Learner - yellow
-    LAYER_2 = "#00b894"     # Thinker - green
-    LAYER_3 = "#74b9ff"     # Guide - blue
-    LAYER_4 = "#a29bfe"     # Memory - purple
-
-
-# Apply custom colors to the library
-def apply_custom_theme():
-    """Apply clean theme to custom_ui_package"""
-    # Custom colors are applied via stylesheets in components
-    # The library handles its own internal theming
-    pass
-
-
-# ============================================================================
-# SIGNAL BRIDGE
-# ============================================================================
-
-class DashboardSignals(QObject):
-    """Signals for thread-safe GUI updates"""
-    video_frame = pyqtSignal(bytes, int, int)
-    metrics_update = pyqtSignal(dict)
-    detection_log = pyqtSignal(dict)
-    system_log = pyqtSignal(str, str)
-    client_connected = pyqtSignal(str)
-    client_disconnected = pyqtSignal(str)
-    layer_response = pyqtSignal(str, dict)
-
-
-# ============================================================================
-# BASE STYLESHEET
-# ============================================================================
-
-BASE_STYLESHEET = f"""
+STYLE_SHEET = f"""
     QMainWindow {{
-        background-color: {CortexColors.BG_PRIMARY};
+        background-color: {Theme.BG_MAIN};
     }}
     QWidget {{
-        background-color: {CortexColors.BG_PRIMARY};
-        color: {CortexColors.TEXT_PRIMARY};
-        font-family: 'Segoe UI', 'Roboto', sans-serif;
-        font-size: 13px;
+        color: {Theme.TEXT_WHITE};
+        font-family: {Theme.FONT_MAIN};
     }}
-    QLabel {{
-        color: {CortexColors.TEXT_PRIMARY};
+    QFrame#GlassCard {{
+        background-color: {Theme.BG_GLASS};
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
     }}
-    QGroupBox {{
-        border: 1px solid {CortexColors.BG_TERTIARY};
-        border-radius: 8px;
-        margin-top: 12px;
-        padding-top: 8px;
-        font-weight: 600;
-        color: {CortexColors.TEXT_SECONDARY};
+    QLabel#Title {{
+        font-size: 18px;
+        font-weight: bold;
+        color: {Theme.NEON_CYAN};
     }}
-    QGroupBox::title {{
-        subcontrol-origin: margin;
-        left: 8px;
-        padding: 0 8px;
-        color: {CortexColors.ACCENT};
+    QLabel#Subtitle {{
+        font-size: 12px;
+        color: {Theme.TEXT_GRAY};
     }}
-    QProgressBar {{
-        background-color: {CortexColors.BG_TERTIARY};
-        border: none;
-        border-radius: 4px;
-        text-align: center;
-        color: {CortexColors.TEXT_PRIMARY};
-    }}
-    QProgressBar::chunk {{
-        background-color: {CortexColors.ACCENT};
-        border-radius: 4px;
-    }}
-    QTableWidget {{
-        background-color: {CortexColors.BG_CARD};
-        color: {CortexColors.TEXT_PRIMARY};
-        border: 1px solid {CortexColors.BG_TERTIARY};
-        gridline-color: {CortexColors.BG_TERTIARY};
+    QPushButton {{
+        background-color: rgba(0, 242, 234, 0.1);
+        border: 1px solid {Theme.NEON_CYAN};
         border-radius: 6px;
+        color: {Theme.NEON_CYAN};
+        padding: 5px 15px;
+        font-weight: bold;
     }}
-    QHeaderView::section {{
-        background-color: {CortexColors.BG_TERTIARY};
-        color: {CortexColors.TEXT_SECONDARY};
-        padding: 8px 12px;
+    QPushButton:hover {{
+        background-color: rgba(0, 242, 234, 0.3);
+    }}
+    QPushButton:pressed {{
+        background-color: {Theme.NEON_CYAN};
+        color: {Theme.BG_MAIN};
+    }}
+    QPushButton#StopBtn {{
+        background-color: rgba(255, 0, 85, 0.1);
+        border: 1px solid {Theme.NEON_RED};
+        color: {Theme.NEON_RED};
+    }}
+    QPushButton#StopBtn:hover {{
+        background-color: rgba(255, 0, 85, 0.3);
+    }}
+    
+    /* Nav Buttons */
+    QPushButton#NavBtn {{
+        background-color: transparent;
         border: none;
-        font-weight: 600;
+        color: {Theme.TEXT_GRAY};
+        font-size: 14px;
+        padding: 10px;
     }}
-    QMenuBar {{
-        background-color: {CortexColors.BG_SECONDARY};
-        color: {CortexColors.TEXT_PRIMARY};
-        border-bottom: 1px solid {CortexColors.BG_TERTIARY};
-        padding: 4px;
+    QPushButton#NavBtn:hover {{
+        color: {Theme.TEXT_WHITE};
+        background-color: rgba(255,255,255,0.05);
     }}
-    QMenuBar::item:selected {{
-        background-color: {CortexColors.ACCENT};
+    QPushButton#NavBtn[active="true"] {{
+        color: {Theme.NEON_CYAN};
+        border-bottom: 2px solid {Theme.NEON_CYAN};
+    }}
+
+    /* Inputs */
+    QLineEdit {{
+        background-color: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 4px;
+        padding: 5px;
+        color: {Theme.TEXT_WHITE};
+        font-family: {Theme.FONT_MONO};
     }}
-    QMenu {{
-        background-color: {CortexColors.BG_SECONDARY};
-        color: {CortexColors.TEXT_PRIMARY};
-        border: 1px solid {CortexColors.BG_TERTIARY};
-        border-radius: 6px;
-        padding: 4px;
-    }}
-    QMenu::item:selected {{
-        background-color: {CortexColors.BG_TERTIARY};
-    }}
-    QStatusBar {{
-        background-color: {CortexColors.BG_SECONDARY};
-        color: {CortexColors.TEXT_SECONDARY};
-        border-top: 1px solid {CortexColors.BG_TERTIARY};
-        padding: 4px 8px;
-    }}
-    QScrollBar:vertical {{
-        background-color: {CortexColors.BG_PRIMARY};
-        width: 10px;
-        border-radius: 5px;
-    }}
-    QScrollBar::handle:vertical {{
-        background-color: {CortexColors.BG_TERTIARY};
+    QComboBox {{
+        background-color: rgba(30, 35, 45, 1.0);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 4px;
-        min-height: 20px;
-    }}
-    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
-        background: none;
-        height: 0px;
+        padding: 5px;
+        color: {Theme.TEXT_WHITE};
     }}
 """
 
-
 # ============================================================================
-# VIDEO WIDGET
+# CUSTOM WIDGETS
 # ============================================================================
 
-class VideoWidget(QFrame):
-    """Video feed display with detection overlays"""
-
+class GlassCard(QFrame):
+    """Semi-transparent container with border"""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Raised)
-        self.setLineWidth(1)
-        self.setStyleSheet(f"""
-            QFrame {{
-                background-color: {CortexColors.BG_CARD};
-                border: 1px solid {CortexColors.BG_TERTIARY};
-                border-radius: 8px;
-            }}
-        """)
-        self.setMinimumSize(640, 400)
-        self.frame_data = None
-        self.detections = []
-        self.fps = 0.0
+        self.setObjectName("GlassCard")
 
-        # FPS label overlay
-        self.fps_label = QLabel("FPS: --", self)
-        self.fps_label.setStyleSheet(f"""
-            QLabel {{
-                color: {CortexColors.ACCENT};
-                font-size: 14px;
-                font-weight: bold;
-                background-color: rgba(15, 20, 25, 180);
-                padding: 4px 8px;
-                border-radius: 4px;
-            }}
-        """)
+class SparklineWidget(QWidget):
+    """Real-time line graph for metrics"""
+    def __init__(self, color=Theme.NEON_CYAN, max_points=50, parent=None):
+        super().__init__(parent)
+        self.color = QColor(color)
+        self.data = deque([0]*max_points, maxlen=max_points)
+        self.setFixedHeight(40)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-    def update_frame(self, frame_data: bytes, width: int, height: int):
-        """Update video frame"""
-        self.frame_data = (frame_data, width, height)
+    def add_value(self, value):
+        self.data.append(value)
         self.update()
-
-    def update_detections(self, detections: List[Dict]):
-        """Update detection overlays"""
-        self.detections = detections
-        self.update()
-
-    def update_fps(self, fps: float):
-        """Update FPS display"""
-        self.fps = fps
-        self.fps_label.setText(f"FPS: {fps:.1f}")
 
     def paintEvent(self, event):
-        """Draw video frame and detection overlays"""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-
-        # Draw frame if available
-        if self.frame_data:
-            try:
-                frame_data, width, height = self.frame_data
-                image = QImage(frame_data, width, height, QImage.Format.Format_Jpeg)
-                painter.drawImage(self.rect(), image)
-            except Exception as e:
-                pass
-
-        # Draw detection overlays
-        for det in self.detections:
-            bbox = det.get('bbox', [])
-            if len(bbox) >= 4:
-                x1, y1, x2, y2 = bbox
-                conf = det.get('confidence', 0)
-                layer = det.get('layer', 'unknown')
-                class_name = det.get('class_name', 'object')
-
-                # Color based on layer
-                layer_colors = {
-                    'guardian': CortexColors.LAYER_0,
-                    'learner': CortexColors.LAYER_1,
-                }
-                color_str = layer_colors.get(layer, CortexColors.TEXT_SECONDARY)
-                color = QColor(color_str)
-                color.setAlpha(180)
-
-                pen = QColor(color_str)
-                pen.setWidth(2)
-                painter.setPen(pen)
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-
-                # Draw bounding box
-                rect_w = x2 - x1
-                rect_h = y2 - y1
-                painter.drawRect(int(x1), int(y1), int(rect_w), int(rect_h))
-
-                # Draw label background
-                label = f"{class_name} {conf:.0%}"
-                font = QFont("Segoe UI", 10, QFont.Weight.Bold)
-                painter.setFont(font)
-                fm = painter.fontMetrics()
-                text_width = fm.horizontalAdvance(label) + 16
-
-                bg_color = QColor(color_str)
-                bg_color.setAlpha(220)
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(bg_color)
-                painter.drawRoundedRect(int(x1), int(y1) - 20, text_width, 20, 4, 4)
-
-                # Draw label text
-                painter.setPen(QColor(CortexColors.BG_PRIMARY))
-                painter.drawText(int(x1) + 8, int(y1) - 6, label)
-
-        painter.end()
-
-    def resizeEvent(self, event):
-        """Position FPS label"""
-        super().resizeEvent(event)
-        self.fps_label.move(12, 12)
-
-
-# ============================================================================
-# METRICS WIDGET
-# ============================================================================
-
-class MetricsWidget(QFrame):
-    """System metrics display using CustomCard"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setStyleSheet(f"""
-            QFrame {{
-                background-color: {CortexColors.BG_CARD};
-                border: 1px solid {CortexColors.BG_TERTIARY};
-                border-radius: 8px;
-            }}
-        """)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
-
-        # Title
-        title = QLabel("System Metrics")
-        title.setStyleSheet(f"""
-            QLabel {{
-                color: {CortexColors.ACCENT};
-                font-size: 14px;
-                font-weight: bold;
-            }}
-        """)
-        layout.addWidget(title)
-
-        # Metrics grid
-        self.metrics = {}
-        metric_config = [
-            ("FPS", "fps", CortexColors.ACCENT),
-            ("RAM", "ram_percent", CortexColors.WARNING),
-            ("CPU", "cpu_percent", CortexColors.DANGER),
-            ("Battery", "battery_percent", CortexColors.SUCCESS),
-            ("Temperature", "temperature", CortexColors.ACCENT_SECONDARY),
-        ]
-
-        for name, key, color in metric_config:
-            row_layout = QHBoxLayout()
-
-            # Label
-            name_label = QLabel(f"{name}:")
-            name_label.setStyleSheet(f"color: {CortexColors.TEXT_SECONDARY}; font-size: 12px;")
-            name_label.setFixedWidth(80)
-            row_layout.addWidget(name_label)
-
-            # Value
-            value_label = QLabel("--")
-            value_label.setStyleSheet(f"""
-                QLabel {{
-                    color: {color};
-                    font-size: 14px;
-                    font-weight: bold;
-                    min-width: 70px;
-                }}
-            """)
-            row_layout.addWidget(value_label)
-
-            # Progress bar
-            progress = CustomProgressBar()
-            progress.setFixedHeight(6)
-            progress.setRange(0, 100)
-            progress.setValue(0)
-            row_layout.addWidget(progress)
-
-            layout.addLayout(row_layout)
-            self.metrics[key] = (value_label, progress)
-
-        # Mode display
-        self.mode_label = QLabel("Mode: --")
-        self.mode_label.setStyleSheet(f"""
-            QLabel {{
-                color: {CortexColors.TEXT_PRIMARY};
-                font-size: 13px;
-                padding: 8px 12px;
-                background-color: {CortexColors.BG_TERTIARY};
-                border-radius: 6px;
-                margin-top: 8px;
-            }}
-        """)
-        layout.addWidget(self.mode_label)
-
-        # Active layers
-        self.layers_label = QLabel("Layers: None")
-        self.layers_label.setStyleSheet(f"""
-            QLabel {{
-                color: {CortexColors.TEXT_SECONDARY};
-                font-size: 12px;
-            }}
-        """)
-        layout.addWidget(self.layers_label)
-
-        layout.addStretch()
-
-    def update_metrics(self, data: Dict):
-        """Update metrics display"""
-        for key, (value_label, progress) in self.metrics.items():
-            if key in data:
-                value = data[key]
-                if key == "fps":
-                    value_label.setText(f"{value:.1f}")
-                    progress.setValue(int(min(value, 60)))
-                elif key == "temperature":
-                    value_label.setText(f"{value:.1f}°C")
-                    progress.setValue(int(min(value, 100)))
-                else:
-                    value_label.setText(f"{value:.1f}%")
-                    progress.setValue(int(value))
-
-        # Update mode
-        mode = data.get("current_mode", "--")
-        self.mode_label.setText(f"Mode: {mode}")
-
-        # Update layers
-        layers = data.get("active_layers", [])
-        layers_text = ", ".join(layers) if layers else "None"
-        self.layers_label.setText(f"Layers: {layers_text}")
-
-
-# ============================================================================
-# DETECTION LOG WIDGET
-# ============================================================================
-
-class DetectionLogWidget(QFrame):
-    """Detection log widget"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setStyleSheet(f"""
-            QFrame {{
-                background-color: {CortexColors.BG_CARD};
-                border: 1px solid {CortexColors.BG_TERTIARY};
-                border-radius: 8px;
-            }}
-        """)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
-
-        # Header
-        header_layout = QHBoxLayout()
-
-        title = QLabel("Detection Log")
-        title.setStyleSheet(f"""
-            QLabel {{
-                color: {CortexColors.ACCENT};
-                font-size: 14px;
-                font-weight: bold;
-            }}
-        """)
-        header_layout.addWidget(title)
-
-        header_layout.addStretch()
-
-        # Clear button
-        clear_btn = QPushButton("Clear")
-        clear_btn.setFixedSize(70, 28)
-        clear_btn.clicked.connect(self.clear_log)
-        header_layout.addWidget(clear_btn)
-
-        layout.addLayout(header_layout)
-
-        # Table
-        self.table = QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["Time", "Layer", "Object", "Conf", "Source"])
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setRowCount(0)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table.setStyleSheet(f"""
-            QTableWidget {{
-                border: none;
-                gridline-color: {CortexColors.BG_TERTIARY};
-            }}
-        """)
-        layout.addWidget(self.table)
-
-    def add_detection(self, data: Dict):
-        """Add detection entry"""
-        row = self.table.rowCount()
-        self.table.insertRow(row)
-
-        time_str = datetime.now().strftime("%H:%M:%S")
-
-        items = [
-            QTableWidgetItem(time_str),
-            QTableWidgetItem(data.get('layer', 'unknown')[:7]),
-            QTableWidgetItem(data.get('class_name', 'unknown')[:15]),
-            QTableWidgetItem(f"{data.get('confidence', 0):.0%}"),
-            QTableWidgetItem(data.get('source', 'NCNN')[:8])
-        ]
-
-        # Color based on confidence
-        conf = data.get('confidence', 0)
-        bg_color = QColor(CortexColors.BG_TERTIARY)
-
-        for i, item in enumerate(items):
-            if i == 3:  # Confidence column
-                item.setBackground(bg_color)
-            self.table.setItem(row, i, item)
-
-        # Scroll and limit
-        self.table.scrollToBottom()
-        if self.table.rowCount() > 500:
-            self.table.removeRow(0)
-
-    def clear_log(self):
-        """Clear the log"""
-        self.table.clearContents()
-        self.table.setRowCount(0)
-
-
-# ============================================================================
-# SYSTEM LOG WIDGET
-# ============================================================================
-
-class SystemLogWidget(QFrame):
-    """System log widget"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setStyleSheet(f"""
-            QFrame {{
-                background-color: {CortexColors.BG_CARD};
-                border: 1px solid {CortexColors.BG_TERTIARY};
-                border-radius: 8px;
-            }}
-        """)
-
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
-
-        # Header
-        header_layout = QHBoxLayout()
-
-        title = QLabel("System Log")
-        title.setStyleSheet(f"""
-            QLabel {{
-                color: {CortexColors.ACCENT};
-                font-size: 14px;
-                font-weight: bold;
-            }}
-        """)
-        header_layout.addWidget(title)
-
-        header_layout.addStretch()
-
-        layout.addLayout(header_layout)
-
-        # Log text area (create before button that connects to it)
-        self.log_area = QTextEdit()
-        self.log_area.setReadOnly(True)
-        self.log_area.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: {CortexColors.BG_PRIMARY};
-                color: {CortexColors.TEXT_PRIMARY};
-                border: 1px solid {CortexColors.BG_TERTIARY};
-                border-radius: 4px;
-                font-family: 'Consolas', 'Monaco', monospace;
-                font-size: 11px;
-                padding: 8px;
-            }}
-        """)
-        layout.addWidget(self.log_area)
-
-        # Clear button (after log_area is created)
-        clear_btn = QPushButton("Clear")
-        clear_btn.setFixedSize(70, 28)
-        clear_btn.clicked.connect(self.log_area.clear)
-        header_layout.addWidget(clear_btn)
-
-        # Log colors
-        self.colors = {
-            "ERROR": CortexColors.DANGER,
-            "WARNING": CortexColors.WARNING,
-            "SUCCESS": CortexColors.SUCCESS,
-            "INFO": CortexColors.ACCENT,
-            "DEBUG": CortexColors.TEXT_MUTED
-        }
-
-    def add_log(self, message: str, level: str = "INFO"):
-        """Add log entry"""
-        time_str = datetime.now().strftime("%H:%M:%S")
-        color = self.colors.get(level, CortexColors.TEXT_PRIMARY)
-
-        formatted = f'<span style="color: {CortexColors.TEXT_MUTED};">[{time_str}]</span> ' \
-                    f'<span style="color: {color}; font-weight: bold;">[{level}]</span> {message}'
-        self.log_area.append(formatted)
-        self.log_area.verticalScrollBar().setValue(
-            self.log_area.verticalScrollBar().maximum()
-        )
-
-
-# ============================================================================
-# LAYER CONTROL PANEL
-# ============================================================================
-
-class LayerCard(QFrame):
-    """Card for controlling a single layer"""
-
-    command_sent = pyqtSignal(str, dict)
-
-    def __init__(self, layer_name: str, display_name: str, color: str, parent=None):
-        super().__init__(parent)
-        self.layer_name = layer_name
-        self.color = color
-
-        self.setStyleSheet(f"""
-            QFrame {{
-                background-color: {CortexColors.BG_CARD};
-                border: 1px solid {CortexColors.BG_TERTIARY};
-                border-radius: 8px;
-            }}
-        """)
-        self.setup_ui(display_name)
-
-    def setup_ui(self, display_name: str):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
-
-        # Header
-        header_layout = QHBoxLayout()
-
-        title = QLabel(display_name)
-        title.setStyleSheet(f"""
-            QLabel {{
-                color: {self.color};
-                font-size: 14px;
-                font-weight: bold;
-            }}
-        """)
-        header_layout.addWidget(title)
-
-        # Status badge (simple label-based)
-        self.status_badge = QLabel("Disconnected")
-        self.status_badge.setStyleSheet(f"""
-            QLabel {{
-                background-color: {CortexColors.BG_TERTIARY};
-                color: {CortexColors.TEXT_SECONDARY};
-                padding: 4px 12px;
-                border-radius: 12px;
-                font-size: 11px;
-            }}
-        """)
-        header_layout.addWidget(self.status_badge)
-
-        header_layout.addStretch()
-        layout.addLayout(header_layout)
-
-        # Buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(8)
-
-        self.start_btn = QPushButton("Start")
-        self.start_btn.setFixedSize(80, 32)
-        self.start_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {self.color};
-                color: {CortexColors.BG_PRIMARY};
-                border: none;
-                border-radius: 6px;
-                font-weight: bold;
-            }}
-            QPushButton:hover {{
-                opacity: 0.9;
-            }}
-        """)
-        self.start_btn.clicked.connect(lambda: self.send_command("start"))
-        btn_layout.addWidget(self.start_btn)
-
-        self.stop_btn = QPushButton("Stop")
-        self.stop_btn.setFixedSize(80, 32)
-        self.stop_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {CortexColors.BG_TERTIARY};
-                color: {CortexColors.TEXT_PRIMARY};
-                border: 1px solid {CortexColors.BG_TERTIARY};
-                border-radius: 6px;
-                padding: 8px 16px;
-            }}
-            QPushButton:hover {{
-                background-color: {CortexColors.DANGER};
-                color: white;
-            }}
-        """)
-        self.stop_btn.clicked.connect(lambda: self.send_command("stop"))
-        btn_layout.addWidget(self.stop_btn)
-
-        layout.addLayout(btn_layout)
-
-        # Response area
-        self.response_area = QTextEdit()
-        self.response_area.setMaximumHeight(100)
-        self.response_area.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: {CortexColors.BG_PRIMARY};
-                color: {CortexColors.TEXT_PRIMARY};
-                border: 1px solid {CortexColors.BG_TERTIARY};
-                border-radius: 4px;
-                font-family: 'Consolas', monospace;
-                font-size: 11px;
-                padding: 8px;
-            }}
-        """)
-        layout.addWidget(self.response_area)
-
-        layout.addStretch()
-
-    def send_command(self, action: str):
-        """Send command for this layer"""
-        command_data = {
-            "action": action,
-            "timestamp": datetime.utcnow().isoformat() + "Z"
-        }
-        self.command_sent.emit(self.layer_name, command_data)
-        self.response_area.append(f"[SENT] {action.upper()}")
-
-    def set_status(self, status: str, is_running: bool):
-        """Update status badge"""
-        self.status_badge.setText(status or ("Running" if is_running else "Stopped"))
-        if is_running:
-            self.status_badge.setStyleSheet(f"""
-                QLabel {{
-                    background-color: {CortexColors.SUCCESS};
-                    color: {CortexColors.BG_PRIMARY};
-                    padding: 4px 12px;
-                    border-radius: 12px;
-                    font-size: 11px;
-                    font-weight: bold;
-                }}
-            """)
-        else:
-            self.status_badge.setStyleSheet(f"""
-                QLabel {{
-                    background-color: {CortexColors.BG_TERTIARY};
-                    color: {CortexColors.TEXT_SECONDARY};
-                    padding: 4px 12px;
-                    border-radius: 12px;
-                    font-size: 11px;
-                }}
-            """)
-
-    def add_response(self, response: Dict):
-        """Add response from layer"""
-        self.response_area.append(f"[OK] {response}")
-
-
-class LayerControlPanel(QWidget):
-    """Panel for controlling all layers"""
-
-    command_sent = pyqtSignal(str, dict)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setup_ui()
-
-    def setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
-
-        # Title
-        title = QLabel("Layer Control")
-        title.setStyleSheet(f"""
-            QLabel {{
-                color: {CortexColors.ACCENT};
-                font-size: 16px;
-                font-weight: bold;
-            }}
-        """)
-        layout.addWidget(title)
-
-        # Layer cards
-        self.layer_cards = {}
-
-        layers = [
-            ("layer_0", "Layer 0: Guardian", CortexColors.LAYER_0),
-            ("layer_1", "Layer 1: Learner", CortexColors.LAYER_1),
-            ("layer_2", "Layer 2: Thinker", CortexColors.LAYER_2),
-            ("layer_3", "Layer 3: Guide", CortexColors.LAYER_3),
-        ]
-
-        for layer_id, display_name, color in layers:
-            card = LayerCard(layer_id, display_name, color)
-            card.command_sent.connect(self.command_sent.emit)
-            layout.addWidget(card)
-            self.layer_cards[layer_id] = card
-
-        layout.addStretch()
-
-
-# ============================================================================
-# WORKFLOW TEST WIDGET
-# ============================================================================
-
-class WorkflowTestWidget(QWidget):
-    """Widget for testing complete workflows"""
-
-    test_query = pyqtSignal(str)
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setup_ui()
-
-    def setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
-
-        # Title
-        title = QLabel("Workflow Test")
-        title.setStyleSheet(f"""
-            QLabel {{
-                color: {CortexColors.ACCENT};
-                font-size: 16px;
-                font-weight: bold;
-            }}
-        """)
-        layout.addWidget(title)
-
-        # Query input
-        input_group = QFrame()
-        input_group.setStyleSheet(f"""
-            QFrame {{
-                background-color: {CortexColors.BG_CARD};
-                border: 1px solid {CortexColors.BG_TERTIARY};
-                border-radius: 8px;
-            }}
-        """)
-        input_layout = QVBoxLayout(input_group)
-        input_layout.setContentsMargins(12, 12, 12, 12)
-        input_layout.setSpacing(8)
-
-        input_label = QLabel("Test Query")
-        input_label.setStyleSheet(f"color: {CortexColors.TEXT_SECONDARY}; font-size: 12px;")
-        input_layout.addWidget(input_label)
-
-        self.query_input = QLineEdit()
-        self.query_input.setPlaceholderText("Enter test query...")
-        self.query_input.setStyleSheet(f"""
-            QLineEdit {{
-                background-color: {CortexColors.BG_PRIMARY};
-                color: {CortexColors.TEXT_PRIMARY};
-                border: 1px solid {CortexColors.BG_TERTIARY};
-                padding: 10px 12px;
-                font-size: 13px;
-                border-radius: 6px;
-            }}
-            QLineEdit:focus {{
-                border-color: {CortexColors.ACCENT};
-            }}
-        """)
-        input_layout.addWidget(self.query_input)
-
-        # Quick test buttons
-        btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(8)
-
-        quick_tests = [
-            ("What do you see?", "text_prompts"),
-            ("Scan everything", "prompt_free"),
-            ("Where is my wallet?", "visual_prompts"),
-        ]
-
-        for label, mode in quick_tests:
-            btn = QPushButton(label)
-            btn.setFixedHeight(32)
-            btn.clicked.connect(lambda checked, q=label, m=mode: self.on_quick_test(q, m))
-            btn_layout.addWidget(btn)
-
-        input_layout.addLayout(btn_layout)
-
-        # Submit button
-        submit_btn = QPushButton("Submit Query")
-        submit_btn.setFixedHeight(36)
-        submit_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {CortexColors.ACCENT};
-                color: {CortexColors.BG_PRIMARY};
-                border: none;
-                border-radius: 6px;
-                font-weight: bold;
-                padding: 8px 20px;
-            }}
-            QPushButton:hover {{
-                opacity: 0.9;
-            }}
-        """)
-        submit_btn.clicked.connect(self.on_submit_query)
-        input_layout.addWidget(submit_btn)
-
-        layout.addWidget(input_group)
-
-        # Expected behavior
-        expected_group = QFrame()
-        expected_group.setStyleSheet(f"""
-            QFrame {{
-                background-color: {CortexColors.BG_CARD};
-                border: 1px solid {CortexColors.BG_TERTIARY};
-                border-radius: 8px;
-            }}
-        """)
-        expected_layout = QVBoxLayout(expected_group)
-        expected_layout.setContentsMargins(12, 12, 12, 12)
-        expected_layout.setSpacing(8)
-
-        expected_label = QLabel("Expected Behavior")
-        expected_label.setStyleSheet(f"color: {CortexColors.TEXT_SECONDARY}; font-size: 12px;")
-        expected_layout.addWidget(expected_label)
-
-        self.expected_text = QLabel("Enter a query to see expected behavior...")
-        self.expected_text.setStyleSheet(f"color: {CortexColors.TEXT_PRIMARY}; font-size: 13px;")
-        self.expected_text.setWordWrap(True)
-        expected_layout.addWidget(self.expected_text)
-
-        layout.addWidget(expected_group)
-
-        # Query history
-        history_group = QFrame()
-        history_group.setStyleSheet(f"""
-            QFrame {{
-                background-color: {CortexColors.BG_CARD};
-                border: 1px solid {CortexColors.BG_TERTIARY};
-                border-radius: 8px;
-            }}
-        """)
-        history_layout = QVBoxLayout(history_group)
-        history_layout.setContentsMargins(12, 12, 12, 12)
-        history_layout.setSpacing(8)
-
-        history_label = QLabel("Query History")
-        history_label.setStyleSheet(f"color: {CortexColors.TEXT_SECONDARY}; font-size: 12px;")
-        history_layout.addWidget(history_label)
-
-        self.history_area = QTextEdit()
-        self.history_area.setMaximumHeight(120)
-        self.history_area.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: {CortexColors.BG_PRIMARY};
-                color: {CortexColors.TEXT_PRIMARY};
-                border: 1px solid {CortexColors.BG_TERTIARY};
-                border-radius: 4px;
-                font-size: 12px;
-                padding: 8px;
-            }}
-        """)
-        history_layout.addWidget(self.history_area)
-
-        layout.addWidget(history_group)
-        layout.addStretch()
-
-    def on_quick_test(self, query: str, expected_mode: str):
-        """Handle quick test button click"""
-        self.query_input.setText(query)
-
-        behaviors = {
-            "text_prompts": "Route: Layer 1 (Learner)\nMode: TEXT_PROMPTS\nConfidence: 0.7-0.9\nAdaptive vocabulary",
-            "prompt_free": "Route: Layer 1 (Learner)\nMode: PROMPT_FREE\nConfidence: 0.3-0.6\n4585+ built-in classes",
-            "visual_prompts": "Route: Layer 1 (Learner)\nMode: VISUAL_PROMPTS\nConfidence: 0.6-0.95\nVisual embeddings from memory",
-        }
-
-        self.expected_text.setText(behaviors.get(expected_mode, "Unknown mode"))
-
-    def on_submit_query(self):
-        """Submit test query"""
-        query = self.query_input.text().strip()
-        if not query:
+        
+        # Draw background
+        rect = self.rect()
+        painter.fillRect(rect, QColor(0, 0, 0, 0)) # Transparent
+        
+        if not self.data:
             return
+            
+        points = []
+        w = rect.width()
+        h = rect.height()
+        step = w / (len(self.data) - 1) if len(self.data) > 1 else w
+        
+        min_val = 0
+        max_val = 100 
+        
+        for i, val in enumerate(self.data):
+            x = i * step
+            normalized = (val - min_val) / (max_val - min_val) if max_val > min_val else 0
+            y = h - (normalized * h)
+            points.append((x, y))
+            
+        # Draw Line
+        pen = QPen(self.color)
+        pen.setWidth(2)
+        painter.setPen(pen)
+        
+        for i in range(len(points) - 1):
+            p1 = points[i]
+            p2 = points[i+1]
+            painter.drawLine(int(p1[0]), int(p1[1]), int(p2[0]), int(p2[1]))
 
-        self.test_query.emit(query)
-
-        # Add to history
-        time_str = datetime.now().strftime("%H:%M:%S")
-        self.history_area.append(f"[{time_str}] {query}")
-
-        self.query_input.clear()
-
-
-# ============================================================================
-# MESSAGE INJECTOR WIDGET
-# ============================================================================
-
-class MessageInjectorWidget(QWidget):
-    """Widget for injecting test messages"""
-
-    def __init__(self, parent=None):
+class UptimeWidget(QWidget):
+    """Tracks and displays uptime"""
+    def __init__(self, label, parent=None):
         super().__init__(parent)
-        self.setup_ui()
-
-    def setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
-
-        # Title
-        title = QLabel("Message Injector")
-        title.setStyleSheet(f"""
-            QLabel {{
-                color: {CortexColors.ACCENT};
-                font-size: 16px;
-                font-weight: bold;
-            }}
-        """)
-        layout.addWidget(title)
-
-        # Message type selector
-        type_layout = QHBoxLayout()
-
-        type_label = QLabel("Type:")
-        type_label.setStyleSheet(f"color: {CortexColors.TEXT_SECONDARY};")
-        type_layout.addWidget(type_label)
-
-        self.type_combo = QComboBox()
-        for msg_type in MessageType:
-            self.type_combo.addItem(msg_type.value, msg_type)
-        self.type_combo.setStyleSheet(f"""
-            QComboBox {{
-                background-color: {CortexColors.BG_CARD};
-                color: {CortexColors.TEXT_PRIMARY};
-                padding: 8px 12px;
-                border: 1px solid {CortexColors.BG_TERTIARY};
-                border-radius: 6px;
-                min-width: 150px;
-            }}
-        """)
-        type_layout.addWidget(self.type_combo)
-
-        layout.addLayout(type_layout)
-
-        # Message data input
-        self.data_input = QTextEdit()
-        self.data_input.setPlaceholderText("Enter message data as JSON...")
-        self.data_input.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: {CortexColors.BG_CARD};
-                color: {CortexColors.TEXT_PRIMARY};
-                border: 1px solid {CortexColors.BG_TERTIARY};
-                font-family: 'Consolas', monospace;
-                font-size: 12px;
-                border-radius: 6px;
-                padding: 8px;
-                min-height: 100px;
-            }}
-        """)
-        layout.addWidget(self.data_input)
-
-        # Preset buttons
-        preset_layout = QHBoxLayout()
-        preset_layout.setSpacing(8)
-
-        presets = [
-            ("Ping", {"type": "PING"}),
-            ("Start", {"type": "COMMAND", "command": "start"}),
-            ("Pause", {"type": "COMMAND", "command": "pause"}),
-        ]
-
-        for name, preset in presets:
-            btn = QPushButton(name)
-            btn.setFixedHeight(32)
-            btn.clicked.connect(lambda checked, p=preset: self.load_preset(p))
-            preset_layout.addWidget(btn)
-
-        layout.addLayout(preset_layout)
-
-        # Send button
-        send_btn = QPushButton("Send Message")
-        send_btn.setFixedHeight(40)
-        send_btn.setStyleSheet(f"""
-            QPushButton {{
-                background-color: {CortexColors.ACCENT};
-                color: {CortexColors.BG_PRIMARY};
-                border: none;
-                border-radius: 6px;
-                font-weight: bold;
-                padding: 8px 20px;
-            }}
-        """)
-        layout.addWidget(send_btn)
-
-        # Sent log
-        sent_label = QLabel("Sent Messages")
-        sent_label.setStyleSheet(f"color: {CortexColors.TEXT_SECONDARY}; font-size: 12px;")
-        layout.addWidget(sent_label)
-
-        self.sent_log = QTextEdit()
-        self.sent_log.setMaximumHeight(100)
-        self.sent_log.setStyleSheet(f"""
-            QTextEdit {{
-                background-color: {CortexColors.BG_CARD};
-                color: {CortexColors.TEXT_PRIMARY};
-                border: 1px solid {CortexColors.BG_TERTIARY};
-                font-family: 'Consolas', monospace;
-                font-size: 11px;
-                border-radius: 6px;
-                padding: 8px;
-            }}
-        """)
-        layout.addWidget(self.sent_log)
-
-        layout.addStretch()
-
-    def load_preset(self, preset: dict):
-        """Load a preset message"""
-        self.type_combo.setCurrentText(preset.get("type", ""))
-        self.data_input.setText(json.dumps(preset, indent=2))
-
-
-# ============================================================================
-# TESTING WINDOW
-# ============================================================================
-
-class TestingWindow(QDialog):
-    """Separate window for testing and controlling layers"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("ProjectCortex - Testing & Control")
-        self.setMinimumSize(800, 600)
-        self.setStyleSheet(f"background-color: {CortexColors.BG_PRIMARY};")
-        self.setup_ui()
-
-    def setup_ui(self):
-        layout = QVBoxLayout(self)
+        layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-
-        # Custom tab widget
-        self.tabs = CustomTabWidget()
-
-        # Layer Control Tab
-        self.layer_control = LayerControlPanel()
-        self.tabs.addTab(self.layer_control, "Layers")
-
-        # Workflow Test Tab
-        self.workflow_test = WorkflowTestWidget()
-        self.tabs.addTab(self.workflow_test, "Workflow")
-
-        # Message Injector Tab
-        self.message_injector = MessageInjectorWidget()
-        self.tabs.addTab(self.message_injector, "Messages")
-
-        layout.addWidget(self.tabs)
-
-        # Button box
-        btn_layout = QHBoxLayout()
-        btn_layout.setContentsMargins(16, 12, 16, 12)
-
-        btn_layout.addStretch()
-
-        close_btn = QPushButton("Close")
-        close_btn.setFixedSize(80, 36)
-        close_btn.clicked.connect(self.close)
-        btn_layout.addWidget(close_btn)
-
-        layout.addLayout(btn_layout)
-
-
-# ============================================================================
-# WEBSOCKET CLIENT
-# ============================================================================
-
-class WebSocketClient(QThread):
-    """WebSocket client for connecting to RPi5 simulator"""
-
-    # Signals for GUI updates
-    connected = pyqtSignal(str)  # server_url
-    disconnected = pyqtSignal(str)  # reason
-    video_frame = pyqtSignal(bytes, int, int)  # frame_data, width, height
-    metrics_update = pyqtSignal(dict)
-    detection = pyqtSignal(dict)
-    error = pyqtSignal(str)
-
-    def __init__(self, server_url: str = "ws://localhost:8765"):
-        super().__init__()
-        self.server_url = server_url
-        self.running = False
-        self._websocket = None
-
-    def run(self):
-        """Run the WebSocket client loop"""
-        if not WEBSOCKETS_AVAILABLE:
-            self.error.emit("WebSocket support not available. Install: pip install websockets")
-            return
-
-        logger.info(f"WebSocket client connecting to {self.server_url}...")
-        self.running = True
-
-        async def client_loop():
-            try:
-                async with websockets.connect(self.server_url) as websocket:
-                    self._websocket = websocket
-                    self.connected.emit(self.server_url)
-                    logger.info(f"Connected to {self.server_url}")
-
-                    while self.running:
-                        try:
-                            message = await asyncio.wait_for(websocket.recv(), timeout=1.0)
-                            self._handle_message(message)
-                        except asyncio.TimeoutError:
-                            continue
-                        except websockets.exceptions.ConnectionClosed:
-                            self.disconnected.emit("Connection closed")
-                            break
-
-            except Exception as e:
-                logger.error(f"WebSocket error: {e}")
-                self.error.emit(str(e))
-                self.disconnected.emit(str(e))
-
-        asyncio.run(client_loop())
-
-    def _handle_message(self, message: str):
-        """Handle incoming WebSocket message"""
-        try:
-            data = json.loads(message)
-            msg_type = data.get("type", "")
-            msg_data = data.get("data", {})
-
-            if msg_type == "VIDEO_FRAME":
-                frame_b64 = msg_data.get("frame", "")
-                frame_data = base64.b64decode(frame_b64)
-                width = msg_data.get("width", 640)
-                height = msg_data.get("height", 480)
-                self.video_frame.emit(frame_data, width, height)
-
-            elif msg_type == "METRICS_UPDATE":
-                self.metrics_update.emit(msg_data)
-
-            elif msg_type == "DETECTION":
-                self.detection.emit(msg_data)
-
-            elif msg_type == "PONG":
-                logger.debug("Received PONG")
-
-            else:
-                logger.debug(f"Unknown message type: {msg_type}")
-
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON: {e}")
-        except Exception as e:
-            logger.error(f"Error handling message: {e}")
-
-    def send_message(self, message: dict):
-        """Send a message to the server"""
-        if self._websocket and self.running:
-            try:
-                msg_str = json.dumps(message)
-                asyncio.run(self._websocket.send(msg_str))
-            except Exception as e:
-                logger.error(f"Failed to send message: {e}")
-
+        
+        self.lbl_name = QLabel(label)
+        self.lbl_name.setStyleSheet(f"color: {Theme.TEXT_GRAY};")
+        
+        self.lbl_time = QLabel("00:00:00")
+        self.lbl_time.setStyleSheet(f"color: {Theme.TEXT_WHITE}; font-family: {Theme.FONT_MONO}; font-weight: bold;")
+        self.lbl_time.setAlignment(Qt.AlignmentFlag.AlignRight)
+        
+        layout.addWidget(self.lbl_name)
+        layout.addStretch()
+        layout.addWidget(self.lbl_time)
+        
+        self.start_time = None
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self.update_time)
+        
+    def start(self):
+        self.start_time = time.time()
+        self.timer.start(1000)
+        
     def stop(self):
-        """Stop the WebSocket client"""
-        logger.info("Stopping WebSocket client...")
-        self.running = False
-        if self._websocket:
-            asyncio.run(self._websocket.close())
+        self.timer.stop()
+        self.lbl_time.setText("OFFLINE")
+        self.lbl_time.setStyleSheet(f"color: {Theme.NEON_RED}; font-family: {Theme.FONT_MONO};")
+
+    def update_time(self):
+        if self.start_time:
+            elapsed = int(time.time() - self.start_time)
+            hours = elapsed // 3600
+            minutes = (elapsed % 3600) // 60
+            seconds = elapsed % 60
+            self.lbl_time.setText(f"{hours:02}:{minutes:02}:{seconds:02}")
+            self.lbl_time.setStyleSheet(f"color: {Theme.NEON_GREEN}; font-family: {Theme.FONT_MONO};")
+
+class ProductionToggle(QWidget):
+    """Large Toggle Switch for Production Mode"""
+    toggled = pyqtSignal(bool)
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.lbl_status = QLabel("DEV MODE")
+        self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_status.setStyleSheet(f"color: {Theme.TEXT_GRAY}; font-weight: bold; font-size: 14px;")
+        
+        self.btn_toggle = QPushButton("ENABLE PRODUCTION")
+        self.btn_toggle.setFixedSize(200, 40)
+        self.btn_toggle.setCheckable(True)
+        self.btn_toggle.setStyleSheet(f"""
+            QPushButton {{
+                background-color: rgba(255, 255, 255, 0.05);
+                border: 2px solid {Theme.TEXT_GRAY};
+                color: {Theme.TEXT_GRAY};
+                border-radius: 20px;
+                font-size: 12px;
+            }}
+            QPushButton:checked {{
+                background-color: {Theme.NEON_PURPLE};
+                border: 2px solid {Theme.NEON_PURPLE};
+                color: {Theme.TEXT_WHITE};
+                box-shadow: 0 0 15px {Theme.NEON_PURPLE};
+            }}
+        """)
+        self.btn_toggle.clicked.connect(self._on_toggle)
+        
+        layout.addWidget(self.lbl_status)
+        layout.addWidget(self.btn_toggle)
+        
+    def _on_toggle(self, checked):
+        if checked:
+            self.lbl_status.setText("PRODUCTION ACTIVE")
+            self.lbl_status.setStyleSheet(f"color: {Theme.NEON_PURPLE}; font-weight: bold; font-size: 14px;")
+            self.btn_toggle.setText("DISABLE PRODUCTION")
+        else:
+            self.lbl_status.setText("DEV MODE")
+            self.lbl_status.setStyleSheet(f"color: {Theme.TEXT_GRAY}; font-weight: bold; font-size: 14px;")
+            self.btn_toggle.setText("ENABLE PRODUCTION")
+        self.toggled.emit(checked)
+
+
+class TopNavBar(GlassCard):
+    """Navigation Bar"""
+    tab_changed = pyqtSignal(int) # index of tab
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 5, 10, 5)
+        
+        # Branding
+        title = QLabel("PROJECT CORTEX")
+        title.setObjectName("Title")
+        title.setStyleSheet("font-size: 16px; margin-right: 20px;")
+        layout.addWidget(title)
+        
+        # Tabs
+        self.btn_overview = self._create_nav_btn("OVERVIEW", 0, True)
+        self.btn_testing = self._create_nav_btn("TESTING", 1)
+        self.btn_logs = self._create_nav_btn("LOGS", 2)
+        
+        layout.addWidget(self.btn_overview)
+        layout.addWidget(self.btn_testing)
+        layout.addWidget(self.btn_logs)
+        layout.addStretch()
+        
+        # Status
+        self.lbl_status = QLabel("DISCONNECTED")
+        self.lbl_status.setStyleSheet(f"color: {Theme.NEON_RED}; font-weight: bold;")
+        layout.addWidget(self.lbl_status)
+
+    def _create_nav_btn(self, text, index, active=False):
+        btn = QPushButton(text)
+        btn.setObjectName("NavBtn")
+        btn.setProperty("active", str(active).lower())
+        btn.clicked.connect(lambda: self._on_click(index))
+        return btn
+        
+    def _on_click(self, index):
+        self.tab_changed.emit(index)
+        # Update active state
+        self.btn_overview.setProperty("active", "false")
+        self.btn_testing.setProperty("active", "false")
+        self.btn_logs.setProperty("active", "false")
+        
+        if index == 0: self.btn_overview.setProperty("active", "true")
+        elif index == 1: self.btn_testing.setProperty("active", "true")
+        elif index == 2: self.btn_logs.setProperty("active", "true")
+        
+        self.style().unpolish(self.btn_overview)
+        self.style().polish(self.btn_overview)
+        self.style().unpolish(self.btn_testing)
+        self.style().polish(self.btn_testing)
+        self.style().unpolish(self.btn_logs)
+        self.style().polish(self.btn_logs)
+
+    def set_connection_status(self, connected: bool, addr: str = ""):
+        if connected:
+            self.lbl_status.setText(f"CONNECTED: {addr}")
+            self.lbl_status.setStyleSheet(f"color: {Theme.NEON_GREEN}; font-weight: bold;")
+        else:
+            self.lbl_status.setText("DISCONNECTED")
+            self.lbl_status.setStyleSheet(f"color: {Theme.NEON_RED}; font-weight: bold;")
 
 
 # ============================================================================
-# MAIN DASHBOARD WINDOW
+# APP VIEWS
 # ============================================================================
+
+class DashboardOverviewWidget(QWidget):
+    """Main Overview Tab"""
+    send_command = pyqtSignal(dict) # Relay to parent
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(20)
+        
+        # === LEFT COLUMN: Video & Production Control (60%) ===
+        left_col = QVBoxLayout()
+        left_col.setSpacing(20)
+        
+        # 1. Mode Control
+        self.prod_toggle = ProductionToggle()
+        self.prod_toggle.toggled.connect(self._send_mode)
+        left_col.addWidget(self.prod_toggle)
+        
+        # 2. Video Feed
+        self.video_frame = QLabel("Waiting for Video Source...")
+        self.video_frame.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.video_frame.setStyleSheet(f"""
+            background-color: black;
+            border: 2px solid {Theme.BG_GLASS};
+            border-radius: 12px;
+            color: {Theme.TEXT_GRAY};
+        """)
+        self.video_frame.setMinimumSize(640, 480)
+        self.video_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        left_col.addWidget(self.video_frame)
+        
+        # Video Controls
+        vid_ctrl_row = QHBoxLayout()
+        self.btn_stream = QPushButton("TOGGLE STREAM")
+        self.btn_stream.clicked.connect(self._toggle_stream)
+        vid_ctrl_row.addWidget(self.btn_stream)
+        
+        self.chk_bbox_l0 = QCheckBox("Show Guardian (L0)")
+        self.chk_bbox_l0.setChecked(True)
+        self.chk_bbox_l1 = QCheckBox("Show Learner (L1)") 
+        self.chk_bbox_l1.setChecked(True)
+        vid_ctrl_row.addWidget(self.chk_bbox_l0)
+        vid_ctrl_row.addWidget(self.chk_bbox_l1)
+        
+        left_col.addLayout(vid_ctrl_row)
+
+        
+        # 3. Detection Stream (Compact)
+        det_panel = GlassCard()
+        det_layout = QVBoxLayout(det_panel)
+        det_layout.addWidget(QLabel("LIVE DETECTIONS", objectName="Title"))
+        
+        self.det_log = QTextEdit()
+        self.det_log.setReadOnly(True)
+        self.det_log.setStyleSheet(f"background-color: transparent; border: none; font-family: {Theme.FONT_MONO}; color: {Theme.NEON_CYAN};")
+        self.det_log.setMaximumHeight(150)
+        det_layout.addWidget(self.det_log)
+        
+        left_col.addWidget(det_panel)
+        
+        # === RIGHT COLUMN: Metrics & Controls (40%) ===
+        right_col = QVBoxLayout()
+        right_col.setSpacing(20)
+        
+        # 1. System Status
+        status_panel = GlassCard()
+        status_layout = QVBoxLayout(status_panel)
+        status_layout.addWidget(QLabel("SYSTEM METRICS", objectName="Title"))
+        
+        # Sparklines
+        self.cpu_spark = SparklineWidget(Theme.NEON_RED)
+        status_layout.addWidget(QLabel("CPU Load"))
+        status_layout.addWidget(self.cpu_spark)
+        
+        self.ram_spark = SparklineWidget(Theme.NEON_PURPLE)
+        status_layout.addWidget(QLabel("Memory Usage"))
+        status_layout.addWidget(self.ram_spark)
+        
+        self.fps_spark = SparklineWidget(Theme.NEON_GREEN)
+        status_layout.addWidget(QLabel("FPS Analysis"))
+        status_layout.addWidget(self.fps_spark)
+        
+        # Uptimes
+        self.uptime_layer = UptimeWidget("Layer Runtime")
+        self.uptime_cam = UptimeWidget("Camera Feed")
+        status_layout.addWidget(self.uptime_layer)
+        status_layout.addWidget(self.uptime_cam)
+        
+        right_col.addWidget(status_panel)
+        
+        # 2. Layer Control
+        control_panel = GlassCard()
+        control_layout = QVBoxLayout(control_panel)
+        control_layout.addWidget(QLabel("LAYER CONTROL", objectName="Title"))
+        
+        # Layer 1 Mode
+        l1_row = QHBoxLayout()
+        l1_row.addWidget(QLabel("L1 Mode:"))
+        self.combo_l1_mode = QComboBox()
+        self.combo_l1_mode.addItems(["TEXT_PROMPTS", "PROMPT_FREE"])
+        self.combo_l1_mode.currentTextChanged.connect(self._set_l1_mode)
+        l1_row.addWidget(self.combo_l1_mode)
+        control_layout.addLayout(l1_row)
+        
+        layers = [
+            ("Guardian (Safe)", Theme.NEON_RED, "layer0"),
+            ("Learner (Adapt)", Theme.NEON_YELLOW, "layer1"),
+            ("Thinker (LLM)", Theme.NEON_PURPLE, "layer2"),
+            ("Guide (Nav)", Theme.NEON_CYAN, "layer3")
+        ]
+        
+        for name, color, lid in layers:
+            row = QHBoxLayout()
+            lbl = QLabel(name)
+            btn = QPushButton("RESTART")
+            btn.setStyleSheet(f"border-color: {color}; color: {color}; font-size: 10px;")
+            btn.clicked.connect(lambda checked, l=lid: self._restart_layer(l))
+            row.addWidget(lbl)
+            row.addStretch()
+            row.addWidget(btn)
+            control_layout.addLayout(row)
+            
+        # Full Restart
+        btn_full_restart = QPushButton("FULL SYSTEM RESTART")
+        btn_full_restart.setObjectName("StopBtn")
+        btn_full_restart.clicked.connect(self._restart_system)
+        control_layout.addWidget(btn_full_restart)
+        
+        right_col.addWidget(control_panel)
+        right_col.addStretch()
+        
+        # Add columns to main layout
+        main_layout.addLayout(left_col, 60)
+        main_layout.addLayout(right_col, 40)
+
+    # --- Actions ---
+    def _send_mode(self, enabled):
+        cmd = {
+            "action": "SET_MODE",
+            "mode": "PRODUCTION" if enabled else "DEV"
+        }
+        self.send_command.emit(cmd)
+
+    def _toggle_stream(self):
+        # We don't track state locally effectively without feedback, but we can send toggle
+        # Actually protocol says START/STOP_VIDEO_STREAMING
+        # For simplicity, let's just assume we want to START
+        # Or better, make it a checkable button
+        pass # Implemented in future if needed
+
+    def _set_l1_mode(self, mode_str):
+        cmd = {
+            "action": "SET_LAYER_MODE",
+            "layer": "layer1",
+            "mode": mode_str
+        }
+        self.send_command.emit(cmd)
+
+    def _restart_layer(self, layer_id):
+        cmd = {
+            "action": "RESTART_LAYER",
+            "layer": layer_id
+        }
+        self.send_command.emit(cmd)
+
+    def _restart_system(self):
+         self.send_command.emit({"action": "RESTART"})
+
+
+class TestingWidget(QWidget):
+    """Manual Testing Tab"""
+    send_command = pyqtSignal(dict) # Relay
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(20)
+        
+        # Title
+        layout.addWidget(QLabel("MANUAL TESTING SUITE", objectName="Title"))
+        
+        # Input Area
+        input_panel = GlassCard()
+        input_layout = QVBoxLayout(input_panel)
+        input_layout.addWidget(QLabel("TEXT QUERY INJECTION"))
+        
+        input_row = QHBoxLayout()
+        self.txt_input = QLineEdit()
+        self.txt_input.setPlaceholderText("Type a query here (e.g. 'What is this?') and press Enter...")
+        self.txt_input.returnPressed.connect(self._send_text)
+        
+        btn_send = QPushButton("SEND")
+        btn_send.clicked.connect(self._send_text)
+        
+        input_row.addWidget(self.txt_input)
+        input_row.addWidget(btn_send)
+        input_layout.addLayout(input_row)
+        layout.addWidget(input_panel)
+        
+        # Test Presets
+        presets_panel = GlassCard()
+        presets_layout = QGridLayout(presets_panel)
+        
+        presets = [
+            ("Describe Scene", "Describe what you see"),
+            ("Read Text", "Read any text visible"),
+            ("Find Person", "Is there a person here?"),
+            ("Count Objects", "Count the objects"),
+            ("Where am I?", "Where am I?"),
+            ("Safety Check", "Is this path safe?")
+        ]
+        
+        row = 0
+        col = 0
+        for label, query in presets:
+            btn = QPushButton(label)
+            btn.clicked.connect(lambda checked, q=query: self._inject_query(q))
+            presets_layout.addWidget(btn, row, col)
+            col += 1
+            if col > 2:
+                col = 0
+                row += 1
+                
+        layout.addWidget(presets_panel)
+        
+        # Test Log
+        log_panel = GlassCard()
+        log_layout = QVBoxLayout(log_panel)
+        log_layout.addWidget(QLabel("TEST RESULTS / RESPONSES"))
+        
+        self.test_log = QTextEdit()
+        self.test_log.setReadOnly(True)
+        self.test_log.setStyleSheet(f"background-color: transparent; border: none; font-family: {Theme.FONT_MONO}; color: {Theme.NEON_YELLOW};")
+        log_layout.addWidget(self.test_log)
+        
+        layout.addWidget(log_panel)
+        
+    def _send_text(self):
+        text = self.txt_input.text().strip()
+        if text:
+            self._inject_query(text)
+            self.txt_input.clear()
+            
+    def _inject_query(self, text):
+        self.test_log.append(f">>> {text}")
+        cmd = {
+            "action": "TEXT_QUERY",
+            "query": text
+        }
+        self.send_command.emit(cmd)
+        
+    def append_log(self, text):
+        self.test_log.append(text)
+
+
+class LogsWidget(QWidget):
+    """Full Logs Tab"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        
+        layout.addWidget(QLabel("SYSTEM LOGS", objectName="Title"))
+        
+        self.sys_log = QTextEdit()
+        self.sys_log.setReadOnly(True)
+        self.sys_log.setStyleSheet(f"background-color: rgba(0,0,0,0.3); border: 1px solid {Theme.BG_GLASS}; font-family: {Theme.FONT_MONO}; font-size: 11px;")
+        layout.addWidget(self.sys_log)
+
+    def append(self, html):
+        self.sys_log.append(html)
+
+
+# ============================================================================
+# MAIN WINDOW
+# ============================================================================
+
+class DashboardSignals(QObject):
+    video_frame = pyqtSignal(bytes, int, int)
+    metrics_update = pyqtSignal(dict)
+    detection_log = pyqtSignal(dict)
+    system_log = pyqtSignal(str, str)  # message, level
+    client_connected = pyqtSignal(str)
+    client_disconnected = pyqtSignal(str)
+    send_command = pyqtSignal(dict) # UI -> Server
 
 class CortexDashboard(QMainWindow):
-    """Main dashboard window"""
-
-    def __init__(self):
+    def __init__(self, config: DashboardConfig = None):
         super().__init__()
-        logger.info("Initializing CortexDashboard...")
-        self.setWindowTitle("ProjectCortex Dashboard")
-        self.setMinimumSize(1100, 700)
-
-        # Apply stylesheet
-        self.setStyleSheet(BASE_STYLESHEET)
-        logger.debug("Base stylesheet applied")
-
-        self.signals = DashboardSignals()
-        logger.debug("DashboardSignals created")
-
-        # WebSocket client (initially None)
-        self.ws_client = None
-        self.ws_connected = False
-
-        self.setup_ui()
-        logger.debug("UI setup complete")
-
-        self.setup_menus()
-        logger.debug("Menus setup complete")
-
-        self.setup_connections()
-        logger.debug("Signal connections established")
-
-        logger.info("CortexDashboard initialized successfully")
-
-    def setup_ui(self):
-        """Setup main dashboard UI"""
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-
-        # Main layout
-        main_layout = QHBoxLayout(central_widget)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-
-        # Splitter
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-
-        # Left panel - Video and Metrics
-        left_widget = QWidget()
-        left_layout = QVBoxLayout(left_widget)
-        left_layout.setContentsMargins(12, 12, 12, 12)
-        left_layout.setSpacing(12)
-
-        # Video feed
-        self.video_widget = VideoWidget()
-        self.video_widget.setMinimumSize(560, 360)
-        left_layout.addWidget(self.video_widget, 2)
-
-        # Metrics
-        self.metrics_widget = MetricsWidget()
-        left_layout.addWidget(self.metrics_widget, 1)
-
-        splitter.addWidget(left_widget)
-
-        # Right panel - Logs
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
-        right_layout.setContentsMargins(12, 12, 12, 12)
-        right_layout.setSpacing(12)
-
-        # Detection log
-        self.detection_log = DetectionLogWidget()
-        right_layout.addWidget(self.detection_log, 1)
-
-        # System log
-        self.system_log = SystemLogWidget()
-        right_layout.addWidget(self.system_log, 1)
-
-        splitter.addWidget(right_widget)
-
-        # Set splitter sizes
-        splitter.setSizes([600, 400])
-
-        main_layout.addWidget(splitter)
-
-        # Status bar
-        self.statusBar().showMessage("Ready - Connect a RPi5 device")
-
-    def setup_menus(self):
-        """Setup menu bar"""
-        menubar = self.menuBar()
-
-        # File menu
-        file_menu = menubar.addMenu("File")
-        file_menu.addAction("Connect...", self.on_connect)
-        file_menu.addAction("Disconnect", self.on_disconnect)
-        file_menu.addSeparator()
-        file_menu.addAction("Exit", self.close)
-
-        # View menu
-        view_menu = menubar.addMenu("View")
-        view_menu.addAction("Testing Window", self.show_testing_window)
-
-        # Tools menu
-        tools_menu = menubar.addMenu("Tools")
-        tools_menu.addAction("Clear Logs", self.on_clear_logs)
-
-        # Help menu
-        help_menu = menubar.addMenu("Help")
-        help_menu.addAction("About", self.on_about)
-
-        # Testing window reference
-        self.testing_window = None
-
-    def setup_connections(self):
-        """Setup signal connections"""
+        self.config = config
+        self.setWindowTitle("ProjectCortex v2.0 // Dashboard")
+        self.resize(1400, 900)
+        self.setStyleSheet(STYLE_SHEET)
+        
+        # Signals
+        self.signals = DashboardSignals() # Will be replaced by shared instance in DashboardApplication usually, or we connect to this one
+        
+        # UI Setup
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+        
+        # 1. Top Nav
+        self.navbar = TopNavBar()
+        self.navbar.tab_changed.connect(self.switch_tab)
+        layout.addWidget(self.navbar)
+        
+        # 2. Content Stack
+        self.stack = QStackedWidget()
+        
+        # View 0: Overview
+        self.view_overview = DashboardOverviewWidget()
+        self.view_overview.send_command.connect(self.broadcast_command)
+        self.stack.addWidget(self.view_overview)
+        
+        # View 1: Testing
+        self.view_testing = TestingWidget()
+        self.view_testing.send_command.connect(self.broadcast_command)
+        self.stack.addWidget(self.view_testing)
+        
+        # View 2: Logs
+        self.view_logs = LogsWidget()
+        self.stack.addWidget(self.view_logs)
+        
+        layout.addWidget(self.stack)
+        
+        # Connect internal signals
         self.signals.video_frame.connect(self.on_video_frame)
         self.signals.metrics_update.connect(self.on_metrics_update)
         self.signals.detection_log.connect(self.on_detection)
@@ -1448,173 +702,78 @@ class CortexDashboard(QMainWindow):
         self.signals.client_connected.connect(self.on_client_connected)
         self.signals.client_disconnected.connect(self.on_client_disconnected)
 
-    # =========================================================================
-    # SLOT IMPLEMENTATIONS
-    # =========================================================================
+    def switch_tab(self, index):
+        self.stack.setCurrentIndex(index)
 
-    @pyqtSlot(bytes, int, int)
-    def on_video_frame(self, frame_data: bytes, width: int, height: int):
-        """Handle video frame update"""
-        logger.debug(f"Video frame received: {width}x{height}, {len(frame_data)} bytes")
-        self.video_widget.update_frame(frame_data, width, height)
+    def broadcast_command(self, cmd):
+        # Emit signal for Application to pick up and send
+        self.signals.send_command.emit(cmd)
 
-    @pyqtSlot(dict)
-    def on_metrics_update(self, data: Dict):
-        """Handle metrics update"""
-        logger.debug(f"Metrics update: {list(data.keys())}")
-        self.metrics_widget.update_metrics(data)
-        self.video_widget.update_fps(data.get('fps', 0))
+    # --- Slot Handlers ---
 
-    @pyqtSlot(dict)
-    def on_detection(self, data: Dict):
-        """Handle detection log update"""
-        logger.debug(f"Detection: {data.get('class_name')} conf={data.get('confidence'):.2%} layer={data.get('layer')}")
-        self.detection_log.add_detection(data)
-        current = self.video_widget.detections
-        current.append(data)
-        self.video_widget.detections = current[-10:]
-        self.video_widget.update_detections(current[-10:])
+    def on_video_frame(self, frame_data, w, h):
+        image = QImage.fromData(frame_data)
+        if not image.isNull():
+            pixmap = QPixmap.fromImage(image)
+            target = self.view_overview.video_frame
+            target.setPixmap(pixmap.scaled(
+                target.size(), 
+                Qt.AspectRatioMode.KeepAspectRatio, 
+                Qt.TransformationMode.SmoothTransformation
+            ))
 
-    @pyqtSlot(str, str)
-    def on_system_log(self, message: str, level: str):
-        """Handle system log update"""
-        logger.info(f"[{level}] {message}")
-        self.system_log.add_log(message, level)
+    def on_metrics_update(self, data):
+        # Update overview widgets
+        if "cpu_percent" in data:
+            self.view_overview.cpu_spark.add_value(data["cpu_percent"])
+        if "ram_percent" in data:
+            self.view_overview.ram_spark.add_value(data["ram_percent"])
+        if "fps" in data:
+            self.view_overview.fps_spark.add_value(data["fps"])
 
-    @pyqtSlot(str)
-    def on_client_connected(self, address: str):
-        """Handle client connection"""
-        logger.info(f"Client connected: {address}")
-        self.statusBar().showMessage(f"Connected: {address}")
-        self.on_system_log(f"Client connected: {address}", "SUCCESS")
+    def on_detection(self, det):
+        cls = det.get("class", "unknown")
+        conf = det.get("confidence", 0)
+        layer = det.get("layer", "sys")
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        
+        line = f"[{timestamp}] <{layer}> {cls} ({conf:.0%})"
+        
+        # Add to overview log
+        self.view_overview.det_log.append(line)
+        # Scroll
+        sb = self.view_overview.det_log.verticalScrollBar()
+        sb.setValue(sb.maximum())
+        
+        # Visualize Bounding Box? 
+        # (Would need to overlay on video_frame, requiring custom PaintEvent on QLabel or a canvas)
+        # For now we just log.
 
-    @pyqtSlot(str)
-    def on_client_disconnected(self, address: str):
-        """Handle client disconnection"""
-        logger.info(f"Client disconnected: {address}")
-        self.statusBar().showMessage(f"Disconnected: {address}")
-        self.on_system_log(f"Client disconnected: {address}", "WARNING")
+    def on_system_log(self, msg, level):
+        color = Theme.NEON_CYAN if level == "INFO" else Theme.NEON_RED if level == "ERROR" else Theme.NEON_GREEN
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        html = f'<span style="color:{Theme.TEXT_GRAY}">[{timestamp}]</span> <b style="color:{color}">[{level}]</b> {msg}'
+        
+        self.view_logs.append(html)
+        
+        # Also log key events to testing tab if relevant?
+        if "Audio" in msg or "Response" in msg:
+             self.view_testing.append_log(msg)
 
-    # =========================================================================
-    # MENU ACTIONS
-    # =========================================================================
+    def on_client_connected(self, addr):
+        self.on_system_log(f"Client Connected: {addr}", "SUCCESS")
+        self.navbar.set_connection_status(True, addr)
+        self.view_overview.uptime_layer.start()
+        self.view_overview.uptime_cam.start()
 
-    def on_connect(self):
-        """Handle connect action - show dialog to enter server URL"""
-        # Ask for server URL
-        default_url = "ws://192.168.0.92:8765" if self.ws_connected else "ws://localhost:8765"
-        server_url, ok = QInputDialog.getText(
-            self,
-            "Connect to RPi5",
-            "Enter WebSocket server URL:",
-            QLineEdit.EchoMode.Normal,
-            default_url
-        )
-
-        if not ok or not server_url:
-            return
-
-        logger.info(f"Connecting to {server_url}...")
-
-        # Create and start WebSocket client
-        self.ws_client = WebSocketClient(server_url)
-
-        # Connect signals
-        self.ws_client.connected.connect(self.on_ws_connected)
-        self.ws_client.disconnected.connect(self.on_ws_disconnected)
-        self.ws_client.video_frame.connect(self.on_video_frame)
-        self.ws_client.metrics_update.connect(self.on_metrics_update)
-        self.ws_client.detection.connect(self.on_detection)
-        self.ws_client.error.connect(lambda msg: self.on_system_log(f"WebSocket Error: {msg}", "ERROR"))
-
-        # Start client in background thread
-        self.ws_client.start()
-
-    def on_disconnect(self):
-        """Handle disconnect action"""
-        if self.ws_client and self.ws_connected:
-            logger.info("Disconnecting from server...")
-            self.ws_client.stop()
-            self.ws_client.wait()
-            self.ws_client = None
-            self.ws_connected = False
-            self.on_system_log("Disconnected from server", "WARNING")
-        else:
-            self.on_system_log("Not connected to any server", "INFO")
-
-    @pyqtSlot(str)
-    def on_ws_connected(self, server_url: str):
-        """Handle WebSocket connection"""
-        self.ws_connected = True
-        self.statusBar().showMessage(f"Connected: {server_url}")
-        self.on_system_log(f"Connected to {server_url}", "SUCCESS")
-        logger.info(f"WebSocket connected to {server_url}")
-
-    @pyqtSlot(str)
-    def on_ws_disconnected(self, reason: str):
-        """Handle WebSocket disconnection"""
-        self.ws_connected = False
-        self.statusBar().showMessage(f"Disconnected: {reason}")
-        self.on_system_log(f"Disconnected: {reason}", "WARNING")
-        logger.info(f"WebSocket disconnected: {reason}")
-
-    def show_testing_window(self):
-        """Show the testing window"""
-        if not self.testing_window:
-            self.testing_window = TestingWindow(self)
-        self.testing_window.show()
-
-    def on_clear_logs(self):
-        """Clear all logs"""
-        self.detection_log.clear_log()
-        self.system_log.log_area.clear()
-        self.on_system_log("Logs cleared", "INFO")
-
-    def on_about(self):
-        """Show about dialog"""
-        QMessageBox.about(
-            self,
-            "About ProjectCortex",
-            f"<h2>ProjectCortex Dashboard</h2>"
-            f"<p>Version 2.0</p>"
-            f"<p>AI Wearable for the Visually Impaired</p>"
-            f"<p>Author: Haziq (@IRSPlays)</p>"
-        )
-
-    def closeEvent(self, event):
-        """Handle window close - cleanup WebSocket client"""
-        logger.info("Dashboard closing...")
-        if self.ws_client and self.ws_connected:
-            self.ws_client.stop()
-            self.ws_client.wait()
-        if self.testing_window:
-            self.testing_window.close()
-        event.accept()
-
-
-# ============================================================================
-# MAIN ENTRY POINT
-# ============================================================================
-
-def main():
-    app = QApplication(sys.argv)
-
-    # Apply clean theme
-    apply_custom_theme()
-
-    # Set application info
-    app.setApplicationName("ProjectCortex Dashboard")
-    app.setOrganizationName("ProjectCortex")
-
-    # Create and show dashboard
-    window = CortexDashboard()
-    window.show()
-
-    print("ProjectCortex Dashboard started.")
-    print("Use 'View -> Testing Window' to access layer controls.")
-
-    sys.exit(app.exec())
-
-
+    def on_client_disconnected(self, addr):
+        self.on_system_log(f"Client Disconnected: {addr}", "WARNING")
+        self.navbar.set_connection_status(False)
+        
 if __name__ == "__main__":
-    main()
+    app = QApplication(sys.argv)
+    font = QFont(Theme.FONT_MAIN, 10)
+    app.setFont(font)
+    dashboard = CortexDashboard()
+    dashboard.show()
+    sys.exit(app.exec())

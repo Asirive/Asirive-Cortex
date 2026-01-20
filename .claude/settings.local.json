@@ -37,7 +37,8 @@
       "Skill(superpowers:systematic-debugging)",
       "Skill(superpowers:systematic-debugging:*)",
       "Bash(du:*)",
-      "Bash(ssh-keygen:*)"
+      "Bash(ssh-keygen:*)",
+      "Bash(rsync:*)"
     ]
   }
 }

@@ -134,7 +134,7 @@ class CortexWebSocketServer:
                 except Exception as e:
                     logger.error(f"Error in on_disconnect callback: {e}")
 
-    async def handle_client(self, websocket, path: str):
+    async def handle_client(self, websocket):
         """Handle client connection and messages"""
         await self.register_client(websocket)
 
@@ -150,6 +150,20 @@ class CortexWebSocketServer:
                 try:
                     parsed_message = parse_message(message)
                     if parsed_message:
+                        # 2. Handle System Messages (PING/PONG)
+                        if parsed_message.type == MessageType.PING:
+                            logger.debug(f"Received PING from {websocket.remote_address}")
+                            from laptop.protocol import create_pong
+                            
+                            # Respond with standardized PONG
+                            pong_msg = create_pong(
+                                device_id="laptop-dashboard",
+                                latency_ms=0.0
+                            )
+                            await websocket.send(pong_msg.to_json())
+                            continue
+
+                        # 3. Handle Other Messages
                         logger.debug(f"📥 Received {parsed_message.type} from {websocket.remote_address}")
 
                         # Call message callback

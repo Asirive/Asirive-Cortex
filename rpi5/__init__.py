@@ -21,8 +21,8 @@ __version__ = "2.0.0"
 __author__ = "Haziq (@IRSPlays)"
 
 # Core exports
-from rpi5.main import CortexSystem, load_config
-from rpi5.config.config import get_config
+from rpi5.main import CortexSystem
+from rpi5.config.config import load_config, get_config
 
 __all__ = [
     "CortexSystem",

@@ -488,7 +488,15 @@ class HybridMemoryManager:
         """Start background sync worker"""
         if not self.sync_running:
             self.sync_running = True
-            self.sync_task = asyncio.create_task(self._sync_worker())
+            # Handle both async and sync contexts
+            try:
+                # We're in an async context with running loop
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # We're in a sync context, create a new loop
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            self.sync_task = loop.create_task(self._sync_worker())
             logger.info("✅ Sync worker started")
 
     def stop_sync_worker(self):
