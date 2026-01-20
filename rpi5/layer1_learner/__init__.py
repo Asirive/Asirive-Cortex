@@ -42,15 +42,17 @@ from enum import Enum
 import numpy as np
 
 try:
-    from ultralytics import YOLOE
+    from ultralytics import YOLO, YOLOE
     from ultralytics.models.yolo.yoloe import YOLOEVPSegPredictor
     YOLOE_AVAILABLE = True
 except ImportError:
     YOLOE_AVAILABLE = False
+    YOLOE = None
+    YOLO = None
     YOLOEVPSegPredictor = None
     logging.warning("⚠️ ultralytics YOLOE not installed. Run: pip install ultralytics")
 
-from layer1_learner.adaptive_prompt_manager import AdaptivePromptManager
+from rpi5.layer1_learner.adaptive_prompt_manager import AdaptivePromptManager
 
 logger = logging.getLogger(__name__)
 
@@ -107,22 +109,10 @@ class YOLOELearner:
         if "-pf.pt" in model_path and mode != YOLOEMode.PROMPT_FREE:
             logger.warning(f"⚠️ Model filename suggests prompt-free mode, switching from {mode.value} to prompt_free")
             self.mode = YOLOEMode.PROMPT_FREE
-        
-        # Load YOLOE model (mode-specific configuration)
-        logger.info(f"📦 Loading YOLOE from {model_path} (mode: {self.mode.value})...")
-        try:
-            self.model = YOLOE(model_path)
-            self.model.to(device)
-            
-            # Verify model supports selected mode
-            is_prompt_free = hasattr(self.model.model.model[-1], 'lrpc')
-            if is_prompt_free and self.mode == YOLOEMode.TEXT_PROMPTS:
-                raise ValueError(f"Model {model_path} is prompt-free and does not support set_classes(). Use YOLOEMode.PROMPT_FREE.")
-            
-            logger.info(f"✅ YOLOE loaded on {device} (prompt-free: {is_prompt_free})")
-        except Exception as e:
-            logger.error(f"❌ Failed to load YOLOE: {e}")
-            raise
+
+        # Load YOLOE model - prioritize PyTorch for full YOLOE features
+        logger.info(f"📦 Loading YOLOE (mode: {self.mode.value})...")
+        self._load_model_with_fallback(model_path, device)
         
         # Mode-specific initialization
         self.current_classes = []
@@ -168,7 +158,88 @@ class YOLOELearner:
         logger.info(f"   Confidence: {confidence}")
         if self.mode == YOLOEMode.TEXT_PROMPTS:
             logger.info(f"   Initial Classes: {len(self.current_classes)}")
-    
+
+    def _load_model_with_fallback(self, model_path: str, device: str):
+        """
+        Load YOLOE model with PyTorch/NCNN fallback support.
+
+        YOLOE requires PyTorch format for text/visual prompts mode.
+        NCNN format only supports basic inference (no set_classes support).
+
+        Priority:
+        1. Try PyTorch (.pt) - for full YOLOE features (text/visual prompts)
+        2. Fallback to NCNN path - for basic inference only
+        """
+        import os
+        from pathlib import Path
+
+        # Try PyTorch model first (required for YOLOE features)
+        pt_model = None
+
+        # Look for PyTorch model in various locations
+        possible_pt_paths = [
+            model_path,  # Already points to .pt
+            model_path.replace('_ncnn_model', '').replace('converted/', ''),
+            model_path.replace('converted/', '') + '.pt',
+            f"models/{Path(model_path).stem}.pt",
+        ]
+
+        # Also check config for pt_model_path
+        try:
+            from rpi5.config.config import get_config
+            config = get_config()
+            if 'pt_model_path' in config.get('layer1', {}):
+                pt_model = config['layer1']['pt_model_path']
+                possible_pt_paths.insert(0, pt_model)
+        except Exception:
+            pass
+
+        for pt_path in possible_pt_paths:
+            if pt_path.endswith('.pt') and os.path.exists(pt_path):
+                try:
+                    logger.info(f"📦 Loading PyTorch model: {pt_path}")
+                    self.model = YOLOE(pt_path)
+                    self.model.to(device)
+
+                    # Verify model supports selected mode
+                    is_prompt_free = hasattr(self.model.model.model[-1], 'lrpc')
+                    if is_prompt_free and self.mode == YOLOEMode.TEXT_PROMPTS:
+                        logger.warning(f"⚠️ Model is prompt-free, cannot use text prompts mode")
+                        is_prompt_free = False
+
+                    logger.info(f"✅ YOLOE PyTorch loaded: {pt_path} (prompt-free: {is_prompt_free})")
+                    self.model_type = 'pytorch'
+                    self.model_path = pt_path
+                    return
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to load PyTorch model {pt_path}: {e}")
+                    continue
+
+        # Fallback to NCNN model (basic inference only)
+        ncnn_path = model_path
+        if not ncnn_path.endswith('_ncnn_model'):
+            ncnn_path = model_path + '_ncnn_model'
+
+        if os.path.exists(ncnn_path):
+            try:
+                logger.info(f"📦 Loading NCNN model (basic inference only): {ncnn_path}")
+                self.model = YOLO(ncnn_path)  # Use YOLO (not YOLOE) for NCNN
+
+                if self.mode != YOLOEMode.PROMPT_FREE:
+                    logger.warning(f"⚠️ NCNN model only supports basic inference")
+                    logger.warning(f"⚠️ Switching to PROMPT_FREE mode (4585 classes)")
+                    self.mode = YOLOEMode.PROMPT_FREE
+
+                logger.info(f"✅ NCNN model loaded: {ncnn_path}")
+                self.model_type = 'ncnn'
+                self.model_path = ncnn_path
+                return
+            except Exception as e:
+                logger.error(f"❌ Failed to load NCNN model {ncnn_path}: {e}")
+                raise RuntimeError(f"Could not load any model. Tried PyTorch and NCNN formats.")
+
+        raise FileNotFoundError(f"No valid model found. Checked: {possible_pt_paths}, {ncnn_path}")
+
     def switch_to_prompt_free(self):
         """
         Switch to Prompt-Free mode (4585+ built-in classes).
@@ -629,7 +700,7 @@ class YOLOELearner:
             >>> # Now learner is in VISUAL_PROMPTS mode, ready to detect user's wallet
         """
         try:
-            from layer1_learner.visual_prompt_manager import VisualPromptManager
+            from rpi5.layer1_learner.visual_prompt_manager import VisualPromptManager
             
             vpm = VisualPromptManager()
             prompt = vpm.load_visual_prompt(memory_id)

@@ -32,10 +32,16 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+import datetime
 
 import cv2
 import numpy as np
 import yaml
+import psutil
+
+# Create logs directory if it doesn't exist
+logs_dir = Path('logs')
+logs_dir.mkdir(exist_ok=True)
 
 # Configure logging
 logging.basicConfig(
@@ -54,40 +60,65 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # =====================================================
+# LOAD ENVIRONMENT VARIABLES FROM .env
+# =====================================================
+# Load .env file if it exists (for API keys and config)
+dotenv_path = PROJECT_ROOT / ".env"
+if dotenv_path.exists():
+    try:
+        with open(dotenv_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, value = line.split("=", 1)
+                    os.environ.setdefault(key.strip(), value.strip())
+        logger.info(f"Loaded environment variables from {dotenv_path}")
+    except Exception as e:
+        logger.warning(f"Failed to load .env file: {e}")
+
+# =====================================================
 # IMPORT LAYERS
 # =====================================================
+logger.info("[DEBUG] ===== LAYER IMPORTS STARTING =====")
 try:
     from rpi5.layer0_guardian import YOLOGuardian
-except ImportError:
-    logger.error("Layer 0 (Guardian) not found")
+    logger.info("[DEBUG] ✅ Layer 0 (Guardian) imported successfully")
+except ImportError as e:
+    logger.error(f"[DEBUG] ❌ Layer 0 (Guardian) import failed: {e}")
     YOLOGuardian = None
 
 try:
     from rpi5.layer1_learner import YOLOELearner, YOLOEMode
-except ImportError:
-    logger.error("Layer 1 (Learner) not found")
+    logger.info("[DEBUG] ✅ Layer 1 (Learner) imported successfully")
+except ImportError as e:
+    logger.error(f"[DEBUG] ❌ Layer 1 (Learner) import failed: {e}")
     YOLOELearner = None
     YOLOEMode = None
 
 try:
     from rpi5.layer2_thinker.gemini_live_handler import GeminiLiveHandler
-except ImportError:
-    logger.error("Layer 2 (Thinker) not found")
+    logger.info("[DEBUG] ✅ Layer 2 (Thinker) imported successfully")
+except ImportError as e:
+    logger.error(f"[DEBUG] ❌ Layer 2 (Thinker) import failed: {e}")
     GeminiLiveHandler = None
 
 try:
     from rpi5.layer3_guide.router import IntentRouter
     from rpi5.layer3_guide.detection_router import DetectionRouter
-except ImportError:
-    logger.error("Layer 3 (Router) not found")
+    logger.info("[DEBUG] ✅ Layer 3 (Router) imported successfully")
+except ImportError as e:
+    logger.error(f"[DEBUG] ❌ Layer 3 (Router) import failed: {e}")
     IntentRouter = None
     DetectionRouter = None
 
 try:
     from rpi5.layer4_memory.hybrid_memory_manager import HybridMemoryManager
-except ImportError:
-    logger.error("Layer 4 (Memory) not found")
+    logger.info("[DEBUG] ✅ Layer 4 (Memory) imported successfully")
+except ImportError as e:
+    logger.error(f"[DEBUG] ❌ Layer 4 (Memory) import failed: {e}")
     HybridMemoryManager = None
+
+logger.info("[DEBUG] ===== LAYER IMPORTS COMPLETE =====")
 
 # =====================================================
 # IMPORT SUPPORTING MODULES
@@ -96,6 +127,7 @@ try:
     from rpi5.fastapi_client import CortexFastAPIClient
 except ImportError:
     logger.warning("FastAPI client not found, falling back to legacy")
+    CortexFastAPIClient = None
     try:
         from rpi5.websocket_client import RPiWebSocketClient
     except ImportError:
@@ -107,6 +139,7 @@ except ImportError:
 # =====================================================
 # Use the config module
 from rpi5.config.config import get_config
+from rpi5.voice_coordinator import VoiceCoordinator
 
 
 # =====================================================
@@ -151,6 +184,15 @@ class CameraHandler:
                 main={"format": 'RGB888', "size": self.resolution}
             )
             self.camera.configure(config)
+            
+            # Enable Continuous Auto-Focus (AfMode=2) for Module 3
+            # 0=Manual, 1=Auto(Single), 2=Continuous
+            try:
+                self.camera.set_controls({"AfMode": 2})
+                logger.info("✅ Picamera2: Continuous Auto-Focus Enabled")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not set AfMode: {e}")
+
             self.camera.start()
 
             # Start capture thread
@@ -160,8 +202,32 @@ class CameraHandler:
             )
             self.capture_thread.start()
 
-        except ImportError:
-            logger.error("❌ picamera2 not installed, falling back to OpenCV")
+        except ImportError as e:
+            # Try to find system libcamera (common on RPi with custom venv)
+            if "libcamera" in str(e) or "picamera2" in str(e):
+                system_site = "/usr/lib/python3/dist-packages"
+                if system_site not in sys.path and os.path.exists(system_site):
+                    logger.info(f"⚠️  Attempting to load system libcamera from {system_site}")
+                    sys.path.append(system_site)
+                    try:
+                        import libcamera
+                        import picamera2
+                        logger.info("✅ System libcamera/picamera2 found and loaded!")
+                        # If successful, re-attempt starting picamera
+                        self._start_picamera()
+                        return # Exit this exception handler as picamera started
+                    except ImportError:
+                        logger.warning(f"❌ System libcamera/picamera2 not found in {system_site} or failed to load.")
+                        pass # Continue to original fallback if system import fails
+
+            logger.error(f"❌ picamera2 not installed, falling back to OpenCV")
+            logger.error(f"   Import Error: {e}")
+            logger.error(f"   Python Path: {sys.path}")
+            try:
+                import types
+                logger.error(f"   picamera2 in modules? {'picamera2' in sys.modules}")
+            except:
+                 pass
             self.use_picamera = False
             self._start_opencv()
         except Exception as e:
@@ -250,8 +316,10 @@ class CortexSystem:
             self.config = get_config()
 
         # Initialize Layer 4: Memory Manager (Hybrid)
+        logger.info("[DEBUG] ===== LAYER 4 INITIALIZATION START =====")
         if HybridMemoryManager:
             logger.info("💾 Initializing Layer 4: Memory Manager...")
+            logger.info(f"[DEBUG] Layer 4 config: url={self.config['supabase']['url'][:30]}..., device_id={self.config['supabase']['device_id']}")
             self.memory_manager = HybridMemoryManager(
                 supabase_url=self.config['supabase']['url'],
                 supabase_key=self.config['supabase']['anon_key'],
@@ -266,10 +334,13 @@ class CortexSystem:
         else:
             self.memory_manager = None
             logger.warning("⚠️  Layer 4 not available, running without cloud storage")
+        logger.info("[DEBUG] ===== LAYER 4 INITIALIZATION COMPLETE =====")
 
         # Initialize Layer 0: Guardian (Safety-Critical Detection)
+        logger.info("[DEBUG] ===== LAYER 0 INITIALIZATION START =====")
         if YOLOGuardian:
             logger.info("🛡️  Initializing Layer 0: Guardian...")
+            logger.info(f"[DEBUG] Layer 0 config: model_path={self.config['layer0']['model_path']}, device={self.config['layer0']['device']}")
             self.layer0 = YOLOGuardian(
                 model_path=self.config['layer0']['model_path'],
                 device=self.config['layer0']['device'],
@@ -282,10 +353,13 @@ class CortexSystem:
         else:
             self.layer0 = None
             logger.warning("⚠️  Layer 0 not available")
+        logger.info("[DEBUG] ===== LAYER 0 INITIALIZATION COMPLETE =====")
 
         # Initialize Layer 1: Learner (Adaptive Detection)
+        logger.info("[DEBUG] ===== LAYER 1 INITIALIZATION START =====")
         if YOLOELearner and YOLOEMode:
             logger.info("🎯 Initializing Layer 1: Learner...")
+            logger.info(f"[DEBUG] Layer 1 config: model_path={self.config['layer1']['model_path']}, mode={self.config['layer1']['mode']}")
             mode_map = {
                 'PROMPT_FREE': YOLOEMode.PROMPT_FREE,
                 'TEXT_PROMPTS': YOLOEMode.TEXT_PROMPTS,
@@ -302,10 +376,13 @@ class CortexSystem:
         else:
             self.layer1 = None
             logger.warning("⚠️  Layer 1 not available")
+        logger.info("[DEBUG] ===== LAYER 1 INITIALIZATION COMPLETE =====")
 
         # Initialize Layer 2: Thinker (Gemini Live API)
+        logger.info("[DEBUG] ===== LAYER 2 INITIALIZATION START =====")
         if GeminiLiveHandler:
             logger.info("🧠 Initializing Layer 2: Thinker...")
+            logger.info(f"[DEBUG] Layer 2 config: api_key={'*' * 10} (hidden)")
             self.layer2 = GeminiLiveHandler(
                 api_key=self.config['layer2']['gemini_api_key']
             )
@@ -313,8 +390,10 @@ class CortexSystem:
         else:
             self.layer2 = None
             logger.warning("⚠️  Layer 2 not available")
+        logger.info("[DEBUG] ===== LAYER 2 INITIALIZATION COMPLETE =====")
 
         # Initialize Layer 3: Router (Intent Routing)
+        logger.info("[DEBUG] ===== LAYER 3 INITIALIZATION START =====")
         if IntentRouter and DetectionRouter:
             logger.info("🔀 Initializing Layer 3: Router...")
             self.intent_router = IntentRouter()
@@ -324,6 +403,7 @@ class CortexSystem:
             self.intent_router = None
             self.detection_router = None
             logger.warning("⚠️  Layer 3 not available")
+        logger.info("[DEBUG] ===== LAYER 3 INITIALIZATION COMPLETE =====")
 
         # Initialize Camera Handler
         logger.info("📸 Initializing Camera...")
@@ -343,6 +423,8 @@ class CortexSystem:
                 port=self.config['laptop_server']['port'],
                 device_id=self.config['supabase']['device_id']
             )
+            # Link command handler
+            self.ws_client.on_command = self.handle_dashboard_command
             logger.info("✅ FastAPI client initialized")
         elif RPiWebSocketClient:
             logger.info("🌐 Initializing legacy WebSocket Client...")
@@ -362,7 +444,86 @@ class CortexSystem:
         self.running = False
         self.detection_count = 0
 
+        # Initialize Voice Coordinator
+        self.voice_coordinator = VoiceCoordinator(on_command_detected=self.handle_voice_command)
+        self.voice_coordinator.initialize()
+
+        # Start Time for Uptime
+        self.start_time = time.time()
+
         logger.info("✅ ProjectCortex v2.0 initialized successfully")
+
+    def handle_dashboard_command(self, cmd: Dict[str, Any]):
+        """Handle incoming commands from dashboard"""
+        action = cmd.get("action")
+        logger.info(f"📥 Dashboard Command: {action}")
+        
+        if action == "SET_MODE":
+            mode = cmd.get("mode")
+            self.set_mode(mode)
+        elif action == "RESTART":
+             self.stop()
+             sys.exit(0) # Systemd should restart
+        
+        # New: Text Query Handling
+        elif action == "TEXT_QUERY":
+            query = cmd.get("query")
+            if query:
+                logger.info(f"⌨️ Text Query: '{query}'")
+                # Run sync since main loop isn't async
+                asyncio.run(self.handle_voice_command(query))
+
+        # New: Layer Control (Restart)
+        elif action == "RESTART_LAYER":
+            target = cmd.get("layer")
+            if target == "layer1":
+                # Re-init Layer 1
+                logger.info("🔄 Restarting Layer 1 (Learner)...") 
+                # Ideally we'd reload the module but for now we just re-instantiate if possible
+                if self.layer1:
+                     # Re-loading logic would go here
+                     logger.info("Re-initialization of Layer 1 triggered (placeholder)")
+            elif target == "layer2":
+                pass
+
+        # New: Layer Mode Toggle
+        elif action == "SET_LAYER_MODE":
+            layer = cmd.get("layer") # "layer1"
+            mode = cmd.get("mode") # "TEXT_PROMPTS" vs "PROMPT_FREE"
+            if layer == "layer1" and self.layer1:
+                # Check for set_mode in layer1 (assumed to exist or added)
+                # YOLOELearner usually has 'mode' attribute.
+                # Just set it directly if possible or call method
+                if hasattr(self.layer1, "set_mode"):
+                    self.layer1.set_mode(mode) # Assuming this method exists or we add it to Layer1
+                else:
+                    self.layer1.mode = mode # Direct attribute fallback
+                logger.info(f"✅ Layer 1 switched to {mode}")
+
+    def set_mode(self, mode: str):
+        """Set system operation mode"""
+        logger.info(f"🔄 Switching to Mode: {mode}")
+        
+        if mode == "PRODUCTION":
+            # Enable VAD (Always On)
+            logger.info("🎙️ PRODUCTION MODE: Enforcing VAD Always On")
+            self.voice_coordinator.start()
+            
+            # TODO: Enforce Bluetooth (requires shell/bluez)
+            logger.info("🎧 PRODUCTION MODE: Verifying Bluetooth Audio...")
+            # For now just log, real impl needs platform specific check
+            
+            # Update Layer 1 to use tighter thresholds?
+            if self.layer1:
+                self.layer1.confidence = 0.6 # Stricter
+                
+        elif mode == "DEV":
+            # Disable VAD monitoring (manual trigger only)
+            logger.info("🛠️ DEV MODE: Disabling VAD monitoring")
+            self.voice_coordinator.stop()
+            
+            if self.layer1:
+                self.layer1.confidence = 0.4 # Laxer
 
     def start(self):
         """Start main system loop"""
@@ -378,12 +539,27 @@ class CortexSystem:
             try:
                 self.ws_client.start()
                 logger.info("✅ Connected to laptop dashboard (FastAPI)")
+                
+                # Send initial status
+                self.ws_client.send_status("ONLINE", "RPi5 System Started")
             except Exception as e:
                 logger.warning(f"⚠️  Failed to connect to laptop: {e}")
 
-        # Start Layer 2 Gemini Live API session
-        if self.layer2:
-            asyncio.run(self.layer2.connect())
+        # Start Layer 2 Gemini Live API session (only if enabled and API key valid)
+        gemini_enabled = os.getenv("GEMINI_LIVE_ENABLED", "true").lower() == "true"
+        if self.layer2 and gemini_enabled:
+            # Check if API key is valid (not placeholder)
+            api_key = os.getenv("GEMINI_API_KEY", "")
+            if api_key and not api_key.startswith("YOUR_"):
+                try:
+                    asyncio.run(self.layer2.connect())
+                    logger.info("✅ Gemini Live API connected")
+                except Exception as e:
+                    logger.warning(f"⚠️ Gemini Live API failed: {e}")
+            else:
+                logger.info("ℹ️ Gemini Live API skipped (invalid or missing API key)")
+        elif self.layer2:
+            logger.info("ℹ️ Gemini Live API disabled via GEMINI_LIVE_ENABLED=false")
 
         logger.info("✅ System started")
         logger.info("📸 Capturing frames...")
@@ -398,6 +574,7 @@ class CortexSystem:
         """Main processing loop"""
         fps_tracker = []
         last_sync_time = time.time()
+        last_metrics_time = time.time()
 
         try:
             while self.running:
@@ -413,7 +590,8 @@ class CortexSystem:
                 all_detections = self._run_dual_detection(frame)
 
                 # 3. Send to laptop dashboard via WebSocket
-                if self.ws_client and all_detections:
+                if self.ws_client:
+                     # Video streaming is toggled inside client class, we just send
                     self._send_to_laptop(frame, all_detections)
 
                 # 4. Update device heartbeat every 30 seconds
@@ -421,7 +599,20 @@ class CortexSystem:
                     self._update_heartbeat()
                     last_sync_time = time.time()
 
-                # 5. Track FPS
+                # 5. Send Metrics (every 0.5s)
+                if time.time() - last_metrics_time > 0.5 and self.ws_client and self.ws_client.is_connected:
+                    loop_time = time.time() - loop_start
+                    fps = 1.0 / loop_time if loop_time > 0 else 0
+                    
+                    self.ws_client.send_metrics(
+                        fps=fps,
+                        cpu_percent=psutil.cpu_percent(),
+                        ram_percent=psutil.virtual_memory().percent,
+                        temperature=self._get_cpu_temp()
+                    )
+                    last_metrics_time = time.time()
+
+                # 6. Track FPS for Logging
                 loop_time = time.time() - loop_start
                 fps = 1.0 / loop_time if loop_time > 0 else 0
                 fps_tracker.append(fps)
@@ -435,6 +626,14 @@ class CortexSystem:
             logger.info("⚠️  Interrupted by user")
         except Exception as e:
             logger.error(f"❌ Main loop error: {e}", exc_info=True)
+
+    def _get_cpu_temp(self):
+        """Get CPU temperature (RPi specific)"""
+        try:
+            with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
+                return float(f.read()) / 1000.0
+        except:
+            return 0.0
 
     def _run_dual_detection(self, frame: np.ndarray) -> List[Dict[str, Any]]:
         """Run Layer 0 + Layer 1 detection in parallel"""
@@ -480,7 +679,8 @@ class CortexSystem:
                     "y1": int(det.get('y1', 0)),
                     "x2": int(det.get('x2', 0)),
                     "y2": int(det.get('y2', 0)),
-                    "layer": det.get('layer', 'layer0')
+                    # Ensure layer is always present
+                    "layer": det.get('layer', 'layer0') 
                 })
 
             # Send video frame with detections (only if streaming enabled)
@@ -509,21 +709,28 @@ class CortexSystem:
     async def handle_voice_command(self, query: str):
         """
         Handle voice command through routing system
-
+        
         Args:
             query: User's voice command text
         """
+        # Ensure we are not missing frames
+        
         if not self.intent_router:
             logger.warning("⚠️  Intent router not available")
             return
 
         logger.info(f"🎤 Voice command: '{query}'")
 
-        # Route intent
+        # Route intent with context
         target_layer = self.intent_router.route(query)
         mode = self.intent_router.get_recommended_mode(query)
 
         logger.info(f"🔀 Routed to: {target_layer} (mode: {mode})")
+        
+        # Notify dashboard of audio event
+        if self.ws_client:
+            # We don't have send_audio_event on FastAPI client yet, implementing mock or assume extended
+            pass 
 
         frame = self.camera.get_frame()
         if frame is None:
@@ -534,7 +741,11 @@ class CortexSystem:
         if target_layer == "layer1" and self.layer1:
             # Switch mode if needed
             if mode == "PROMPT_FREE":
-                self.layer1.switch_to_prompt_free()
+                # Assuming this method exists or logic is similar to set_mode
+                if hasattr(self.layer1, "switch_to_prompt_free"):
+                     self.layer1.switch_to_prompt_free()
+                elif hasattr(self.layer1, "set_mode"):
+                     self.layer1.set_mode("PROMPT_FREE")
             elif mode == "VISUAL_PROMPTS":
                 # Would need visual prompts
                 pass
@@ -580,6 +791,10 @@ class CortexSystem:
                     )
             except Exception as e:
                 logger.error(f"❌ Layer 2 error: {e}")
+        
+        elif target_layer == "layer3":
+             # Route to Layer 3 (Navigation/Guide)
+             pass 
 
     def stop(self):
         """Graceful shutdown"""

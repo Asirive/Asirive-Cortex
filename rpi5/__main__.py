@@ -16,7 +16,7 @@ Usage:
     python -m rpi5 test                 # Run self-test diagnostics
 
 Options:
-    --laptop HOST   Laptop IP for dashboard connection (default: 192.168.0.92)
+    --laptop HOST   Laptop IP for dashboard connection (default: 192.168.0.171)
     --port PORT     Dashboard port (default: 8765)
     --offline       Disable cloud APIs (Gemini, Supabase)
     --no-haptic     Disable vibration motor
@@ -66,8 +66,8 @@ Examples:
     )
     all_parser.add_argument(
         "--laptop",
-        default="192.168.0.92",
-        help="Laptop IP for dashboard connection (default: 192.168.0.92)"
+        default="192.168.0.171",
+        help="Laptop IP for dashboard connection (default: 192.168.0.171)"
     )
     all_parser.add_argument(
         "--offline",
@@ -95,7 +95,7 @@ Examples:
         )
         layer_parser.add_argument(
             "--laptop",
-            default="192.168.0.92",
+            default="192.168.0.171",
             help="Laptop IP for dashboard connection"
         )
 
@@ -131,8 +131,8 @@ Examples:
     )
     connect_parser.add_argument(
         "--laptop",
-        default="192.168.0.92",
-        help="Laptop IP (default: 192.168.0.92)"
+        default="192.168.0.171",
+        help="Laptop IP (default: 192.168.0.171)"
     )
     connect_parser.add_argument(
         "--port",
@@ -161,7 +161,7 @@ def run_command(args: argparse.Namespace) -> int:
         print(f"Starting ProjectCortex v2.0 (all layers)...")
 
         config = get_config()
-        config['laptop_server']['host'] = getattr(args, "laptop", "192.168.0.92")
+        config['laptop_server']['host'] = getattr(args, "laptop", "192.168.0.171")
 
         if getattr(args, "offline", False):
             print("Running in offline mode (cloud APIs disabled)")
@@ -175,7 +175,7 @@ def run_command(args: argparse.Namespace) -> int:
         layer_num = command.replace("layer", "")
         run_layer(
             layer_num,
-            laptop_host=getattr(args, "laptop", "192.168.0.92")
+            laptop_host=getattr(args, "laptop", "192.168.0.171")
         )
 
     elif command == "camera":
@@ -195,7 +195,7 @@ def run_command(args: argparse.Namespace) -> int:
     elif command == "connect":
         from rpi5.cli.commands import connect_to_laptop
 
-        host = getattr(args, "laptop", "192.168.0.92")
+        host = getattr(args, "laptop", "192.168.0.171")
         port = getattr(args, "port", 8765)
         return connect_to_laptop(host=host, port=port)
 

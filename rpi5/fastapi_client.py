@@ -1,5 +1,8 @@
 """
-FastAPI Client for RPi5 → Laptop Dashboard Communication
+RPi5 WebSocket Client using Shared API
+
+Uses the shared AsyncWebSocketClient and protocol for
+communication with the laptop dashboard.
 
 Features:
 - WebSocket connection for real-time video + YOLO data
@@ -8,26 +11,24 @@ Features:
 - Auto-reconnect with exponential backoff
 
 Usage:
-    from rpi5.fastapi_client import CortexFastAPIClient
-    client = CortexFastAPIClient(host="192.168.0.91", port=8765)
+    from rpi5.fastapi_client import RPi5Client
+    client = RPi5Client(
+        host="192.168.0.171",  # Laptop IP
+        port=8765,
+        device_id="rpi5-cortex-001"
+    )
     client.start()
 
 Author: Haziq (@IRSPlays)
-Date: January 11, 2026
+Date: January 17, 2026
 """
 
-import asyncio
-import base64
-import json
 import logging
 import sys
-import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
-from datetime import datetime
 
-import cv2
 import numpy as np
 import websockets
 from websockets.exceptions import ConnectionClosed
@@ -37,438 +38,329 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+# Import shared API
+from shared.api import (
+    AsyncWebSocketClient,
+    ClientConfig,
+    BaseMessage,
+    MessageType,
+    Detection,
+    SystemMetrics,
+    create_video_frame,
+    create_metrics,
+    create_detections,
+    create_command,
+    parse_message,
+)
+
 logger = logging.getLogger(__name__)
 
 
-class CortexFastAPIClient:
+class RPi5Client(AsyncWebSocketClient):
     """
-    FastAPI client for RPi5 to connect to laptop dashboard
+    RPi5 client for connecting to laptop dashboard.
 
-    Supports:
-    - WebSocket for real-time video + YOLO data
-    - REST API for control commands
-    - Video streaming toggle (save system resources when off)
+    Inherits from shared AsyncWebSocketClient, adding RPi5-specific methods.
     """
 
     def __init__(
         self,
-        host: str = "192.168.0.91",
+        host: str = "192.168.0.171",  # Laptop IP (updated)
         port: int = 8765,
         device_id: str = "rpi5-cortex-001",
         auto_reconnect: bool = True,
-        reconnect_interval: float = 5.0,
-        video_quality: int = 85
+        reconnect_delay: float = 5.0,
+        video_quality: int = 85,
+        max_fps: int = 15,
     ):
         """
-        Initialize client
+        Initialize client.
 
         Args:
             host: Laptop IP address
             port: FastAPI server port
             device_id: Unique device identifier
             auto_reconnect: Automatically reconnect on disconnect
-            reconnect_interval: Seconds between reconnect attempts
+            reconnect_delay: Seconds between reconnect attempts
             video_quality: JPEG quality (1-100)
+            max_fps: Maximum video FPS to send
         """
+        # Build WebSocket URL
+        url = f"ws://{host}:{port}/ws/{device_id}"
+
+        # Create shared config
+        config = ClientConfig(
+            url=url,
+            device_id=device_id,
+            reconnect_delay=reconnect_delay,
+            ping_interval=30.0,
+            ping_timeout=10.0,
+            message_queue_size=100,
+        )
+
+        super().__init__(config)
+
         self.host = host
         self.port = port
-        self.device_id = device_id
-        self.auto_reconnect = auto_reconnect
-        self.reconnect_interval = reconnect_interval
         self.video_quality = video_quality
-
-        # Connection state
-        self.websocket: Optional[websockets.client.WebSocketClientProtocol] = None
-        self.is_connected = False
-        self.should_reconnect = True
-        self.video_streaming_enabled = True  # Can be toggled by laptop
+        self.max_fps = max_fps
 
         # Video streaming state
         self._send_video = True  # Local toggle
-        self._frame_skip = 0
         self._last_frame_time = 0
 
-        # Event loop
-        self.loop: Optional[asyncio.AbstractEventLoop] = None
-        self.thread: Optional[threading.Thread] = None
-
         # Callbacks
-        self.on_connect: Optional[Callable] = None
-        self.on_disconnect: Optional[Callable] = None
         self.on_command: Optional[Callable[[Dict[str, Any]], None]] = None
 
-        logger.info(f"FastAPI client initialized: {host}:{port} ({device_id})")
+        logger.info(f"RPi5 client initialized: {host}:{port} ({device_id})")
 
     # =========================================================================
-    # CONNECTION METHODS
+    # Abstract Method Implementations (WebSockets)
     # =========================================================================
 
-    async def _connect_ws(self):
-        """Connect to laptop via WebSocket"""
-        uri = f"ws://{self.host}:{self.port}/ws/{self.device_id}"
+    async def _connect_impl(self):
+        """Connect using websockets library."""
+        self.websocket = await websockets.connect(
+            self.config.url,
+            ping_interval=30,
+            ping_timeout=10,
+            close_timeout=10
+        )
 
-        while self.should_reconnect:
-            try:
-                logger.info(f"🔌 Connecting to laptop: {uri}")
+    async def _send_impl(self, message: BaseMessage):
+        """Send message over WebSocket."""
+        await self.websocket.send(message.to_json())
 
-                self.websocket = await websockets.connect(
-                    uri,
-                    ping_interval=30,
-                    ping_timeout=10,
-                    close_timeout=10
-                )
+    async def _disconnect_impl(self):
+        """Close WebSocket connection."""
+        if self.websocket:
+            await self.websocket.close()
 
-                self.is_connected = True
-                logger.info(f"✅ Connected to laptop dashboard")
-
-                # Send initial status
-                await self._send_status("connected", f"Device {self.device_id} connected")
-
-                # Notify callback
-                if self.on_connect:
-                    self.on_connect()
-
-                # Handle incoming messages
-                await self._handle_messages()
-
-            except (ConnectionRefusedError, ConnectionError) as e:
-                logger.warning(f"⚠️  Connection refused: {e}")
-                self.is_connected = False
-                self._handle_disconnect()
-
-                if self.auto_reconnect:
-                    logger.info(f"🔄 Reconnecting in {self.reconnect_interval}s...")
-                    await asyncio.sleep(self.reconnect_interval)
-                else:
-                    break
-
-            except Exception as e:
-                logger.error(f"❌ Connection error: {e}")
-                self.is_connected = False
-                self._handle_disconnect()
-
-                if self.auto_reconnect:
-                    await asyncio.sleep(self.reconnect_interval)
-                else:
-                    break
-
-    async def _handle_messages(self):
-        """Handle incoming WebSocket messages"""
+    async def _receive_impl(self) -> Optional[BaseMessage]:
+        """Receive next message."""
         try:
             async for message in self.websocket:
-                try:
-                    data = json.loads(message)
-                    msg_type = data.get("type")
-
-                    if msg_type == "PING":
-                        await self._send_pong(data.get("data", {}))
-
-                    elif msg_type == "COMMAND":
-                        cmd_data = data.get("data", {})
-                        command = cmd_data.get("command")
-                        logger.info(f"📥 Received command: {command}")
-
-                        # Handle commands
-                        if command == "START_VIDEO_STREAMING":
-                            self._send_video = True
-                        elif command == "STOP_VIDEO_STREAMING":
-                            self._send_video = False
-                        elif command == "RESTART":
-                            # Trigger restart
-                            if self.on_command:
-                                self.on_command({"action": "restart"})
-
-                        # Notify callback
-                        if self.on_command:
-                            self.on_command(cmd_data)
-
-                    elif msg_type == "CONFIG":
-                        config_data = data.get("data", {})
-                        key = config_data.get("key")
-                        value = config_data.get("value")
-
-                        if key == "video_streaming_enabled":
-                            self._send_video = bool(value)
-                            logger.info(f"📹 Video streaming set to: {self._send_video}")
-
-                except json.JSONDecodeError:
-                    logger.error(f"Invalid JSON: {message}")
-                except Exception as e:
-                    logger.error(f"Error processing message: {e}")
-
+                return parse_message(message)
         except ConnectionClosed:
-            logger.warning("⚠️  Connection closed")
-            self.is_connected = False
-        except Exception as e:
-            logger.error(f"❌ Message handler error: {e}")
-            self.is_connected = False
-
-    def _handle_disconnect(self):
-        """Handle disconnection"""
-        if self.on_disconnect:
-            self.on_disconnect()
-
-    async def _send_pong(self, ping_data: Dict[str, Any]):
-        """Send pong response"""
-        pong_msg = {
-            "type": "PONG",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "data": {
-                "ping_timestamp": ping_data.get("timestamp"),
-                "pong_timestamp": datetime.utcnow().isoformat() + "Z"
-            }
-        }
-        await self._send_message(pong_msg)
-
-    async def _send_status(self, status: str, message: str):
-        """Send status message"""
-        status_msg = {
-            "type": "STATUS",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "data": {
-                "status": status,
-                "message": message,
-                "device_id": self.device_id
-            }
-        }
-        await self._send_message(status_msg)
-
-    async def _send_message(self, message: Dict[str, Any]):
-        """Send message to laptop"""
-        if not self.is_connected or not self.websocket:
-            return
-
-        try:
-            await self.websocket.send(json.dumps(message))
-        except Exception as e:
-            logger.error(f"Error sending message: {e}")
-            self.is_connected = False
+            return None
+        except Exception:
+            return None
 
     # =========================================================================
-    # PUBLIC API (Thread-safe)
+    # Message Handlers
     # =========================================================================
 
-    def _run_event_loop(self):
-        """Run event loop in background thread"""
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
+    async def _handle_command(self, message: BaseMessage):
+        """Handle COMMAND messages from laptop."""
+        cmd_data = message.data
+        command = cmd_data.get("action")
 
-        try:
-            self.loop.run_until_complete(self._connect_ws())
-        except Exception as e:
-            logger.error(f"Event loop error: {e}")
-        finally:
-            self.loop.close()
+        logger.info(f"Received command: {command}")
 
-    def start(self):
-        """Start client in background thread"""
-        if self.thread and self.thread.is_alive():
-            logger.warning("Client already running")
-            return
+        # Handle built-in commands
+        if command == "START_VIDEO_STREAMING":
+            self._send_video = True
+        elif command == "STOP_VIDEO_STREAMING":
+            self._send_video = False
+        elif command == "RESTART":
+            if self.on_command:
+                self.on_command({"action": "restart"})
 
-        logger.info("🚀 Starting FastAPI client...")
-        self.should_reconnect = True
+        # Forward to callback
+        if self.on_command:
+            self.on_command(cmd_data)
 
-        self.thread = threading.Thread(
-            target=self._run_event_loop,
-            daemon=True,
-            name="FastAPIClient"
-        )
-        self.thread.start()
+    async def _handle_config(self, message: BaseMessage):
+        """Handle CONFIG messages."""
+        config_data = message.data
+        key = config_data.get("key")
+        value = config_data.get("value")
 
-        logger.info("✅ FastAPI client started")
+        if key == "video_streaming_enabled":
+            self._send_video = bool(value)
+            logger.info(f"Video streaming set to: {self._send_video}")
 
-    def stop(self):
-        """Stop client"""
-        logger.info("🛑 Stopping FastAPI client...")
-        self.should_reconnect = False
-        self.is_connected = False
-
-        if self.websocket:
-            try:
-                asyncio.run_coroutine_threadsafe(
-                    self.websocket.close(),
-                    self.loop
-                )
-            except Exception:
-                pass
-
-        if self.thread:
-            self.thread.join(timeout=5.0)
-
-        logger.info("✅ FastAPI client stopped")
-
-    def set_video_streaming(self, enabled: bool):
-        """Enable/disable video streaming (local control)"""
-        self._send_video = enabled
-        logger.info(f"📹 Video streaming {'enabled' if enabled else 'disabled'}")
-
-        # Notify laptop
-        msg_type = "VIDEO_STREAMING_START" if enabled else "VIDEO_STREAMING_STOP"
-        if self.is_connected:
-            asyncio.run_coroutine_threadsafe(
-                self._send_message({
-                    "type": msg_type,
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
-                    "data": {"device_id": self.device_id}
-                }),
-                self.loop
-            )
+    async def _handle_ping(self, message: BaseMessage):
+        """Handle PING - send PONG response."""
+        # Use parent's _handle_ping which sends PONG automatically
+        await super()._handle_ping(message)
 
     # =========================================================================
-    # SEND METHODS
+    # Public API (RPi5-specific)
     # =========================================================================
 
-    def send_video_frame(self, frame: np.ndarray, detections: List[Dict[str, Any]] = None,
-                         width: int = 640, height: int = 480):
+    def send_video_frame(
+        self,
+        frame: np.ndarray,
+        detections: List[Dict[str, Any]] = None,
+        width: int = None,
+        height: int = None,
+    ):
         """
-        Send video frame with YOLO detections to laptop
+        Send video frame with detections to laptop.
 
-        Only sends if:
-        - Connected to laptop
-        - Video streaming is enabled (by laptop or locally)
-        - Frame rate limiting (max 15 FPS when streaming)
+        Args:
+            frame: OpenCV frame (BGR format)
+            detections: List of detection dicts
+            width: Frame width (auto-detected if None)
+            height: Frame height (auto-detected if None)
         """
         if not self.is_connected or not self._send_video:
             return
 
         # Rate limiting
         current_time = time.time()
-        if current_time - self._last_frame_time < 0.067:  # ~15 FPS max when streaming
+        min_interval = 1.0 / self.max_fps
+        if current_time - self._last_frame_time < min_interval:
             return
         self._last_frame_time = current_time
 
-        try:
-            # Encode frame to JPEG
-            _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, self.video_quality])
-            frame_b64 = base64.b64encode(buffer).decode('utf-8')
+        # Auto-detect dimensions
+        if width is None:
+            height, width = frame.shape[:2]
 
-            # Prepare detection data
-            detection_data = []
-            if detections:
-                for det in detections:
-                    detection_data.append({
-                        "class": det.get("class", "unknown"),
-                        "confidence": det.get("confidence", 0.0),
-                        "x1": int(det.get("x1", 0)),
-                        "y1": int(det.get("y1", 0)),
-                        "x2": int(det.get("x2", 0)),
-                        "y2": int(det.get("y2", 0)),
-                        "layer": det.get("layer", "unknown")
-                    })
+        # Convert detections to Detection objects
+        detection_objects = None
+        if detections:
+            detection_objects = []
+            for det in detections:
+                detection_objects.append(Detection(
+                    class_name=det.get("class", "unknown"),
+                    confidence=det.get("confidence", 0.0),
+                    bbox=BoundingBox(
+                        x1=det.get("x1", 0) / width,
+                        y1=det.get("y1", 0) / height,
+                        x2=det.get("x2", 0) / width,
+                        y2=det.get("y2", 0) / height,
+                    ),
+                    layer=det.get("layer", 0),
+                ))
 
-            message = {
-                "type": "VIDEO_FRAME",
-                "timestamp": datetime.utcnow().isoformat() + "Z",
-                "data": {
-                    "frame": frame_b64,
-                    "width": width,
-                    "height": height,
-                    "detections": detection_data,
-                    "device_id": self.device_id
-                }
+        # Create and send message
+        msg = create_video_frame(
+            device_id=self.device_id,
+            frame_bytes=frame,
+            width=width,
+            height=height,
+            detections=detection_objects,
+            quality=self.video_quality,
+        )
+
+        if self._async_loop:
+            import asyncio
+            asyncio.run_coroutine_threadsafe(self.send(msg), self._async_loop)
+        else:
+            logger.warning("Async loop not active, cannot send video frame")
+
+    def send_metrics(
+        self,
+        fps: float,
+        cpu_percent: float,
+        ram_percent: float,
+        battery_percent: float = None,
+        temperature: float = None,
+        inference_time_ms: float = None,
+    ):
+        """
+        Send system metrics to laptop.
+
+        Args:
+            fps: Current FPS
+            cpu_percent: CPU usage percentage
+            ram_percent: RAM usage percentage
+            battery_percent: Battery level (if available)
+            temperature: CPU temperature (if available)
+            inference_time_ms: Last inference time
+        """
+        metrics = SystemMetrics(
+            fps=fps,
+            cpu_percent=cpu_percent,
+            ram_percent=ram_percent,
+            battery_percent=battery_percent,
+            temperature=temperature,
+            inference_time_ms=inference_time_ms,
+        )
+
+        msg = create_metrics(self.device_id, metrics)
+        
+        if self._async_loop:
+            import asyncio
+            asyncio.run_coroutine_threadsafe(self.send(msg), self._async_loop)
+        else:
+            logger.warning("Async loop not active, cannot send metrics")
+
+    def send_detection(
+        self,
+        class_name: str,
+        confidence: float,
+        bbox: List[int],  # [x1, y1, x2, y2]
+        layer: int = 0,
+        width: int = None,
+        height: int = None,
+    ):
+        """
+        Send single detection event.
+
+        Args:
+            class_name: Detected class name
+            confidence: Confidence score (0-1)
+            bbox: Bounding box [x1, y1, x2, y2]
+            layer: Detection layer (0=Guardian, 1=Learner)
+            width: Frame width for normalization
+            height: Frame height for normalization
+        """
+        if width is None or height is None:
+            # Use defaults if not provided
+            width, height = 640, 480
+
+        detection = Detection(
+            class_name=class_name,
+            confidence=confidence,
+            bbox=BoundingBox(
+                x1=bbox[0] / width,
+                y1=bbox[1] / height,
+                x2=bbox[2] / width,
+                y2=bbox[3] / height,
+            ),
+            layer=layer,
+        )
+
+        msg = create_detections(self.device_id, [detection])
+        
+        if self._async_loop:
+            import asyncio
+            asyncio.run_coroutine_threadsafe(self.send(msg), self._async_loop)
+        else:
+            logger.warning("Async loop not active, cannot send detection")
+
+    def set_video_streaming(self, enabled: bool):
+        """Enable/disable video streaming (local control)."""
+        self._send_video = enabled
+        logger.info(f"Video streaming {'enabled' if enabled else 'disabled'}")
+
+    def send_status(self, status: str, message: str):
+        """Send status update to laptop."""
+        msg = BaseMessage(
+            type=MessageType.STATUS,
+            data={
+                "status": status,
+                "message": message,
+                "device_id": self.device_id,
             }
+        )
+        
+        if self._async_loop:
+            import asyncio
+            asyncio.run_coroutine_threadsafe(self.send(msg), self._async_loop)
+        else:
+            logger.warning("Async loop not active, cannot send status")
 
-            self._send_to_loop(message)
 
-        except Exception as e:
-            logger.error(f"Error encoding frame: {e}")
+# Backwards compatibility alias
+CortexFastAPIClient = RPi5Client
 
-    def send_metrics(self, fps: float, ram_mb: int, ram_percent: float,
-                     cpu_percent: float, battery_percent: float, temperature: float,
-                     active_layers: List[str], current_mode: str):
-        """Send system metrics to laptop"""
-        message = {
-            "type": "METRICS",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "data": {
-                "fps": fps,
-                "ram_mb": ram_mb,
-                "ram_percent": ram_percent,
-                "cpu_percent": cpu_percent,
-                "battery_percent": battery_percent,
-                "temperature": temperature,
-                "active_layers": active_layers,
-                "current_mode": current_mode,
-                "device_id": self.device_id
-            }
-        }
-        self._send_to_loop(message)
 
-    def send_detection(self, detection: Dict[str, Any]):
-        """Send single detection event"""
-        message = {
-            "type": "DETECTIONS",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "data": {
-                **detection,
-                "device_id": self.device_id
-            }
-        }
-        self._send_to_loop(message)
 
-    def send_audio_event(self, event: str, text: str, layer: str, confidence: float = 0.0):
-        """Send audio event"""
-        message = {
-            "type": "AUDIO_EVENT",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "data": {
-                "event": event,
-                "text": text,
-                "layer": layer,
-                "confidence": confidence,
-                "device_id": self.device_id
-            }
-        }
-        self._send_to_loop(message)
-
-    def _send_to_loop(self, message: Dict[str, Any]):
-        """Send message to event loop (thread-safe)"""
-        if self.loop and self.loop.is_running():
-            asyncio.run_coroutine_threadsafe(
-                self._send_message(message),
-                self.loop
-            )
-
-    # =========================================================================
-    # REST API CLIENT
-    # =========================================================================
-
-    async def _api_request(self, method: str, endpoint: str, data: Dict = None):
-        """Make REST API request to laptop"""
-        import aiohttp
-
-        url = f"http://{self.host}:{self.port}/api/v1/{endpoint}"
-
-        async with aiohttp.ClientSession() as session:
-            if method == "GET":
-                async with session.get(url) as response:
-                    return await response.json()
-            elif method == "POST":
-                async with session.post(url, json=data) as response:
-                    return await response.json()
-
-    async def get_status(self) -> Dict[str, Any]:
-        """Get dashboard status"""
-        return await self._api_request("GET", "status")
-
-    async def get_devices(self) -> Dict[str, Any]:
-        """Get connected devices"""
-        return await self._api_request("GET", "devices")
-
-    async def start_video_streaming(self) -> Dict[str, Any]:
-        """Request to start video streaming"""
-        return await self._api_request("POST", "control", {
-            "action": "start_video",
-            "device_id": self.device_id
-        })
-
-    async def stop_video_streaming(self) -> Dict[str, Any]:
-        """Request to stop video streaming"""
-        return await self._api_request("POST", "control", {
-            "action": "stop_video",
-            "device_id": self.device_id
-        })
 
 
 # ============================================================================
@@ -476,7 +368,6 @@ class CortexFastAPIClient:
 # ============================================================================
 
 if __name__ == "__main__":
-    import time
     import numpy as np
 
     # Setup logging
@@ -486,15 +377,15 @@ if __name__ == "__main__":
     )
 
     # Create client
-    client = CortexFastAPIClient(
-        host="192.168.0.91",
+    client = RPi5Client(
+        host="192.168.0.171",  # Laptop IP
         port=8765,
         device_id="rpi5-cortex-001"
     )
 
     def on_command(cmd):
         print(f"Received command: {cmd}")
-        if cmd.get("command") == "STOP_VIDEO_STREAMING":
+        if cmd.get("action") == "STOP_VIDEO_STREAMING":
             print("Stopping video streaming...")
 
     client.on_command = on_command
@@ -508,13 +399,11 @@ if __name__ == "__main__":
             # Send metrics
             client.send_metrics(
                 fps=30.0,
-                ram_mb=2048,
-                ram_percent=52.3,
                 cpu_percent=45.2,
+                ram_percent=52.3,
                 battery_percent=85,
                 temperature=42.5,
-                active_layers=["layer0", "layer1"],
-                current_mode="TEXT_PROMPTS"
+                inference_time_ms=15.0,
             )
 
             # Send fake frame with detections
@@ -524,7 +413,7 @@ if __name__ == "__main__":
                     "class": "person",
                     "confidence": 0.92,
                     "x1": 100, "y1": 50, "x2": 300, "y2": 400,
-                    "layer": "layer0"
+                    "layer": 0
                 }
             ]
             client.send_video_frame(fake_frame, detections)
@@ -532,5 +421,5 @@ if __name__ == "__main__":
             time.sleep(1)
 
     except KeyboardInterrupt:
-        print("\n🛑 Stopping client...")
+        print("\nStopping client...")
         client.stop()
