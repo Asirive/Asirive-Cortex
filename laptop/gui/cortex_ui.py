@@ -398,20 +398,45 @@ class DashboardOverviewWidget(QWidget):
         self.video_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         left_col.addWidget(self.video_frame)
         
-        # Video Controls
-        vid_ctrl_row = QHBoxLayout()
-        self.btn_stream = QPushButton("TOGGLE STREAM")
+        # 2b. Clean Control Bar
+        ctrl_panel = GlassCard()
+        ctrl_layout = QHBoxLayout(ctrl_panel)
+        ctrl_layout.setContentsMargins(10, 5, 10, 5)
+        
+        # Group 1: Stream
+        self.btn_stream = QPushButton("START STREAM")
+        self.btn_stream.setCheckable(True)
         self.btn_stream.clicked.connect(self._toggle_stream)
-        vid_ctrl_row.addWidget(self.btn_stream)
+        ctrl_layout.addWidget(self.btn_stream)
         
-        self.chk_bbox_l0 = QCheckBox("Show Guardian (L0)")
+        # Group 2: Overlays
+        ctrl_layout.addWidget(QLabel("|"))
+        self.chk_bbox_l0 = QCheckBox("Guardian (L0)")
         self.chk_bbox_l0.setChecked(True)
-        self.chk_bbox_l1 = QCheckBox("Show Learner (L1)") 
+        self.chk_bbox_l1 = QCheckBox("Learner (L1)") 
         self.chk_bbox_l1.setChecked(True)
-        vid_ctrl_row.addWidget(self.chk_bbox_l0)
-        vid_ctrl_row.addWidget(self.chk_bbox_l1)
+        ctrl_layout.addWidget(self.chk_bbox_l0)
+        ctrl_layout.addWidget(self.chk_bbox_l1)
         
-        left_col.addLayout(vid_ctrl_row)
+        # Group 3: Features
+        ctrl_layout.addWidget(QLabel("|"))
+        self.chk_supabase = QCheckBox("Cloud Sync")
+        self.chk_supabase.setChecked(True)
+        self.chk_supabase.setToolTip("Enable/Disable Supabase Sync")
+        ctrl_layout.addWidget(self.chk_supabase)
+        
+        # Group 4: Mode (Right Aligned)
+        ctrl_layout.addStretch()
+        self.combo_mode = QComboBox()
+        self.combo_mode.addItems(["TEXT_PROMPTS", "PROMPT_FREE"])
+        self.combo_mode.setToolTip("Switch Layer 1 Detection Mode")
+        self.combo_mode.currentTextChanged.connect(self._send_mode_update)
+        ctrl_layout.addWidget(self.combo_mode)
+        
+        left_col.addWidget(ctrl_panel)
+
+        
+        # 3. Detection Stream (Compact)
 
         
         # 3. Detection Stream (Compact)
@@ -507,6 +532,17 @@ class DashboardOverviewWidget(QWidget):
         cmd = {
             "action": "SET_MODE",
             "mode": "PRODUCTION" if enabled else "DEV"
+        }
+        self.send_command.emit(cmd)
+
+    def _send_mode_update(self, mode_text: str):
+        """Send mode update command to RPi5"""
+        cmd = {
+            "type": "CONFIG",
+            "data": {
+                "layer": "layer1",
+                "mode": mode_text
+            }
         }
         self.send_command.emit(cmd)
 

@@ -1,10 +1,9 @@
 # Project-Cortex v2.0 - Unified System Architecture
-**The Complete Blueprint for a Gold Medal-Winning Assistive Wearable**
 
-**Last Updated:** January 8, 2026 (**NEW:** 256x256 Optimized Models + NCNN/ONNX Framework)
-**Author:** Haziq (@IRSPlays) + AI Planner (Claude)
-**Status:** Adaptive Self-Learning with Cloud-Powered Memory & Analytics
-**Target:** Young Innovators Award (YIA) 2026 Competition
+**Last Updated:** January 24, 2026
+**Author:** Haziq (@IRSPlays)
+**Status:** Implementing the RPi 5 with AI Hat + 
+**Target:** Young Innovators Award (YIA) 2026 Competition + Innovation Project
 **Innovation:** Layer 0 (Guardian) + Layer 1 (Learner with 3 Detection Modes) + **Supabase Cloud Backend** - First AI wearable that learns without retraining, supports prompt-free discovery, contextual learning, personal object recognition, AND provides real-time cloud sync, remote monitoring, and scalable analytics.
 
 **🚨 LATEST CHANGE (Jan 8, 2026):** **ADDED SUPABASE 3-TIER HYBRID ARCHITECTURE** - Integrated Supabase Free Tier (500MB PostgreSQL, 1GB Storage, 5GB Bandwidth) as cloud backend for persistent storage, real-time sync, remote monitoring, and multi-device coordination. See "🌐 SUPABASE CLOUD INTEGRATION" section below for full architecture.
@@ -13,11 +12,11 @@
 
 ## 📋 EXECUTIVE SUMMARY
 
-Project-Cortex v2.0 is a **$150 AI wearable** for the visually impaired, disrupting the $4,000+ OrCam market through:
+Project-Cortex v2.0 is a **$250 AI wearable** for the visually impaired, disrupting the $4,000+ OrCam market through:
 - **Adaptive Self-Learning**: Dual-model cascade learns new objects without retraining (Layer 0 + Layer 1)
-- **Edge-First Computing**: Raspberry Pi 5 handles all user-facing features (YOLO, YOLOE, Whisper, Gemini Live API)
-- **Hybrid Offloading**: Laptop server handles heavy spatial compute (VIO/SLAM post-processing, web dashboard)
-- **Revolutionary Layer 2**: Gemini 2.5 Flash Live API for <500ms audio-to-audio conversations (vs 2-3s HTTP pipeline)
+- **Edge-First Computing**: Raspberry Pi 5 + AI Hat + handles all user-facing features (YOLO, YOLOE, Whisper, Gemini Live API)
+- **Hybrid Offloading**: Laptop server handles heavy spatial compute (VIO/SLAM post-processing, pytq6 dashboard)
+- **Revolutionary Layer 2**: Gemini 2.5 Flash Live API for <500ms audio-to-audio conversations (vs 2-3s HTTP pipeline) or Gemini 3 flash + Gemini 2.5 flash tts/kokoro tts
 - **Local-First Safety**: Layer 0 Guardian works 100% offline with <100ms latency (no network dependency)
 
 **Architecture Modes:**
@@ -30,17 +29,15 @@ Project-Cortex v2.0 is a **$150 AI wearable** for the visually impaired, disrupt
 
 ## 🎯 THE PROBLEM: RPi 5 Resource Constraints
 
-### Current Hardware Limits:
-```
-Raspberry Pi 5 (4GB RAM):
-├── CPU: ARM Cortex-A76 @ 2.4GHz (4 cores) ✅ GOOD
-├── RAM: 4GB LPDDR4X ⚠️ CONSTRAINT (must stay under 3.9GB)
-├── Storage: microSD (slow I/O) ⚠️ CONSTRAINT
-├── GPU: VideoCore VII (limited CUDA) ⚠️ CONSTRAINT
-└── Network: Gigabit Ethernet / Wi-Fi 6 ✅ GOOD
-```
+| Hardware Component | Specification | Status / Constraint |
+| :--- | :--- | :--- |
+| **CPU** | ARM Cortex-A76 @ 2.4GHz (4 cores) | ✅ GOOD |
+| **RAM** | 4GB LPDDR4X | ⚠️ CONSTRAINT (must stay under 3.9GB) |
+| **Storage** | microSD (slow I/O) | ⚠️ CONSTRAINT |
+| **GPU** | VideoCore VII (limited CUDA) | ⚠️ CONSTRAINT |
+| **Network** | Gigabit Ethernet / Wi-Fi 6 | ✅ GOOD |
+| **AI Hat NPU** | Hailo-8L (13 TOPS) | ✅ GOOD |
 
-### Memory Footprint (Optimized with Dual-Model Cascade + NCNN/ONNX):
 **All models converted at 256x256 resolution for RPi5 optimization**
 
 | Component | Model Size | RAM Usage | Framework | Status |
@@ -63,7 +60,8 @@ Raspberry Pi 5 (4GB RAM):
 | Web Dashboard | ~150MB | Laptop | 🟢 (offloaded) |
 | **Server TOTAL** | **~2GB** | Laptop | 🟢 LOW |
 
-**Conclusion:** Dual-model cascade (YOLO11x + YOLOE-11s) keeps RPi under 4GB while enabling **adaptive learning without retraining**. This is the first AI wearable that learns new objects from context (Gemini descriptions + Google Maps POI) in real-time.
+**Conclusion:** Dual-model cascade (YOLO26n + YOLOE-26n-seg pf + non pf) keeps RPi under 4GB while enabling 
+**adaptive learning without retraining**. This is the first AI wearable that learns new objects from context (Gemini descriptions + Google Maps POI + Server Post Processing) in real-time.
 
 **Innovation Breakthrough:** By using YOLOE's dynamic text prompts, the system can add "coffee machine", "fire extinguisher", "exit sign" to its detection vocabulary based on:
 1. Gemini scene descriptions ("I see a red fire extinguisher...")
@@ -77,25 +75,25 @@ This adaptive vocabulary updates every 30 seconds with <50ms overhead, requiring
 ## 🏗️ PHYSICAL INFRASTRUCTURE
 
 ### Edge Unit (Wearable - Raspberry Pi 5)
-```
 ┌─────────────────────────────────────────────────────────────┐
-│                   RASPBERRY PI 5 (4GB RAM)                   │
+│                   RASPBERRY PI 5 (4GB RAM)                  │
 ├─────────────────────────────────────────────────────────────┤
-│ SENSORS:                                                     │
-│  • IMX415 8MP Low-Light Camera - Vision Input (CSI)         │
-│  • BNO055 IMU - 9-DOF Head-Tracking (I2C)                   │
-│  • GY-NEO6MV2 GPS - Outdoor Localization (UART)             │
-│                                                              │
-│ ACTUATORS:                                                   │
-│  • PWM Vibration Motor - Haptic Alerts (GPIO 18)            │
-│  • Bluetooth Headphones - 3D Spatial Audio (Low-Latency)    │
-│                                                              │
-│ CONNECTIVITY:                                                │
-│  • Wi-Fi 1: Internet (Gemini Live API)                      │
-│  • Wi-Fi 2: Local Server (VIO/SLAM, Dashboard)              │
-│                                                              │
-│ POWER:                                                       │
-│  • 30,000mAh USB-C PD Power Bank (usb_max_current_enable=1) │
+│ SENSORS:                                                    │
+│  • Rasberry Pi Camera Module 3 (Wide Angle) -               |
+│     Vision Input (CSI)                                      |
+│  • BNO055 IMU - 9-DOF Head-Tracking (I2C)                   |
+│  • GY-NEO8MV2 GPS - Outdoor Localization (UART)             |
+│                                                             |
+│ ACTUATORS:                                                  │
+│  • PWM Vibration Motor - Haptic Alerts (GPIO 18)            |
+│  • Bluetooth Headphones - 3D Spatial Audio (Low-Latency)    |
+│                                                             |
+│ CONNECTIVITY:                                               |
+│  • Wi-Fi 1: Internet (Gemini Live API)                      |
+│  • Wi-Fi 2: Local Server (VIO/SLAM, Dashboard)              |
+│                                                             |
+│ POWER:                                                      │
+│  • 10,000mAh USB-C PD Power Bank (usb_max_current_enable=1) |
 │  • Official Active Cooler (MANDATORY for thermal mgmt)      │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -103,15 +101,16 @@ This adaptive vocabulary updates every 30 seconds with <50ms overhead, requiring
 ### Compute Node (Server - High-Performance Laptop)
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│             DELL INSPIRON 15 (RTX 2050 CUDA)                │
+│             ACER NITRO V15S (RTX 2050 CUDA)                 │
 ├─────────────────────────────────────────────────────────────┤
-│ ROLE: Heavy Spatial Computing                                │
+│ ROLE: Heavy Spatial Computing                               │
 │  • VIO/SLAM Post-Processing (OpenVINS, VINS-Fusion)         │
 │  • 3D Map Generation & Storage (PostgreSQL + PostGIS)       │
-│  • Web Dashboard (Dash by Plotly) - Port 5000               │
+│  • Pytqq6 Desktop Dashboard - Realtime, Fast                │
 │  • REST API (Port 8001) - SQLite queries from RPi           │
-│                                                              │
-│ COMMUNICATION:                                               │
+│  • Moondream 2 Preview (VLMM)                               │
+│                                                             │
+│ COMMUNICATION:                                              │
 │  • HTTP Server (Port 5001) - EuRoC dataset upload           │
 │  • WebSocket Server (Port 8765) - Real-time Nav Data        │
 └─────────────────────────────────────────────────────────────┘
@@ -1876,6 +1875,9 @@ Dashboard: ❌ Unavailable → No visualization (data still saved to SQLite)
 │  │  Progress bars with color coding       │  │                            │ │
 │  └────────────────────────────────────────┘  └────────────────────────────┘ │
 │                                                                              │
+│  ┌────────────────────────────────────────────────────────────────────────┐ │
+│  │  LAPTOP PROCESSING: [Moondream2: IDLE] [SLAM: ACTIVE] [Prompts: 45]    │ │
+│  └────────────────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -1951,6 +1953,31 @@ Dashboard: ❌ Unavailable → No visualization (data still saved to SQLite)
 │  [14:32:15] PING sent                                            │
 │  [14:32:16] PONG received (45ms)                                │
 └─────────────────────────────────────────────────────────────────┘
+
+#### Tab 4: Laptop Processing Control (NEW)
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Server Post-Processing (Moondream 2 Preview)                    │
+│  [Analyze Last Frame] [Auto-Analyze Every 10s]                   │
+│  Status: Model Loaded (3GB VRAM)                                      │
+│  Response: "A cluttered desk with a laptop displaying code..."    │
+│                                                                 │
+│  VIO + SLAM Control                                              │
+│  [Start Mapping] [Reset Map] [Save Map]                          │
+│  Map View: [ 3D Point Cloud Visualizer ]                         │
+│  Trajectory: (x=1.2, y=0.5, z=0.0)                               │
+│                                                                 │
+│  Vocabulary & Item Management (Synced)                           │
+│  Text Prompts (Layer 1):                                         │
+│  [ "checkers board", "white cane", "tactile paving" ] [Add] [Del]│
+│                                                                 │
+│  Visual Prompts (Personal Items):                                │
+│  [ "My Wallet" (Img) ] [ "Keys" (Img) ]                          │
+│  Storage: laptop/memory_storage (Synced from Pi)                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Tab 5: Message Injector
 ```
 
 ### Protocol Message Types for Testing

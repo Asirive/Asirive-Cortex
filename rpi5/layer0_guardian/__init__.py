@@ -70,7 +70,7 @@ class YOLOGuardian:
     
     def __init__(
         self,
-        model_path: str = "models/yolo11n_ncnn_model",
+        model_path: str = "models/converted/yolo26n_ncnn_model",
         device: str = "cpu",
         confidence: float = 0.5,
         enable_haptic: bool = True,
@@ -101,8 +101,13 @@ class YOLOGuardian:
         logger.info(f"📦 Loading YOLO11n-NCNN from {model_path}...")
         try:
             self.model = YOLO(model_path, task='detect')
-            # Note: NCNN models are inference-only, .to(device) not supported
-            logger.info(f"✅ YOLO11n-NCNN loaded for inference (80.7ms avg latency)")
+            # DEBUG: Inspect what was actually loaded
+            logger.info(f"✅ Loaded YOLO model from {model_path}")
+            if hasattr(self.model, 'model'):
+                logger.info(f"   Internal Type: {type(self.model.model)}")
+            if hasattr(self.model, 'predictor'):
+                 logger.info(f"   Predictor: {type(self.model.predictor)}")
+            
         except Exception as e:
             logger.error(f"❌ Failed to load YOLO11n-NCNN: {e}")
             raise
@@ -158,14 +163,27 @@ class YOLOGuardian:
         conf = confidence if confidence is not None else self.confidence
         
         try:
-            # Run YOLO11x inference
-            results = self.model(
-                frame,
+            # DEBUG: Backend Inspection
+            # Check if this is really the NCNN specific wrapper or Ultralytics generic
+            # logger.debug(f"DEBUG: Layer 0 Model Type: {type(self.model)}")
+            
+            # Predict
+            start_debug = time.perf_counter()
+            results = self.model.predict(
+                source=frame,
                 conf=conf,
                 verbose=False,  # Suppress console output
-                device=self.device
+                device=self.device,
+                task='detect'
             )
+            lat = (time.perf_counter() - start_debug) * 1000
             
+            # Verify Latency
+            if lat > 150:
+                 logger.warning(f"⚠️ Layer 0 High Latency: {lat:.1f}ms (Expected <100ms)")
+            else:
+                 logger.debug(f"⚡ Layer 0 Inference: {lat:.1f}ms")
+
             # Extract detections
             detections = []
             if results and len(results) > 0:

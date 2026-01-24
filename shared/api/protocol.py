@@ -352,22 +352,30 @@ def create_command(
     )
 
 
-def create_ping(device_id: str) -> BaseMessage:
+def create_ping(device_id: str, ping_id: Optional[str] = None) -> BaseMessage:
     """Create a PING message."""
+    data = {"device_id": device_id}
+    if ping_id:
+        data["ping_id"] = ping_id
+    
     return BaseMessage(
         type=MessageType.PING,
-        data={"device_id": device_id},
+        data=data,
     )
 
 
-def create_pong(device_id: str, latency_ms: float) -> BaseMessage:
+def create_pong(device_id: str, latency_ms: float, ping_id: Optional[str] = None) -> BaseMessage:
     """Create a PONG message (response to PING)."""
+    data = {
+        "device_id": device_id,
+        "latency_ms": latency_ms,
+    }
+    if ping_id:
+        data["ping_id"] = ping_id
+
     return BaseMessage(
         type=MessageType.PONG,
-        data={
-            "device_id": device_id,
-            "latency_ms": latency_ms,
-        },
+        data=data,
     )
 
 

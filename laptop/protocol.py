@@ -258,6 +258,25 @@ def create_message(message_type: MessageType, data: Dict[str, Any]) -> BaseMessa
     return message_class(type=message_type.value, timestamp=timestamp, data=data)
 
 
+def create_ping(device_id: str, ping_id: str) -> BaseMessage:
+    """Create a PING message"""
+    return create_message(MessageType.PING, {
+        "device_id": device_id,
+        "ping_id": ping_id,
+        "timestamp": datetime.utcnow().isoformat() + "Z"
+    })
+
+
+def create_pong(device_id: str, latency_ms: float, ping_id: str) -> BaseMessage:
+    """Create a PONG message"""
+    return create_message(MessageType.PONG, {
+        "device_id": device_id,
+        "latency_ms": latency_ms,
+        "ping_id": ping_id,
+        "pong_timestamp": datetime.utcnow().isoformat() + "Z"
+    })
+
+
 def parse_message(json_str: str) -> Optional[BaseMessage]:
     """Parse JSON string into message object"""
     try:

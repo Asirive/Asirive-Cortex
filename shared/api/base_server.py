@@ -301,7 +301,8 @@ class AsyncWebSocketServer(ABC):
         # Handle PING
         if message.type == MessageType.PING:
             from .protocol import create_pong
-            pong = create_pong(client_id, 0.0)
+            ping_id = message.data.get("ping_id")
+            pong = create_pong(client_id, 0.0, ping_id=ping_id)
             await self.send_to_client(client_id, pong)
             return
 

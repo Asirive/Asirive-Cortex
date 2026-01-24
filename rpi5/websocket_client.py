@@ -136,19 +136,22 @@ class RPiWebSocketClient:
         try:
             async for message in self.websocket:
                 try:
+                try:
                     data = json.loads(message)
                     msg_type = data.get("type")
 
                     # Handle PING
-                    if msg_type == "PING":
-                        await self._send_pong(data.get("data", {}))
+                    if msg_type == MessageType.PING:
+                        # Echo ping_id if present
+                        ping_id = data.get("data", {}).get("ping_id")
+                        await self._send_pong(self.device_id, 0.0, ping_id)
 
                     # Handle COMMAND (future)
-                    elif msg_type == "COMMAND":
+                    elif msg_type == MessageType.COMMAND:
                         logger.info(f"📥 Received command: {data.get('data')}")
 
                     # Handle CONFIG (future)
-                    elif msg_type == "CONFIG":
+                    elif msg_type == MessageType.CONFIG:
                         logger.info(f"📥 Received config update: {data.get('data')}")
 
                 except Exception as e:
@@ -161,17 +164,11 @@ class RPiWebSocketClient:
             logger.error(f"❌ Error in receive loop: {e}")
             self.is_connected = False
 
-    async def _send_pong(self, ping_data: Dict[str, Any]):
+    async def _send_pong(self, device_id: str, latency: float, ping_id: Optional[str]):
         """Send pong response"""
-        pong_msg = {
-            "type": "PONG",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "data": {
-                "ping_timestamp": ping_data.get("timestamp"),
-                "pong_timestamp": datetime.utcnow().isoformat() + "Z"
-            }
-        }
-        await self._send_message(pong_msg)
+        from shared.api import create_pong
+        pong_msg = create_pong(device_id, latency, ping_id)
+        await self._send_message(pong_msg.to_dict())
 
     async def _send_status(self, status: str, message: str):
         """Send status message"""
