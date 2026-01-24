@@ -1,63 +1,55 @@
-# Project-Cortex v2.0 - Python Dependencies
-# Laptop Development + Raspberry Pi 5 Deployment
-# Last Updated: January 17, 2026
-# Using >= for latest versions, <2.0 for numpy compatibility
+# Project-Cortex v2.0 - RPi 5 (ARM64) / Python 3.11
+# Fixed: Jan 22, 2026
 
 # ===== Core Framework =====
-python-dotenv>=1.0.0            # Environment variable management
+python-dotenv>=1.0.1        # Env management
 
 # ===== Computer Vision =====
-opencv-python>=4.8.0            # Image processing (laptop + RPi)
-# picamera2                     # RPi 5 camera (install on RPi only)
-numpy>=1.24.0,<2.3.0          # Array operations (pinned for opencv compatibility)
+# CRITICAL: Python 3.13 mandates Numpy 2.1+. Legacy Numpy 1.x will fail.
+numpy>=2.1.0                
+opencv-python-headless>=4.10.0.84  # Headless for Lite OS; supports Numpy 2.x
+
+# NOTE: Install picamera2 via apt: 'sudo apt install python3-picamera2'
+# picamera2>=0.3.0
 
 # ===== AI/ML Models =====
-ultralytics>=8.0.0              # YOLO object detection
-torch>=2.1.0                    # PyTorch (CPU-only for RPi)
-torchvision>=0.16.0             # Vision utilities
-pillow>=10.0.0                  # Image manipulation
+# Torch 2.6+ is required for Python 3.13 ARM64 support
+ultralytics>=8.4.0          # YOLOv11/v10
+torch>=2.6.0                # PyTorch for ARM64 (CPU)
+torchvision>=0.21.0         # Matching vision library
+pillow>=11.1.0              # Image processing
+ncnn>=1.0.20240410           # NCNN inference
+onnxruntime>=1.17.0          # ONNX inference
+onnx>=1.15.0                 # ONNX export support
+
 
 # ===== Cloud AI APIs =====
-google-generativeai>=0.7.0      # Google Gemini API
-google-genai>=1.0.0             # Google Gen AI SDK for Gemini 2.5 Flash TTS
-openai>=1.0.0                   # OpenAI GPT-4 Vision (fallback)
-requests>=2.31.0                # HTTP requests
-gradio-client>=0.6.0            # Hugging Face API client (Whisper STT)
-zai-sdk                         # Z.ai GLM-4.6V official SDK (Tier 2 fallback)
+#zai-sdk>=0.2.1              # FIXED: Latest official Z.ai SDK (was zhipuai)
+google-genai>=1.60.0        # Unified SDK for Gemini 2.0 Flash
+google-generativeai>=0.8.6  # Legacy Gemini support
+openai>=1.60.1              # OpenAI Client
+gradio-client>=1.7.0        # Hugging Face Interface
+requests>=2.32.3            # HTTP Client
 
 # ===== Local AI Models =====
-openai-whisper                  # Local Whisper STT
-kokoro>=0.3.4                   # Local Kokoro TTS
-misaki[en]                      # G2P for Kokoro
-phonemizer                      # Phoneme support
-espeakng-loader                 # eSpeak NG loader
+openai-whisper>=20240930    # STT (requires system ffmpeg)
+kokoro>=0.7.0               # Local TTS
+misaki[en]>=0.5.0           # G2P for Kokoro
+phonemizer>=3.2.1           # Phoneme support (requires espeak-ng)
+espeakng-loader>=0.1.3      
 
 # ===== Audio Processing =====
-pygame>=2.5.0                   # Audio playback
-sounddevice>=0.4.0              # Audio recording
-scipy>=1.11.0                   # Audio file I/O
-pydub>=0.25.0                   # Audio manipulation
-pyaudio>=0.2.11                 # Real-time microphone capture (for VAD)
-silero-vad>=4.0.0               # Silero VAD for voice activity detection
-PyOpenAL>=0.7.0                 # 3D spatial audio with HRTF support
+pygame>=2.6.1               # Audio I/O
+sounddevice>=0.5.1          # Recording
+scipy>=1.15.0               # Signal processing (Numpy 2.x ready)
+pydub>=0.25.1               # Audio manipulation
+silero-vad>=5.1.2           # Voice Activity Detection
 
-# ===== GUI (Development) =====
-# Tkinter comes with Python standard library
-Pillow>=10.0.0                  # For ImageTk
-
-# ===== Web Framework =====
-fastapi>=0.100.0                # REST API backend
-uvicorn>=0.23.0                 # ASGI server
-websockets>=12.0                # Real-time dashboard
+# ===== Web & Dashboard =====
+fastapi>=0.115.6            
+uvicorn[standard]>=0.34.0   
+websockets>=14.1            
 
 # ===== Utilities =====
-pyyaml>=6.0.0                   # Config file parsing
-python-dateutil>=2.8.0          # Date/time utilities
-
-# ===== Development Tools =====
-pytest>=7.4.0                   # Testing framework
-black>=23.0.0                   # Code formatting
-flake8>=6.0.0                   # Linting
-
-# ===== Performance Monitoring =====
-psutil>=5.9.0                   # System resource monitoring
+pyyaml>=6.0.2               
+psutil>=6.1.1               

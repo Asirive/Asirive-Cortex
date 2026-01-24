@@ -235,7 +235,7 @@ def get_default_rpi5_config() -> Dict[str, Any]:
         },
         'models': {
             'guardian': {
-                'model_path': 'models/converted/yolo26n/model.ncnn',
+                'model_path': 'models/converted/yolo26n_ncnn_model/model.ncnn',
                 'confidence': 0.5,
             },
             'learner': {

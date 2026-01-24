@@ -43,14 +43,14 @@ def load_config(config_path: str = None) -> Dict[str, Any]:
             'local_db_path': 'local_cortex.db'
         },
         'layer0': {
-            'model_path': 'models/yolo11n_ncnn_model',
+            'model_path': 'models/converted/yolo26n_ncnn_model',
             'device': 'cpu',
             'confidence': 0.5,
             'enable_haptic': True,
             'gpio_pin': 18
         },
         'layer1': {
-            'model_path': 'models/yoloe-11s-seg_ncnn_model',
+            'model_path': 'models/converted/yoloe_26s_seg_ncnn_model',
             'device': 'cpu',
             'confidence': 0.25,
             'mode': 'TEXT_PROMPTS'

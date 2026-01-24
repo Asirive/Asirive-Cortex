@@ -3,7 +3,7 @@ Convert all YOLO models to optimized formats:
 - NCNN: For YOLOv26 and YOLOE (segmentation) - optimized for ARM/Raspberry Pi
 - ONNX: For YOLOE Prompt-Free - better support for open-vocabulary detection
 
-Frame size: 320x320 | Precision: FP16
+Frame size: 192x192 | Precision: FP16
 """
 import os
 import shutil
@@ -35,7 +35,14 @@ def convert_model(config):
 
     # Create individual folder for each model
     model_base = os.path.splitext(model_name)[0].replace("-", "_")
-    output_folder = os.path.join(OUTPUT_DIR, model_base)
+    
+    # Append suffix for NCNN (Required by Ultralytics AutoBackend)
+    if fmt == "ncnn":
+        output_folder_name = f"{model_base}_ncnn_model"
+    else:
+        output_folder_name = model_base
+        
+    output_folder = os.path.join(OUTPUT_DIR, output_folder_name)
     os.makedirs(output_folder, exist_ok=True)
 
     model_path = os.path.join(MODEL_DIR, model_name)
@@ -53,15 +60,29 @@ def convert_model(config):
 
         # Common export options
         export_kwargs = {
-            "imgsz": 320,
-            "half": True,  # FP16 for smaller size
-            "simplify": True,
+            "half": True,       # FP16 for smaller size
+            "simplify": True,   # ONNX simplification
             "opset": 12,
+            "dynamic": False,   # FIXED SHAPE IS FASTER & SAFER (Prevents Hangs)
         }
+        
+        # Resolution logic (Per User Request)
+        if model_type == "yolo":
+            # Layer 0 (Normal YOLO): 320x320
+            export_kwargs["imgsz"] = 320
+        else:
+            # Layer 1 (YOLOE/Seg): 192x192 (Heavy model optimization)
+            export_kwargs["imgsz"] = 192
+            export_kwargs["int8"] = True  # Enable INT8 Quantization for Speed
 
         if fmt == "ncnn":
             exported_path = model.export(format="ncnn", **export_kwargs)
         elif fmt == "onnx":
+            # ONNX doesn't support 'int8' arg in ultra export, use dynamic=False and half=True
+            if "int8" in export_kwargs:
+                del export_kwargs["int8"]
+            # Ensure opset is 12 for compatibility
+            export_kwargs["opset"] = 12
             exported_path = model.export(format="onnx", **export_kwargs)
         else:
             raise ValueError(f"Unsupported format: {fmt}")
@@ -81,7 +102,7 @@ def convert_model(config):
                 shutil.move(exported_path, dst)
                 print(f"  Saved: {model_base}/{model_base}.{fmt}")
 
-            print(f"  SUCCESS: {model_name} -> {fmt.upper()} (320x320, FP16)")
+            print(f"  SUCCESS: {model_name} -> {fmt.upper()} (192x192, FP16)")
         else:
             print(f"  ERROR: Export failed for {model_name}")
 
@@ -91,7 +112,7 @@ def convert_model(config):
 def main():
     print("="*60)
     print("YOLO/YOLOE Model Conversion")
-    print("Frame size: 320x320 | Precision: FP16")
+    print("Frame size: 192x192 | Precision: FP16")
     print(f"Output directory: {OUTPUT_DIR}/")
     print("="*60)
 

@@ -77,6 +77,23 @@ if dotenv_path.exists():
         logger.warning(f"Failed to load .env file: {e}")
 
 # =====================================================
+# THREADING OPTIMIZATION (Must be set before importing Torch/NCNN)
+# =====================================================
+# Read directly from config file as we haven't loaded the full config module yet
+try:
+    with open('rpi5/config/config.yaml') as f:
+        _cfg = yaml.safe_load(f)
+        _threads = str(_cfg.get('performance', {}).get('cpu_threads', 3))
+        
+        logger.info(f"🚀 Performance Optimization: Setting OMP_NUM_THREADS={_threads}")
+        os.environ["OMP_NUM_THREADS"] = _threads
+        os.environ["MKL_NUM_THREADS"] = _threads
+        os.environ["OPENBLAS_NUM_THREADS"] = _threads
+except Exception as e:
+    logger.warning(f"⚠️ Could not load threading config, defaulting to 3: {e}")
+    os.environ["OMP_NUM_THREADS"] = "3"
+
+# =====================================================
 # IMPORT LAYERS
 # =====================================================
 logger.info("[DEBUG] ===== LAYER IMPORTS STARTING =====")
@@ -177,21 +194,32 @@ class CameraHandler:
     def _start_picamera(self):
         """Initialize Picamera2 (RPi5)"""
         try:
+            # Optimizations for Module 3 Wide (IMX708)
+            # 1. Force Wide Tuning File for LSC/Color Correction
+            # This ensures we don't get dark corners or weird colors
+            os.environ["LIBCAMERA_RPI_TUNING_FILE"] = "/usr/share/libcamera/ipa/rpi/vc4/imx708_wide.json"
+            
             from picamera2 import Picamera2
 
             self.camera = Picamera2(self.camera_id)
-            config = self.camera.create_preview_configuration(
-                main={"format": 'RGB888', "size": self.resolution}
+            
+            # 2. Use Video Configuration (Better for high FPS/continuous than preview)
+            config = self.camera.create_video_configuration(
+                main={"format": 'RGB888', "size": self.resolution},
+                buffer_count=4  # Prevent starvation
             )
             self.camera.configure(config)
             
-            # Enable Continuous Auto-Focus (AfMode=2) for Module 3
+            # 3. Enable Continuous Auto-Focus (AfMode=2) & Auto-Exposure
             # 0=Manual, 1=Auto(Single), 2=Continuous
             try:
-                self.camera.set_controls({"AfMode": 2})
-                logger.info("✅ Picamera2: Continuous Auto-Focus Enabled")
+                self.camera.set_controls({
+                    "AfMode": 2,
+                    "AeEnable": True
+                })
+                logger.info("✅ Picamera2: Continuous Auto-Focus & AE Enabled")
             except Exception as e:
-                logger.warning(f"⚠️ Could not set AfMode: {e}")
+                logger.warning(f"⚠️ Could not set Camera Controls: {e}")
 
             self.camera.start()
 
@@ -208,17 +236,42 @@ class CameraHandler:
                 system_site = "/usr/lib/python3/dist-packages"
                 if system_site not in sys.path and os.path.exists(system_site):
                     logger.info(f"⚠️  Attempting to load system libcamera from {system_site}")
-                    sys.path.append(system_site)
+                    # CRITICAL: Use insert(0) to prioritize system packages over broken venv packages
+                    sys.path.insert(0, system_site)
                     try:
+                        # Clean any partial imports
+                        if 'picamera2' in sys.modules: del sys.modules['picamera2']
+                        if 'libcamera' in sys.modules: del sys.modules['libcamera']
+                        
                         import libcamera
                         import picamera2
                         logger.info("✅ System libcamera/picamera2 found and loaded!")
-                        # If successful, re-attempt starting picamera
-                        self._start_picamera()
-                        return # Exit this exception handler as picamera started
+                        # If successful, re-attempt starting picamera with the NEWLY loaded module
+                        # We must re-instantiate because the class object might have come from the broken module
+                        self.camera = picamera2.Picamera2(self.camera_id)
+                        
+                        # Re-apply config
+                        config = self.camera.create_video_configuration(
+                            main={"format": 'RGB888', "size": self.resolution},
+                            buffer_count=4
+                        )
+                        self.camera.configure(config)
+                        self.camera.set_controls({"AfMode": 2, "AeEnable": True})
+                        self.camera.start()
+                        
+                        # Start thread
+                        self.capture_thread = threading.Thread(
+                            target=self._picamera_capture_loop,
+                            daemon=True
+                        )
+                        self.capture_thread.start()
+                        return 
                     except ImportError:
                         logger.warning(f"❌ System libcamera/picamera2 not found in {system_site} or failed to load.")
-                        pass # Continue to original fallback if system import fails
+                        # Remove the path if it failed, to be clean
+                        if system_site in sys.path:
+                            sys.path.remove(system_site)
+                        pass
 
             logger.error(f"❌ picamera2 not installed, falling back to OpenCV")
             logger.error(f"   Import Error: {e}")
@@ -235,13 +288,39 @@ class CameraHandler:
             raise
 
     def _start_opencv(self):
-        """Initialize OpenCV (laptop/testing)"""
-        self.camera = cv2.VideoCapture(self.camera_id)
-        if not self.camera.isOpened():
-            raise RuntimeError(f"Failed to open camera {self.camera_id}")
+        """Initialize OpenCV (laptop/testing/RPi fallback)"""
+        # Iterate to find the correct camera index (RPi5 often creates multiple video nodes)
+        found_camera = False
+        
+        # Try indices 0 to 10
+        for idx in range(10):
+            try:
+                # Explicitly request V4L2 backend
+                self.camera = cv2.VideoCapture(idx, cv2.CAP_V4L2)
+                
+                if self.camera.isOpened():
+                    # Read a test frame to ensure it's actually working
+                    ret, _ = self.camera.read()
+                    if ret:
+                        logger.info(f"✅ OpenCV connected to camera index {idx}")
+                        self.camera_id = idx
+                        found_camera = True
+                        break
+                    else:
+                        self.camera.release()
+            except Exception:
+                pass
+        
+        if not found_camera:
+            # Last ditch attempt with default backend at original index
+            self.camera = cv2.VideoCapture(self.camera_id)
+            if not self.camera.isOpened():
+                raise RuntimeError(f"Failed to open camera (tried indices 0-9)")
+            logger.info(f"⚠️  OpenCV connected to index {self.camera_id} (fallback backend)")
 
         self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
         self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
+        self.camera.set(cv2.CAP_PROP_FPS, self.fps)
 
         # Start capture thread
         self.capture_thread = threading.Thread(
@@ -658,7 +737,8 @@ class CortexSystem:
                     layer_detections = future.result(timeout=1.0)  # 1 second timeout
                     detections.extend(layer_detections)
                 except Exception as e:
-                    logger.error(f"❌ {layer_name} detection failed: {e}")
+                    import traceback
+                    logger.error(f"❌ {layer_name} detection failed: {e}\n{traceback.format_exc()}")
 
         self.detection_count += len(detections)
         return detections

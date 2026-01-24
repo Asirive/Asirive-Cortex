@@ -247,15 +247,26 @@ class AsyncWebSocketClient(ABC):
     async def _flush_queue(self):
         """Send all queued messages."""
         logger.debug(f"[DEBUG] _flush_queue called, queue size: {len(self._message_queue)}")
-        while self._message_queue:
-            try:
+        # Copy to list to avoid modification during iteration if needed, 
+        # but popleft is safer.
+        while self._lock: # Check lock/connected? actually just check queue
+             if not self._message_queue:
+                 break
+             
+             try:
+                # Peek first
                 message = self._message_queue[0]
                 logger.debug(f"[DEBUG] Sending queued message: {message.type}")
                 await self._send_impl(message)
-                self._message_queue.popleft()
+                
+                # Pop only if send succeeded
+                if self._message_queue:
+                    self._message_queue.popleft()
+                
                 logger.debug(f"[DEBUG] Sent queued message: {message.type}")
-            except Exception as e:
+             except Exception as e:
                 logger.error(f"[DEBUG] Failed to send queued message: {e}")
+                # Don't pop if failed, but break to avoid loop
                 break
 
     # ==================== Heartbeat ====================
@@ -273,18 +284,19 @@ class AsyncWebSocketClient(ABC):
                         break
 
                 # Send PING if needed
-                if self._heartbeat.should_send_ping():
-                    ping_id = f"{self.device_id}_{int(time.time() * 1000)}"
-                    self._heartbeat.pending_ping = True
-                    self._heartbeat.last_ping_sent = datetime.now(timezone.utc)
-                    self._heartbeat.ping_id = ping_id
+                # User requested disabling continuous heartbeat to save bandwidth/latency
+                # if self._heartbeat.should_send_ping():
+                #     ping_id = f"{self.device_id}_{int(time.time() * 1000)}"
+                #     self._heartbeat.pending_ping = True
+                #     self._heartbeat.last_ping_sent = datetime.now(timezone.utc)
+                #     self._heartbeat.ping_id = ping_id
+                # 
+                #     from .protocol import create_ping
+                #     ping_msg = create_ping(self.device_id, ping_id)
+                #     await self._send_impl(ping_msg)
+                #     logger.debug(f"Sent PING: {ping_id}")
 
-                    from .protocol import create_ping
-                    ping_msg = create_ping(self.device_id)
-                    await self._send_impl(ping_msg)
-                    logger.debug(f"Sent PING: {ping_id}")
-
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(5.0) # Check less frequently
 
             except Exception as e:
                 logger.error(f"Heartbeat error: {e}")
@@ -375,9 +387,18 @@ class AsyncWebSocketClient(ABC):
                 await self._connect_impl()
                 self._connected = True
 
-                # Notify callback
                 if self.on_connect:
                     self.on_connect()
+
+                # Send initial PING (One-time check)
+                try:
+                    from .protocol import create_ping
+                    ping_id = f"{self.device_id}_init_{int(time.time())}"
+                    ping_msg = create_ping(self.device_id, ping_id)
+                    await self._send_impl(ping_msg)
+                    logger.info(f"Sent INITIAL PING: {ping_id}")
+                except Exception as e:
+                    logger.error(f"Failed to send initial PING: {e}")
 
                 # Start heartbeat
                 asyncio.create_task(self._heartbeat_loop())

@@ -153,12 +153,14 @@ class CortexWebSocketServer:
                         # 2. Handle System Messages (PING/PONG)
                         if parsed_message.type == MessageType.PING:
                             logger.debug(f"Received PING from {websocket.remote_address}")
+                            ping_id = parsed_message.data.get("ping_id")
                             from laptop.protocol import create_pong
                             
-                            # Respond with standardized PONG
+                            # Respond with standardized PONG echoing the ID
                             pong_msg = create_pong(
                                 device_id="laptop-dashboard",
-                                latency_ms=0.0
+                                latency_ms=0.0,
+                                ping_id=ping_id
                             )
                             await websocket.send(pong_msg.to_json())
                             continue

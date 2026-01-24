@@ -77,6 +77,7 @@ class HybridMemoryManager:
 
         # Cloud: Supabase (lazy initialization)
         self.supabase_client = None
+        self.supabase_available = True # Assume available until proven otherwise
 
         # Upload queue (for offline mode)
         self.upload_queue = []
@@ -128,6 +129,9 @@ class HybridMemoryManager:
 
     async def init_supabase(self):
         """Lazy initialization of Supabase client"""
+        if not self.supabase_available:
+            return
+
         if self.supabase_client is None:
             try:
                 from supabase import create_async_client
@@ -137,11 +141,11 @@ class HybridMemoryManager:
                 )
                 logger.info("✅ Supabase client initialized")
             except ImportError:
-                logger.error("❌ supabase package not installed. Run: pip install supabase")
-                raise
+                logger.warning("⚠️ supabase package not installed. Cloud sync disabled.")
+                self.supabase_available = False
             except Exception as e:
                 logger.error(f"❌ Failed to initialize Supabase: {e}")
-                raise
+                self.supabase_available = False
 
     def store_detection(self, detection: Dict[str, Any]) -> None:
         """
@@ -199,10 +203,10 @@ class HybridMemoryManager:
         cursor = self.local_db.cursor()
         cursor.execute(f"""
             DELETE FROM detections_local
-            WHERE id IN (
+            WHERE id NOT IN (
                 SELECT id FROM detections_local
                 ORDER BY id DESC
-                OFFSET {self.local_cache_size}
+                LIMIT {self.local_cache_size}
             )
         """)
         deleted = cursor.rowcount
@@ -453,36 +457,33 @@ class HybridMemoryManager:
     ):
         """
         Update device heartbeat in Supabase
-
-        Args:
-            device_name: Device name
-            battery_percent: Battery percentage
-            cpu_percent: CPU usage
-            memory_mb: Memory usage in MB
-            temperature: CPU temperature
-            active_layers: List of active layers
-            current_mode: Current detection mode
-            latitude: GPS latitude
-            longitude: GPS longitude
         """
+        # Ensure client is initialized
+        if not self.supabase_client and self.supabase_available:
+             await self.init_supabase()
+             
+        # Guard clause: If still not available (failed init), exit
         if not self.supabase_client:
-            await self.init_supabase()
+            return
 
-        # Call Supabase RPC function
-        await self.supabase_client.rpc('update_device_heartbeat', {
-            'p_device_id': self.device_id,
-            'p_device_name': device_name,
-            'p_battery': battery_percent,
-            'p_cpu': cpu_percent,
-            'p_memory': memory_mb,
-            'p_temp': temperature,
-            'p_active_layers': active_layers,
-            'p_current_mode': current_mode,
-            'p_lat': latitude,
-            'p_lon': longitude
-        }).execute()
+        try:
+            # Call Supabase RPC function
+            await self.supabase_client.rpc('update_device_heartbeat', {
+                'p_device_id': self.device_id,
+                'p_device_name': device_name,
+                'p_battery': battery_percent,
+                'p_cpu': cpu_percent,
+                'p_memory': memory_mb,
+                'p_temp': temperature,
+                'p_active_layers': active_layers,
+                'p_current_mode': current_mode,
+                'p_lat': latitude,
+                'p_lon': longitude
+            }).execute()
 
-        logger.debug(f"💓 Heartbeat updated: {device_name}")
+            logger.debug(f"💓 Heartbeat updated: {device_name}")
+        except Exception as e:
+            logger.warning(f"⚠️ Heartbeat skipped: {e}")
 
     def start_sync_worker(self):
         """Start background sync worker"""

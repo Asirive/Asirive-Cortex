@@ -29,7 +29,7 @@ supabase:
 # LAYER 0: THE GUARDIAN (Safety-Critical Detection)
 # =====================================================
 layer0:
-  model_path: "models/converted/yolo26n"  # YOLO v26n NCNN - safety-critical detection
+  model_path: "models/converted/yolo26n_ncnn_model"  # YOLO v26n NCNN - safety-critical detection
   framework: "ncnn"  # NCNN - ARM-optimized for RPi5
   device: "cpu"  # Options: 'cpu' (RPi), 'cuda' (laptop with GPU)
   confidence: 0.5  # Detection confidence threshold
@@ -47,19 +47,26 @@ layer0:
 # =====================================================
 layer1:
   # YOLO v26s-seg NCNN - Adaptive detection for RPi5 performance
-  model_path: "models/converted/yoloe_26s_seg"
+  # YOLO v26s-seg ONNX (Prompt Free) - More stable than NCNN OpenVocab
+  model_path: "models/converted/yoloe_26n_seg_pf/model.onnx"
   # PyTorch fallback for full YOLOE features
   pt_model_path: "models/yolo26s.pt"
 
   device: "cpu"
   confidence: 0.25
-  mode: "TEXT_PROMPTS"  # Options: PROMPT_FREE, TEXT_PROMPTS, VISUAL_PROMPTS
-
   # Framework configuration
   framework:
-    ncnn_enabled: true   # Best for RPi5 performance
-    onnx_enabled: false  # Disabled (no ONNX models yet)
+    ncnn_enabled: false   # Disable NCNN for Layer 1
+    onnx_enabled: true    # Enable ONNX
     pytorch_enabled: true  # Enable PyTorch fallback
+
+  # Available Models
+  models:
+    ncnn: "models/converted/yolo26s_ncnn_model"
+    onnx: "models/converted/yoloe_26n_seg_pf" # User requested specifically
+    pt: "models/yolo26s.pt"
+
+  mode: "TEXT_PROMPTS"  # Options: PROMPT_FREE, TEXT_PROMPTS, VISUAL_PROMPTS
 
   text_prompts:
     base_vocabulary:
@@ -256,6 +263,10 @@ logging:
 performance:
   # Thread pool size for parallel inference
   thread_pool_size: 2
+  
+  # Number of CPU threads for NCNN/ONNX (OMP_NUM_THREADS)
+  # User requested: 3 cores for AI, 1 core for system
+  cpu_threads: 3
 
   # Frame queue size
   frame_queue_size: 2
