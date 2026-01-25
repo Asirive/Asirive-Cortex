@@ -67,21 +67,21 @@ def convert_model(config):
         }
         
         # Resolution logic (Per User Request)
-        if model_type == "yolo":
-            # Layer 0 (Normal YOLO): 320x320
-            export_kwargs["imgsz"] = 320
-        else:
-            # Layer 1 (YOLOE/Seg): 192x192 (Heavy model optimization)
-            export_kwargs["imgsz"] = 192
-            export_kwargs["int8"] = True  # Enable INT8 Quantization for Speed
-
+        # Using 256x256 as requested for optimized latency/accuracy balance
+        export_kwargs["imgsz"] = 256
+        
+        # Enable INT8 Quantization for NCNN (Speed)
+        # Note: 'int8=True' is not directly supported for NCNN export in this version of Ultralytics
+        # We rely on half=True (FP16) which is standard for RPi5
+            
         if fmt == "ncnn":
             exported_path = model.export(format="ncnn", **export_kwargs)
         elif fmt == "onnx":
-            # ONNX doesn't support 'int8' arg in ultra export, use dynamic=False and half=True
+            # ONNX doesn't support 'int8' arg in ultra export in the same way
             if "int8" in export_kwargs:
                 del export_kwargs["int8"]
             # Ensure opset is 12 for compatibility
+            export_kwargs["opset"] = 12
             export_kwargs["opset"] = 12
             exported_path = model.export(format="onnx", **export_kwargs)
         else:

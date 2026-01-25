@@ -10,6 +10,7 @@
 # SUPABASE CONFIGURATION
 # =====================================================
 supabase:
+  enabled: true  # Set to false to disable cloud sync entirely
   # Project Credentials (from https://supabase.com/dashboard/project/ziarxgoansbhesdypfic)
   url: "https://ziarxgoansbhesdypfic.supabase.co"
   anon_key: "sb_publishable_ErFxooa2JFiE8eXtd4hx3Q_Yll74lv_"
@@ -29,7 +30,7 @@ supabase:
 # LAYER 0: THE GUARDIAN (Safety-Critical Detection)
 # =====================================================
 layer0:
-  model_path: "models/converted/yolo26n_ncnn_model"  # YOLO v26n NCNN - safety-critical detection
+  model_path: "models/converted/yolo26n_ncnn_model"  # YOLO v26n NCNN - user requested
   framework: "ncnn"  # NCNN - ARM-optimized for RPi5
   device: "cpu"  # Options: 'cpu' (RPi), 'cuda' (laptop with GPU)
   confidence: 0.5  # Detection confidence threshold
@@ -46,6 +47,7 @@ layer0:
 # LAYER 1: THE LEARNER (Adaptive Context-Aware Detection)
 # =====================================================
 layer1:
+  enabled: false # Disabled for now as per user request
   # YOLO v26s-seg NCNN - Adaptive detection for RPi5 performance
   # YOLO v26s-seg ONNX (Prompt Free) - More stable than NCNN OpenVocab
   model_path: "models/converted/yoloe_26n_seg_pf/model.onnx"
@@ -265,8 +267,8 @@ performance:
   thread_pool_size: 2
   
   # Number of CPU threads for NCNN/ONNX (OMP_NUM_THREADS)
-  # User requested: 3 cores for AI, 1 core for system
-  cpu_threads: 3
+  # User requested: 6 threads (High Performance / Over-subscription)
+  cpu_threads: 6
 
   # Frame queue size
   frame_queue_size: 2
@@ -298,6 +300,14 @@ development:
 laptop_server:
   host: "192.168.0.171"  # Laptop IP address - UPDATE THIS for your network
   port: 8765
+
+# =====================================================
+# ZMQ VIDEO STREAMING CONFIGURATION
+# =====================================================
+zmq:
+  video_port: 5555  # Port for ZMQ video streaming (RPi5 -> Laptop)
+  topic_prefix: "cortex-video"  # Topic prefix for video frames
+  high_water_mark: 1  # Only keep latest frame (low latency)
 
 # =====================================================
 # HARDWARE SPECIFIC CONFIGURATIONS

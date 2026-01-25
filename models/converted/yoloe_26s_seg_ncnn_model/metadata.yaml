@@ -4,7 +4,7 @@ description: 'Ultralytics YOLOe-26s-seg model trained on {''train'': {''groundin
   {''img_path'': ''../datasets/Objects365v1/images/train'', ''json_file'': ''../datasets/Objects365v1/annotations/objects365_train_segm.json''}]},
   ''val'': {''yolo_data'': [''/home/louis/ultra_louis_work/datasets/lvis.yaml'']}}'
 author: Ultralytics
-date: '2026-01-24T00:31:40.362515'
+date: '2026-01-24T23:01:47.080037'
 version: 8.4.2
 license: AGPL-3.0 License (https://ultralytics.com/license)
 docs: https://docs.ultralytics.com
@@ -12,8 +12,8 @@ stride: 32
 task: segment
 batch: 1
 imgsz:
-- 192
-- 192
+- 256
+- 256
 names:
   0: '0'
   1: '1'

@@ -103,25 +103,24 @@ class FastAPIConnectionManager:
 
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}  # device_id -> websocket
-        self._lock = threading.Lock()
+        self._lock = asyncio.Lock()  # Use asyncio.Lock for async context
 
     async def connect(self, websocket: WebSocket, device_id: str):
-        """Accept and register new connection"""
-        await websocket.accept()
-        with self._lock:
+        """Register new connection (WebSocket already accepted by endpoint handler)"""
+        async with self._lock:
             self.active_connections[device_id] = websocket
         logger.info(f"Device connected: {device_id} (total: {len(self.active_connections)})")
 
     async def disconnect(self, device_id: str, reason: str = ""):
         """Unregister connection"""
-        with self._lock:
+        async with self._lock:
             if device_id in self.active_connections:
                 del self.active_connections[device_id]
         logger.info(f"Device disconnected: {device_id} - {reason}")
 
     async def send_message(self, device_id: str, message: BaseMessage) -> bool:
         """Send message to specific device"""
-        with self._lock:
+        async with self._lock:
             websocket = self.active_connections.get(device_id)
 
         if websocket:
@@ -136,7 +135,7 @@ class FastAPIConnectionManager:
     async def broadcast(self, message: BaseMessage):
         """Broadcast message to all connected devices"""
         disconnected = []
-        with self._lock:
+        async with self._lock:
             connected = list(self.active_connections.keys())
 
         for device_id in connected:
@@ -148,14 +147,14 @@ class FastAPIConnectionManager:
             await self.disconnect(device_id, "send_failed")
 
     def get_connected_devices(self) -> List[str]:
-        """Get list of connected device IDs"""
-        with self._lock:
-            return list(self.active_connections.keys())
+        """Get list of connected device IDs (sync method for convenience)"""
+        # Note: This is a sync method, safe because we're just reading the keys
+        return list(self.active_connections.keys())
 
     def get_connection_count(self) -> int:
-        """Get number of connections"""
-        with self._lock:
-            return len(self.active_connections)
+        """Get number of connections (sync method for convenience)"""
+        # Note: This is a sync method, safe because we're just reading length
+        return len(self.active_connections)
 
 
 # ============================================================================
@@ -169,39 +168,104 @@ class LaptopWebSocketServer(AsyncWebSocketServer):
     Integrates with FastAPI WebSocket for the actual transport.
     """
 
-    def __init__(self, config: Optional[ServerConfig] = None):
+    def __init__(self, config: Optional[ServerConfig] = None,
+                 on_video_frame: Optional[Callable] = None,
+                 on_metrics: Optional[Callable] = None,
+                 on_detection: Optional[Callable] = None,
+                 on_connect: Optional[Callable] = None,
+                 on_disconnect: Optional[Callable] = None):
         super().__init__(config)
-        self._connection_manager = _connection_manager
+        self._connection_manager = None  # Will be set when first client connects
+        self._websockets = {}  # Fix: Initialize storage for raw websockets
 
-        # Register default handlers
-        self.on_connect = self._default_on_connect
-        self.on_disconnect = self._default_on_disconnect
+        # Store callbacks
+        self._on_video_frame_cb = on_video_frame
+        self._on_metrics_cb = on_metrics
+        self._on_detection_cb = on_detection
+        self._on_connect_cb = on_connect
+        self._on_disconnect_cb = on_disconnect
 
-    async def _default_on_connect(self, client_id: str):
-        """Default connect handler - log and broadcast"""
+        # Register default handlers (that call our custom ones)
+        self.on_connect = self._handle_connect
+        self.on_disconnect = self._handle_disconnect
+
+    async def _handle_connect(self, client_id: str):
+        """Connect handler"""
         logger.info(f"Client connected: {client_id}")
-        # Could broadcast to other clients here
+        if self._on_connect_cb:
+            if asyncio.iscoroutinefunction(self._on_connect_cb):
+                await self._on_connect_cb(client_id)
+            else:
+                 self._on_connect_cb(client_id)
 
-    async def _default_on_disconnect(self, client_id: str, reason: str):
-        """Default disconnect handler - log"""
+    async def _handle_disconnect(self, client_id: str, reason: str):
+        """Disconnect handler"""
         logger.info(f"Client disconnected: {client_id} ({reason})")
+        if self._on_disconnect_cb:
+            if asyncio.iscoroutinefunction(self._on_disconnect_cb):
+                await self._on_disconnect_cb(client_id, reason)
+            else:
+                self._on_disconnect_cb(client_id, reason)
 
     async def _handle_video_frame(self, client_id: str, message: BaseMessage):
         """Handle incoming video frame"""
         data = message.data
-        # Could emit to GUI via signal here
-        logger.debug(f"Video frame from {client_id}: {data.get('width')}x{data.get('height')}")
+        if self._on_video_frame_cb:
+            try:
+                # Extract relevant data
+                frame_b64 = data.get("frame", "")
+                width = data.get("width", 640)
+                height = data.get("height", 480)
+                detections = data.get("detections", [])
+                
+                # Debug log
+                logger.debug(f"DEBUG: Processing VideoFrame on FastAPI Server. B64Size={len(frame_b64)}")
+                
+                frame_bytes = base64.b64decode(frame_b64)
+                logger.debug(f"DEBUG: Decoded Frame Bytes: {len(frame_bytes)}")
+                
+                # Call callback
+                if asyncio.iscoroutinefunction(self._on_video_frame_cb):
+                    await self._on_video_frame_cb(frame_bytes, width, height, detections)
+                else:
+                    self._on_video_frame_cb(frame_bytes, width, height, detections)
+                
+                logger.debug("DEBUG: VideoFrame callback executed successfully")
+                
+            except Exception as e:
+                logger.error(f"ERROR processing video frame: {e}")
+                logger.error(f"Traceback: {str(e)}")
+
 
     async def _handle_metrics(self, client_id: str, message: BaseMessage):
         """Handle incoming metrics"""
         data = message.data
         logger.debug(f"Metrics from {client_id}: FPS={data.get('fps')}")
+        # CRITICAL FIX: Call the metrics callback
+        if self._on_metrics_cb:
+            try:
+                if asyncio.iscoroutinefunction(self._on_metrics_cb):
+                    await self._on_metrics_cb(data)
+                else:
+                    self._on_metrics_cb(data)
+            except Exception as e:
+                logger.error(f"Error in metrics callback: {e}")
 
     async def _handle_detections(self, client_id: str, message: BaseMessage):
         """Handle incoming detections"""
         data = message.data
         detections = data.get("detections", [])
         logger.debug(f"Detections from {client_id}: {len(detections)} objects")
+        # CRITICAL FIX: Call the detections callback
+        if self._on_detection_cb:
+            try:
+                for det in detections:
+                    if asyncio.iscoroutinefunction(self._on_detection_cb):
+                        await self._on_detection_cb(det)
+                    else:
+                        self._on_detection_cb(det)
+            except Exception as e:
+                logger.error(f"Error in detection callback: {e}")
 
     # Abstract method implementations for FastAPI
 
@@ -215,6 +279,13 @@ class LaptopWebSocketServer(AsyncWebSocketServer):
 
     async def _send_to_client_impl(self, client_id: str, message: BaseMessage):
         """Send via FastAPI connection manager"""
+        # Fix: Add null safety check for connection manager
+        if self._connection_manager is None:
+            logger.warning(f"Connection manager not ready, cannot send to {client_id}")
+            return
+
+        # Fix: Also check if client_id is in the active connections
+        # The connection manager uses a lock internally, so we use its method
         await self._connection_manager.send_message(client_id, message)
 
     async def _close_websocket(self, websocket: Any):
@@ -246,9 +317,14 @@ async def websocket_endpoint(websocket: WebSocket, device_id: str):
     """WebSocket endpoint for RPi5 devices"""
     global _connection_manager, _server
 
+    logger.debug(f"WebSocket Connect Request from: {device_id} ({websocket.client.host if websocket.client else 'Unknown'})")
+
+    # Fix: Initialize connection manager if not exists (lazy initialization)
     if _connection_manager is None:
         _connection_manager = FastAPIConnectionManager()
+        logger.info(f"Created new connection manager")
 
+    # Fix: Initialize server if not exists - USE the globally set server if available
     if _server is None:
         config = get_default_laptop_config()
         server_config = ServerConfig(
@@ -257,10 +333,35 @@ async def websocket_endpoint(websocket: WebSocket, device_id: str):
             max_clients=config["server"].get("max_clients", 5),
         )
         _server = LaptopWebSocketServer(server_config)
+        # Fix: Set the connection manager on the server instance
+        _server._connection_manager = _connection_manager
+        logger.info("Created new server instance with connection manager")
+    else:
+        # Ensure the server's connection manager is synced with the global one
+        if _server._connection_manager is None and _connection_manager is not None:
+            _server._connection_manager = _connection_manager
+            logger.info("Synced server connection manager with global connection manager")
+        logger.debug(f"Using existing server instance, connection_manager ready: {_server._connection_manager is not None}")
 
-    # Register connection
-    await _connection_manager.connect(websocket, device_id)
-    _server.register_websocket(device_id, websocket)
+    # Register connection - Accept FIRST before any other operations
+    try:
+        await websocket.accept()
+        logger.info(f"WebSocket accepted for {device_id}")
+    except Exception as e:
+        logger.error(f"WebSocket Accept Failed for {device_id}: {e}")
+        raise
+
+    # Now register with connection manager and server
+    try:
+        await _connection_manager.connect(websocket, device_id)
+        _server.register_websocket(device_id, websocket)
+        # CRITICAL FIX: Call the _handle_connect to trigger the on_connect callback
+        await _server._handle_connect(device_id)
+        logger.info(f"WebSocket registered: {device_id} (total: {_connection_manager.get_connection_count()})")
+    except Exception as e:
+        logger.error(f"WebSocket Registration Failed for {device_id}: {e}")
+        await _connection_manager.disconnect(device_id, str(e))
+        raise
 
     try:
         # Handle messages
@@ -283,6 +384,7 @@ async def websocket_endpoint(websocket: WebSocket, device_id: str):
     finally:
         await _connection_manager.disconnect(device_id, "websocket_closed")
         _server.unregister_websocket(device_id)
+        logger.info(f"WebSocket cleanup complete for {device_id}")
 
 
 # ============================================================================
@@ -387,6 +489,11 @@ def get_connection_manager() -> Optional[FastAPIConnectionManager]:
     """Get the current connection manager"""
     return _connection_manager
 
+
+def set_server_instance(instance: LaptopWebSocketServer):
+    """Set the global server instance (used by dashboard)"""
+    global _server
+    _server = instance
 
 def reset_server():
     """Reset server state (for testing)"""

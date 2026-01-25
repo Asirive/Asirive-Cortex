@@ -35,10 +35,14 @@ from laptop.protocol import MessageType, BaseMessage
 logger = logging.getLogger(__name__)
 
 
+from laptop.server.video_receiver import VideoReceiver
+from laptop.layer1_service import Layer1Service
+import cv2
+
 class DashboardApplication:
     """
     Main dashboard application
-
+    
     Integrates WebSocket or FastAPI server with PyQt6 GUI using thread-safe signals.
     """
 
@@ -46,6 +50,7 @@ class DashboardApplication:
         """Initialize dashboard application"""
         self.config = config or default_config
         self.use_fastapi = use_fastapi
+        self._running = True  # Flag to track application state
 
         # Setup logging
         logging.basicConfig(
@@ -73,25 +78,99 @@ class DashboardApplication:
         self.server_thread = None
         self.loop = None
 
+        # Custom ZMQ Pipeline (Hybrid Architecture)
+        self.zmq_receiver = VideoReceiver(port=5555, on_frame=self._handle_zmq_frame)
+        self.layer1_service = Layer1Service()
+        self.layer1_service.on_result = self._handle_inference_result
+
         # Metrics history (for last update tracking)
         self.last_metrics = {}
 
         # FastAPI specific
         self.fastapi_server = None
 
+    def _handle_zmq_frame(self, frame_bgr):
+        """Handle raw frame from ZMQ (runs in ZMQ thread)"""
+        if not self._running:
+            return
+
+        try:
+            # 1. Feed to inference engine
+            self.layer1_service.process_frame(frame_bgr)
+            
+            # 2. Get latest inference results
+            # (Inference runs async, so we just grab what's available to keep video smooth)
+            # We need to map Layer1Service results format to UI format
+            # Service returns: { "data": [ {class, confidence, bbox...} ] }
+            # UI expects: [ {class, confidence, x1, y1...} ]
+            
+            # Since Layer1Service.on_result emits via signals separately,
+            # we can either draw them here OR rely on the separate signal.
+            # But UI draws detections ON TOP of the video frame.
+            # So we should attach them here if we want them sync-ish.
+            
+            # Ideally:
+            detections = self.layer1_service.latest_results # We need to access this property
+            # Wait, I didn't verify if I exposed `latest_results` in Layer1Service.
+            # I did: `self.latest_results = []` in __init__.
+            # But the on_result callback is for logging/broadcasting events.
+            
+            # Convert frame to bytes (JPG for UI loading)
+            # Qt loads from bytes.
+            # Convert BGR to RGB
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            h, w, ch = frame_rgb.shape
+            
+            # PyQt requires bytes or QImage. 
+            # Our signal `.emit(frame_data, width, height, detections)`
+            # In `start_dashboard.py` (legacy WS), `frame_data` was bytes.
+            # In `cortex_ui.py`, `load_image_from_bytes` uses `QImage.fromData` which expects encoded file (JPG/PNG) OR raw bytes if we handle it.
+            # The UI code: `image.loadFromData(data)`. This implies encoded image (JPG/PNG).
+            
+            # So we MUST encode to JPG here.
+            # This is CPU overhead on Laptop (fine).
+            ret, buffer = cv2.imencode('.jpg', frame_bgr)
+            if ret:
+                frame_bytes = buffer.tobytes()
+                logger.debug(f"UI: Emitting frame {len(frame_bytes)} bytes + {len(detections)} dets")
+
+                # Emit
+                self.signals.video_frame.emit(frame_bytes, w, h, detections)
+                logger.debug(f"[UI] video_frame signal emitted")
+            else:
+                 logger.error("Failed to encode frame for UI")
+                
+        except Exception as e:
+            logger.error(f"ZMQ Handler Error: {e}")
+
+    def _handle_inference_result(self, result: dict):
+        """Handle inference result from Layer1Service"""
+        # This is mainly for logging or sending to API
+        # UI overlays are handled in video_frame loop for sync
+        if not self._running:
+            return
+            
+        # Log to system log if interesting?
+        # Maybe just debug
+        # self.signals.system_log.emit(f"Layer 1: {len(result['data'])} detections", "INFO")
+        pass
+
     def _create_message_handler(self):
         """Create message handler for WebSocket server"""
         async def handle_message(websocket, message: BaseMessage):
             """Handle incoming message from RPi5"""
+            # Check if shutting down to avoid "wrapped C/C++ object deleted" errors
+            if not self._running:
+                return
+
             try:
                 if message.type == MessageType.VIDEO_FRAME.value:
-                    # Handle video frame
-                    frame_data = base64.b64decode(message.data.get("frame", ""))
-                    width = message.data.get("width", 640)
-                    height = message.data.get("height", 480)
-
-                    # Emit signal to GUI (thread-safe)
-                    self.signals.video_frame.emit(frame_data, width, height)
+                    # WebSocket Video (Legacy/Fallback)
+                    # Only process if ZMQ is NOT active or fails?
+                    # For now, allow both but they might fight on UI.
+                    # Hybrid Architecture implies ZMQ is primary.
+                    # If ZMQ is working, RPi should NOT be sending WS frames.
+                    pass 
 
                 elif message.type == MessageType.METRICS.value:
                     # Handle metrics
@@ -99,12 +178,15 @@ class DashboardApplication:
                     self.last_metrics = metrics
 
                     # Emit signal to GUI
-                    self.signals.metrics_update.emit(metrics)
+                    if self._running:
+                        self.signals.metrics_update.emit(metrics)
 
                     # Log to system
                     logger.debug(f"Metrics: FPS={metrics.get('fps', 0):.1f}, "
                                f"RAM={metrics.get('ram_percent', 0):.1f}%, "
                                f"CPU={metrics.get('cpu_percent', 0):.1f}%")
+                               
+                # ... (rest of messages same) ...
 
                 elif message.type == MessageType.DETECTIONS.value:
                     # Handle detection
@@ -114,7 +196,8 @@ class DashboardApplication:
                     confidence = detection.get("confidence", 0.0)
 
                     # Emit signal to GUI with dict
-                    self.signals.detection_log.emit(detection)
+                    if self._running:
+                        self.signals.detection_log.emit(detection)
 
                     logger.info(f"Detection: {class_name} ({confidence:.2f}) [{layer}]")
 
@@ -124,7 +207,8 @@ class DashboardApplication:
                     msg = message.data.get("message", "")
 
                     level = "INFO" if status == "connected" else "WARNING"
-                    self.signals.system_log.emit(f"RPi5 Status: {msg}", level)
+                    if self._running:
+                        self.signals.system_log.emit(f"RPi5 Status: {msg}", level)
 
                     logger.info(f"Status: {status} - {msg}")
 
@@ -135,7 +219,8 @@ class DashboardApplication:
                     layer = message.data.get("layer", "unknown")
 
                     log_msg = f"Audio [{event}]: {text} (routed to {layer})"
-                    self.signals.system_log.emit(log_msg, "INFO")
+                    if self._running:
+                        self.signals.system_log.emit(log_msg, "INFO")
 
                     logger.info(f"Audio Event: {log_msg}")
 
@@ -147,7 +232,8 @@ class DashboardApplication:
                     queue_size = message.data.get("upload_queue", 0)
 
                     log_msg = f"Memory [{event}]: Local={local_rows}, Synced={synced_rows}, Queue={queue_size}"
-                    self.signals.system_log.emit(log_msg, "INFO")
+                    if self._running:
+                        self.signals.system_log.emit(log_msg, "INFO")
 
                     logger.info(f"Memory Event: {log_msg}")
 
@@ -163,10 +249,15 @@ class DashboardApplication:
                     }
                     await websocket.send(json.dumps(pong_msg))
 
+            except RuntimeError:
+                # Ignore "wrapped C/C++ object deleted" errors during shutdown
+                pass
             except Exception as e:
-                logger.error(f"Error handling message: {e}")
-                self.signals.system_log.emit(f"Error: {str(e)}", "ERROR")
+                # Log other errors only if running
+                if self._running:
+                    logger.error(f"Error handling message: {e}")
 
+        # CRITICAL FIX: Return the handler function
         return handle_message
 
     def _create_connect_handler(self):
@@ -253,6 +344,11 @@ class DashboardApplication:
             # Connect UI Logic for Sending Commands
             self.signals.send_command.connect(self._handle_ui_command)
 
+            # Start ZMQ Pipeline (Hybrid Architecture)
+            logger.info("🚀 Starting ZMQ Video Receiver...")
+            self.zmq_receiver.start()
+            self.layer1_service.start()
+
             if self.use_fastapi:
                 # Start FastAPI server in background thread
                 self._run_fastapi_server()
@@ -270,17 +366,19 @@ class DashboardApplication:
             logger.info("Dashboard started")
             logger.info(f"   Server: {'FastAPI' if self.use_fastapi else 'WebSocket'}")
             logger.info(f"   Address: {self.config.ws_host}:{self.config.ws_port}")
+            logger.info(f"   ZMQ Receiver: 0.0.0.0:5555")
             logger.info(f"   GUI: {self.config.gui_width}x{self.config.gui_height}")
             logger.info("   Waiting for RPi5 connections...")
 
             mode_str = "FastAPI" if self.use_fastapi else "WebSocket"
             self.dashboard.on_system_log("Dashboard started successfully", "SUCCESS")
             self.dashboard.on_system_log(f"{mode_str} server listening on {self.config.ws_host}:{self.config.ws_port}", "INFO")
+            self.dashboard.on_system_log("ZMQ Receiver active on port 5555", "INFO")
             self.dashboard.on_system_log("Waiting for RPi5 connections...", "INFO")
 
             # Run Qt application
             return self.app.exec()
-
+        
         except Exception as e:
             logger.error(f"Error starting dashboard: {e}")
             return 1
@@ -297,7 +395,7 @@ class DashboardApplication:
 
         # Connect FastAPI signals to dashboard signals
         fastapi_signals.video_frame.connect(
-            lambda data, w, h, dets: self.signals.video_frame.emit(data, w, h)
+            lambda data, w, h, dets: self.signals.video_frame.emit(data, w, h, dets)
         )
         fastapi_signals.metrics_update.connect(self.signals.metrics_update.emit)
         fastapi_signals.detection_log.connect(self.signals.detection_log.emit)
@@ -306,21 +404,43 @@ class DashboardApplication:
         fastapi_signals.client_disconnected.connect(self.signals.client_disconnected.emit)
 
         def run_server():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            self.fastapi_loop = loop
+            # Standard blocking uvicorn run
+            import uvicorn
+            from laptop.server.fastapi_server import app, set_server_instance
+
+            # Setup the Logic Handler (with signals)
+            # We don't need to call .start() on it because Uvicorn drives the loop
+            # But we do need it initialized
+            from shared.api import ServerConfig
+            server_config = ServerConfig(
+                host=self.config.ws_host,
+                port=self.config.ws_port,
+                max_clients=self.config.ws_max_clients
+            )
 
             try:
+                logger.info(f"Initializing FastAPIServer logic handler")
                 self.fastapi_server = FastAPIServer(
-                    host=self.config.ws_host,
-                    port=self.config.ws_port,
+                    config=server_config,
                     on_video_frame=fastapi_signals.video_frame.emit,
                     on_metrics=fastapi_signals.metrics_update.emit,
                     on_detection=fastapi_signals.detection_log.emit,
                     on_connect=fastapi_signals.client_connected.emit,
                     on_disconnect=fastapi_signals.client_disconnected.emit
                 )
-                loop.run_until_complete(self.fastapi_server.start())
+
+                # Inject into FastAPI app global state
+                set_server_instance(self.fastapi_server)
+
+                logger.info(f"Launching Uvicorn on {self.config.ws_host}:{self.config.ws_port}")
+                uvicorn.run(
+                    app,
+                    host=self.config.ws_host,
+                    port=self.config.ws_port,
+                    log_level="info",
+                    ws_ping_interval=None, # We handle pings manually in shared protocol
+                    ws_ping_timeout=None
+                )
             except Exception as e:
                 logger.error(f"FastAPI server error: {e}")
 
@@ -334,6 +454,13 @@ class DashboardApplication:
     def stop(self):
         """Stop dashboard application"""
         logger.info("Stopping dashboard...")
+        self._running = False  # Signal threads to stop emitting
+        
+        # Stop ZMQ Pipeline
+        if self.zmq_receiver:
+            self.zmq_receiver.stop()
+        if self.layer1_service:
+            self.layer1_service.stop()
 
         # Stop FastAPI server
         if self.use_fastapi and self.fastapi_server:
@@ -356,57 +483,81 @@ class DashboardApplication:
         if self.dashboard:
             self.dashboard.close()
 
+    def _handle_local_command(self, cmd: dict):
+        """Handle local laptop commands"""
+        try:
+            action = cmd.get("action")
+            
+            if action == "SET_CONFIDENCE":
+                conf = float(cmd.get("confidence", 0.5))
+                if self.layer1_service:
+                    self.layer1_service.confidence = conf
+                    logger.info(f"🔧 Local Layer 1 Confidence set to {conf:.2f}")
+                    
+            elif action == "SET_MODEL":
+                model_name = cmd.get("model")
+                logger.info(f"🔧 Request to switch local model to {model_name}")
+                if self.layer1_service:
+                    self.layer1_service.set_model(model_name)
+                
+        except Exception as e:
+            logger.error(f"Error executing local command: {e}")
+
     def _handle_ui_command(self, cmd: dict):
         """Handle command from UI -> Broadcast to RPi5"""
+
+        # 1. Check for local target (Server Tab)
+        if cmd.get("target") == "local":
+            self._handle_local_command(cmd)
+            return
+
         from laptop.protocol import MessageType, BaseMessage
         import asyncio
-        
+
         # Wrap in BaseMessage
         message = BaseMessage(
             type=MessageType.COMMAND,
             data=cmd
         )
-        
+
         # Broadcast
         if self.use_fastapi and self.fastapi_server:
-            # FastAPI server broadcast is async, run in loop
-            # We are in UI thread here, so we need to schedule it
-            # Ideally use a queue, but for now run_coroutine_threadsafe if we have loop
-             # But FastAPI server runs in its own loop in a thread? 
-             # No, run_server creates a new loop.
-             pass # Logic complexity here: accessing separate thread loop
-             
-             # Actually, simpler:
-             # FastAPIServer.broadcast() is async.
-             # We need to find the loop it is running in.
-             # In _run_fastapi_server, we create a loop: `loop = asyncio.new_event_loop()`
-             # But we don't store it in self.loop (that's for legacy server).
-             # We should store existing loop.
-             pass
+            # FastAPI server runs in a separate thread with its own event loop
+            # We need to schedule the broadcast on that loop
+            # The FastAPI server's _connection_manager has the send_message method
+            # which is synchronous but we need to be careful about thread safety
 
-        if self.use_fastapi and self.fastapi_server:
-            # We need to locate the loop running the server
-            # Since _run_fastapi_server is a local scope `loop`, we can't access it easily unless we stored it.
-            # Let's fix _run_fastapi_server to store self.fastapi_loop
-            if hasattr(self, 'fastapi_loop') and self.fastapi_loop:
-                 asyncio.run_coroutine_threadsafe(
-                    self.fastapi_server.broadcast(message),
-                    self.fastapi_loop
+            # Get the connection manager from the server
+            connection_manager = getattr(self.fastapi_server, '_connection_manager', None)
+            if connection_manager:
+                # Use the connection manager directly (it's thread-safe via locks)
+                from shared.api import MessageType as MT
+                # Create a command message
+                cmd_msg = BaseMessage(
+                    type=MT.COMMAND,
+                    data=cmd
                 )
+                # Broadcast to all connected devices
+                connected_devices = connection_manager.get_connected_devices()
+                for device_id in connected_devices:
+                    # Schedule sending on the server's event loop
+                    try:
+                        # Run in the server's event loop if available
+                        loop = getattr(self.fastapi_server, '_loop', None) or asyncio.get_event_loop()
+                        asyncio.run_coroutine_threadsafe(
+                            connection_manager.send_message(device_id, cmd_msg),
+                            loop
+                        )
+                    except Exception as e:
+                        logger.warning(f"Could not send command to {device_id}: {e}")
             else:
-                logger.error("Cannot send command: FastAPI loop not accessible")
+                logger.warning("Connection manager not ready, cannot broadcast command")
 
         elif self.server and self.loop:
             asyncio.run_coroutine_threadsafe(
-                self.server.broadcast(message.to_json()), # Legacy server might expect string? No, checking logic
+                self.server.broadcast(message.to_json()),
                 self.loop
             )
-            # Legacy server .broadcast() method signature?
-            # It inherits from AsyncWebSocketServer. broadcast(message: str | BaseMessage).
-            # If base class, it expects BaseMessage object usually, or string?
-            # Let's check shared.api.AsyncWebSocketServer.broadcast
-            # It calls send_to_client_impl which usually takes BaseMessage if properly typed.
-            # But here let's assume valid.
 
 
 

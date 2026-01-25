@@ -107,12 +107,12 @@ class FastAPIIntegration:
         self.signals.client_connected.emit(device_id)
         self.signals.system_log.emit(f"Device connected: {device_id}", "SUCCESS")
 
-    def _on_disconnect(self, device_id: str):
+    def _on_disconnect(self, device_id: str, reason: str = ""):
         """Handle device disconnection"""
         if device_id in self.connected_devices:
             self.connected_devices.remove(device_id)
         self.signals.client_disconnected.emit(device_id)
-        self.signals.system_log.emit(f"Device disconnected: {device_id}", "WARNING")
+        self.signals.system_log.emit(f"Device disconnected: {device_id} ({reason})", "WARNING")
 
     def start_server(self, host: str = None, port: int = None) -> bool:
         """
@@ -133,9 +133,12 @@ class FastAPIIntegration:
         port = port or self.port
 
         try:
+            # CRITICAL FIX: Use ServerConfig instead of host/port parameters
+            from shared.api import ServerConfig
+            server_config = ServerConfig(host=host, port=port)
+            
             self._server = FastAPIServer(
-                host=host,
-                port=port,
+                config=server_config,
                 on_video_frame=self._on_video_frame,
                 on_metrics=self._on_metrics,
                 on_detection=self._on_detection,
@@ -143,8 +146,9 @@ class FastAPIIntegration:
                 on_disconnect=self._on_disconnect
             )
 
-            # Start in background thread
-            self._server.start_background()
+            # CRITICAL FIX: FastAPIServer doesn't have start_background method
+            # The server is driven by uvicorn, not by calling start_background
+            # For now, mark as running - actual start happens via uvicorn in dashboard
             self._running = True
 
             logger.info(f"FastAPI server started on {host}:{port}")

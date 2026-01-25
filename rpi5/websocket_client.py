@@ -136,22 +136,21 @@ class RPiWebSocketClient:
         try:
             async for message in self.websocket:
                 try:
-                try:
                     data = json.loads(message)
                     msg_type = data.get("type")
 
-                    # Handle PING
-                    if msg_type == MessageType.PING:
+                    # Handle PING (compare with .value for string comparison)
+                    if msg_type == MessageType.PING.value:
                         # Echo ping_id if present
                         ping_id = data.get("data", {}).get("ping_id")
                         await self._send_pong(self.device_id, 0.0, ping_id)
 
                     # Handle COMMAND (future)
-                    elif msg_type == MessageType.COMMAND:
+                    elif msg_type == MessageType.COMMAND.value:
                         logger.info(f"📥 Received command: {data.get('data')}")
 
                     # Handle CONFIG (future)
-                    elif msg_type == MessageType.CONFIG:
+                    elif msg_type == MessageType.CONFIG.value:
                         logger.info(f"📥 Received config update: {data.get('data')}")
 
                 except Exception as e:
