@@ -278,7 +278,6 @@ class ProductionToggle(QWidget):
                 background-color: {Theme.NEON_PURPLE};
                 border: 2px solid {Theme.NEON_PURPLE};
                 color: {Theme.TEXT_WHITE};
-                box-shadow: 0 0 15px {Theme.NEON_PURPLE};
             }}
         """)
         self.btn_toggle.clicked.connect(self._on_toggle)
@@ -315,10 +314,12 @@ class TopNavBar(GlassCard):
         
         # Tabs
         self.btn_overview = self._create_nav_btn("OVERVIEW", 0, True)
-        self.btn_testing = self._create_nav_btn("TESTING", 1)
-        self.btn_logs = self._create_nav_btn("LOGS", 2)
+        self.btn_server = self._create_nav_btn("SERVER", 1)  # New Tab
+        self.btn_testing = self._create_nav_btn("TESTING", 2)
+        self.btn_logs = self._create_nav_btn("LOGS", 3)
         
         layout.addWidget(self.btn_overview)
+        layout.addWidget(self.btn_server)
         layout.addWidget(self.btn_testing)
         layout.addWidget(self.btn_logs)
         layout.addStretch()
@@ -339,15 +340,19 @@ class TopNavBar(GlassCard):
         self.tab_changed.emit(index)
         # Update active state
         self.btn_overview.setProperty("active", "false")
+        self.btn_server.setProperty("active", "false")
         self.btn_testing.setProperty("active", "false")
         self.btn_logs.setProperty("active", "false")
         
         if index == 0: self.btn_overview.setProperty("active", "true")
-        elif index == 1: self.btn_testing.setProperty("active", "true")
-        elif index == 2: self.btn_logs.setProperty("active", "true")
+        elif index == 1: self.btn_server.setProperty("active", "true")
+        elif index == 2: self.btn_testing.setProperty("active", "true")
+        elif index == 3: self.btn_logs.setProperty("active", "true")
         
         self.style().unpolish(self.btn_overview)
         self.style().polish(self.btn_overview)
+        self.style().unpolish(self.btn_server)
+        self.style().polish(self.btn_server)
         self.style().unpolish(self.btn_testing)
         self.style().polish(self.btn_testing)
         self.style().unpolish(self.btn_logs)
@@ -658,6 +663,105 @@ class TestingWidget(QWidget):
         self.test_log.append(text)
 
 
+class ServerTab(QWidget):
+    """Server & Compute Control Tab (Hybrid Architecture)"""
+    send_command = pyqtSignal(dict) # Relay
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setSpacing(20)
+        
+        # === LEFT: Controls ===
+        ctrl_panel = GlassCard()
+        ctrl_layout = QVBoxLayout(ctrl_panel)
+        ctrl_layout.addWidget(QLabel("COMPUTE OFFLOAD CONTROLS", objectName="Title"))
+        
+        # 1. Service Status
+        status_row = QHBoxLayout()
+        self.lbl_service_status = QLabel("SERVICE: RUNNING")
+        self.lbl_service_status.setStyleSheet(f"color: {Theme.NEON_GREEN}; font-weight: bold;")
+        status_row.addWidget(self.lbl_service_status)
+        status_row.addStretch()
+        
+        self.btn_toggle_service = QPushButton("STOP SERVICE")
+        self.btn_toggle_service.setObjectName("StopBtn")
+        self.btn_toggle_service.clicked.connect(self._toggle_service)
+        status_row.addWidget(self.btn_toggle_service)
+        ctrl_layout.addLayout(status_row)
+        
+        # 2. Model Selection
+        ctrl_layout.addWidget(QLabel("Model Selection:"))
+        self.combo_model = QComboBox()
+        # Custom YOLOE models requested by User
+        self.combo_model.addItems([
+            "yoloe-26s-seg.pt", 
+            "yoloe-26s-seg-pf.pt", 
+            "yoloe-26n-seg.pt", 
+            "yoloe-26n-seg-pf.pt",
+            "yolov8n.pt" # Fallback
+        ])
+        self.combo_model.currentTextChanged.connect(self._change_model)
+        ctrl_layout.addWidget(self.combo_model)
+        
+        # 3. Confidence Threshold
+        ctrl_layout.addWidget(QLabel("Confidence Threshold:"))
+        self.lbl_conf = QLabel("0.50")
+        self.lbl_conf.setAlignment(Qt.AlignmentFlag.AlignRight)
+        
+        self.slider_conf = QProgressBar() # Hack for slider-like visual? No, use QSlider
+        # Actually QSlider is standard
+        from PyQt6.QtWidgets import QSlider
+        self.slider_conf = QSlider(Qt.Orientation.Horizontal)
+        self.slider_conf.setRange(0, 100)
+        self.slider_conf.setValue(50)
+        self.slider_conf.valueChanged.connect(lambda v: self._update_conf(v))
+        
+        conf_row = QHBoxLayout()
+        conf_row.addWidget(self.slider_conf)
+        conf_row.addWidget(self.lbl_conf)
+        ctrl_layout.addLayout(conf_row)
+        
+        ctrl_layout.addStretch()
+        layout.addWidget(ctrl_panel, 40)
+        
+        # === RIGHT: Local Logs ===
+        log_panel = GlassCard()
+        log_layout = QVBoxLayout(log_panel)
+        log_layout.addWidget(QLabel("INFERENCE SERVER LOGS", objectName="Title"))
+        
+        self.server_log = QTextEdit()
+        self.server_log.setReadOnly(True)
+        self.server_log.setStyleSheet(f"background-color: transparent; border: none; font-family: {Theme.FONT_MONO}; color: {Theme.NEON_PURPLE};")
+        log_layout.addWidget(self.server_log)
+        
+        layout.addWidget(log_panel, 60)
+
+    def _toggle_service(self):
+        # Implementation depends on tracking state
+        pass
+
+    def _change_model(self, model_name):
+        self.send_command.emit({
+            "target": "local",
+            "action": "SET_MODEL",
+            "model": model_name
+        })
+        self.server_log.append(f"> Requesting model switch: {model_name}")
+
+    def _update_conf(self, val):
+        conf = val / 100.0
+        self.lbl_conf.setText(f"{conf:.2f}")
+        self.send_command.emit({
+            "target": "local",
+            "action": "SET_CONFIDENCE",
+            "confidence": conf
+        })
+
+    def append_log(self, text):
+        self.server_log.append(text)
+
+
 class LogsWidget(QWidget):
     """Full Logs Tab"""
     def __init__(self, parent=None):
@@ -680,7 +784,7 @@ class LogsWidget(QWidget):
 # ============================================================================
 
 class DashboardSignals(QObject):
-    video_frame = pyqtSignal(bytes, int, int)
+    video_frame = pyqtSignal(bytes, int, int, list)
     metrics_update = pyqtSignal(dict)
     detection_log = pyqtSignal(dict)
     system_log = pyqtSignal(str, str)  # message, level
@@ -719,12 +823,17 @@ class CortexDashboard(QMainWindow):
         self.view_overview.send_command.connect(self.broadcast_command)
         self.stack.addWidget(self.view_overview)
         
-        # View 1: Testing
+        # View 1: Server (New)
+        self.view_server = ServerTab()
+        self.view_server.send_command.connect(self.broadcast_command)
+        self.stack.addWidget(self.view_server)
+        
+        # View 2: Testing
         self.view_testing = TestingWidget()
         self.view_testing.send_command.connect(self.broadcast_command)
         self.stack.addWidget(self.view_testing)
         
-        # View 2: Logs
+        # View 3: Logs
         self.view_logs = LogsWidget()
         self.stack.addWidget(self.view_logs)
         
@@ -747,9 +856,65 @@ class CortexDashboard(QMainWindow):
 
     # --- Slot Handlers ---
 
-    def on_video_frame(self, frame_data, w, h):
+    def on_video_frame(self, frame_data, w, h, detections):
+        logger.debug(f"[UI] on_video_frame received: {len(frame_data)} bytes, {w}x{h}, {len(detections)} detections")
         image = QImage.fromData(frame_data)
         if not image.isNull():
+            # Convert to RGB32 (ARGB) to allow painting
+            if image.format() != QImage.Format.Format_ARGB32:
+                 image = image.convertToFormat(QImage.Format.Format_ARGB32)
+
+            # Draw detections
+            painter = QPainter(image)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            
+            font = QFont(Theme.FONT_MONO, 12, QFont.Weight.Bold)
+            painter.setFont(font)
+
+            for det in detections:
+                # Normalize layer: protocol sends int (0, 1), UI expects string ("layer0", "layer1")
+                layer_raw = det.get("layer", "sys")
+                if isinstance(layer_raw, int):
+                    layer = f"layer{layer_raw}"
+                else:
+                    layer = layer_raw
+                
+                # Filter based on checkboxes
+                if layer == "layer0" and not self.view_overview.chk_bbox_l0.isChecked():
+                    continue
+                if layer == "layer1" and not self.view_overview.chk_bbox_l1.isChecked():
+                    continue
+
+                x1 = det.get("x1", 0)
+                y1 = det.get("y1", 0)
+                x2 = det.get("x2", 0)
+                y2 = det.get("y2", 0)
+                # Support both "class" (Layer1Service) and "class_name" (WebSocket protocol)
+                cls_name = det.get("class") or det.get("class_name", "unknown")
+                conf = det.get("confidence", 0.0)
+
+                # Color based on layer
+                color = QColor(Theme.NEON_RED) if layer == "layer0" else QColor(Theme.NEON_YELLOW)
+                
+                # Draw Box
+                pen = QPen(color, 3)
+                painter.setPen(pen)
+                painter.drawRect(x1, y1, x2-x1, y2-y1)
+
+                # Draw Label Background
+                label = f"{cls_name} {conf:.0%}"
+                fm = painter.fontMetrics()
+                rect_w = fm.horizontalAdvance(label) + 10
+                rect_h = fm.height() + 5
+                
+                painter.fillRect(x1, y1-rect_h, rect_w, rect_h, color)
+                
+                # Draw Label Text
+                painter.setPen(QColor(Theme.BG_MAIN))
+                painter.drawText(x1+5, y1-5, label)
+
+            painter.end()
+
             pixmap = QPixmap.fromImage(image)
             target = self.view_overview.video_frame
             target.setPixmap(pixmap.scaled(
@@ -768,9 +933,15 @@ class CortexDashboard(QMainWindow):
             self.view_overview.fps_spark.add_value(data["fps"])
 
     def on_detection(self, det):
-        cls = det.get("class", "unknown")
+        # Support both "class" (Layer1Service) and "class_name" (WebSocket protocol)
+        cls = det.get("class") or det.get("class_name", "unknown")
         conf = det.get("confidence", 0)
-        layer = det.get("layer", "sys")
+        # Normalize layer: protocol sends int (0, 1), UI expects string ("layer0", "layer1")
+        layer_raw = det.get("layer", "sys")
+        if isinstance(layer_raw, int):
+            layer = f"layer{layer_raw}"
+        else:
+            layer = layer_raw
         timestamp = datetime.now().strftime("%H:%M:%S")
         
         line = f"[{timestamp}] <{layer}> {cls} ({conf:.0%})"
@@ -798,13 +969,20 @@ class CortexDashboard(QMainWindow):
 
     def on_client_connected(self, addr):
         self.on_system_log(f"Client Connected: {addr}", "SUCCESS")
-        self.navbar.set_connection_status(True, addr)
-        self.view_overview.uptime_layer.start()
-        self.view_overview.uptime_cam.start()
+        # Fix: Ensure navbar and uptime widgets exist before updating
+        if hasattr(self, 'navbar') and self.navbar:
+            self.navbar.set_connection_status(True, addr)
+        if hasattr(self, 'view_overview') and self.view_overview:
+            if hasattr(self.view_overview, 'uptime_layer') and self.view_overview.uptime_layer:
+                self.view_overview.uptime_layer.start()
+            if hasattr(self.view_overview, 'uptime_cam') and self.view_overview.uptime_cam:
+                self.view_overview.uptime_cam.start()
 
     def on_client_disconnected(self, addr):
         self.on_system_log(f"Client Disconnected: {addr}", "WARNING")
-        self.navbar.set_connection_status(False)
+        # Fix: Ensure navbar exists before updating
+        if hasattr(self, 'navbar') and self.navbar:
+            self.navbar.set_connection_status(False)
         
 if __name__ == "__main__":
     app = QApplication(sys.argv)
