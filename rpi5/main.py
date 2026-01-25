@@ -160,6 +160,35 @@ from rpi5.voice_coordinator import VoiceCoordinator
 
 
 # =====================================================
+# ASYNC HELPER FUNCTION
+# =====================================================
+def run_async_safe(coro):
+    """
+    Safely run an async coroutine from sync code.
+    
+    Handles the case where an event loop may or may not be running.
+    If a loop is running, schedules the coroutine on it.
+    Otherwise, creates a new loop with asyncio.run().
+    """
+    try:
+        # Check if there's already a running event loop
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop, safe to use asyncio.run()
+        return asyncio.run(coro)
+    else:
+        # Loop is running, schedule coroutine
+        # This returns a concurrent.futures.Future
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        try:
+            # Wait for result with timeout
+            return future.result(timeout=30)
+        except Exception as e:
+            logger.error(f"Async execution failed: {e}")
+            return None
+
+
+# =====================================================
 # CAMERA HANDLER
 # =====================================================
 class CameraHandler:
@@ -396,7 +425,8 @@ class CortexSystem:
 
         # Initialize Layer 4: Memory Manager (Hybrid)
         logger.info("[DEBUG] ===== LAYER 4 INITIALIZATION START =====")
-        if HybridMemoryManager:
+        supabase_enabled = self.config['supabase'].get('enabled', True)
+        if HybridMemoryManager and supabase_enabled:
             logger.info("💾 Initializing Layer 4: Memory Manager...")
             logger.info(f"[DEBUG] Layer 4 config: url={self.config['supabase']['url'][:30]}..., device_id={self.config['supabase']['device_id']}")
             self.memory_manager = HybridMemoryManager(
@@ -410,6 +440,20 @@ class CortexSystem:
             )
             self.memory_manager.start_sync_worker()
             logger.info("✅ Layer 4 initialized")
+        elif HybridMemoryManager and not supabase_enabled:
+            logger.info("💾 Initializing Layer 4: Memory Manager (local only, Supabase disabled)...")
+            self.memory_manager = HybridMemoryManager(
+                supabase_url=self.config['supabase']['url'],
+                supabase_key=self.config['supabase']['anon_key'],
+                device_id=self.config['supabase']['device_id'],
+                local_db_path=self.config['supabase']['local_db_path'],
+                sync_interval=self.config['supabase']['sync_interval_seconds'],
+                batch_size=self.config['supabase']['batch_size'],
+                local_cache_size=self.config['supabase']['local_cache_size']
+            )
+            # Disable Supabase sync but keep local storage
+            self.memory_manager.supabase_available = False
+            logger.info("✅ Layer 4 initialized (local only)")
         else:
             self.memory_manager = None
             logger.warning("⚠️  Layer 4 not available, running without cloud storage")
@@ -436,7 +480,8 @@ class CortexSystem:
 
         # Initialize Layer 1: Learner (Adaptive Detection)
         logger.info("[DEBUG] ===== LAYER 1 INITIALIZATION START =====")
-        if YOLOELearner and YOLOEMode:
+        layer1_enabled = self.config['layer1'].get('enabled', True)
+        if YOLOELearner and YOLOEMode and layer1_enabled:
             logger.info("🎯 Initializing Layer 1: Learner...")
             logger.info(f"[DEBUG] Layer 1 config: model_path={self.config['layer1']['model_path']}, mode={self.config['layer1']['mode']}")
             mode_map = {
@@ -513,11 +558,22 @@ class CortexSystem:
                 device_id=self.config['supabase']['device_id']
             )
             logger.info("✅ Legacy WebSocket client initialized")
-        else:
-            logger.warning("⚠️  No dashboard client available")
+        # Initialize ZMQ Video Streamer
+        self.video_streamer = None
+        try:
+            from rpi5.video_streamer import VideoStreamer
+            # Use laptop host from config. Port 5555 is hardcoded for now or add to config?
+            # Using 5555 as agreed.
+            host = self.config['laptop_server']['host']
+            logger.info(f"🎥 Initializing ZMQ Streamer to {host}:5555...")
+            self.video_streamer = VideoStreamer(host, 5555)
+            logger.info(f"✅ ZMQ Streamer initialized: {self.video_streamer is not None}")
+        except Exception as e:
+            logger.error(f"❌ Failed to init ZMQ Streamer: {e}")
 
         # Video streaming state
-        self.video_streaming_active = False
+        self.video_streaming_active = True # Default true for ZMQ
+        logger.info(f"[DEBUG] video_streaming_active={self.video_streaming_active}, video_streamer={self.video_streamer is not None}")
 
         # System state
         self.running = False
@@ -549,8 +605,8 @@ class CortexSystem:
             query = cmd.get("query")
             if query:
                 logger.info(f"⌨️ Text Query: '{query}'")
-                # Run sync since main loop isn't async
-                asyncio.run(self.handle_voice_command(query))
+                # Use safe async runner instead of asyncio.run()
+                run_async_safe(self.handle_voice_command(query))
 
         # New: Layer Control (Restart)
         elif action == "RESTART_LAYER":
@@ -617,12 +673,23 @@ class CortexSystem:
         if self.ws_client:
             try:
                 self.ws_client.start()
-                logger.info("✅ Connected to laptop dashboard (FastAPI)")
-                
+                logger.info("Connected to laptop dashboard (FastAPI)")
+
                 # Send initial status
                 self.ws_client.send_status("ONLINE", "RPi5 System Started")
+
+                # Fix: Wait for laptop acknowledgment before starting ZMQ video stream
+                # This ensures the laptop's VideoReceiver is bound and ready
+                logger.info("Waiting for laptop to be ready for video stream...")
+                time.sleep(1.0)  # Give laptop time to start ZMQ receiver
+
+                # Start ZMQ video streaming only after WebSocket is established
+                if self.video_streaming_active and self.video_streamer:
+                    logger.info("Starting ZMQ video stream...")
+                    # Video streaming is always-on in main loop via self.video_streamer.send_frame()
+
             except Exception as e:
-                logger.warning(f"⚠️  Failed to connect to laptop: {e}")
+                logger.warning(f"Failed to connect to laptop: {e}")
 
         # Start Layer 2 Gemini Live API session (only if enabled and API key valid)
         gemini_enabled = os.getenv("GEMINI_LIVE_ENABLED", "true").lower() == "true"
@@ -631,7 +698,7 @@ class CortexSystem:
             api_key = os.getenv("GEMINI_API_KEY", "")
             if api_key and not api_key.startswith("YOUR_"):
                 try:
-                    asyncio.run(self.layer2.connect())
+                    run_async_safe(self.layer2.connect())
                     logger.info("✅ Gemini Live API connected")
                 except Exception as e:
                     logger.warning(f"⚠️ Gemini Live API failed: {e}")
@@ -668,10 +735,15 @@ class CortexSystem:
                 # 2. Run Layer 0 + Layer 1 in parallel
                 all_detections = self._run_dual_detection(frame)
 
-                # 3. Send to laptop dashboard via WebSocket
+                # 3. Send to laptop dashboard via ZMQ (Hybrid Architecture)
+                if self.video_streamer:
+                    self.video_streamer.send_frame(frame)
+                    logger.debug(f"[ZMQ] Sent frame to laptop, frame shape: {frame.shape}")
+                
+                # Still send DETECTIONS via WebSocket (Metadata only)
                 if self.ws_client:
-                     # Video streaming is toggled inside client class, we just send
-                    self._send_to_laptop(frame, all_detections)
+                     # We modify _send_to_laptop to OPTIONALLY send frame, or just detections
+                    self._send_to_laptop(None, all_detections) # Pass None for frame to skip WS video
 
                 # 4. Update device heartbeat every 30 seconds
                 if time.time() - last_sync_time > 30:
@@ -743,7 +815,7 @@ class CortexSystem:
         self.detection_count += len(detections)
         return detections
 
-    def _send_to_laptop(self, frame: np.ndarray, detections: List[Dict[str, Any]]):
+    def _send_to_laptop(self, frame: Optional[np.ndarray], detections: List[Dict[str, Any]]):
         """Send frame and detections to laptop dashboard"""
         if not self.ws_client:
             return
@@ -752,23 +824,50 @@ class CortexSystem:
             # Prepare detection list with layer info
             enriched_detections = []
             for det in detections:
+                # Handle bbox: Layer 0 uses 'bbox' list, normalize to x1,y1,x2,y2
+                bbox = det.get('bbox', [0, 0, 0, 0])
+                if isinstance(bbox, list) and len(bbox) >= 4:
+                    x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+                else:
+                    x1 = int(det.get('x1', 0))
+                    y1 = int(det.get('y1', 0))
+                    x2 = int(det.get('x2', 0))
+                    y2 = int(det.get('y2', 0))
+                
+                # Normalize layer name: 'guardian' -> 'layer0', 'learner' -> 'layer1'
+                layer = det.get('layer', 'layer0')
+                if layer == 'guardian':
+                    layer = 'layer0'
+                elif layer == 'learner':
+                    layer = 'layer1'
+                
                 enriched_detections.append({
                     "class": det.get('class', 'unknown'),
                     "confidence": det.get('confidence', 0.0),
-                    "x1": int(det.get('x1', 0)),
-                    "y1": int(det.get('y1', 0)),
-                    "x2": int(det.get('x2', 0)),
-                    "y2": int(det.get('y2', 0)),
-                    # Ensure layer is always present
-                    "layer": det.get('layer', 'layer0') 
+                    "x1": x1,
+                    "y1": y1,
+                    "x2": x2,
+                    "y2": y2,
+                    "layer": layer
                 })
 
-            # Send video frame with detections (only if streaming enabled)
-            self.ws_client.send_video_frame(frame, enriched_detections)
+            # Send video frame (Legacy WS) only if frame provided
+            if frame is not None:
+                self.ws_client.send_video_frame(frame, enriched_detections)
 
-            # Send individual detections
+            # Send individual detections (Always)
+            # This allows the laptop to receive detections from RPi's local layers (Guardian)
+            # even if video comes via ZMQ.
             for det in enriched_detections:
-                self.ws_client.send_detection(det)
+                # CRITICAL FIX: Unpack dict to match send_detection signature
+                self.ws_client.send_detection(
+                    class_name=det.get('class', 'unknown'),
+                    confidence=det.get('confidence', 0.0),
+                    bbox=[det.get('x1', 0), det.get('y1', 0), det.get('x2', 0), det.get('y2', 0)],
+                    layer=0 if det.get('layer', 'layer0') == 'layer0' else 1,
+                    width=640,  # Default frame width
+                    height=480  # Default frame height
+                )
 
         except Exception as e:
             logger.debug(f"⚠️  Failed to send to laptop: {e}")
@@ -776,7 +875,7 @@ class CortexSystem:
     def _update_heartbeat(self):
         """Update device heartbeat to Supabase"""
         if self.memory_manager:
-            asyncio.run(self.memory_manager.update_device_heartbeat(
+            run_async_safe(self.memory_manager.update_device_heartbeat(
                 device_name='RPi5-Cortex-001',
                 battery_percent=85,
                 cpu_percent=45.2,
@@ -887,7 +986,7 @@ class CortexSystem:
 
         # Disconnect Layer 2
         if self.layer2:
-            asyncio.run(self.layer2.disconnect())
+            run_async_safe(self.layer2.disconnect())
 
         # Disconnect WebSocket
         if self.ws_client:

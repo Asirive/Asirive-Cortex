@@ -456,12 +456,17 @@ class HybridMemoryManager:
         longitude: Optional[float] = None
     ):
         """
-        Update device heartbeat in Supabase
+        Update device heartbeat in Supabase (graceful degradation)
         """
+        # Guard clause: Skip if Supabase is disabled
+        if not self.supabase_available:
+            logger.debug("⏭️ Heartbeat skipped: Supabase disabled")
+            return
+            
         # Ensure client is initialized
-        if not self.supabase_client and self.supabase_available:
+        if not self.supabase_client:
              await self.init_supabase()
-             
+              
         # Guard clause: If still not available (failed init), exit
         if not self.supabase_client:
             return
@@ -483,7 +488,17 @@ class HybridMemoryManager:
 
             logger.debug(f"💓 Heartbeat updated: {device_name}")
         except Exception as e:
-            logger.warning(f"⚠️ Heartbeat skipped: {e}")
+            error_msg = str(e)
+            # Check for known non-critical errors (function overload ambiguity)
+            if 'PGRST203' in error_msg or 'could not choose' in error_msg.lower():
+                logger.warning("⚠️ Heartbeat skipped: Supabase function overload - fix database")
+                # Disable future attempts to avoid log spam
+                self.supabase_available = False
+            elif 'Event loop is closed' in error_msg:
+                # Suppress during shutdown
+                pass
+            else:
+                logger.warning(f"⚠️ Heartbeat skipped: {e}")
 
     def start_sync_worker(self):
         """Start background sync worker"""

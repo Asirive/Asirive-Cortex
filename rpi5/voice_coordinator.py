@@ -93,7 +93,14 @@ class VoiceCoordinator:
                 # Send to main system (async)
                 if self.on_command_detected:
                     try:
-                        asyncio.run(self._dispatch_command(text))
+                        # Use thread-safe async execution
+                        try:
+                            loop = asyncio.get_running_loop()
+                            # Loop is running, use run_coroutine_threadsafe
+                            asyncio.run_coroutine_threadsafe(self._dispatch_command(text), loop)
+                        except RuntimeError:
+                            # No running loop, safe to use asyncio.run()
+                            asyncio.run(self._dispatch_command(text))
                     except Exception as e:
                         logger.error(f"❌ Error dispatching command: {e}")
             else:

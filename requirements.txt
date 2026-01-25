@@ -49,6 +49,11 @@ silero-vad>=5.1.2           # Voice Activity Detection
 fastapi>=0.115.6            
 uvicorn[standard]>=0.34.0   
 websockets>=14.1            
+pyzmq>=26.0.0               # ZeroMQ for Video Stream
+imagezmq>=1.2.0             # ZMQ helper            
+
+# ===== Cloud Storage =====
+supabase>=2.3.4              # PostgreSQL + Storage for Layer 4 Memory
 
 # ===== Utilities =====
 pyyaml>=6.0.2               

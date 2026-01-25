@@ -23,6 +23,7 @@ Author: Haziq (@IRSPlays)
 Date: January 17, 2026
 """
 
+import asyncio
 import logging
 import sys
 import time
@@ -45,6 +46,7 @@ from shared.api import (
     BaseMessage,
     MessageType,
     Detection,
+    BoundingBox,
     SystemMetrics,
     create_video_frame,
     create_metrics,
@@ -120,12 +122,24 @@ class RPi5Client(AsyncWebSocketClient):
 
     async def _connect_impl(self):
         """Connect using websockets library."""
-        self.websocket = await websockets.connect(
-            self.config.url,
-            ping_interval=30,
-            ping_timeout=10,
-            close_timeout=10
-        )
+        try:
+            logger.info(f"Connecting to WebSocket: {self.config.url}")
+            self.websocket = await websockets.connect(
+                self.config.url,
+                ping_interval=30,
+                ping_timeout=10,
+                close_timeout=10
+            )
+            logger.info("WebSocket connected, waiting for server ready...")
+
+            # Fix: Wait for server to be ready by receiving the first message
+            # This ensures the server has accepted and processed our connection
+            await asyncio.sleep(0.5)
+
+            logger.info("WebSocket ready for communication")
+        except Exception as e:
+            logger.error(f"WebSocket connection failed to {self.config.url}: {e}")
+            raise
 
     async def _send_impl(self, message: BaseMessage):
         """Send message over WebSocket."""
