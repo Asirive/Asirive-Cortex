@@ -80,7 +80,11 @@ class DashboardApplication:
 
         # Custom ZMQ Pipeline (Hybrid Architecture)
         self.zmq_receiver = VideoReceiver(port=5555, on_frame=self._handle_zmq_frame)
-        self.layer1_service = Layer1Service()
+        self.layer1_service = Layer1Service(
+            model_path="models/yoloe-26x-seg-pf.pt",  # X-Large model - highest accuracy (~14 FPS)
+            device="cuda:0",
+            confidence=0.25
+        )
         self.layer1_service.on_result = self._handle_inference_result
 
         # Metrics history (for last update tracking)
@@ -144,16 +148,58 @@ class DashboardApplication:
             logger.error(f"ZMQ Handler Error: {e}")
 
     def _handle_inference_result(self, result: dict):
-        """Handle inference result from Layer1Service"""
-        # This is mainly for logging or sending to API
-        # UI overlays are handled in video_frame loop for sync
+        """Handle inference result from Layer1Service - broadcast to RPi5 devices"""
         if not self._running:
             return
-            
-        # Log to system log if interesting?
-        # Maybe just debug
-        # self.signals.system_log.emit(f"Layer 1: {len(result['data'])} detections", "INFO")
-        pass
+        
+        detections = result.get("data", [])
+        if not detections:
+            return
+        
+        # Log locally for debugging
+        logger.debug(f"Layer 1: {len(detections)} detections, broadcasting to RPi5")
+        
+        # Broadcast to connected RPi5 devices via WebSocket
+        if self.use_fastapi and self.fastapi_server:
+            try:
+                from shared.api import BaseMessage, MessageType
+                
+                # Create DETECTIONS message with source="laptop"
+                msg = BaseMessage(
+                    type=MessageType.DETECTIONS,
+                    data={
+                        "source": "laptop",
+                        "layer": "layer1",
+                        "detections": detections,
+                        "inference_time_ms": result.get("inference_time_ms", 0)
+                    }
+                )
+                
+                # Get connection manager and broadcast
+                connection_manager = getattr(self.fastapi_server, '_connection_manager', None)
+                if connection_manager and connection_manager.get_connection_count() > 0:
+                    import asyncio
+                    
+                    # Schedule broadcast on the event loop
+                    # The FastAPI server thread has its own event loop
+                    try:
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            asyncio.run_coroutine_threadsafe(
+                                connection_manager.broadcast(msg),
+                                loop
+                            )
+                        else:
+                            # Fallback: create new loop context
+                            asyncio.run(connection_manager.broadcast(msg))
+                    except RuntimeError:
+                        # No event loop in this thread, try new_event_loop
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(connection_manager.broadcast(msg))
+                        loop.close()
+            except Exception as e:
+                logger.debug(f"Error broadcasting laptop detections: {e}")
 
     def _create_message_handler(self):
         """Create message handler for WebSocket server"""
@@ -248,6 +294,41 @@ class DashboardApplication:
                         }
                     }
                     await websocket.send(json.dumps(pong_msg))
+
+                elif message.type == "LAYER1_QUERY":
+                    # Handle Layer 1 detection query from RPi5
+                    # RPi5 sends a frame, we run YOLOE inference and send back detections
+                    try:
+                        import base64
+                        import cv2
+                        import numpy as np
+                        
+                        frame_b64 = message.data.get("frame")
+                        if frame_b64 and self.layer1_service:
+                            # Decode frame
+                            frame_bytes = base64.b64decode(frame_b64)
+                            nparr = np.frombuffer(frame_bytes, np.uint8)
+                            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                            
+                            if frame is not None:
+                                # Run Layer 1 inference
+                                result = self.layer1_service.run_inference(frame)
+                                detections = result.get("data", [])
+                                
+                                # Send response back to RPi5
+                                response = {
+                                    "type": "LAYER1_RESPONSE",
+                                    "timestamp": datetime.utcnow().isoformat() + "Z",
+                                    "data": {
+                                        "detections": detections,
+                                        "inference_time_ms": result.get("inference_time_ms", 0),
+                                        "source": "laptop"
+                                    }
+                                }
+                                await websocket.send(json.dumps(response))
+                                logger.debug(f"LAYER1_QUERY: Sent {len(detections)} detections to RPi5")
+                    except Exception as e:
+                        logger.error(f"Error handling LAYER1_QUERY: {e}")
 
             except RuntimeError:
                 # Ignore "wrapped C/C++ object deleted" errors during shutdown

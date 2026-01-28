@@ -354,3 +354,104 @@ class IntentRouter:
         elif layer == "layer3":
             return "Layer 3: Guide (Navigation/Spatial Audio)"
         return "Unknown Layer"
+    
+    def route_with_flags(self, text: str) -> Dict[str, Any]:
+        """
+        Route a voice command and return detailed routing information.
+        
+        This method provides structured output for the voice pipeline,
+        including flags for which systems to use.
+        
+        Args:
+            text: Transcribed user command
+            
+        Returns:
+            Dict with:
+                - layer: Target layer ("layer1", "layer2", "layer3")
+                - use_layer0: Use YOLO NCNN on RPi5 (always True for layer1)
+                - use_layer1: Use YOLOE on Laptop via WebSocket
+                - use_gemini: Use Gemini API (vision or TTS)
+                - use_spatial_audio: Use 3D spatial audio for object localization
+                - query_type: "detection", "analysis", "navigation", "memory"
+                - description: Human-readable description
+        """
+        layer = self.route(text)
+        text_lower = text.lower().strip()
+        
+        # Default flags
+        result = {
+            "layer": layer,
+            "text": text,
+            "use_layer0": False,  # YOLO NCNN on RPi5
+            "use_layer1": False,  # YOLOE on Laptop
+            "use_gemini": False,  # Gemini API
+            "use_spatial_audio": False,  # 3D audio
+            "query_type": "unknown",
+            "description": self.get_layer_description(layer)
+        }
+        
+        # =================================================================
+        # Layer 1: Detection queries
+        # =================================================================
+        if layer == "layer1":
+            result["use_layer0"] = True  # Always use local YOLO
+            result["use_layer1"] = True  # Also use Laptop YOLOE for better accuracy
+            result["query_type"] = "detection"
+            
+            # Check for specific detection sub-types
+            if any(kw in text_lower for kw in ["what do you see", "what can you see", "what u see"]):
+                result["query_type"] = "detection_full"
+            elif any(kw in text_lower for kw in ["count", "how many"]):
+                result["query_type"] = "detection_count"
+            elif any(kw in text_lower for kw in ["identify", "what is this"]):
+                result["query_type"] = "detection_identify"
+        
+        # =================================================================
+        # Layer 2: Deep analysis queries (Gemini)
+        # =================================================================
+        elif layer == "layer2":
+            result["use_gemini"] = True
+            result["query_type"] = "analysis"
+            
+            # Check for specific analysis sub-types
+            if any(kw in text_lower for kw in ["read", "text", "sign", "label", "what does it say"]):
+                result["query_type"] = "analysis_ocr"
+            elif any(kw in text_lower for kw in ["describe", "explain", "tell me about"]):
+                result["query_type"] = "analysis_describe"
+            elif any(kw in text_lower for kw in ["is this safe", "should i", "can i"]):
+                result["query_type"] = "analysis_safety"
+        
+        # =================================================================
+        # Layer 3: Navigation and spatial audio
+        # =================================================================
+        elif layer == "layer3":
+            result["query_type"] = "navigation"
+            
+            # Check for spatial audio queries (object localization)
+            spatial_keywords = [
+                "where is", "where's", "locate", "find the",
+                "guide me to", "lead me to", "point me to",
+                "which direction", "which way"
+            ]
+            
+            if any(kw in text_lower for kw in spatial_keywords):
+                result["use_spatial_audio"] = True
+                result["use_layer0"] = True  # Need detection for object location
+                result["use_layer1"] = True
+                result["query_type"] = "navigation_spatial"
+            
+            # Check for memory queries
+            memory_keywords = ["remember", "save", "memorize", "store", "memory"]
+            if any(kw in text_lower for kw in memory_keywords):
+                result["query_type"] = "memory"
+            
+            # Check for GPS/location queries
+            location_keywords = ["where am i", "location", "gps", "navigate", "take me to"]
+            if any(kw in text_lower for kw in location_keywords):
+                result["query_type"] = "navigation_gps"
+        
+        logger.info(f"🎯 [ROUTER] Flags: L0={result['use_layer0']}, L1={result['use_layer1']}, "
+                   f"Gemini={result['use_gemini']}, Spatial={result['use_spatial_audio']}, "
+                   f"Type={result['query_type']}")
+        
+        return result

@@ -199,6 +199,33 @@ class RPi5Client(AsyncWebSocketClient):
         # Use parent's _handle_ping which sends PONG automatically
         await super()._handle_ping(message)
 
+    async def _handle_detections(self, message: BaseMessage):
+        """Handle DETECTIONS messages from laptop (Layer 1 GPU inference results)."""
+        data = message.data
+        source = data.get("source", "unknown")
+        
+        # Only process detections from laptop
+        if source == "laptop":
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            
+            detections = data.get("detections", [])
+            for det in detections:
+                # Handle different field names (class vs class_name)
+                cls = det.get("class", det.get("class_name", "unknown"))
+                conf = det.get("confidence", 0)
+                
+                # Handle both bbox list and individual x1,y1,x2,y2 keys
+                if "bbox" in det:
+                    bbox = det["bbox"]
+                    bbox_str = f"[{int(bbox[0])}, {int(bbox[1])}, {int(bbox[2])}, {int(bbox[3])}]"
+                elif "x1" in det:
+                    bbox_str = f"[{int(det['x1'])}, {int(det['y1'])}, {int(det['x2'])}, {int(det['y2'])}]"
+                else:
+                    bbox_str = "[?,?,?,?]"
+                
+                logger.info(f"[{timestamp}] <laptop> {cls} ({int(conf*100)}%) bbox={bbox_str}")
+
     # =========================================================================
     # Public API (RPi5-specific)
     # =========================================================================

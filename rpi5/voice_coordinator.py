@@ -47,8 +47,8 @@ class VoiceCoordinator:
             if not self.vad.load_model():
                 logger.error("❌ Failed to load VAD model")
                 
-            # Initialize Whisper (Base model for RPi5/Laptop balance)
-            self.stt = WhisperSTT(model_size="base")
+            # Initialize Whisper (Tiny model for fast RPi5 inference ~1s latency)
+            self.stt = WhisperSTT(model_size="tiny")
             if not self.stt.load_model():
                 logger.error("❌ Failed to load Whisper model")
                 

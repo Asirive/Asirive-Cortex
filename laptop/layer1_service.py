@@ -13,11 +13,17 @@ class Layer1Service:
     """
     Offloaded Layer 1 (Learner) running on Laptop GPU.
     Consumes frames from VideoReceiver and runs YOLOE inference.
+    
+    Optimizations:
+    - FP16 (half precision) for faster inference
+    - Explicit GPU placement
+    - cuDNN benchmark mode for optimal kernels
     """
-    def __init__(self, model_path: str = "yolov8n.pt", device: str = "cuda:0", confidence: float = 0.5):
+    def __init__(self, model_path: str = "yolov8n.pt", device: str = "cuda:0", confidence: float = 0.5, use_half: bool = True):
         self.model_path = model_path
         self.device = device if torch.cuda.is_available() else "cpu"
         self.confidence = confidence
+        self.use_half = use_half and (self.device != "cpu")  # FP16 only on GPU
         self.running = False
         self.model = None
         self.thread = None
@@ -31,15 +37,20 @@ class Layer1Service:
         self.on_result: Optional[Callable[[Dict], None]] = None
 
     def initialize(self):
-        """Load model"""
+        """Load model with GPU optimizations"""
         try:
             # Check for CUDA
             if torch.cuda.is_available():
                 self.device = "cuda:0"
                 gpu_name = torch.cuda.get_device_name(0)
-                logger.info(f"🚀 Using GPU: {gpu_name} (CUDA 12.8 Compatible)")
+                logger.info(f"🚀 Using GPU: {gpu_name} (CUDA {torch.version.cuda})")
+                
+                # Enable cuDNN benchmark for optimal convolution algorithms
+                torch.backends.cudnn.benchmark = True
+                logger.info("✅ cuDNN benchmark mode enabled")
             else:
                 self.device = "cpu"
+                self.use_half = False  # FP16 not supported on CPU
                 logger.warning("⚠️  CUDA not available, using CPU")
 
             logger.info(f"🚀 Loading Layer 1 Model: {self.model_path} on {self.device}")
@@ -60,7 +71,23 @@ class Layer1Service:
                  pass
             
             self.model = YOLO(self.model_path)
-            logger.info("✅ Model loaded successfully")
+            
+            # Explicitly move model to GPU (YOLOE loads on CPU by default)
+            if self.device != "cpu":
+                self.model.to(self.device)
+                logger.info(f"✅ Model moved to {self.device}")
+                
+                if self.use_half:
+                    logger.info("✅ FP16 (half precision) enabled - faster inference")
+            
+            # Warmup inference to initialize CUDA kernels
+            logger.info("🔥 Warming up model...")
+            import numpy as np
+            dummy_frame = np.zeros((640, 640, 3), dtype=np.uint8)
+            for _ in range(3):
+                self.model(dummy_frame, conf=self.confidence, device=self.device, verbose=False, half=self.use_half)
+            logger.info("✅ Model warmed up and ready")
+            
         except Exception as e:
             logger.error(f"❌ Failed to load model: {e}")
 
@@ -87,7 +114,7 @@ class Layer1Service:
         self.latest_frame = frame
 
     def _inference_loop(self):
-        """Continuous inference"""
+        """Continuous inference with GPU optimizations"""
         while self.running:
             if self.latest_frame is None:
                 time.sleep(0.01)
@@ -99,7 +126,8 @@ class Layer1Service:
                 start_t = time.time()
                 
                 start_time = time.time()
-                results = self.model(frame, conf=self.confidence, device=self.device, verbose=False) # Disable verbose Ultralytics logs
+                # Use half precision if enabled for faster inference
+                results = self.model(frame, conf=self.confidence, device=self.device, verbose=False, half=self.use_half)
                 inference_time = (time.time() - start_time) * 1000
                 
                 # logger.debug(f"Inf: {inference_time:.1f}ms | Dets: {len(results[0].boxes)}")
