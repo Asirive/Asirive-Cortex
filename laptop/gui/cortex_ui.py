@@ -952,7 +952,11 @@ class CortexDashboard(QMainWindow):
         sb = self.view_overview.det_log.verticalScrollBar()
         sb.setValue(sb.maximum())
         
-        # Visualize Bounding Box? 
+        # Also log laptop Layer 1 detections to Server tab
+        if layer == "layer1":
+            self.view_server.append_log(line)
+        
+        # Visualize Bounding Box?
         # (Would need to overlay on video_frame, requiring custom PaintEvent on QLabel or a canvas)
         # For now we just log.
 

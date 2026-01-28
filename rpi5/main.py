@@ -158,6 +158,37 @@ except ImportError:
 from rpi5.config.config import get_config
 from rpi5.voice_coordinator import VoiceCoordinator
 
+# =====================================================
+# IMPORT NEW VOICE PIPELINE HANDLERS
+# =====================================================
+try:
+    from rpi5.bluetooth_handler import BluetoothAudioManager
+    logger.info("[DEBUG] ✅ BluetoothAudioManager imported successfully")
+except ImportError as e:
+    logger.warning(f"[DEBUG] ⚠️ BluetoothAudioManager import failed: {e}")
+    BluetoothAudioManager = None
+
+try:
+    from rpi5.vision_query_handler import VisionQueryHandler
+    logger.info("[DEBUG] ✅ VisionQueryHandler imported successfully")
+except ImportError as e:
+    logger.warning(f"[DEBUG] ⚠️ VisionQueryHandler import failed: {e}")
+    VisionQueryHandler = None
+
+try:
+    from rpi5.tts_router import TTSRouter
+    logger.info("[DEBUG] ✅ TTSRouter imported successfully")
+except ImportError as e:
+    logger.warning(f"[DEBUG] ⚠️ TTSRouter import failed: {e}")
+    TTSRouter = None
+
+try:
+    from rpi5.layer3_guide.detection_aggregator import DetectionAggregator
+    logger.info("[DEBUG] ✅ DetectionAggregator imported successfully")
+except ImportError as e:
+    logger.warning(f"[DEBUG] ⚠️ DetectionAggregator import failed: {e}")
+    DetectionAggregator = None
+
 
 # =====================================================
 # ASYNC HELPER FUNCTION
@@ -644,9 +675,19 @@ class CortexSystem:
             logger.info("🎙️ PRODUCTION MODE: Enforcing VAD Always On")
             self.voice_coordinator.start()
             
-            # TODO: Enforce Bluetooth (requires shell/bluez)
-            logger.info("🎧 PRODUCTION MODE: Verifying Bluetooth Audio...")
-            # For now just log, real impl needs platform specific check
+            # Setup Bluetooth audio (CMF Buds 2 Plus)
+            logger.info("🎧 PRODUCTION MODE: Setting up Bluetooth Audio...")
+            if BluetoothAudioManager:
+                try:
+                    bt_manager = BluetoothAudioManager(device_name="CMF Buds")
+                    if bt_manager.connect_and_setup():
+                        logger.info("✅ Bluetooth audio connected and set as default")
+                    else:
+                        logger.warning("⚠️ Bluetooth audio setup failed - using default audio")
+                except Exception as e:
+                    logger.error(f"❌ Bluetooth setup error: {e}")
+            else:
+                logger.warning("⚠️ BluetoothAudioManager not available")
             
             # Update Layer 1 to use tighter thresholds?
             if self.layer1:
@@ -887,93 +928,184 @@ class CortexSystem:
 
     async def handle_voice_command(self, query: str):
         """
-        Handle voice command through routing system
+        Handle voice command through routing system with new voice pipeline.
+        
+        Pipeline:
+        1. VAD detects speech -> Whisper transcribes -> query arrives here
+        2. IntentRouter determines layer and flags
+        3. Execute appropriate handler (VisionQueryHandler, Gemini, etc.)
+        4. Aggregate detections if needed
+        5. Route to TTS (Gemini or Kokoro based on length)
         
         Args:
             query: User's voice command text
         """
-        # Ensure we are not missing frames
-        
         if not self.intent_router:
             logger.warning("⚠️  Intent router not available")
             return
 
         logger.info(f"🎤 Voice command: '{query}'")
 
-        # Route intent with context
-        target_layer = self.intent_router.route(query)
-        mode = self.intent_router.get_recommended_mode(query)
-
-        logger.info(f"🔀 Routed to: {target_layer} (mode: {mode})")
+        # Get routing with detailed flags
+        routing = self.intent_router.route_with_flags(query)
+        target_layer = routing["layer"]
+        
+        logger.info(f"🔀 Routed to: {target_layer} | L0={routing['use_layer0']}, "
+                   f"L1={routing['use_layer1']}, Gemini={routing['use_gemini']}, "
+                   f"Type={routing['query_type']}")
         
         # Notify dashboard of audio event
         if self.ws_client:
-            # We don't have send_audio_event on FastAPI client yet, implementing mock or assume extended
-            pass 
+            try:
+                # Send voice command event
+                pass  # TODO: Implement send_audio_event on FastAPI client
+            except Exception:
+                pass
 
         frame = self.camera.get_frame()
         if frame is None:
             logger.warning("⚠️  No frame available")
+            # Speak error via TTS
+            if TTSRouter:
+                tts = TTSRouter()
+                await tts.speak_async("I couldn't capture an image from the camera.")
             return
 
-        # Handle based on target layer
-        if target_layer == "layer1" and self.layer1:
-            # Switch mode if needed
-            if mode == "PROMPT_FREE":
-                # Assuming this method exists or logic is similar to set_mode
-                if hasattr(self.layer1, "switch_to_prompt_free"):
-                     self.layer1.switch_to_prompt_free()
-                elif hasattr(self.layer1, "set_mode"):
-                     self.layer1.set_mode("PROMPT_FREE")
-            elif mode == "VISUAL_PROMPTS":
-                # Would need visual prompts
-                pass
+        response = ""
 
-            # Run detection
-            detections = self.layer1.detect(frame)
-
-            # Generate response
-            if detections:
-                top_detection = detections[0]
-                response = f"I see a {top_detection['class']} with {top_detection['confidence']:.0%} confidence"
+        # =================================================================
+        # Layer 1: Detection queries ("what do you see")
+        # =================================================================
+        if target_layer == "layer1":
+            logger.info("🔍 Processing Layer 1 detection query...")
+            
+            # Run Layer 0 (YOLO NCNN) locally
+            layer0_detections = []
+            if routing["use_layer0"] and self.layer0:
+                try:
+                    layer0_result = self.layer0.detect(frame)
+                    layer0_detections = layer0_result if layer0_result else []
+                    logger.info(f"  Layer 0: {len(layer0_detections)} detections")
+                except Exception as e:
+                    logger.error(f"  Layer 0 error: {e}")
+            
+            # Request Layer 1 (YOLOE) from laptop via WebSocket
+            layer1_detections = []
+            if routing["use_layer1"] and self.ws_client:
+                try:
+                    # For now, use local layer1 if available (laptop integration via WS is async)
+                    # Full WS integration is in VisionQueryHandler
+                    if self.layer1:
+                        layer1_result = self.layer1.detect(frame)
+                        layer1_detections = layer1_result if layer1_result else []
+                        logger.info(f"  Layer 1: {len(layer1_detections)} detections")
+                except Exception as e:
+                    logger.error(f"  Layer 1 error: {e}")
+            
+            # Aggregate detections
+            if DetectionAggregator:
+                aggregator = DetectionAggregator(min_confidence=0.25)
+                if layer1_detections:
+                    merged = aggregator.merge_layers(layer0_detections, layer1_detections)
+                else:
+                    merged = aggregator.aggregate(layer0_detections, "layer0")
+                
+                response = aggregator.format_for_speech(merged)
+                logger.info(f"  Aggregated: {merged['total']} objects -> '{response}'")
             else:
-                response = "I don't see anything specific right now"
-
-            logger.info(f"✅ Response: {response}")
-
-            # Store to Supabase
+                # Fallback without aggregator
+                total = len(layer0_detections) + len(layer1_detections)
+                if total > 0:
+                    response = f"I see {total} objects."
+                else:
+                    response = "I don't see anything specific right now."
+            
+            # Speak via TTS
+            if TTSRouter and response:
+                tts = TTSRouter()
+                await tts.speak_async(response)
+            
+            # Store to memory
             if self.memory_manager:
                 await self.memory_manager.store_query(
                     user_query=query,
                     transcribed_text=query,
                     routed_layer=target_layer,
                     routing_confidence=0.95,
-                    detection_mode=mode,
+                    detection_mode=routing["query_type"],
                     ai_response=response
                 )
 
-        elif target_layer == "layer2" and self.layer2:
-            # Deep analysis with Gemini
-            try:
-                response = await self.layer2.send_query(query, frame)
-                logger.info(f"✅ Gemini response: {response}")
-
-                # Store to Supabase
-                if self.memory_manager:
-                    await self.memory_manager.store_query(
-                        user_query=query,
-                        transcribed_text=query,
-                        routed_layer=target_layer,
-                        routing_confidence=0.95,
-                        ai_response=response,
-                        tier_used='gemini_live'
-                    )
-            except Exception as e:
-                logger.error(f"❌ Layer 2 error: {e}")
+        # =================================================================
+        # Layer 2: Deep analysis queries ("explain what you see")
+        # =================================================================
+        elif target_layer == "layer2":
+            logger.info("🧠 Processing Layer 2 analysis query...")
+            
+            if routing["use_gemini"]:
+                try:
+                    # Use Gemini for vision analysis
+                    if self.layer2:
+                        response = await self.layer2.send_query(query, frame)
+                        logger.info(f"  Gemini response: {response[:100]}...")
+                    else:
+                        # Fallback to GeminiTTS vision handler
+                        try:
+                            from rpi5.layer2_thinker.gemini_tts_handler import GeminiTTS
+                            from PIL import Image
+                            
+                            gemini = GeminiTTS()
+                            pil_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                            response = gemini.generate_text_from_image(pil_image, query)
+                            
+                            if response:
+                                logger.info(f"  Gemini vision response: {response[:100]}...")
+                            else:
+                                response = "I couldn't analyze the scene."
+                        except Exception as e:
+                            logger.error(f"  Gemini vision error: {e}")
+                            response = "I encountered an error analyzing the scene."
+                    
+                    # Speak via TTS (route based on length)
+                    if TTSRouter and response:
+                        tts = TTSRouter()
+                        await tts.speak_async(response)
+                    
+                    # Store to memory
+                    if self.memory_manager:
+                        await self.memory_manager.store_query(
+                            user_query=query,
+                            transcribed_text=query,
+                            routed_layer=target_layer,
+                            routing_confidence=0.95,
+                            ai_response=response,
+                            tier_used='gemini'
+                        )
+                except Exception as e:
+                    logger.error(f"❌ Layer 2 error: {e}")
+                    response = "I encountered an error processing your request."
+                    if TTSRouter:
+                        tts = TTSRouter()
+                        await tts.speak_async(response)
         
+        # =================================================================
+        # Layer 3: Navigation and spatial audio
+        # =================================================================
         elif target_layer == "layer3":
-             # Route to Layer 3 (Navigation/Guide)
-             pass 
+            logger.info("🧭 Processing Layer 3 navigation query...")
+            
+            if routing["use_spatial_audio"]:
+                # TODO: Implement spatial audio for object localization
+                response = "Spatial audio navigation is coming soon."
+            else:
+                # TODO: Implement GPS/navigation
+                response = "Navigation features are coming soon."
+            
+            if TTSRouter and response:
+                tts = TTSRouter()
+                await tts.speak_async(response)
+        
+        logger.info(f"✅ Voice command processed: '{response[:50]}...'" if len(response) > 50 else f"✅ Voice command processed: '{response}'")
 
     def stop(self):
         """Graceful shutdown"""

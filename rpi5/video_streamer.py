@@ -77,13 +77,18 @@ class VideoStreamer:
         
         Message format: [4-byte topic length][topic bytes][jpeg data]
         This avoids the CONFLATE + multipart crash bug.
+        
+        Frames are resized to 1600x900 for bandwidth savings (~31% fewer pixels).
         """
         if not self.connected:
             return False
             
         try:
+            # Resize to 1600x900 for bandwidth savings (~31% fewer pixels vs 1920x1080)
+            frame_resized = cv2.resize(frame, (1600, 900), interpolation=cv2.INTER_AREA)
+            
             # Compress to JPEG
-            ret, jpg_buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+            ret, jpg_buffer = cv2.imencode('.jpg', frame_resized, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
             
             if not ret:
                 logger.warning("[ZMQ-TX] Failed to encode frame to JPEG")

@@ -238,6 +238,11 @@ class YOLOGuardian:
                                 'layer': 'guardian'
                             }
                             detections.append(detection)
+                            
+                            # Log detection with timestamp
+                            from datetime import datetime
+                            ts = datetime.now().strftime("%H:%M:%S")
+                            logger.info(f"[{ts}] <layer0> {class_name} ({int(conf_score*100)}%) bbox=[{int(bbox[0])}, {int(bbox[1])}, {int(bbox[2])}, {int(bbox[3])}]")
 
                             # Store to memory manager (Supabase + local SQLite)
                             if self.memory_manager:
