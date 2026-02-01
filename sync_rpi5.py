@@ -37,11 +37,47 @@ except ImportError:
     # If paramiko is missing, we can try to install it or just warn
     # print("Paramiko not found. Install with: pip install paramiko scp")
 
-# Configuration
-RPI_HOST_IP = "192.168.0.92"
-RPI_USER = "cortex"
+def load_rpi_config():
+    """Load RPi5 configuration from config.yaml."""
+    import yaml
+    from pathlib import Path
+    
+    config_paths = [
+        Path(__file__).parent / "rpi5" / "config" / "config.yaml",
+        Path(__file__).parent.parent / "ProjectCortex" / "rpi5" / "config" / "config.yaml",
+    ]
+    
+    for config_path in config_paths:
+        if config_path.exists():
+            try:
+                with open(config_path, 'r') as f:
+                    config = yaml.safe_load(f)
+                
+                rpi_config = config.get('rpi5_device', {})
+                return {
+                    'host': rpi_config.get('host', '10.226.221.31'),
+                    'user': rpi_config.get('user', 'cortex'),
+                    'path': rpi_config.get('path', '/home/cortex/ProjectCortex'),
+                }
+            except Exception as e:
+                print(f"Warning: Could not load config from {config_path}: {e}")
+    
+    # Fallback to defaults
+    print("Warning: Could not load config.yaml, using defaults")
+    return {
+        'host': '10.226.221.31',
+        'user': 'cortex',
+        'path': '/home/cortex/ProjectCortex',
+    }
+
+# Load configuration from config.yaml
+_rpi_config = load_rpi_config()
+
+# Configuration (loaded from config.yaml or defaults)
+RPI_HOST_IP = _rpi_config['host']
+RPI_USER = _rpi_config['user']
 RPI_HOST = f"{RPI_USER}@{RPI_HOST_IP}"
-RPI_PATH = "/home/cortex/ProjectCortex"
+RPI_PATH = _rpi_config['path']
 LAPTOP_PATH = os.path.dirname(os.path.abspath(__file__))
 
 # Get password from environment or prompt

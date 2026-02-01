@@ -108,6 +108,23 @@ class YOLOGuardian:
             if hasattr(self.model, 'predictor'):
                  logger.info(f"   Predictor: {type(self.model.predictor)}")
             
+            # DEBUG: Log loaded class names to verify metadata.yaml was read
+            if hasattr(self.model, 'names') and self.model.names:
+                names_dict = self.model.names
+                logger.info(f"   Class names loaded: {len(names_dict)} classes")
+                # Show first 5 and last 5 to verify full COCO vocabulary
+                first_5 = [f"{k}:{v}" for k, v in list(names_dict.items())[:5]]
+                last_5 = [f"{k}:{v}" for k, v in list(names_dict.items())[-5:]]
+                logger.info(f"   First 5: {first_5}")
+                logger.info(f"   Last 5: {last_5}")
+                
+                # CRITICAL: Check if we only have 'person' (metadata.yaml missing)
+                if len(names_dict) <= 1:
+                    logger.error(f"   ❌ ONLY {len(names_dict)} class(es) loaded! metadata.yaml may be missing!")
+                    logger.error(f"   Expected 80 COCO classes. Check: {model_path}/metadata.yaml")
+            else:
+                logger.error("   ❌ Model has NO 'names' attribute - class labels will be wrong!")
+            
         except Exception as e:
             logger.error(f"❌ Failed to load YOLO11n-NCNN: {e}")
             raise
@@ -197,7 +214,12 @@ class YOLOGuardian:
                 if result.boxes is not None:
                     for box in result.boxes:
                         class_id = int(box.cls[0])
-                        class_name = result.names[class_id]
+                        # Defensive lookup with fallback if class_id not in names
+                        if class_id in result.names:
+                            class_name = result.names[class_id]
+                        else:
+                            logger.warning(f"⚠️ Unknown class_id {class_id}, names dict has {len(result.names)} entries")
+                            class_name = f"class_{class_id}"
                         conf_score = float(box.conf[0])
                         bbox = box.xyxy[0].cpu().numpy()  # [x1, y1, x2, y2]
                         
@@ -239,10 +261,10 @@ class YOLOGuardian:
                             }
                             detections.append(detection)
                             
-                            # Log detection with timestamp
+                            # Log detection at DEBUG level (status display shows summary)
                             from datetime import datetime
                             ts = datetime.now().strftime("%H:%M:%S")
-                            logger.info(f"[{ts}] <layer0> {class_name} ({int(conf_score*100)}%) bbox=[{int(bbox[0])}, {int(bbox[1])}, {int(bbox[2])}, {int(bbox[3])}]")
+                            logger.debug(f"[{ts}] <layer0> {class_name} ({int(conf_score*100)}%) bbox=[{int(bbox[0])}, {int(bbox[1])}, {int(bbox[2])}, {int(bbox[3])}]")
 
                             # Store to memory manager (Supabase + local SQLite)
                             if self.memory_manager:

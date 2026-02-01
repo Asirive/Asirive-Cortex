@@ -38,20 +38,55 @@ import cv2
 import numpy as np
 import yaml
 import psutil
+from collections import Counter
+
+# Rich library for interactive status display
+try:
+    from rich.console import Console
+    from rich.live import Live
+    from rich.text import Text
+    from rich.panel import Panel
+    from rich.logging import RichHandler
+    RICH_AVAILABLE = True
+except ImportError:
+    RICH_AVAILABLE = False
+    RichHandler = None
 
 # Create logs directory if it doesn't exist
 logs_dir = Path('logs')
 logs_dir.mkdir(exist_ok=True)
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('logs/cortex.log'),
-        logging.StreamHandler()
-    ]
-)
+# Create shared Rich console for both logging and Live display
+# This prevents logging from interfering with the Live panel
+_rich_console = Console() if RICH_AVAILABLE else None
+
+# Configure logging with RichHandler to prevent interference with Live display
+if RICH_AVAILABLE and RichHandler:
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(message)s',  # RichHandler handles formatting
+        datefmt='[%X]',
+        handlers=[
+            logging.FileHandler('logs/cortex.log'),
+            RichHandler(
+                console=_rich_console,
+                show_time=True,
+                show_path=False,
+                rich_tracebacks=True,
+                tracebacks_show_locals=False
+            )
+        ]
+    )
+else:
+    # Fallback if Rich not available
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.FileHandler('logs/cortex.log'),
+            logging.StreamHandler()
+        ]
+    )
 logger = logging.getLogger(__name__)
 
 # Add rpi5 to path
@@ -155,7 +190,7 @@ except ImportError:
 # CONFIGURATION
 # =====================================================
 # Use the config module
-from rpi5.config.config import get_config
+from rpi5.config.config import get_config, load_config
 from rpi5.voice_coordinator import VoiceCoordinator
 
 # =====================================================
@@ -217,6 +252,234 @@ def run_async_safe(coro):
         except Exception as e:
             logger.error(f"Async execution failed: {e}")
             return None
+
+
+# =====================================================
+# INTERACTIVE STATUS DISPLAY
+# =====================================================
+class StatusDisplay:
+    """
+    Interactive status panel for real-time detection display.
+    
+    Uses Rich library for in-place terminal updates.
+    Shows: Mode, FPS, Layer 0 detections, Layer 1 detections (multi-line).
+    
+    Thread-safe for use across camera, detection, and main loops.
+    """
+    
+    _instance = None  # Singleton instance
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+    
+    def __init__(self):
+        if self._initialized:
+            return
+        self._initialized = True
+        
+        self._lock = threading.Lock()
+        
+        # Detection state
+        self._l0_count = 0
+        self._l0_classes = []
+        self._l0_latency = 0.0
+        self._l1_count = 0
+        self._l1_classes = []
+        self._l1_latency = 0.0
+        self._fps = 0.0
+        self._mode = "DEV"
+        
+        # Rich console and live display - use shared console to prevent logging interference
+        self._console = _rich_console  # Use the module-level shared console
+        self._live = None
+        self._started = False
+        self._enabled = RICH_AVAILABLE
+        
+        if not RICH_AVAILABLE:
+            logger.warning("Rich library not available, using fallback status display")
+    
+    def start(self):
+        """Start the live status display."""
+        if not self._enabled or self._started:
+            return
+        
+        try:
+            self._live = Live(
+                self._render(),
+                console=self._console,
+                refresh_per_second=4,
+                transient=False,
+                vertical_overflow="visible"
+            )
+            self._live.start()
+            self._started = True
+            logger.info("Interactive status display started")
+        except Exception as e:
+            logger.warning(f"Failed to start Rich live display: {e}")
+            self._enabled = False
+    
+    def stop(self):
+        """Stop the live status display."""
+        if self._live and self._started:
+            try:
+                self._live.stop()
+                self._started = False
+            except Exception:
+                pass
+    
+    def update_layer0(self, detections: List[Dict], latency_ms: float = 0.0):
+        """Update Layer 0 detection info (thread-safe)."""
+        with self._lock:
+            self._l0_count = len(detections)
+            self._l0_classes = [d.get('class', 'unknown') for d in detections]
+            self._l0_latency = latency_ms
+        self._refresh()
+    
+    def update_layer1(self, detections: List[Dict], latency_ms: float = 0.0):
+        """Update Layer 1 detection info (thread-safe)."""
+        with self._lock:
+            self._l1_count = len(detections)
+            self._l1_classes = [d.get('class', 'unknown') for d in detections]
+            self._l1_latency = latency_ms
+        self._refresh()
+    
+    def update_fps(self, fps: float):
+        """Update FPS display (thread-safe)."""
+        with self._lock:
+            self._fps = fps
+        self._refresh()
+    
+    def update_mode(self, mode: str):
+        """Update mode display (thread-safe)."""
+        with self._lock:
+            self._mode = mode
+        self._refresh()
+    
+    def _format_classes(self, classes: List[str], max_show: int = 8) -> str:
+        """
+        Format class list with grouping.
+        
+        Example: ['person', 'person', 'car', 'dog', 'cat'] 
+              -> 'person x2, car, dog, cat'
+        """
+        if not classes:
+            return "none"
+        
+        counts = Counter(classes)
+        items = []
+        
+        for cls, count in counts.most_common(max_show):
+            if count > 1:
+                items.append(f"{cls} x{count}")
+            else:
+                items.append(cls)
+        
+        remaining = len(counts) - max_show
+        if remaining > 0:
+            items.append(f"+{remaining} more")
+        
+        return ", ".join(items)
+    
+    def _render(self):
+        """Render the multi-line status panel."""
+        with self._lock:
+            # Format classes with more items shown
+            l0_str = self._format_classes(self._l0_classes, max_show=5)
+            l1_str = self._format_classes(self._l1_classes, max_show=8)
+            
+            # Build status text with colors
+            if RICH_AVAILABLE:
+                from rich.table import Table
+                
+                # Create a compact table for the status
+                table = Table.grid(padding=(0, 2))
+                table.add_column(justify="left")
+                table.add_column(justify="left")
+                table.add_column(justify="left")
+                
+                # Row 1: Mode and FPS
+                mode_color = "green" if self._mode == "PRODUCTION" else "yellow"
+                fps_color = "green" if self._fps >= 10 else "yellow" if self._fps >= 5 else "red"
+                
+                row1 = Text()
+                row1.append(f"[{self._mode}]", style=f"bold {mode_color}")
+                row1.append("  FPS: ", style="bold")
+                row1.append(f"{self._fps:.1f}", style=f"bold {fps_color}")
+                row1.append(f"  |  L0: {self._l0_latency:.0f}ms  L1: {self._l1_latency:.0f}ms", style="dim")
+                
+                # Row 2: Layer 0 detections
+                row2 = Text()
+                row2.append("L0 Guardian: ", style="bold cyan")
+                row2.append(f"{self._l0_count}", style="bold white")
+                if self._l0_count > 0:
+                    row2.append(f" ({l0_str})", style="cyan")
+                else:
+                    row2.append(" (none)", style="dim")
+                
+                # Row 3: Layer 1 detections
+                row3 = Text()
+                row3.append("L1 Learner:  ", style="bold magenta")
+                row3.append(f"{self._l1_count}", style="bold white")
+                if self._l1_count > 0:
+                    row3.append(f" ({l1_str})", style="magenta")
+                else:
+                    row3.append(" (none)", style="dim")
+                
+                table.add_row(row1)
+                table.add_row(row2)
+                table.add_row(row3)
+                
+                return Panel(
+                    table,
+                    title="[bold white]ProjectCortex Status[/bold white]",
+                    border_style="blue",
+                    padding=(0, 1)
+                )
+            else:
+                # Fallback plain text
+                return f"[{self._mode}] L0: {self._l0_count} ({l0_str}) | L1: {self._l1_count} ({l1_str}) | FPS: {self._fps:.1f}"
+    
+    def _refresh(self):
+        """Refresh the status display."""
+        if not self._enabled or not self._started or not self._live:
+            return
+        
+        try:
+            self._live.update(self._render())
+        except Exception:
+            pass  # Ignore refresh errors
+    
+    def print_above(self, message: str, style: str = None):
+        """Print a message above the status line (for important logs)."""
+        if self._console and self._started:
+            try:
+                if style:
+                    self._console.print(message, style=style)
+                else:
+                    self._console.print(message)
+            except Exception:
+                print(message)
+        else:
+            print(message)
+
+
+# Global status display instance
+_status_display: Optional[StatusDisplay] = None
+
+def get_status_display() -> Optional[StatusDisplay]:
+    """Get the global status display instance."""
+    global _status_display
+    return _status_display
+
+def init_status_display() -> StatusDisplay:
+    """Initialize and return the global status display."""
+    global _status_display
+    if _status_display is None:
+        _status_display = StatusDisplay()
+    return _status_display
 
 
 # =====================================================
@@ -602,8 +865,8 @@ class CortexSystem:
         except Exception as e:
             logger.error(f"❌ Failed to init ZMQ Streamer: {e}")
 
-        # Video streaming state
-        self.video_streaming_active = True # Default true for ZMQ
+        # Video streaming state - only active if streamer was successfully initialized
+        self.video_streaming_active = (self.video_streamer is not None)  # CRITICAL FIX: Check if streamer exists
         logger.info(f"[DEBUG] video_streaming_active={self.video_streaming_active}, video_streamer={self.video_streamer is not None}")
 
         # System state
@@ -613,9 +876,16 @@ class CortexSystem:
         # Initialize Voice Coordinator
         self.voice_coordinator = VoiceCoordinator(on_command_detected=self.handle_voice_command)
         self.voice_coordinator.initialize()
+        
+        # Initialize Bluetooth Manager (will be connected in start() if configured)
+        self.bt_manager = None
 
         # Start Time for Uptime
         self.start_time = time.time()
+
+        # Initialize interactive status display
+        self.status_display = init_status_display()
+        logger.info("📊 Interactive status display initialized")
 
         logger.info("✅ ProjectCortex v2.0 initialized successfully")
 
@@ -670,24 +940,30 @@ class CortexSystem:
         """Set system operation mode"""
         logger.info(f"🔄 Switching to Mode: {mode}")
         
+        # Update status display
+        if self.status_display:
+            self.status_display.update_mode(mode)
+        
         if mode == "PRODUCTION":
-            # Enable VAD (Always On)
-            logger.info("🎙️ PRODUCTION MODE: Enforcing VAD Always On")
-            self.voice_coordinator.start()
+            # Enable VAD (Always On) - only if not already started
+            if not self.voice_coordinator.is_listening:
+                logger.info("🎙️ PRODUCTION MODE: Enforcing VAD Always On")
+                self.voice_coordinator.start()
             
-            # Setup Bluetooth audio (CMF Buds 2 Plus)
-            logger.info("🎧 PRODUCTION MODE: Setting up Bluetooth Audio...")
-            if BluetoothAudioManager:
-                try:
-                    bt_manager = BluetoothAudioManager(device_name="CMF Buds")
-                    if bt_manager.connect_and_setup():
-                        logger.info("✅ Bluetooth audio connected and set as default")
-                    else:
-                        logger.warning("⚠️ Bluetooth audio setup failed - using default audio")
-                except Exception as e:
-                    logger.error(f"❌ Bluetooth setup error: {e}")
-            else:
-                logger.warning("⚠️ BluetoothAudioManager not available")
+            # Setup Bluetooth audio only if not already initialized
+            if not self.bt_manager:
+                logger.info("🎧 PRODUCTION MODE: Setting up Bluetooth Audio...")
+                if BluetoothAudioManager:
+                    try:
+                        self.bt_manager = BluetoothAudioManager(device_name="CMF Buds")
+                        if self.bt_manager.connect_and_setup():
+                            logger.info("✅ Bluetooth audio connected and set as default")
+                        else:
+                            logger.warning("⚠️ Bluetooth audio setup failed - using default audio")
+                    except Exception as e:
+                        logger.error(f"❌ Bluetooth setup error: {e}")
+                else:
+                    logger.warning("⚠️ BluetoothAudioManager not available")
             
             # Update Layer 1 to use tighter thresholds?
             if self.layer1:
@@ -700,6 +976,48 @@ class CortexSystem:
             
             if self.layer1:
                 self.layer1.confidence = 0.4 # Laxer
+    
+    def _init_bluetooth(self):
+        """Initialize Bluetooth audio connection from config."""
+        bluetooth_config = self.config.get('bluetooth', {})
+        
+        if not bluetooth_config.get('enabled', True):
+            logger.info("ℹ️ Bluetooth disabled in config")
+            return
+        
+        if not BluetoothAudioManager:
+            logger.warning("⚠️ BluetoothAudioManager not available")
+            return
+        
+        device_name = bluetooth_config.get('device_name', 'CMF Buds')
+        auto_connect = bluetooth_config.get('auto_connect', True)
+        
+        if not auto_connect:
+            logger.info("ℹ️ Bluetooth auto-connect disabled in config")
+            return
+        
+        logger.info(f"🎧 Initializing Bluetooth Audio: {device_name}")
+        
+        try:
+            self.bt_manager = BluetoothAudioManager(
+                device_name=device_name,
+                max_retries=bluetooth_config.get('retry_count', 3)
+            )
+            
+            # Try to connect (to paired device) or scan and pair
+            if self.bt_manager.auto_connect_or_pair(
+                scan_duration=bluetooth_config.get('scan_duration', 15)
+            ):
+                logger.info(f"✅ Bluetooth audio connected: {device_name}")
+                
+                # Start auto-reconnect monitoring
+                if bluetooth_config.get('auto_reconnect', True):
+                    self.bt_manager.start_auto_reconnect()
+                    logger.info("🔄 Bluetooth auto-reconnect enabled")
+            else:
+                logger.warning(f"⚠️ Bluetooth connection failed for {device_name}")
+        except Exception as e:
+            logger.error(f"❌ Bluetooth initialization error: {e}")
 
     def start(self):
         """Start main system loop"""
@@ -747,12 +1065,27 @@ class CortexSystem:
                 logger.info("ℹ️ Gemini Live API skipped (invalid or missing API key)")
         elif self.layer2:
             logger.info("ℹ️ Gemini Live API disabled via GEMINI_LIVE_ENABLED=false")
+        
+        # Initialize Bluetooth audio (auto-connect based on config)
+        self._init_bluetooth()
+        
+        # Start Voice Coordinator (always on for voice commands)
+        logger.info("🎙️ Starting Voice Coordinator...")
+        self.voice_coordinator.start()
+        
+        # Set default mode to PRODUCTION (enables all features)
+        self.set_mode("PRODUCTION")
 
         logger.info("✅ System started")
         logger.info("📸 Capturing frames...")
         logger.info("🔍 Running detections...")
         logger.info("💾 Syncing to Supabase...")
         logger.info("🌐 Sending to laptop dashboard...")
+
+        # Start interactive status display
+        if self.status_display:
+            self.status_display.start()
+            logger.info("📊 Interactive status display active")
 
         # Main loop
         self._main_loop()
@@ -804,10 +1137,14 @@ class CortexSystem:
                     )
                     last_metrics_time = time.time()
 
-                # 6. Track FPS for Logging
+                # 6. Track FPS for Logging and Status Display
                 loop_time = time.time() - loop_start
                 fps = 1.0 / loop_time if loop_time > 0 else 0
                 fps_tracker.append(fps)
+
+                # Update status display with FPS (every frame for smooth display)
+                if self.status_display:
+                    self.status_display.update_fps(fps)
 
                 if len(fps_tracker) >= 30:
                     avg_fps = sum(fps_tracker) / len(fps_tracker)
@@ -830,25 +1167,43 @@ class CortexSystem:
     def _run_dual_detection(self, frame: np.ndarray) -> List[Dict[str, Any]]:
         """Run Layer 0 + Layer 1 detection in parallel"""
         detections = []
+        layer0_detections = []
+        layer1_detections = []
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             futures = []
+            start_times = {}
 
             # Layer 0: Guardian (Safety-Critical)
             if self.layer0:
+                start_times['layer0'] = time.time()
                 future = executor.submit(self.layer0.detect, frame)
                 futures.append(('layer0', future))
 
             # Layer 1: Learner (Adaptive)
             if self.layer1:
+                start_times['layer1'] = time.time()
                 future = executor.submit(self.layer1.detect, frame)
                 futures.append(('layer1', future))
 
             # Collect results
             for layer_name, future in futures:
                 try:
-                    layer_detections = future.result(timeout=1.0)  # 1 second timeout
-                    detections.extend(layer_detections)
+                    layer_dets = future.result(timeout=1.0)  # 1 second timeout
+                    latency_ms = (time.time() - start_times.get(layer_name, time.time())) * 1000
+                    
+                    if layer_name == 'layer0':
+                        layer0_detections = layer_dets if layer_dets else []
+                        # Update status display for Layer 0
+                        if self.status_display:
+                            self.status_display.update_layer0(layer0_detections, latency_ms)
+                    elif layer_name == 'layer1':
+                        layer1_detections = layer_dets if layer_dets else []
+                        # Update status display for Layer 1
+                        if self.status_display:
+                            self.status_display.update_layer1(layer1_detections, latency_ms)
+                    
+                    detections.extend(layer_dets if layer_dets else [])
                 except Exception as e:
                     import traceback
                     logger.error(f"❌ {layer_name} detection failed: {e}\n{traceback.format_exc()}")
@@ -1128,6 +1483,10 @@ class CortexSystem:
         if self.memory_manager:
             self.memory_manager.stop_sync_worker()
             self.memory_manager.cleanup()
+
+        # Stop interactive status display
+        if self.status_display:
+            self.status_display.stop()
 
         logger.info("✅ ProjectCortex v2.0 stopped")
         logger.info(f"📊 Total detections: {self.detection_count}")

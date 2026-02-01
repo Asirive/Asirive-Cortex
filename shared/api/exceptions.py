@@ -154,4 +154,5 @@ class AuthenticationError(CortexException):
 
 
 # Alias for common name used in base_client.py
-TimeoutError = ConnectionTimeout
+# CRITICAL FIX: Renamed to avoid shadowing Python's built-in TimeoutError
+ConnectionTimeoutError = ConnectionTimeout

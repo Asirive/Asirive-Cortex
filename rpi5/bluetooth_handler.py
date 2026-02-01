@@ -508,6 +508,201 @@ class BluetoothAudioManager:
             status["source_id"] = source_id
         
         return status
+    
+    # =========================================================================
+    # Auto-Connect and Pairing (NEW METHODS FOR V2.0)
+    # =========================================================================
+    
+    def scan_devices(self, duration: int = 10) -> List[Dict]:
+        """
+        Scan for nearby Bluetooth devices.
+        
+        Args:
+            duration: Seconds to scan
+            
+        Returns:
+            List of dicts with 'mac' and 'name' keys
+        """
+        logger.info(f"🔍 Scanning for Bluetooth devices ({duration}s)...")
+        
+        try:
+            # Start scanning
+            subprocess.run(
+                ["bluetoothctl", "scan", "on"],
+                capture_output=True,
+                timeout=5
+            )
+            
+            time.sleep(duration)
+            
+            # Stop scanning
+            subprocess.run(
+                ["bluetoothctl", "scan", "off"],
+                capture_output=True,
+                timeout=5
+            )
+            
+            # Get all discovered devices
+            result = subprocess.run(
+                ["bluetoothctl", "devices"],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            devices = []
+            pattern = r"Device\s+([0-9A-Fa-f:]{17})\s+(.+)"
+            
+            for line in result.stdout.strip().split('\n'):
+                match = re.match(pattern, line)
+                if match:
+                    devices.append({
+                        'mac': match.group(1),
+                        'name': match.group(2).strip()
+                    })
+            
+            logger.info(f"Found {len(devices)} devices")
+            for device in devices:
+                logger.debug(f"  - {device['name']} ({device['mac']})")
+            
+            return devices
+            
+        except Exception as e:
+            logger.error(f"Error scanning devices: {e}")
+            return []
+    
+    def pair_device(self, mac_address: str) -> bool:
+        """
+        Pair with a Bluetooth device.
+        
+        Args:
+            mac_address: Device MAC address
+            
+        Returns:
+            True if pairing successful
+        """
+        logger.info(f"🔗 Pairing with {mac_address}...")
+        
+        try:
+            result = subprocess.run(
+                ["bluetoothctl", "pair", mac_address],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if "Pairing successful" in result.stdout:
+                logger.info(f"✅ Paired with {mac_address}")
+                return True
+            elif "already paired" in result.stdout.lower():
+                logger.info(f"✅ Already paired with {mac_address}")
+                return True
+            else:
+                logger.error(f"❌ Pairing failed: {result.stdout} {result.stderr}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            logger.error("Pairing timeout")
+            return False
+        except Exception as e:
+            logger.error(f"Pairing error: {e}")
+            return False
+    
+    def start_auto_reconnect(self, check_interval: float = 10.0):
+        """
+        Start background thread to monitor and reconnect Bluetooth.
+        
+        Args:
+            check_interval: Seconds between connection checks
+        """
+        import threading
+        
+        if hasattr(self, '_reconnect_thread') and self._reconnect_thread.is_alive():
+            logger.debug("Auto-reconnect already running")
+            return
+        
+        self._reconnect_running = True
+        self._reconnect_thread = threading.Thread(
+            target=self._monitor_connection,
+            args=(check_interval,),
+            daemon=True,
+            name="BluetoothReconnect"
+        )
+        self._reconnect_thread.start()
+        logger.info("🔄 Bluetooth auto-reconnect started")
+    
+    def stop_auto_reconnect(self):
+        """Stop the auto-reconnect monitoring thread."""
+        self._reconnect_running = False
+        logger.info("🛑 Bluetooth auto-reconnect stopped")
+    
+    def _monitor_connection(self, interval: float):
+        """
+        Background thread to monitor Bluetooth connection.
+        
+        Args:
+            interval: Seconds between checks
+        """
+        while self._reconnect_running:
+            try:
+                if self.connected_mac and not self.is_connected(self.connected_mac):
+                    logger.warning("🔌 Bluetooth disconnected, attempting reconnect...")
+                    if self.connect_and_setup():
+                        logger.info("✅ Bluetooth reconnected")
+                    else:
+                        logger.warning("⚠️ Reconnect failed, will retry")
+            except Exception as e:
+                logger.error(f"Reconnect check error: {e}")
+            
+            time.sleep(interval)
+    
+    def auto_connect_or_pair(self, scan_duration: int = 15) -> bool:
+        """
+        Auto-connect to known device, or scan and pair if not found.
+        
+        Flow:
+        1. Try to connect to already-paired device matching device_name
+        2. If not found, scan for new devices
+        3. If matching device found in scan, pair and connect
+        
+        Args:
+            scan_duration: Seconds to scan for new devices
+            
+        Returns:
+            True if connected successfully
+        """
+        # Step 1: Try known paired devices
+        logger.info(f"Looking for paired device matching '{self.device_name}'...")
+        mac = self.find_device_by_name()
+        
+        if mac:
+            logger.info(f"Found paired device: {mac}")
+            return self.connect_and_setup()
+        
+        # Step 2: Scan for new devices
+        logger.info(f"Device '{self.device_name}' not paired. Scanning for {scan_duration}s...")
+        devices = self.scan_devices(scan_duration)
+        
+        if not devices:
+            logger.error("No Bluetooth devices found during scan")
+            return False
+        
+        # Step 3: Find matching device in scan results
+        for device in devices:
+            if self.device_name.lower() in device['name'].lower():
+                logger.info(f"Found matching device: {device['name']} ({device['mac']})")
+                
+                # Step 4: Pair with device
+                if self.pair_device(device['mac']):
+                    # Step 5: Trust and connect
+                    self.trust_device(device['mac'])
+                    time.sleep(1)  # Brief pause after pairing
+                    return self.connect_and_setup()
+                else:
+                    logger.error(f"Failed to pair with {device['mac']}")
+        
+        logger.error(f"No device matching '{self.device_name}' found")
+        return False
 
 
 # =============================================================================

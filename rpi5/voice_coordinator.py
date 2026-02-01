@@ -34,6 +34,11 @@ class VoiceCoordinator:
         self.vad = None
         self.stt = None
         self.is_active = False
+    
+    @property
+    def is_listening(self) -> bool:
+        """Alias for is_active (compatibility with main.py)."""
+        return self.is_active
 
     def initialize(self):
         """Initialize VAD and Whisper models"""

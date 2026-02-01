@@ -20,7 +20,7 @@ from collections import deque
 import json
 
 from .protocol import BaseMessage, MessageType
-from .exceptions import ConnectionError, TimeoutError, ProtocolError
+from .exceptions import ConnectionError, ConnectionTimeoutError, ProtocolError
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +175,33 @@ class AsyncWebSocketClient(ABC):
         # Disconnect if connected
         if self._connected:
             try:
-                self._disconnect_impl()
+                # CRITICAL FIX: _disconnect_impl is async, must be called properly
+                if hasattr(self, '_async_loop') and self._async_loop and self._async_loop.is_running():
+                    # Schedule in the async loop and wait for completion
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._disconnect_impl(),
+                        self._async_loop
+                    )
+                    try:
+                        future.result(timeout=5.0)
+                    except Exception as e:
+                        logger.error(f"Disconnect failed: {e}")
+                else:
+                    # No async loop stored, try to detect if we're in a loop
+                    try:
+                        loop = asyncio.get_running_loop()
+                        # We're in an event loop, schedule the coroutine
+                        future = asyncio.run_coroutine_threadsafe(
+                            self._disconnect_impl(),
+                            loop
+                        )
+                        future.result(timeout=5.0)
+                    except RuntimeError:
+                        # No event loop running, safe to use asyncio.run()
+                        try:
+                            asyncio.run(self._disconnect_impl())
+                        except Exception as e:
+                            logger.warning(f"Cannot disconnect cleanly: {e}")
             except Exception as e:
                 logger.error(f"Error during disconnect: {e}")
 
@@ -228,7 +254,7 @@ class AsyncWebSocketClient(ABC):
 
         try:
             return future.result(timeout=timeout)
-        except TimeoutError:
+        except ConnectionTimeoutError:
             logger.error("Send timed out")
             return False
 
@@ -249,7 +275,7 @@ class AsyncWebSocketClient(ABC):
         logger.debug(f"[DEBUG] _flush_queue called, queue size: {len(self._message_queue)}")
         # Copy to list to avoid modification during iteration if needed, 
         # but popleft is safer.
-        while self._lock: # Check lock/connected? actually just check queue
+        while self._connected and not self._closing:  # CRITICAL FIX: Check connection state, not lock object
              if not self._message_queue:
                  break
              
