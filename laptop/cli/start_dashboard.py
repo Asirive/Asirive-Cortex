@@ -29,7 +29,8 @@ from laptop.config import DashboardConfig, default_config
 from laptop.server.websocket_server import CortexWebSocketServer
 from laptop.server.fastapi_server import FastAPIServer
 from laptop.gui.cortex_ui import CortexDashboard as CortexDashboardUI, DashboardSignals
-from laptop.protocol import MessageType, BaseMessage
+# CRITICAL FIX: Use shared.api consistently for protocol to avoid type mismatches
+from shared.api import MessageType, BaseMessage
 
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,7 @@ class DashboardApplication:
 
         # FastAPI specific
         self.fastapi_server = None
+        self._uvicorn_loop = None  # Store Uvicorn's event loop for cross-thread communication
 
     def _handle_zmq_frame(self, frame_bgr):
         """Handle raw frame from ZMQ (runs in ZMQ thread)"""
@@ -182,22 +184,17 @@ class DashboardApplication:
                     
                     # Schedule broadcast on the event loop
                     # The FastAPI server thread has its own event loop
-                    try:
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
+                    # CRITICAL FIX: Use run_coroutine_threadsafe with stored Uvicorn loop
+                    if self._uvicorn_loop and self._uvicorn_loop.is_running():
+                        try:
                             asyncio.run_coroutine_threadsafe(
                                 connection_manager.broadcast(msg),
-                                loop
+                                self._uvicorn_loop
                             )
-                        else:
-                            # Fallback: create new loop context
-                            asyncio.run(connection_manager.broadcast(msg))
-                    except RuntimeError:
-                        # No event loop in this thread, try new_event_loop
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        loop.run_until_complete(connection_manager.broadcast(msg))
-                        loop.close()
+                        except Exception as e:
+                            logger.debug(f"Error scheduling broadcast: {e}")
+                    else:
+                        logger.debug("Uvicorn loop not available, skipping broadcast")
             except Exception as e:
                 logger.debug(f"Error broadcasting laptop detections: {e}")
 
@@ -487,7 +484,7 @@ class DashboardApplication:
         def run_server():
             # Standard blocking uvicorn run
             import uvicorn
-            from laptop.server.fastapi_server import app, set_server_instance
+            from laptop.server.fastapi_server import app, set_server_instance, set_dashboard_runner
 
             # Setup the Logic Handler (with signals)
             # We don't need to call .start() on it because Uvicorn drives the loop
@@ -512,8 +509,11 @@ class DashboardApplication:
 
                 # Inject into FastAPI app global state
                 set_server_instance(self.fastapi_server)
+                # Store reference to dashboard runner so Uvicorn startup can capture the loop
+                set_dashboard_runner(self)
 
                 logger.info(f"Launching Uvicorn on {self.config.ws_host}:{self.config.ws_port}")
+                # Note: Event loop will be captured in Uvicorn startup event
                 uvicorn.run(
                     app,
                     host=self.config.ws_host,
@@ -546,7 +546,15 @@ class DashboardApplication:
         # Stop FastAPI server
         if self.use_fastapi and self.fastapi_server:
             try:
-                asyncio.run(self.fastapi_server.stop())
+                # CRITICAL FIX: Use run_coroutine_threadsafe with stored Uvicorn loop
+                if self._uvicorn_loop and self._uvicorn_loop.is_running():
+                    future = asyncio.run_coroutine_threadsafe(
+                        self.fastapi_server.stop(),
+                        self._uvicorn_loop
+                    )
+                    future.result(timeout=10.0)  # Wait up to 10 seconds
+                else:
+                    logger.warning("Uvicorn loop not available, cannot stop server cleanly")
             except Exception as e:
                 logger.error(f"Error stopping FastAPI server: {e}")
 
@@ -592,49 +600,65 @@ class DashboardApplication:
             self._handle_local_command(cmd)
             return
 
-        from laptop.protocol import MessageType, BaseMessage
         import asyncio
 
-        # Wrap in BaseMessage
-        message = BaseMessage(
-            type=MessageType.COMMAND,
-            data=cmd
-        )
+        logger.info(f"📤 UI Command: {cmd.get('action', cmd)}")
 
         # Broadcast
         if self.use_fastapi and self.fastapi_server:
             # FastAPI server runs in a separate thread with its own event loop
-            # We need to schedule the broadcast on that loop
-            # The FastAPI server's _connection_manager has the send_message method
-            # which is synchronous but we need to be careful about thread safety
+            # We need to use the global connection manager from fastapi_server module
 
-            # Get the connection manager from the server
-            connection_manager = getattr(self.fastapi_server, '_connection_manager', None)
-            if connection_manager:
-                # Use the connection manager directly (it's thread-safe via locks)
-                from shared.api import MessageType as MT
-                # Create a command message
+            from laptop.server.fastapi_server import get_connection_manager
+            connection_manager = get_connection_manager()
+            
+            if connection_manager and connection_manager.get_connection_count() > 0:
+                # Create a command message (using shared.api imports from top of file)
                 cmd_msg = BaseMessage(
-                    type=MT.COMMAND,
+                    type=MessageType.COMMAND,
                     data=cmd
                 )
+                
                 # Broadcast to all connected devices
                 connected_devices = connection_manager.get_connected_devices()
+                logger.info(f"📡 Broadcasting to {len(connected_devices)} device(s): {connected_devices}")
+                
                 for device_id in connected_devices:
-                    # Schedule sending on the server's event loop
                     try:
-                        # Run in the server's event loop if available
-                        loop = getattr(self.fastapi_server, '_loop', None) or asyncio.get_event_loop()
-                        asyncio.run_coroutine_threadsafe(
-                            connection_manager.send_message(device_id, cmd_msg),
-                            loop
-                        )
+                        # CRITICAL FIX: Use Uvicorn's event loop, not a new one
+                        # The WebSocket was created in Uvicorn's loop, so we must use that loop
+                        if self._uvicorn_loop and self._uvicorn_loop.is_running():
+                            # Schedule the coroutine in Uvicorn's loop
+                            future = asyncio.run_coroutine_threadsafe(
+                                connection_manager.send_message(device_id, cmd_msg),
+                                self._uvicorn_loop
+                            )
+                            try:
+                                # Wait for completion with timeout
+                                result = future.result(timeout=5.0)
+                                if result:
+                                    logger.info(f"✅ Command sent to {device_id}")
+                                else:
+                                    logger.warning(f"⚠️ Send returned False for {device_id}")
+                            except Exception as e:
+                                logger.error(f"❌ Failed to send to {device_id}: {e}")
+                        else:
+                            logger.warning(f"⚠️ Uvicorn loop not available for {device_id}, cannot send")
+                        
                     except Exception as e:
                         logger.warning(f"Could not send command to {device_id}: {e}")
             else:
-                logger.warning("Connection manager not ready, cannot broadcast command")
+                if not connection_manager:
+                    logger.warning("⚠️ Connection manager not ready, cannot broadcast command")
+                else:
+                    logger.warning("⚠️ No devices connected, cannot broadcast command")
 
         elif self.server and self.loop:
+            # Legacy WebSocket server mode - create message using shared.api
+            message = BaseMessage(
+                type=MessageType.COMMAND,
+                data=cmd
+            )
             asyncio.run_coroutine_threadsafe(
                 self.server.broadcast(message.to_json()),
                 self.loop

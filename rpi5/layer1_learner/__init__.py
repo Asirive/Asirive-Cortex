@@ -435,9 +435,9 @@ class YOLOELearner:
             latency = (time.time() - start_time) * 1000
             self.inference_times.append(latency)
             
-            # ✅ PERFORMANCE METRICS: Detection summary
+            # ✅ PERFORMANCE METRICS: Detection summary (DEBUG level - status display shows summary)
             avg_conf = sum([d['confidence'] for d in detections]) / len(detections) if detections else 0.0
-            logger.info(f"🎯 [LAYER 1] Detected {len(detections)} objects in {latency:.1f}ms (mode={self.mode.value}, avg_conf={avg_conf:.3f})")
+            logger.debug(f"🎯 [LAYER 1] Detected {len(detections)} objects in {latency:.1f}ms (mode={self.mode.value}, avg_conf={avg_conf:.3f})")
             
             # Log individual detections for debugging
             if detections:

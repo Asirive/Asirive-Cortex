@@ -49,6 +49,10 @@ class MessageType(str, Enum):
     DISCONNECT = "DISCONNECT"
     ACK = "ACK"
 
+    # Layer 1 GPU Offloading (RPi5 <-> Laptop)
+    LAYER1_QUERY = "LAYER1_QUERY"        # RPi5 sends frame for GPU inference
+    LAYER1_RESPONSE = "LAYER1_RESPONSE"  # Laptop sends back detections
+
 
 class DetectionClass(str, Enum):
     """Common detection classes for standardization."""

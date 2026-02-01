@@ -81,6 +81,7 @@ class FastAPIIntegration:
         self._server: Optional[FastAPIServer] = None
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._uvicorn_loop: Optional[asyncio.AbstractEventLoop] = None  # Store Uvicorn's loop
 
         # State
         self.connected_devices: List[str] = []
@@ -170,7 +171,18 @@ class FastAPIIntegration:
         self.signals.system_log.emit("Stopping FastAPI server...", "INFO")
 
         if self._server:
-            asyncio.run(self._server.stop())
+            # CRITICAL FIX: Use run_coroutine_threadsafe with stored loop
+            if self._uvicorn_loop and self._uvicorn_loop.is_running():
+                try:
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._server.stop(),
+                        self._uvicorn_loop
+                    )
+                    future.result(timeout=10.0)
+                except Exception as e:
+                    logger.error(f"Error stopping server: {e}")
+            else:
+                logger.warning("Uvicorn loop not available, cannot stop server cleanly")
 
         self._running = False
         logger.info("FastAPI server stopped")

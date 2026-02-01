@@ -70,6 +70,32 @@ app.add_middleware(
 # Global connection manager and server
 _connection_manager: Optional["FastAPIConnectionManager"] = None
 _server: Optional["LaptopWebSocketServer"] = None
+_dashboard_runner: Optional[Any] = None  # Reference to DashboardRunner for loop capture
+
+
+def set_server_instance(server: "LaptopWebSocketServer"):
+    """Set the global server instance."""
+    global _server
+    _server = server
+
+def get_server_instance() -> Optional["LaptopWebSocketServer"]:
+    """Get the global server instance."""
+    return _server
+
+def set_connection_instance(manager: "FastAPIConnectionManager"):
+    """Set the global connection manager instance."""
+    global _connection_manager
+    _connection_manager = manager
+
+def get_connection_manager() -> Optional["FastAPIConnectionManager"]:
+    """Get the global connection manager."""
+    return _connection_manager
+
+def set_dashboard_runner(runner: Any):
+    """Set reference to DashboardRunner to capture event loop on startup."""
+    global _dashboard_runner
+    _dashboard_runner = runner
+    logger.info(f"Dashboard runner registered: {runner}")
 
 
 # ============================================================================
@@ -99,33 +125,40 @@ class FastAPIConnectionManager:
     Manages WebSocket connections using FastAPI WebSocket.
 
     Integrates with shared AsyncWebSocketServer for protocol handling.
+    
+    Thread-Safety Note:
+        Uses threading.Lock() instead of asyncio.Lock() to allow cross-thread
+        access from the Qt main thread (via _handle_ui_command) while Uvicorn
+        runs in its own thread with its own event loop.
     """
 
     def __init__(self):
         self.active_connections: Dict[str, WebSocket] = {}  # device_id -> websocket
-        self._lock = asyncio.Lock()  # Use asyncio.Lock for async context
+        # CRITICAL: Use threading.Lock for cross-thread safety (Qt thread -> Uvicorn thread)
+        self._lock = threading.Lock()
 
     async def connect(self, websocket: WebSocket, device_id: str):
         """Register new connection (WebSocket already accepted by endpoint handler)"""
-        async with self._lock:
+        with self._lock:
             self.active_connections[device_id] = websocket
         logger.info(f"Device connected: {device_id} (total: {len(self.active_connections)})")
 
     async def disconnect(self, device_id: str, reason: str = ""):
         """Unregister connection"""
-        async with self._lock:
+        with self._lock:
             if device_id in self.active_connections:
                 del self.active_connections[device_id]
         logger.info(f"Device disconnected: {device_id} - {reason}")
 
     async def send_message(self, device_id: str, message: BaseMessage) -> bool:
-        """Send message to specific device"""
-        async with self._lock:
+        """Send message to specific device (thread-safe)"""
+        with self._lock:
             websocket = self.active_connections.get(device_id)
 
         if websocket:
             try:
                 await websocket.send_text(message.to_json())
+                logger.debug(f"Message sent to {device_id}: {message.type}")
                 return True
             except Exception as e:
                 logger.error(f"Error sending to {device_id}: {e}")
@@ -135,7 +168,7 @@ class FastAPIConnectionManager:
     async def broadcast(self, message: BaseMessage):
         """Broadcast message to all connected devices"""
         disconnected = []
-        async with self._lock:
+        with self._lock:
             connected = list(self.active_connections.keys())
 
         for device_id in connected:
@@ -147,14 +180,14 @@ class FastAPIConnectionManager:
             await self.disconnect(device_id, "send_failed")
 
     def get_connected_devices(self) -> List[str]:
-        """Get list of connected device IDs (sync method for convenience)"""
-        # Note: This is a sync method, safe because we're just reading the keys
-        return list(self.active_connections.keys())
+        """Get list of connected device IDs (thread-safe)"""
+        with self._lock:
+            return list(self.active_connections.keys())
 
     def get_connection_count(self) -> int:
-        """Get number of connections (sync method for convenience)"""
-        # Note: This is a sync method, safe because we're just reading length
-        return len(self.active_connections)
+        """Get number of connections (thread-safe)"""
+        with self._lock:
+            return len(self.active_connections)
 
 
 # ============================================================================
@@ -267,6 +300,50 @@ class LaptopWebSocketServer(AsyncWebSocketServer):
             except Exception as e:
                 logger.error(f"Error in detection callback: {e}")
 
+    async def _handle_status(self, client_id: str, message: BaseMessage):
+        """Handle STATUS messages from RPi5."""
+        data = message.data
+        status = data.get("status", "unknown")
+        msg = data.get("message", "")
+        logger.info(f"Status from {client_id}: {status} - {msg}")
+
+    async def _handle_audio_event(self, client_id: str, message: BaseMessage):
+        """Handle AUDIO_EVENT messages from RPi5."""
+        data = message.data
+        event = data.get("event", "unknown")
+        text = data.get("text", "")
+        logger.info(f"Audio event from {client_id}: [{event}] {text}")
+
+    async def _handle_memory_event(self, client_id: str, message: BaseMessage):
+        """Handle MEMORY_EVENT messages from RPi5."""
+        data = message.data
+        event = data.get("event", "unknown")
+        local_rows = data.get("local_rows", 0)
+        synced_rows = data.get("synced_rows", 0)
+        logger.debug(f"Memory event from {client_id}: {event} (local={local_rows}, synced={synced_rows})")
+
+    async def _handle_gps_imu(self, client_id: str, message: BaseMessage):
+        """Handle GPS_IMU messages from RPi5."""
+        data = message.data
+        logger.debug(f"GPS/IMU from {client_id}: lat={data.get('latitude')}, lon={data.get('longitude')}")
+
+    async def _handle_layer_response(self, client_id: str, message: BaseMessage):
+        """Handle LAYER_RESPONSE messages from RPi5."""
+        data = message.data
+        layer = data.get("layer", "unknown")
+        logger.info(f"Layer response from {client_id}: layer={layer}")
+
+    async def _handle_layer1_query(self, client_id: str, message: BaseMessage):
+        """Handle LAYER1_QUERY messages - RPi5 requesting GPU inference."""
+        data = message.data
+        frame_b64 = data.get("frame")
+        
+        if not frame_b64:
+            logger.warning(f"LAYER1_QUERY from {client_id} missing frame data")
+            return
+        
+        logger.debug(f"LAYER1_QUERY from {client_id}: processing GPU inference request")
+
     # Abstract method implementations for FastAPI
 
     async def _start_server_impl(self):
@@ -306,6 +383,21 @@ class LaptopWebSocketServer(AsyncWebSocketServer):
         """Unregister a FastAPI WebSocket connection"""
         self._websockets.pop(device_id, None)
         self._clients.pop(device_id, None)
+
+
+# ============================================================================
+# LIFESPAN EVENTS
+# ============================================================================
+
+@app.on_event("startup")
+async def startup_event():
+    """Capture Uvicorn's event loop on startup for cross-thread communication."""
+    global _dashboard_runner
+    if _dashboard_runner:
+        # Store the event loop that Uvicorn is using
+        import asyncio
+        _dashboard_runner._uvicorn_loop = asyncio.get_running_loop()
+        logger.info(f"✅ Uvicorn event loop captured: {_dashboard_runner._uvicorn_loop}")
 
 
 # ============================================================================
@@ -484,16 +576,6 @@ def get_server() -> Optional[LaptopWebSocketServer]:
     """Get the current server instance"""
     return _server
 
-
-def get_connection_manager() -> Optional[FastAPIConnectionManager]:
-    """Get the current connection manager"""
-    return _connection_manager
-
-
-def set_server_instance(instance: LaptopWebSocketServer):
-    """Set the global server instance (used by dashboard)"""
-    global _server
-    _server = instance
 
 def reset_server():
     """Reset server state (for testing)"""

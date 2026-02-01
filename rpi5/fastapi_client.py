@@ -13,7 +13,7 @@ Features:
 Usage:
     from rpi5.fastapi_client import RPi5Client
     client = RPi5Client(
-        host="192.168.0.171",  # Laptop IP
+        host="10.226.221.101",  # Laptop IP
         port=8765,
         device_id="rpi5-cortex-001"
     )
@@ -67,7 +67,7 @@ class RPi5Client(AsyncWebSocketClient):
 
     def __init__(
         self,
-        host: str = "192.168.0.171",  # Laptop IP (updated)
+        host: str = None,  # Will load from config if not provided
         port: int = 8765,
         device_id: str = "rpi5-cortex-001",
         auto_reconnect: bool = True,
@@ -79,7 +79,7 @@ class RPi5Client(AsyncWebSocketClient):
         Initialize client.
 
         Args:
-            host: Laptop IP address
+            host: Laptop IP address (loads from config if None)
             port: FastAPI server port
             device_id: Unique device identifier
             auto_reconnect: Automatically reconnect on disconnect
@@ -87,6 +87,12 @@ class RPi5Client(AsyncWebSocketClient):
             video_quality: JPEG quality (1-100)
             max_fps: Maximum video FPS to send
         """
+        # Load from config if host not provided
+        if host is None:
+            from rpi5.config.config import get_config
+            config = get_config()
+            host = config.get('laptop_server', {}).get('host', '10.226.221.101')
+        
         # Build WebSocket URL
         url = f"ws://{host}:{port}/ws/{device_id}"
 
@@ -169,20 +175,27 @@ class RPi5Client(AsyncWebSocketClient):
         cmd_data = message.data
         command = cmd_data.get("action")
 
-        logger.info(f"Received command: {command}")
+        logger.info(f"📥 Received COMMAND from laptop: {command}")
+        logger.debug(f"📥 Full command data: {cmd_data}")
 
         # Handle built-in commands
         if command == "START_VIDEO_STREAMING":
             self._send_video = True
+            logger.info("🎥 Video streaming ENABLED")
         elif command == "STOP_VIDEO_STREAMING":
             self._send_video = False
+            logger.info("🎥 Video streaming DISABLED")
         elif command == "RESTART":
+            logger.info("🔄 RESTART command received")
             if self.on_command:
                 self.on_command({"action": "restart"})
 
-        # Forward to callback
+        # Forward ALL commands to callback (for main.py to handle SET_MODE, TEXT_QUERY, etc.)
         if self.on_command:
+            logger.info(f"📡 Forwarding command to on_command callback: {command}")
             self.on_command(cmd_data)
+        else:
+            logger.warning("⚠️ No on_command callback registered!")
 
     async def _handle_config(self, message: BaseMessage):
         """Handle CONFIG messages."""
@@ -210,6 +223,8 @@ class RPi5Client(AsyncWebSocketClient):
             timestamp = datetime.now().strftime("%H:%M:%S")
             
             detections = data.get("detections", [])
+            inference_time_ms = data.get("inference_time_ms", 0)
+            
             for det in detections:
                 # Handle different field names (class vs class_name)
                 cls = det.get("class", det.get("class_name", "unknown"))
@@ -224,7 +239,61 @@ class RPi5Client(AsyncWebSocketClient):
                 else:
                     bbox_str = "[?,?,?,?]"
                 
-                logger.info(f"[{timestamp}] <laptop> {cls} ({int(conf*100)}%) bbox={bbox_str}")
+                # Log at DEBUG level (status display shows summary)
+                logger.debug(f"[{timestamp}] <laptop> {cls} ({int(conf*100)}%) bbox={bbox_str}")
+            
+            # Update the interactive status display with Layer 1 detections from laptop
+            try:
+                from rpi5.main import get_status_display
+                status_display = get_status_display()
+                if status_display and detections:
+                    # Format detections for status display (needs 'class' key)
+                    formatted_dets = [
+                        {"class": det.get("class", det.get("class_name", "unknown"))}
+                        for det in detections
+                    ]
+                    status_display.update_layer1(formatted_dets, inference_time_ms)
+            except ImportError:
+                pass  # Status display not available yet
+
+    async def _handle_navigation(self, message: BaseMessage):
+        """Handle NAVIGATION messages from laptop."""
+        data = message.data
+        action = data.get("action", "unknown")
+        logger.info(f"📍 Navigation command received: {action}")
+        # Forward to Layer 3 spatial audio system if callback registered
+        if self.on_command:
+            self.on_command({"action": "NAVIGATION", "navigation_data": data})
+
+    async def _handle_spatial_audio(self, message: BaseMessage):
+        """Handle SPATIAL_AUDIO messages from laptop."""
+        data = message.data
+        enabled = data.get("enabled", True)
+        logger.info(f"🔊 Spatial audio config received: enabled={enabled}")
+        # Forward to command handler
+        if self.on_command:
+            self.on_command({"action": "SPATIAL_AUDIO", "audio_data": data})
+
+    async def _handle_layer1_response(self, message: BaseMessage):
+        """Handle LAYER1_RESPONSE messages from laptop (GPU inference results)."""
+        data = message.data
+        detections = data.get("detections", [])
+        inference_time_ms = data.get("inference_time_ms", 0)
+        
+        logger.debug(f"📥 LAYER1_RESPONSE: {len(detections)} detections, {inference_time_ms:.1f}ms")
+        
+        # Update status display with Layer 1 detections from laptop
+        try:
+            from rpi5.main import get_status_display
+            status_display = get_status_display()
+            if status_display and detections:
+                formatted_dets = [
+                    {"class": det.get("class", det.get("class_name", "unknown"))}
+                    for det in detections
+                ]
+                status_display.update_layer1(formatted_dets, inference_time_ms)
+        except ImportError:
+            pass
 
     # =========================================================================
     # Public API (RPi5-specific)
@@ -419,7 +488,7 @@ if __name__ == "__main__":
 
     # Create client
     client = RPi5Client(
-        host="192.168.0.171",  # Laptop IP
+        host=None,  # Laptop IP (loaded from config.yaml)
         port=8765,
         device_id="rpi5-cortex-001"
     )

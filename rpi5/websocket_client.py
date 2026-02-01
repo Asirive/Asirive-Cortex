@@ -42,18 +42,24 @@ class RPiWebSocketClient:
 
     def __init__(
         self,
-        host: str = "192.168.0.91",  # Laptop IP
+        host: str = None,  # Will load from config if not provided
         port: int = 8765,
         device_id: str = "rpi5-cortex-001",
         auto_reconnect: bool = True,
         reconnect_interval: float = 5.0,
         queue_size: int = 100
     ):
+        # Load from config if host not provided
+        if host is None:
+            from rpi5.config.config import get_config
+            config = get_config()
+            host = config.get('laptop_server', {}).get('host', '10.226.221.101')
+        
         """
         Initialize WebSocket client
 
         Args:
-            host: Laptop IP address
+            host: Laptop IP address (loads from config if None)
             port: WebSocket port (default: 8765)
             device_id: Unique device identifier
             auto_reconnect: Automatically reconnect on disconnect
@@ -372,7 +378,7 @@ if __name__ == "__main__":
 
     # Create client
     client = RPiWebSocketClient(
-        host="192.168.0.91",  # Your laptop IP
+        host=None,  # Laptop IP (loaded from config.yaml)
         port=8765
     )
 

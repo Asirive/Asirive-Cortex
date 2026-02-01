@@ -298,7 +298,7 @@ development:
 # LAPTOP SERVER CONFIGURATION
 # =====================================================
 laptop_server:
-  host: "192.168.0.171"  # Laptop IP address - UPDATE THIS for your network
+  host: "10.226.221.101"  # Laptop IP address - UPDATE THIS for your network
   port: 8765
 
 # =====================================================
@@ -308,6 +308,25 @@ zmq:
   video_port: 5555  # Port for ZMQ video streaming (RPi5 -> Laptop)
   topic_prefix: "cortex-video"  # Topic prefix for video frames
   high_water_mark: 1  # Only keep latest frame (low latency)
+
+# =====================================================
+# RPI5 DEVICE CONFIGURATION (for sync tools)
+# =====================================================
+rpi5_device:
+  host: "10.226.221.31"  # RPi5 IP address - used by sync tools
+  user: "cortex"  # SSH username for sync
+  path: "/home/cortex/ProjectCortex"  # Remote path for sync
+
+# =====================================================
+# BLUETOOTH CONFIGURATION
+# =====================================================
+bluetooth:
+  enabled: true  # Enable Bluetooth audio
+  auto_connect: true  # Auto-connect to headphones on startup
+  auto_reconnect: true  # Auto-reconnect if disconnected
+  device_name: "CMF Buds"  # Target Bluetooth device name
+  retry_count: 3  # Number of connection retries
+  scan_duration: 15  # Seconds to scan for new devices
 
 # =====================================================
 # HARDWARE SPECIFIC CONFIGURATIONS
