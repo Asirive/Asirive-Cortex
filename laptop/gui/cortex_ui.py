@@ -534,9 +534,11 @@ class DashboardOverviewWidget(QWidget):
 
     # --- Actions ---
     def _send_mode(self, enabled):
+        mode = "PRODUCTION" if enabled else "DEV"
+        logger.info(f"🎛️ Mode toggle clicked: enabled={enabled}, sending mode='{mode}'")
         cmd = {
             "action": "SET_MODE",
-            "mode": "PRODUCTION" if enabled else "DEV"
+            "mode": mode
         }
         self.send_command.emit(cmd)
 

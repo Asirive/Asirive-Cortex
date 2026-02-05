@@ -292,29 +292,44 @@ class BluetoothAudioManager:
                 timeout=10
             )
             
+            logger.debug(f"wpctl status output:\n{result.stdout}")
+            
             sinks = []
             sources = []
             current_section = None
+            in_audio_section = False
             
             for line in result.stdout.split('\n'):
-                # Detect sections
+                # Track when we're in the Audio section
+                if line.startswith("Audio"):
+                    in_audio_section = True
+                    continue
+                elif line.startswith("Video") or line.startswith("Settings"):
+                    in_audio_section = False
+                    current_section = None
+                    continue
+                
+                if not in_audio_section:
+                    continue
+                
+                # Detect subsections within Audio
                 if "Sinks:" in line:
                     current_section = "sinks"
                     continue
                 elif "Sources:" in line:
                     current_section = "sources"
                     continue
-                elif "Sink endpoints:" in line or "Source endpoints:" in line:
-                    current_section = None
-                    continue
-                elif line.strip() == "" or "Video" in line or "Filters:" in line:
+                elif "Devices:" in line or "endpoints:" in line or "Streams:" in line:
                     current_section = None
                     continue
                 
-                # Parse device lines
+                # Parse device lines - handle tree characters (├─, │, └─)
                 if current_section:
+                    # Remove tree characters and clean the line
+                    clean_line = re.sub(r'[├│└─]', '', line)
+                    
                     # Format: "  * 47. Device Name [vol: 1.00]" or "    47. Device Name"
-                    match = re.match(r'\s+(\*?)\s*(\d+)\.\s+(.+?)(?:\s+\[vol:.*\])?$', line)
+                    match = re.match(r'\s*(\*?)\s*(\d+)\.\s+(.+?)(?:\s+\[vol:.*\])?$', clean_line)
                     if match:
                         device = {
                             "default": match.group(1) == "*",
@@ -323,9 +338,12 @@ class BluetoothAudioManager:
                         }
                         if current_section == "sinks":
                             sinks.append(device)
+                            logger.debug(f"Found sink: {device}")
                         else:
                             sources.append(device)
+                            logger.debug(f"Found source: {device}")
             
+            logger.info(f"Audio devices found - Sinks: {len(sinks)}, Sources: {len(sources)}")
             return sinks, sources
             
         except Exception as e:
@@ -345,21 +363,33 @@ class BluetoothAudioManager:
         mac_formatted = mac_address.replace(":", "_")
         sinks, sources = self.get_audio_devices()
         
+        logger.info(f"Looking for Bluetooth audio: MAC={mac_formatted}, device_name='{self.device_name}'")
+        logger.info(f"Available sinks ({len(sinks)}): {sinks}")
+        logger.info(f"Available sources ({len(sources)}): {sources}")
+        
         sink_id = None
         source_id = None
         
         # Find sink (speaker/headphone output)
+        # Match by: MAC address, "bluez" keyword, or device name
         for sink in sinks:
-            if mac_formatted in sink["name"] or "bluez" in sink["name"].lower():
+            sink_name_lower = sink["name"].lower()
+            logger.debug(f"Checking sink: '{sink['name']}' against '{self.device_name.lower()}'")
+            if (mac_formatted.lower() in sink_name_lower or 
+                "bluez" in sink_name_lower or
+                self.device_name.lower() in sink_name_lower):
                 sink_id = sink["id"]
-                logger.debug(f"Found Bluetooth sink: {sink['name']} (ID: {sink_id})")
+                logger.info(f"✅ Found Bluetooth sink: {sink['name']} (ID: {sink_id})")
                 break
         
         # Find source (microphone input)
         for source in sources:
-            if mac_formatted in source["name"] or "bluez" in source["name"].lower():
+            source_name_lower = source["name"].lower()
+            if (mac_formatted.lower() in source_name_lower or 
+                "bluez" in source_name_lower or
+                self.device_name.lower() in source_name_lower):
                 source_id = source["id"]
-                logger.debug(f"Found Bluetooth source: {source['name']} (ID: {source_id})")
+                logger.info(f"✅ Found Bluetooth source: {source['name']} (ID: {source_id})")
                 break
         
         return sink_id, source_id
@@ -429,10 +459,12 @@ class BluetoothAudioManager:
         
         # Step 4: Connect with retries
         connected = False
+        was_already_connected = False
         for attempt in range(1, self.max_retries + 1):
             if self.is_connected(mac):
                 logger.info("Device already connected")
                 connected = True
+                was_already_connected = True
                 break
             
             logger.info(f"Connection attempt {attempt}/{self.max_retries}...")
@@ -451,16 +483,27 @@ class BluetoothAudioManager:
         self.connected_mac = mac
         
         # Step 5: Wait for audio profile to initialize
-        logger.info("Waiting for audio profile to initialize...")
-        time.sleep(2)
+        # If device was already connected, PipeWire should have it registered already
+        # If freshly connected, PipeWire needs more time
+        if was_already_connected:
+            logger.info("Device was already connected, checking audio immediately...")
+            time.sleep(1)
+        else:
+            logger.info("Fresh connection - waiting for audio profile to initialize...")
+            time.sleep(5)
         
-        # Step 6: Find and set default audio devices
-        sink_id, source_id = self.find_bluetooth_audio(mac)
+        # Step 6: Find and set default audio devices with retries
+        sink_id = None
+        source_id = None
         
-        if sink_id is None:
-            logger.warning("Bluetooth audio sink (speaker) not found - retrying...")
-            time.sleep(2)
+        for attempt in range(1, 6):  # Try up to 5 times
             sink_id, source_id = self.find_bluetooth_audio(mac)
+            
+            if sink_id is not None:
+                break
+            
+            logger.warning(f"Bluetooth audio sink not found - attempt {attempt}/5, retrying in 3s...")
+            time.sleep(3)
         
         success = True
         

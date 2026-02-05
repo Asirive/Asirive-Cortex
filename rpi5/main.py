@@ -893,10 +893,15 @@ class CortexSystem:
         """Handle incoming commands from dashboard"""
         action = cmd.get("action")
         logger.info(f"📥 Dashboard Command: {action}")
+        logger.debug(f"📥 Full command payload: {cmd}")
         
         if action == "SET_MODE":
             mode = cmd.get("mode")
-            self.set_mode(mode)
+            logger.info(f"📥 SET_MODE command received: mode='{mode}'")
+            if mode:
+                self.set_mode(mode)
+            else:
+                logger.error(f"❌ SET_MODE missing 'mode' field! Full cmd: {cmd}")
         elif action == "RESTART":
              self.stop()
              sys.exit(0) # Systemd should restart
@@ -938,11 +943,20 @@ class CortexSystem:
 
     def set_mode(self, mode: str):
         """Set system operation mode"""
+        logger.info(f"🔄 set_mode() called with: '{mode}'")
+        
+        if mode is None:
+            logger.error("❌ set_mode() called with None! Ignoring.")
+            return
+        
         logger.info(f"🔄 Switching to Mode: {mode}")
         
         # Update status display
         if self.status_display:
+            logger.debug(f"📊 Updating status display to: {mode}")
             self.status_display.update_mode(mode)
+        else:
+            logger.warning("⚠️ status_display is None, cannot update mode display")
         
         if mode == "PRODUCTION":
             # Enable VAD (Always On) - only if not already started

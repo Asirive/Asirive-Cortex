@@ -13,7 +13,7 @@ Features:
 Usage:
     from rpi5.fastapi_client import RPi5Client
     client = RPi5Client(
-        host="10.226.221.101",  # Laptop IP
+        host="10.17.233.101",  # Laptop IP
         port=8765,
         device_id="rpi5-cortex-001"
     )
@@ -91,7 +91,7 @@ class RPi5Client(AsyncWebSocketClient):
         if host is None:
             from rpi5.config.config import get_config
             config = get_config()
-            host = config.get('laptop_server', {}).get('host', '10.226.221.101')
+            host = config.get('laptop_server', {}).get('host', '10.17.233.101')
         
         # Build WebSocket URL
         url = f"ws://{host}:{port}/ws/{device_id}"
@@ -176,7 +176,7 @@ class RPi5Client(AsyncWebSocketClient):
         command = cmd_data.get("action")
 
         logger.info(f"📥 Received COMMAND from laptop: {command}")
-        logger.debug(f"📥 Full command data: {cmd_data}")
+        logger.info(f"📥 Full command data: {cmd_data}")  # Changed to INFO for visibility
 
         # Handle built-in commands
         if command == "START_VIDEO_STREAMING":
@@ -189,6 +189,9 @@ class RPi5Client(AsyncWebSocketClient):
             logger.info("🔄 RESTART command received")
             if self.on_command:
                 self.on_command({"action": "restart"})
+        elif command == "SET_MODE":
+            mode = cmd_data.get("mode")
+            logger.info(f"🔄 SET_MODE command: mode='{mode}'")
 
         # Forward ALL commands to callback (for main.py to handle SET_MODE, TEXT_QUERY, etc.)
         if self.on_command:
