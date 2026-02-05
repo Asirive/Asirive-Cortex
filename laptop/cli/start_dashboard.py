@@ -166,13 +166,24 @@ class DashboardApplication:
             try:
                 from shared.api import BaseMessage, MessageType
                 
+                # Optimization: Strip absolute coordinates for network transmission
+                # The RPi5 should use the normalized 'bbox' dict
+                optimized_detections = []
+                for det in detections:
+                    # Create a copy to avoid modifying the original used by local UI
+                    opt_det = det.copy()
+                    # Remove absolute keys if they exist
+                    for key in ['x1', 'y1', 'x2', 'y2']:
+                        opt_det.pop(key, None)
+                    optimized_detections.append(opt_det)
+                
                 # Create DETECTIONS message with source="laptop"
                 msg = BaseMessage(
                     type=MessageType.DETECTIONS,
                     data={
                         "source": "laptop",
                         "layer": "layer1",
-                        "detections": detections,
+                        "detections": optimized_detections,
                         "inference_time_ms": result.get("inference_time_ms", 0)
                     }
                 )

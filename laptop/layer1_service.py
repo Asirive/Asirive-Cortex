@@ -132,6 +132,8 @@ class Layer1Service:
                 
                 # Parse Results
                 parsed_results = []
+                frame_h, frame_w = frame.shape[:2]
+                
                 for r in results:
                     boxes = r.boxes
                     for box in boxes:
@@ -140,11 +142,18 @@ class Layer1Service:
                         conf = float(box.conf[0])
                         name = self.model.names[cls]
                         
+                        # Calculate normalized coordinates
+                        nx1 = round(x1 / frame_w, 4)
+                        ny1 = round(y1 / frame_h, 4)
+                        nx2 = round(x2 / frame_w, 4)
+                        ny2 = round(y2 / frame_h, 4)
+                        
                         parsed_results.append({
                             "class": name,
                             "confidence": conf,
-                            "bbox": [int(x1), int(y1), int(x2), int(y2)],
-                            # Add individual keys for UI compatibility
+                            # Normalized bbox for Protocol/RPi5
+                            "bbox": {"x1": nx1, "y1": ny1, "x2": nx2, "y2": ny2},
+                            # Absolute coords for Local UI
                             "x1": int(x1),
                             "y1": int(y1),
                             "x2": int(x2),

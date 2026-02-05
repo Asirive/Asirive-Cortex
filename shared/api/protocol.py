@@ -79,10 +79,10 @@ class BoundingBox:
 
     def to_dict(self) -> Dict[str, float]:
         return {
-            "x1": self.x1,
-            "y1": self.y1,
-            "x2": self.x2,
-            "y2": self.y2,
+            "x1": round(self.x1, 4),
+            "y1": round(self.y1, 4),
+            "x2": round(self.x2, 4),
+            "y2": round(self.y2, 4),
         }
 
     @classmethod
@@ -108,7 +108,7 @@ class Detection:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "class_name": self.class_name,
-            "confidence": self.confidence,
+            "confidence": round(self.confidence, 3),
             "bbox": self.bbox.to_dict(),
             "layer": self.layer,
             "track_id": self.track_id,
