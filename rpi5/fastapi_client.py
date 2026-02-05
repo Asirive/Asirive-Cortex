@@ -233,14 +233,18 @@ class RPi5Client(AsyncWebSocketClient):
                 cls = det.get("class", det.get("class_name", "unknown"))
                 conf = det.get("confidence", 0)
                 
-                # Handle both bbox list and individual x1,y1,x2,y2 keys
+                # Handle bbox (dict or list) and individual keys
+                bbox_str = "[?,?,?,?]"
                 if "bbox" in det:
                     bbox = det["bbox"]
-                    bbox_str = f"[{int(bbox[0])}, {int(bbox[1])}, {int(bbox[2])}, {int(bbox[3])}]"
+                    if isinstance(bbox, dict):
+                        # Normalized dict: {"x1": 0.1, ...}
+                        bbox_str = f"[norm: {bbox.get('x1', 0):.2f}, {bbox.get('y1', 0):.2f}, ...]"
+                    elif isinstance(bbox, list):
+                        # Absolute list: [100, 200, 300, 400]
+                        bbox_str = f"[{int(bbox[0])}, {int(bbox[1])}, {int(bbox[2])}, {int(bbox[3])}]"
                 elif "x1" in det:
                     bbox_str = f"[{int(det['x1'])}, {int(det['y1'])}, {int(det['x2'])}, {int(det['y2'])}]"
-                else:
-                    bbox_str = "[?,?,?,?]"
                 
                 # Log at DEBUG level (status display shows summary)
                 logger.debug(f"[{timestamp}] <laptop> {cls} ({int(conf*100)}%) bbox={bbox_str}")
