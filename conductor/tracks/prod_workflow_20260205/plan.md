@@ -1,9 +1,9 @@
 # Implementation Plan: Stabilize Production Workflow
 
-## Phase 1: Laptop Service Stabilization
-- [ ] Task: Audit \laptop/layer1_service.py\ for NPF model loading and GPU utilization.
-- [ ] Task: Implement robust error handling for ZMQ video stream interruptions.
-- [ ] Task: Conductor - User Manual Verification 'Phase 1' (Protocol in workflow.md)
+## Phase 1: Laptop Service Stabilization [checkpoint: 2f2defa]
+- [x] Task: Audit \laptop/layer1_service.py\ for NPF model loading and GPU utilization. c8785d0
+- [x] Task: Implement robust error handling for ZMQ video stream interruptions. cca0a1b
+- [x] Task: Conductor - User Manual Verification 'Phase 1' (Protocol in workflow.md)
 
 ## Phase 2: Communication & Sync
 - [ ] Task: Optimize WebSocket message payload for NPF detection metadata.
