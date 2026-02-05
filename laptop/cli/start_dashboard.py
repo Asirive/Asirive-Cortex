@@ -603,6 +603,7 @@ class DashboardApplication:
         import asyncio
 
         logger.info(f"📤 UI Command: {cmd.get('action', cmd)}")
+        logger.info(f"📤 Full command payload: {cmd}")
 
         # Broadcast
         if self.use_fastapi and self.fastapi_server:
