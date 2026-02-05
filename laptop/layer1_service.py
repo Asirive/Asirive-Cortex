@@ -39,50 +39,48 @@ class Layer1Service:
     def initialize(self):
         """Load model with GPU optimizations"""
         try:
-            # Check for CUDA
-            if torch.cuda.is_available():
-                self.device = "cuda:0"
-                gpu_name = torch.cuda.get_device_name(0)
-                logger.info(f"🚀 Using GPU: {gpu_name} (CUDA {torch.version.cuda})")
-                
-                # Enable cuDNN benchmark for optimal convolution algorithms
-                torch.backends.cudnn.benchmark = True
-                logger.info("✅ cuDNN benchmark mode enabled")
-            else:
+            # Check for CUDA availability and user preference
+            if "cuda" in self.device and not torch.cuda.is_available():
+                logger.warning(f"⚠️  CUDA requested but not available, falling back to CPU")
                 self.device = "cpu"
-                self.use_half = False  # FP16 not supported on CPU
-                logger.warning("⚠️  CUDA not available, using CPU")
+                self.use_half = False
+
+            if "cuda" in self.device:
+                try:
+                    gpu_name = torch.cuda.get_device_name(0)
+                    logger.info(f"🚀 Using GPU: {gpu_name} (CUDA {torch.version.cuda})")
+                    # Enable cuDNN benchmark for optimal convolution algorithms
+                    torch.backends.cudnn.benchmark = True
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to initialize CUDA: {e}. Falling back to CPU.")
+                    self.device = "cpu"
+                    self.use_half = False
+            
+            if self.device == "cpu":
+                logger.info("💻 Using CPU for inference")
+                self.use_half = False
 
             logger.info(f"🚀 Loading Layer 1 Model: {self.model_path} on {self.device}")
             
             # Allow loading local file if it exists in current dir or project root
-            # Ultralytics handles relative paths well, but let's be safe
             import os
-            
-            # Check if model is in 'models/' subdirectory
             if not os.path.exists(self.model_path):
                 possible_path = os.path.join("models", self.model_path)
                 if os.path.exists(possible_path):
                     self.model_path = possible_path
                     logger.info(f"📁 Found model in {self.model_path}")
             
-            if not os.path.exists(self.model_path) and not self.model_path.endswith(".pt"):
-                 # Maybe it's a standard hub model
-                 pass
-            
             self.model = YOLO(self.model_path)
             
-            # Explicitly move model to GPU (YOLOE loads on CPU by default)
-            if self.device != "cpu":
-                self.model.to(self.device)
-                logger.info(f"✅ Model moved to {self.device}")
-                
-                if self.use_half:
-                    logger.info("✅ FP16 (half precision) enabled - faster inference")
+            # Explicitly move model to device
+            self.model.to(self.device)
+            logger.info(f"✅ Model moved to {self.device}")
+            
+            if self.use_half and self.device != "cpu":
+                logger.info("✅ FP16 (half precision) enabled - faster inference")
             
             # Warmup inference to initialize CUDA kernels
             logger.info("🔥 Warming up model...")
-            import numpy as np
             dummy_frame = np.zeros((640, 640, 3), dtype=np.uint8)
             for _ in range(3):
                 self.model(dummy_frame, conf=self.confidence, device=self.device, verbose=False, half=self.use_half)
