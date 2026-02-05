@@ -28,9 +28,11 @@ class VideoReceiver:
     
     Message format: [4-byte topic length][topic bytes][jpeg data]
     """
-    def __init__(self, port: int = 5555, on_frame: Optional[Callable] = None):
+    def __init__(self, port: int = 5555, on_frame: Optional[Callable] = None, timeout: float = 3.0):
         self.port = port
         self.on_frame = on_frame
+        self.on_status_change: Optional[Callable[[str], None]] = None
+        self.timeout = timeout
         self.running = False
         self.thread = None
         
@@ -43,8 +45,9 @@ class VideoReceiver:
         self.last_frame_time = 0.0
         self.frame_count = 0
         self.last_log_time = time.time()
+        self.stream_active = False
         
-        logger.info(f"[ZMQ-RX] VideoReceiver initialized (port={port})")
+        logger.info(f"[ZMQ-RX] VideoReceiver initialized (port={port}, timeout={timeout}s)")
         
     def start(self):
         """Start receiver thread"""
@@ -118,17 +121,31 @@ class VideoReceiver:
         logger.info("[ZMQ-RX] Stopped")
             
     def _receive_loop(self):
-        """Main receive loop"""
+        """Main receive loop with robust error handling and timeout detection"""
         logger.info("[ZMQ-RX] 🧵 Receive loop started, waiting for frames...")
+        
+        # Reset stats
+        self.last_frame_time = time.time()
+        self.stream_active = False
 
         while self.running:
             try:
-                # Poll with timeout to allow checking self.running
+                # Poll with timeout to allow checking self.running and stream timeout
                 if not self.socket.poll(100):  # 100ms timeout
+                    # Check for stream timeout
+                    if self.stream_active and (time.time() - self.last_frame_time > self.timeout):
+                        self.stream_active = False
+                        logger.warning(f"[ZMQ-RX] ⚠️ Stream lost (no frames for {self.timeout}s)")
+                        if self.on_status_change:
+                            try:
+                                self.on_status_change("LOST")
+                            except Exception as e:
+                                logger.error(f"Error in on_status_change callback: {e}")
                     continue
                     
                 # Receive single-part message (not multipart!)
                 message = self.socket.recv(zmq.NOBLOCK)
+                now = time.time()
                 
                 if len(message) < 4:
                     logger.warning(f"[ZMQ-RX] Message too short: {len(message)} bytes")
@@ -140,12 +157,21 @@ class VideoReceiver:
                 if len(message) < 4 + topic_len:
                     logger.warning(f"[ZMQ-RX] Malformed message: topic_len={topic_len}, msg_len={len(message)}")
                     continue
+                
+                # Update stream status if restored
+                if not self.stream_active:
+                    self.stream_active = True
+                    logger.info("[ZMQ-RX] ✅ Stream restored/active")
+                    if self.on_status_change:
+                        try:
+                            self.on_status_change("ACTIVE")
+                        except Exception as e:
+                            logger.error(f"Error in on_status_change callback: {e}")
                     
                 topic = message[4:4+topic_len].decode('utf-8', errors='replace')
                 image_data = message[4+topic_len:]
                 
                 self.frame_count += 1
-                now = time.time()
                 
                 # Log first frame immediately
                 if self.frame_count == 1:
