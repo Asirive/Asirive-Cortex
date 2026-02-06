@@ -57,6 +57,12 @@ class BluetoothAudioManager:
             max_retries: Maximum connection attempts
         """
         if self._initialized:
+            # Allow updating device_name if a different one is passed
+            if device_name != self.device_name:
+                logger.info(f"BluetoothAudioManager: updating device_name from '{self.device_name}' to '{device_name}'")
+                self.device_name = device_name
+            if max_retries != self.max_retries:
+                self.max_retries = max_retries
             return
             
         self.device_name = device_name
@@ -371,26 +377,45 @@ class BluetoothAudioManager:
         source_id = None
         
         # Find sink (speaker/headphone output)
-        # Match by: MAC address, "bluez" keyword, or device name
+        # Priority: 1) MAC address match, 2) device name match, 3) "bluez" fallback
         for sink in sinks:
             sink_name_lower = sink["name"].lower()
             logger.debug(f"Checking sink: '{sink['name']}' against '{self.device_name.lower()}'")
-            if (mac_formatted.lower() in sink_name_lower or 
-                "bluez" in sink_name_lower or
-                self.device_name.lower() in sink_name_lower):
+            if mac_formatted.lower() in sink_name_lower:
                 sink_id = sink["id"]
-                logger.info(f"✅ Found Bluetooth sink: {sink['name']} (ID: {sink_id})")
+                logger.info(f"✅ Found Bluetooth sink (MAC match): {sink['name']} (ID: {sink_id})")
+                break
+            elif self.device_name.lower() in sink_name_lower:
+                sink_id = sink["id"]
+                logger.info(f"✅ Found Bluetooth sink (name match): {sink['name']} (ID: {sink_id})")
                 break
         
-        # Find source (microphone input)
+        # Fallback: if no MAC or name match, try "bluez" keyword (only one BT device expected)
+        if sink_id is None:
+            for sink in sinks:
+                if "bluez" in sink["name"].lower():
+                    sink_id = sink["id"]
+                    logger.info(f"✅ Found Bluetooth sink (bluez fallback): {sink['name']} (ID: {sink_id})")
+                    break
+        
+        # Find source (microphone input) - same priority
         for source in sources:
             source_name_lower = source["name"].lower()
-            if (mac_formatted.lower() in source_name_lower or 
-                "bluez" in source_name_lower or
-                self.device_name.lower() in source_name_lower):
+            if mac_formatted.lower() in source_name_lower:
                 source_id = source["id"]
-                logger.info(f"✅ Found Bluetooth source: {source['name']} (ID: {source_id})")
+                logger.info(f"✅ Found Bluetooth source (MAC match): {source['name']} (ID: {source_id})")
                 break
+            elif self.device_name.lower() in source_name_lower:
+                source_id = source["id"]
+                logger.info(f"✅ Found Bluetooth source (name match): {source['name']} (ID: {source_id})")
+                break
+        
+        if source_id is None:
+            for source in sources:
+                if "bluez" in source["name"].lower():
+                    source_id = source["id"]
+                    logger.info(f"✅ Found Bluetooth source (bluez fallback): {source['name']} (ID: {source_id})")
+                    break
         
         return sink_id, source_id
     
@@ -425,6 +450,70 @@ class BluetoothAudioManager:
         except Exception as e:
             logger.error(f"Error setting default source: {e}")
             return False
+
+    def ensure_hfp_profile(self, mac_address: str) -> bool:
+        """
+        Ensure the device is using HFP/HSP profile to enable the microphone.
+        
+        Uses pactl (PulseAudio compat layer) with named profiles, which is
+        reliable on PipeWire. wpctl set-profile with numeric indices does not
+        map correctly to Bluetooth profiles.
+        
+        Tries mSBC first (better audio quality), then falls back to CVSD.
+        
+        Args:
+            mac_address: Device MAC
+            
+        Returns:
+            True if profile set and source appeared
+        """
+        # Build the pactl card name from MAC: bluez_card.XX_XX_XX_XX_XX_XX
+        card_name = f"bluez_card.{mac_address.replace(':', '_')}"
+        
+        # Profiles to try, in priority order:
+        # - headset-head-unit: mSBC codec (wideband, better quality)
+        # - headset-head-unit-cvsd: CVSD codec (narrowband, fallback)
+        candidate_profiles = ["headset-head-unit", "headset-head-unit-cvsd"]
+        
+        logger.info(f"Switching to HFP/HSP profile on card {card_name}")
+        
+        for profile_name in candidate_profiles:
+            try:
+                logger.info(f"Trying profile: {profile_name}...")
+                result = subprocess.run(
+                    ["pactl", "set-card-profile", card_name, profile_name],
+                    capture_output=True, text=True, timeout=5
+                )
+                
+                if result.returncode != 0:
+                    logger.warning(f"pactl set-card-profile failed: {result.stderr.strip()}")
+                    continue
+                
+                # Wait for PipeWire to reconfigure audio nodes
+                time.sleep(2)
+                
+                # Check if a source (mic) appeared
+                _, sources = self.get_audio_devices()
+                mac_formatted = mac_address.replace(":", "_").lower()
+                for source in sources:
+                    source_lower = source["name"].lower()
+                    if (mac_formatted in source_lower or 
+                        self.device_name.lower() in source_lower or
+                        "bluez" in source_lower):
+                        logger.info(f"Profile '{profile_name}' enabled mic: {source['name']}")
+                        return True
+                
+                logger.info(f"Profile '{profile_name}' did not produce a mic source")
+                
+            except FileNotFoundError:
+                logger.error("pactl not found. Install pulseaudio-utils: sudo apt install pulseaudio-utils")
+                return False
+            except Exception as e:
+                logger.warning(f"Error trying profile '{profile_name}': {e}")
+                continue
+        
+        logger.warning("No HFP/HSP profile produced a mic source")
+        return False
     
     # =========================================================================
     # High-Level API
@@ -483,8 +572,6 @@ class BluetoothAudioManager:
         self.connected_mac = mac
         
         # Step 5: Wait for audio profile to initialize
-        # If device was already connected, PipeWire should have it registered already
-        # If freshly connected, PipeWire needs more time
         if was_already_connected:
             logger.info("Device was already connected, checking audio immediately...")
             time.sleep(1)
@@ -492,18 +579,30 @@ class BluetoothAudioManager:
             logger.info("Fresh connection - waiting for audio profile to initialize...")
             time.sleep(5)
         
-        # Step 6: Find and set default audio devices with retries
+        # Step 6: Find and set default audio devices
+        # First, wait for PipeWire to register the sink (up to 3 attempts)
         sink_id = None
         source_id = None
         
-        for attempt in range(1, 6):  # Try up to 5 times
+        for attempt in range(1, 4):
             sink_id, source_id = self.find_bluetooth_audio(mac)
-            
             if sink_id is not None:
                 break
-            
-            logger.warning(f"Bluetooth audio sink not found - attempt {attempt}/5, retrying in 3s...")
+            logger.warning(f"Bluetooth audio not ready - attempt {attempt}/3, retrying in 3s...")
             time.sleep(3)
+        
+        # If we have sink but no source, try HFP/HSP profile switch
+        # ensure_hfp_profile already iterates through candidate profiles
+        # and verifies source appearance, so we only need to call it once
+        if sink_id is not None and source_id is None:
+            logger.info("Sink found but NO source (mic). Attempting HFP/HSP profile switch...")
+            profile_ok = self.ensure_hfp_profile(mac)
+            
+            if profile_ok:
+                # Re-scan to pick up the newly appeared source
+                sink_id, source_id = self.find_bluetooth_audio(mac)
+            else:
+                logger.warning("HFP/HSP profile switch failed - continuing with A2DP (output only)")
         
         success = True
         

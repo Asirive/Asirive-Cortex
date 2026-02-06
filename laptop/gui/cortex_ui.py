@@ -295,6 +295,25 @@ class ProductionToggle(QWidget):
             self.lbl_status.setStyleSheet(f"color: {Theme.TEXT_GRAY}; font-weight: bold; font-size: 14px;")
             self.btn_toggle.setText("ENABLE PRODUCTION")
         self.toggled.emit(checked)
+    
+    def set_mode_state(self, mode: str):
+        """Programmatically set toggle state from server notification.
+        
+        Blocks signals to avoid feedback loop (re-sending the command back).
+        """
+        is_production = (mode == "PRODUCTION")
+        self.btn_toggle.blockSignals(True)
+        self.btn_toggle.setChecked(is_production)
+        self.btn_toggle.blockSignals(False)
+        # Update label/style without emitting toggled
+        if is_production:
+            self.lbl_status.setText("PRODUCTION ACTIVE")
+            self.lbl_status.setStyleSheet(f"color: {Theme.NEON_PURPLE}; font-weight: bold; font-size: 14px;")
+            self.btn_toggle.setText("DISABLE PRODUCTION")
+        else:
+            self.lbl_status.setText("DEV MODE")
+            self.lbl_status.setStyleSheet(f"color: {Theme.TEXT_GRAY}; font-weight: bold; font-size: 14px;")
+            self.btn_toggle.setText("ENABLE PRODUCTION")
 
 
 class TopNavBar(GlassCard):
@@ -543,13 +562,11 @@ class DashboardOverviewWidget(QWidget):
         self.send_command.emit(cmd)
 
     def _send_mode_update(self, mode_text: str):
-        """Send mode update command to RPi5"""
+        """Send Layer 1 mode update command to RPi5"""
         cmd = {
-            "type": "CONFIG",
-            "data": {
-                "layer": "layer1",
-                "mode": mode_text
-            }
+            "action": "SET_LAYER_MODE",
+            "layer": "layer1",
+            "mode": mode_text
         }
         self.send_command.emit(cmd)
 
@@ -793,6 +810,7 @@ class DashboardSignals(QObject):
     client_connected = pyqtSignal(str)
     client_disconnected = pyqtSignal(str)
     send_command = pyqtSignal(dict) # UI -> Server
+    mode_changed = pyqtSignal(str)  # Server -> UI (PRODUCTION / DEV)
 
 class CortexDashboard(QMainWindow):
     def __init__(self, config: DashboardConfig = None):
@@ -848,6 +866,7 @@ class CortexDashboard(QMainWindow):
         self.signals.system_log.connect(self.on_system_log)
         self.signals.client_connected.connect(self.on_client_connected)
         self.signals.client_disconnected.connect(self.on_client_disconnected)
+        self.signals.mode_changed.connect(self.on_mode_changed)
 
     def switch_tab(self, index):
         self.stack.setCurrentIndex(index)
@@ -896,7 +915,7 @@ class CortexDashboard(QMainWindow):
                 conf = det.get("confidence", 0.0)
 
                 # Color based on layer
-                color = QColor(Theme.NEON_RED) if layer == "layer0" else QColor(Theme.NEON_YELLOW)
+                color = QColor(Theme.NEON_GREEN) if layer == "layer0" else QColor(Theme.NEON_YELLOW)
                 
                 # Draw Box
                 pen = QPen(color, 3)
@@ -989,6 +1008,13 @@ class CortexDashboard(QMainWindow):
         # Fix: Ensure navbar exists before updating
         if hasattr(self, 'navbar') and self.navbar:
             self.navbar.set_connection_status(False)
+
+    def on_mode_changed(self, mode: str):
+        """Handle mode change notification from RPi5."""
+        self.on_system_log(f"RPi5 Mode Changed: {mode}", "INFO")
+        if hasattr(self, 'view_overview') and self.view_overview:
+            if hasattr(self.view_overview, 'prod_toggle') and self.view_overview.prod_toggle:
+                self.view_overview.prod_toggle.set_mode_state(mode)
         
 if __name__ == "__main__":
     app = QApplication(sys.argv)

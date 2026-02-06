@@ -13,7 +13,7 @@ Features:
 Usage:
     from rpi5.fastapi_client import RPi5Client
     client = RPi5Client(
-        host="10.17.233.101",  # Laptop IP
+        host="10.52.86.101",  # Laptop IP
         port=8765,
         device_id="rpi5-cortex-001"
     )
@@ -91,7 +91,7 @@ class RPi5Client(AsyncWebSocketClient):
         if host is None:
             from rpi5.config.config import get_config
             config = get_config()
-            host = config.get('laptop_server', {}).get('host', '10.17.233.101')
+            host = config.get('laptop_server', {}).get('host', '10.52.86.101')
         
         # Build WebSocket URL
         url = f"ws://{host}:{port}/ws/{device_id}"
@@ -119,6 +119,11 @@ class RPi5Client(AsyncWebSocketClient):
 
         # Callbacks
         self.on_command: Optional[Callable[[Dict[str, Any]], None]] = None
+        
+        # Cache for latest Layer 1 detections from laptop
+        # Used by voice handler to include L1 results in responses
+        self.latest_layer1_detections: List[Dict[str, Any]] = []
+        self._layer1_cache_time: float = 0.0  # timestamp of last update
 
         logger.info(f"RPi5 client initialized: {host}:{port} ({device_id})")
 
@@ -187,8 +192,6 @@ class RPi5Client(AsyncWebSocketClient):
             logger.info("🎥 Video streaming DISABLED")
         elif command == "RESTART":
             logger.info("🔄 RESTART command received")
-            if self.on_command:
-                self.on_command({"action": "restart"})
         elif command == "SET_MODE":
             mode = cmd_data.get("mode")
             logger.info(f"🔄 SET_MODE command: mode='{mode}'")
@@ -249,6 +252,11 @@ class RPi5Client(AsyncWebSocketClient):
                 # Log at DEBUG level (status display shows summary)
                 logger.debug(f"[{timestamp}] <laptop> {cls} ({int(conf*100)}%) bbox={bbox_str}")
             
+            # Cache detections for voice handler (Layer 1 queries)
+            self.latest_layer1_detections = detections
+            self._layer1_cache_time = time.time()
+            logger.debug(f"Cached {len(detections)} L1 detections from laptop (DETECTIONS msg)")
+            
             # Update the interactive status display with Layer 1 detections from laptop
             try:
                 from rpi5.main import get_status_display
@@ -287,7 +295,12 @@ class RPi5Client(AsyncWebSocketClient):
         detections = data.get("detections", [])
         inference_time_ms = data.get("inference_time_ms", 0)
         
-        logger.debug(f"📥 LAYER1_RESPONSE: {len(detections)} detections, {inference_time_ms:.1f}ms")
+        logger.debug(f"LAYER1_RESPONSE: {len(detections)} detections, {inference_time_ms:.1f}ms")
+        
+        # Cache detections for voice handler (Layer 1 queries)
+        self.latest_layer1_detections = detections
+        self._layer1_cache_time = time.time()
+        logger.debug(f"Cached {len(detections)} L1 detections from laptop (LAYER1_RESPONSE msg)")
         
         # Update status display with Layer 1 detections from laptop
         try:

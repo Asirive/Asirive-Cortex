@@ -53,7 +53,7 @@ class RPiWebSocketClient:
         if host is None:
             from rpi5.config.config import get_config
             config = get_config()
-            host = config.get('laptop_server', {}).get('host', '10.17.233.101')
+            host = config.get('laptop_server', {}).get('host', '10.52.86.101')
         
         """
         Initialize WebSocket client

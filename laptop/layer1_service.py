@@ -4,8 +4,8 @@ import time
 import cv2
 import numpy as np
 import torch
-from ultralytics import YOLO
-from typing import Optional, Dict, Any, Callable
+from ultralytics import YOLOE
+from typing import Optional, Dict, Any, Callable, List
 
 logger = logging.getLogger(__name__)
 
@@ -14,16 +14,20 @@ class Layer1Service:
     Offloaded Layer 1 (Learner) running on Laptop GPU.
     Consumes frames from VideoReceiver and runs YOLOE inference.
     
+    Uses text-prompt YOLOE with a curated class list (~118 classes)
+    instead of prompt-free mode (4585 LVIS classes).
+    
     Optimizations:
     - FP16 (half precision) for faster inference
     - Explicit GPU placement
     - cuDNN benchmark mode for optimal kernels
     """
-    def __init__(self, model_path: str = "yolov8n.pt", device: str = "cuda:0", confidence: float = 0.5, use_half: bool = True):
+    def __init__(self, model_path: str = "yoloe-26x-seg.pt", device: str = "cuda:0", confidence: float = 0.40, use_half: bool = True, class_names: List[str] = None):
         self.model_path = model_path
         self.device = device if torch.cuda.is_available() else "cpu"
         self.confidence = confidence
         self.use_half = use_half and (self.device != "cpu")  # FP16 only on GPU
+        self.class_names = class_names  # Text-prompt classes (set before warmup)
         self.running = False
         self.model = None
         self.thread = None
@@ -37,30 +41,30 @@ class Layer1Service:
         self.on_result: Optional[Callable[[Dict], None]] = None
 
     def initialize(self):
-        """Load model with GPU optimizations"""
+        """Load YOLOE model with GPU optimizations"""
         try:
             # Check for CUDA availability and user preference
             if "cuda" in self.device and not torch.cuda.is_available():
-                logger.warning(f"⚠️  CUDA requested but not available, falling back to CPU")
+                logger.warning("CUDA requested but not available, falling back to CPU")
                 self.device = "cpu"
                 self.use_half = False
 
             if "cuda" in self.device:
                 try:
                     gpu_name = torch.cuda.get_device_name(0)
-                    logger.info(f"🚀 Using GPU: {gpu_name} (CUDA {torch.version.cuda})")
+                    logger.info(f"Using GPU: {gpu_name} (CUDA {torch.version.cuda})")
                     # Enable cuDNN benchmark for optimal convolution algorithms
                     torch.backends.cudnn.benchmark = True
                 except Exception as e:
-                    logger.warning(f"⚠️ Failed to initialize CUDA: {e}. Falling back to CPU.")
+                    logger.warning(f"Failed to initialize CUDA: {e}. Falling back to CPU.")
                     self.device = "cpu"
                     self.use_half = False
             
             if self.device == "cpu":
-                logger.info("💻 Using CPU for inference")
+                logger.info("Using CPU for inference")
                 self.use_half = False
 
-            logger.info(f"🚀 Loading Layer 1 Model: {self.model_path} on {self.device}")
+            logger.info(f"Loading YOLOE Model: {self.model_path} on {self.device}")
             
             # Allow loading local file if it exists in current dir or project root
             import os
@@ -68,26 +72,70 @@ class Layer1Service:
                 possible_path = os.path.join("models", self.model_path)
                 if os.path.exists(possible_path):
                     self.model_path = possible_path
-                    logger.info(f"📁 Found model in {self.model_path}")
+                    logger.info(f"Found model in {self.model_path}")
             
-            self.model = YOLO(self.model_path)
+            # CRITICAL: Use YOLOE (not YOLO) for text-prompt support
+            self.model = YOLOE(self.model_path)
             
             # Explicitly move model to device
             self.model.to(self.device)
-            logger.info(f"✅ Model moved to {self.device}")
+            logger.info(f"Model moved to {self.device}")
             
             if self.use_half and self.device != "cpu":
-                logger.info("✅ FP16 (half precision) enabled - faster inference")
+                logger.info("FP16 (half precision) enabled - faster inference")
+            
+            # CRITICAL: Set text-prompt classes BEFORE warmup (model is still FP32 here).
+            # Warmup with half=True converts to FP16 internally, which breaks
+            # MobileCLIP text encoder (FP32) if set_classes() runs after warmup.
+            if self.class_names:
+                logger.info(f"Setting {len(self.class_names)} text-prompt classes for YOLOE")
+                self.model.set_classes(self.class_names)
+                logger.info(f"YOLOE classes set successfully ({len(self.class_names)} classes)")
             
             # Warmup inference to initialize CUDA kernels
-            logger.info("🔥 Warming up model...")
+            logger.info("Warming up model...")
             dummy_frame = np.zeros((640, 640, 3), dtype=np.uint8)
             for _ in range(3):
                 self.model(dummy_frame, conf=self.confidence, device=self.device, verbose=False, half=self.use_half)
-            logger.info("✅ Model warmed up and ready")
+            logger.info("Model warmed up and ready")
             
         except Exception as e:
-            logger.error(f"❌ Failed to load model: {e}")
+            logger.error(f"Failed to load model: {e}")
+
+    def set_classes(self, class_names: List[str]):
+        """
+        Set text-prompt classes for YOLOE inference.
+        
+        Can be called at runtime to change the detected classes.
+        Handles FP16 dtype mismatch by temporarily converting to FP32.
+        
+        Args:
+            class_names: List of class names to detect (e.g. ["person", "car", "door"])
+        """
+        self.class_names = class_names
+        
+        if not self.model:
+            logger.info("Classes stored, will be applied when model initializes")
+            return
+        
+        try:
+            logger.info(f"Setting {len(class_names)} text-prompt classes for YOLOE")
+            # MobileCLIP text encoder requires FP32; if model was already warmed up
+            # in FP16, temporarily convert back to FP32 for set_classes()
+            was_half = next(self.model.model.parameters()).dtype == torch.float16
+            if was_half:
+                logger.info("Temporarily converting model to FP32 for set_classes()")
+                self.model.model.float()
+            
+            self.model.set_classes(class_names)
+            
+            if was_half:
+                self.model.model.half()
+                logger.info("Model converted back to FP16")
+            
+            logger.info(f"YOLOE classes set successfully ({len(class_names)} classes)")
+        except Exception as e:
+            logger.error(f"Failed to set YOLOE classes: {e}")
 
     def start(self):
         """Start inference loop"""
@@ -127,8 +175,6 @@ class Layer1Service:
                 # Use half precision if enabled for faster inference
                 results = self.model(frame, conf=self.confidence, device=self.device, verbose=False, half=self.use_half)
                 inference_time = (time.time() - start_time) * 1000
-                
-                # logger.debug(f"Inf: {inference_time:.1f}ms | Dets: {len(results[0].boxes)}")
                 
                 # Parse Results
                 parsed_results = []
@@ -182,7 +228,7 @@ class Layer1Service:
 
     def set_model(self, model_path: str):
         """Hot-swap model"""
-        logger.info(f"🔄 Switching model to: {model_path}")
+        logger.info(f"Switching model to: {model_path}")
         self.model_path = model_path
         # Reload
         self.initialize()

@@ -298,7 +298,7 @@ development:
 # LAPTOP SERVER CONFIGURATION
 # =====================================================
 laptop_server:
-  host: "10.17.233.101"  # Laptop IP address - UPDATE THIS for your network
+  host: "10.52.86.101"  # Laptop IP address - UPDATE THIS for your network
   port: 8765
 
 # =====================================================
@@ -313,7 +313,7 @@ zmq:
 # RPI5 DEVICE CONFIGURATION (for sync tools)
 # =====================================================
 rpi5_device:
-  host: "10.17.233.31"  # RPi5 IP address - used by sync tools
+  host: "10.52.86.31"  # RPi5 IP address - used by sync tools
   user: "cortex"  # SSH username for sync
   path: "/home/cortex/ProjectCortex"  # Remote path for sync
 
@@ -327,6 +327,33 @@ bluetooth:
   device_name: "CMF Buds"  # Target Bluetooth device name
   retry_count: 3  # Number of connection retries
   scan_duration: 15  # Seconds to scan for new devices
+
+# =====================================================
+# HAILO NPU CONFIGURATION (Hailo-8L M.2 HAT)
+# =====================================================
+hailo:
+  enabled: true
+  device_id: null  # Auto-detect (null = first available device)
+
+  # Depth Estimation (fast_depth model)
+  depth:
+    enabled: true
+    model_path: "models/hailo/fast_depth.hef"
+    input_size: [224, 224]
+    scale_factor: 1.0  # Calibration factor: relative depth -> meters
+    hazard_detection:
+      wall_threshold: 1.5        # Distance (m) below which a surface is flagged as wall
+      stair_gradient_threshold: 0.3  # Depth gradient magnitude for stair/curb detection
+      dropoff_threshold: 3.0     # Depth ratio for drop-off detection
+      approach_rate_threshold: 0.1   # Per-frame depth decrease rate for approaching objects
+      alert_cooldown: 3.0        # Seconds between repeated alerts of the same type
+
+  # OCR Recognition (PaddleOCR on Hailo)
+  ocr:
+    enabled: true
+    recognition_model_path: "models/hailo/paddle_ocr_v3_recognition.hef"
+    detection_method: "paddle"   # CPU-based PaddleOCR text detection
+    confidence: 0.5              # Minimum OCR confidence threshold
 
 # =====================================================
 # HARDWARE SPECIFIC CONFIGURATIONS

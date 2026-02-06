@@ -25,7 +25,7 @@ import base64
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import QTimer
 
-from laptop.config import DashboardConfig, default_config
+from laptop.config import DashboardConfig, YOLOEConfig, default_config
 from laptop.server.websocket_server import CortexWebSocketServer
 from laptop.server.fastapi_server import FastAPIServer
 from laptop.gui.cortex_ui import CortexDashboard as CortexDashboardUI, DashboardSignals
@@ -81,10 +81,12 @@ class DashboardApplication:
 
         # Custom ZMQ Pipeline (Hybrid Architecture)
         self.zmq_receiver = VideoReceiver(port=5555, on_frame=self._handle_zmq_frame)
+        self.yoloe_config = YOLOEConfig()
         self.layer1_service = Layer1Service(
-            model_path="models/yoloe-26x-seg-pf.pt",  # X-Large model - highest accuracy (~14 FPS)
-            device="cuda:0",
-            confidence=0.25
+            model_path=self.yoloe_config.model_path,      # yoloe-26x-seg.pt (text-prompt)
+            device=self.yoloe_config.device,
+            confidence=self.yoloe_config.confidence,       # 0.40 (raised from 0.25)
+            class_names=self.yoloe_config.text_prompts     # ~118 curated classes
         )
         self.layer1_service.on_result = self._handle_inference_result
 
@@ -263,6 +265,10 @@ class DashboardApplication:
                     level = "INFO" if status == "connected" else "WARNING"
                     if self._running:
                         self.signals.system_log.emit(f"RPi5 Status: {msg}", level)
+                        
+                        # Forward mode changes to UI toggle
+                        if status == "MODE_CHANGE":
+                            self.signals.mode_changed.emit(msg)
 
                     logger.info(f"Status: {status} - {msg}")
 
@@ -426,6 +432,7 @@ class DashboardApplication:
             self.signals.system_log.connect(self.dashboard.on_system_log)
             self.signals.client_connected.connect(self.dashboard.on_client_connected)
             self.signals.client_disconnected.connect(self.dashboard.on_client_disconnected)
+            self.signals.mode_changed.connect(self.dashboard.on_mode_changed)
 
             # Show dashboard
             self.dashboard.show()
@@ -434,7 +441,7 @@ class DashboardApplication:
             self.signals.send_command.connect(self._handle_ui_command)
 
             # Start ZMQ Pipeline (Hybrid Architecture)
-            logger.info("🚀 Starting ZMQ Video Receiver...")
+            logger.info("Starting ZMQ Video Receiver...")
             self.zmq_receiver.start()
             self.layer1_service.start()
 
@@ -491,6 +498,13 @@ class DashboardApplication:
         fastapi_signals.system_log.connect(self.signals.system_log.emit)
         fastapi_signals.client_connected.connect(self.signals.client_connected.emit)
         fastapi_signals.client_disconnected.connect(self.signals.client_disconnected.emit)
+        
+        # Bridge status updates — detect MODE_CHANGE and emit mode_changed
+        def _handle_fastapi_status(status: str, msg: str):
+            self.signals.system_log.emit(f"RPi5 Status: {msg}", "INFO")
+            if status == "MODE_CHANGE":
+                self.signals.mode_changed.emit(msg)
+        fastapi_signals.status_update.connect(_handle_fastapi_status)
 
         def run_server():
             # Standard blocking uvicorn run
@@ -515,7 +529,8 @@ class DashboardApplication:
                     on_metrics=fastapi_signals.metrics_update.emit,
                     on_detection=fastapi_signals.detection_log.emit,
                     on_connect=fastapi_signals.client_connected.emit,
-                    on_disconnect=fastapi_signals.client_disconnected.emit
+                    on_disconnect=fastapi_signals.client_disconnected.emit,
+                    on_status=fastapi_signals.status_update.emit
                 )
 
                 # Inject into FastAPI app global state

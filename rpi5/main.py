@@ -224,6 +224,27 @@ except ImportError as e:
     logger.warning(f"[DEBUG] ⚠️ DetectionAggregator import failed: {e}")
     DetectionAggregator = None
 
+try:
+    from rpi5.hailo_depth import HailoDepthEstimator
+    logger.info("[DEBUG] ✅ HailoDepthEstimator imported successfully")
+except ImportError as e:
+    logger.warning(f"[DEBUG] ⚠️ HailoDepthEstimator import failed: {e}")
+    HailoDepthEstimator = None
+
+try:
+    from rpi5.audio_alerts import AudioAlertManager
+    logger.info("[DEBUG] ✅ AudioAlertManager imported successfully")
+except ImportError as e:
+    logger.warning(f"[DEBUG] ⚠️ AudioAlertManager import failed: {e}")
+    AudioAlertManager = None
+
+try:
+    from rpi5.hailo_ocr import HailoOCRPipeline
+    logger.info("[DEBUG] ✅ HailoOCRPipeline imported successfully")
+except ImportError as e:
+    logger.warning(f"[DEBUG] ⚠️ HailoOCRPipeline import failed: {e}")
+    HailoOCRPipeline = None
+
 
 # =====================================================
 # ASYNC HELPER FUNCTION
@@ -602,7 +623,7 @@ class CameraHandler:
             try:
                 import types
                 logger.error(f"   picamera2 in modules? {'picamera2' in sys.modules}")
-            except:
+            except Exception:
                  pass
             self.use_picamera = False
             self._start_opencv()
@@ -887,6 +908,60 @@ class CortexSystem:
         self.status_display = init_status_display()
         logger.info("📊 Interactive status display initialized")
 
+        # Initialize Hailo Depth Estimator (lazy — only if config enabled)
+        self.depth_estimator = None
+        self.audio_alerts = None
+        self.ocr_pipeline = None
+        hailo_config = self.config.get('hailo', {})
+        if hailo_config.get('enabled', False):
+            depth_config = hailo_config.get('depth', {})
+            if depth_config.get('enabled', False) and HailoDepthEstimator:
+                try:
+                    hazard_cfg = depth_config.get('hazard_detection', {})
+                    self.depth_estimator = HailoDepthEstimator(
+                        hef_path=depth_config.get('model_path', 'models/hailo/fast_depth.hef'),
+                        scale_factor=depth_config.get('scale_factor', 1.0),
+                        wall_threshold=hazard_cfg.get('wall_threshold', 1.5),
+                        stair_gradient_threshold=hazard_cfg.get('stair_gradient_threshold', 0.3),
+                        dropoff_threshold=hazard_cfg.get('dropoff_threshold', 3.0),
+                        approach_rate_threshold=hazard_cfg.get('approach_rate_threshold', 0.1),
+                        alert_cooldown=hazard_cfg.get('alert_cooldown', 3.0),
+                    )
+                    if self.depth_estimator.is_available:
+                        logger.info("✅ Hailo depth estimator initialized")
+                    else:
+                        logger.warning("⚠️ Hailo depth estimator loaded but NPU not available (will run without depth)")
+                except Exception as e:
+                    logger.error(f"❌ Failed to init Hailo depth estimator: {e}")
+                    self.depth_estimator = None
+
+            # Initialize Audio Alert Manager (for hazard alerts)
+            if self.depth_estimator and AudioAlertManager:
+                try:
+                    self.audio_alerts = AudioAlertManager(
+                        cooldown=hazard_cfg.get('alert_cooldown', 3.0)
+                    )
+                    logger.info(f"✅ Audio alerts initialized ({len(self.audio_alerts.available_alerts)} clips)")
+                except Exception as e:
+                    logger.error(f"❌ Failed to init audio alerts: {e}")
+                    self.audio_alerts = None
+
+            # Initialize OCR pipeline (lazy — detector loaded on first query)
+            ocr_config = hailo_config.get('ocr', {})
+            if ocr_config.get('enabled', False) and HailoOCRPipeline:
+                try:
+                    self.ocr_pipeline = HailoOCRPipeline(
+                        recognition_hef_path=ocr_config.get('recognition_model_path', 'models/hailo/paddle_ocr_v3_recognition.hef'),
+                        confidence_threshold=ocr_config.get('confidence', 0.5),
+                    )
+                    if self.ocr_pipeline.is_available:
+                        logger.info("✅ Hailo OCR pipeline initialized (detector lazy-loaded)")
+                    else:
+                        logger.warning("⚠️ Hailo OCR pipeline loaded but NPU not available")
+                except Exception as e:
+                    logger.error(f"❌ Failed to init Hailo OCR: {e}")
+                    self.ocr_pipeline = None
+
         logger.info("✅ ProjectCortex v2.0 initialized successfully")
 
     def handle_dashboard_command(self, cmd: Dict[str, Any]):
@@ -959,27 +1034,22 @@ class CortexSystem:
             logger.warning("⚠️ status_display is None, cannot update mode display")
         
         if mode == "PRODUCTION":
+            # Setup Bluetooth audio (uses config for device name)
+            if not self.bt_manager:
+                self._init_bluetooth()
+            elif self.bt_manager:
+                logger.info("🎧 PRODUCTION MODE: Ensuring Bluetooth Audio & Mic Profile...")
+                if self.bt_manager.connect_and_setup():
+                    logger.info("✅ Bluetooth audio connected and mic profile ready")
+                else:
+                    logger.warning("⚠️ Bluetooth audio setup incomplete - mic may not work")
+
             # Enable VAD (Always On) - only if not already started
             if not self.voice_coordinator.is_listening:
-                logger.info("🎙️ PRODUCTION MODE: Enforcing VAD Always On")
+                logger.info("🎙️ PRODUCTION MODE: Starting VAD Always On")
                 self.voice_coordinator.start()
             
-            # Setup Bluetooth audio only if not already initialized
-            if not self.bt_manager:
-                logger.info("🎧 PRODUCTION MODE: Setting up Bluetooth Audio...")
-                if BluetoothAudioManager:
-                    try:
-                        self.bt_manager = BluetoothAudioManager(device_name="CMF Buds")
-                        if self.bt_manager.connect_and_setup():
-                            logger.info("✅ Bluetooth audio connected and set as default")
-                        else:
-                            logger.warning("⚠️ Bluetooth audio setup failed - using default audio")
-                    except Exception as e:
-                        logger.error(f"❌ Bluetooth setup error: {e}")
-                else:
-                    logger.warning("⚠️ BluetoothAudioManager not available")
-            
-            # Update Layer 1 to use tighter thresholds?
+            # Update Layer 1 to use tighter thresholds
             if self.layer1:
                 self.layer1.confidence = 0.6 # Stricter
                 
@@ -990,6 +1060,11 @@ class CortexSystem:
             
             if self.layer1:
                 self.layer1.confidence = 0.4 # Laxer
+        
+        # Notify laptop dashboard of mode change
+        if self.ws_client and self.ws_client.is_connected:
+            self.ws_client.send_status("MODE_CHANGE", mode)
+            logger.info(f"Sent MODE_CHANGE={mode} to dashboard")
     
     def _init_bluetooth(self):
         """Initialize Bluetooth audio connection from config."""
@@ -1080,15 +1155,16 @@ class CortexSystem:
         elif self.layer2:
             logger.info("ℹ️ Gemini Live API disabled via GEMINI_LIVE_ENABLED=false")
         
-        # Initialize Bluetooth audio (auto-connect based on config)
-        self._init_bluetooth()
-        
-        # Start Voice Coordinator (always on for voice commands)
-        logger.info("🎙️ Starting Voice Coordinator...")
-        self.voice_coordinator.start()
-        
-        # Set default mode to PRODUCTION (enables all features)
+        # Set default mode to PRODUCTION
+        # This handles: Bluetooth init, voice coordinator start, layer thresholds
         self.set_mode("PRODUCTION")
+
+        # Pre-initialize TTS engines to avoid 5.5s spike on first voice query
+        if TTSRouter:
+            logger.info("🔊 Pre-loading TTS engines (Kokoro + Gemini)...")
+            tts = TTSRouter()
+            gemini_ok, kokoro_ok = tts.initialize()
+            logger.info(f"🔊 TTS ready — Kokoro: {'OK' if kokoro_ok else 'FAIL'}, Gemini: {'OK' if gemini_ok else 'FAIL'}")
 
         logger.info("✅ System started")
         logger.info("📸 Capturing frames...")
@@ -1122,6 +1198,51 @@ class CortexSystem:
 
                 # 2. Run Layer 0 + Layer 1 in parallel
                 all_detections = self._run_dual_detection(frame)
+
+                # 2b. Run Hailo depth estimation + hazard detection
+                depth_map = None
+                if self.depth_estimator and self.depth_estimator.is_available:
+                    try:
+                        depth_map = self.depth_estimator.estimate(frame)
+                        
+                        if depth_map is not None:
+                            # Enrich YOLO detections with distance estimates
+                            for det in all_detections:
+                                bbox = det.get('bbox', [])
+                                if bbox and len(bbox) >= 4:
+                                    dist = self.depth_estimator.get_depth_at_bbox(
+                                        depth_map, bbox, frame.shape
+                                    )
+                                    det['distance_m'] = dist
+                                    det['distance_label'] = self.depth_estimator.classify_distance(dist)
+                            
+                            # Analyze depth map for environmental hazards
+                            hazards = self.depth_estimator.analyze_hazards(
+                                depth_map, all_detections, frame.shape
+                            )
+                            
+                            # Trigger alerts for critical/warning hazards
+                            if hazards:
+                                # Find highest-severity hazard
+                                top_hazard = hazards[0]  # Already sorted by severity
+                                
+                                # Compare with L0 haptic feedback priority
+                                # L0 haptic runs independently via trigger_haptic_feedback()
+                                # Depth hazards use audio alerts (non-competing channel)
+                                if self.audio_alerts and top_hazard.severity.value in ("critical", "warning"):
+                                    self.audio_alerts.play(top_hazard.alert_key)
+                                
+                                # Haptic boost: if depth hazard is CRITICAL and
+                                # L0 haptic is not already at max, pulse the motor
+                                if (top_hazard.severity.value == "critical" 
+                                    and self.layer0 and hasattr(self.layer0, 'haptic')
+                                    and self.layer0.haptic):
+                                    try:
+                                        self.layer0.haptic.pulse(intensity=100, duration=300)
+                                    except Exception:
+                                        pass
+                    except Exception as e:
+                        logger.debug(f"Depth processing error: {e}")
 
                 # 3. Send to laptop dashboard via ZMQ (Hybrid Architecture)
                 if self.video_streamer:
@@ -1175,7 +1296,7 @@ class CortexSystem:
         try:
             with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
                 return float(f.read()) / 1000.0
-        except:
+        except Exception:
             return 0.0
 
     def _run_dual_detection(self, frame: np.ndarray) -> List[Dict[str, Any]]:
@@ -1258,7 +1379,9 @@ class CortexSystem:
                     "y1": y1,
                     "x2": x2,
                     "y2": y2,
-                    "layer": layer
+                    "layer": layer,
+                    "distance_m": det.get('distance_m', -1.0),
+                    "distance_label": det.get('distance_label', ''),
                 })
 
             # Send video frame (Legacy WS) only if frame provided
@@ -1270,14 +1393,14 @@ class CortexSystem:
             # even if video comes via ZMQ.
             for det in enriched_detections:
                 # CRITICAL FIX: Unpack dict to match send_detection signature
-                self.ws_client.send_detection(
-                    class_name=det.get('class', 'unknown'),
-                    confidence=det.get('confidence', 0.0),
-                    bbox=[det.get('x1', 0), det.get('y1', 0), det.get('x2', 0), det.get('y2', 0)],
-                    layer=0 if det.get('layer', 'layer0') == 'layer0' else 1,
-                    width=640,  # Default frame width
-                    height=480  # Default frame height
-                )
+                    self.ws_client.send_detection(
+                        class_name=det.get('class', 'unknown'),
+                        confidence=det.get('confidence', 0.0),
+                        bbox=[det.get('x1', 0), det.get('y1', 0), det.get('x2', 0), det.get('y2', 0)],
+                        layer=0 if det.get('layer', 'layer0') == 'layer0' else 1,
+                        width=self.camera.resolution[0] if self.camera else 640,
+                        height=self.camera.resolution[1] if self.camera else 480
+                    )
 
         except Exception as e:
             logger.debug(f"⚠️  Failed to send to laptop: {e}")
@@ -1285,15 +1408,27 @@ class CortexSystem:
     def _update_heartbeat(self):
         """Update device heartbeat to Supabase"""
         if self.memory_manager:
-            run_async_safe(self.memory_manager.update_device_heartbeat(
-                device_name='RPi5-Cortex-001',
-                battery_percent=85,
-                cpu_percent=45.2,
-                memory_mb=2048,
-                temperature=42.5,
-                active_layers=['layer0', 'layer1', 'layer2', 'layer3'],
-                current_mode='TEXT_PROMPTS'
-            ))
+            # Gather real system metrics
+            active_layers = []
+            if self.layer0: active_layers.append('layer0')
+            if self.layer1: active_layers.append('layer1')
+            if self.layer2: active_layers.append('layer2')
+            if self.intent_router: active_layers.append('layer3')
+            
+            current_mode = 'PRODUCTION' if self.voice_coordinator and self.voice_coordinator.is_listening else 'DEV'
+            
+            try:
+                run_async_safe(self.memory_manager.update_device_heartbeat(
+                    device_name='RPi5-Cortex-001',
+                    battery_percent=100,  # RPi5 is wall-powered
+                    cpu_percent=psutil.cpu_percent(),
+                    memory_mb=psutil.virtual_memory().used / (1024 * 1024),
+                    temperature=self._get_cpu_temp(),
+                    active_layers=active_layers,
+                    current_mode=current_mode
+                ))
+            except Exception as e:
+                logger.warning(f"Heartbeat update failed: {e}")
 
     async def handle_voice_command(self, query: str):
         """
@@ -1322,6 +1457,11 @@ class CortexSystem:
         logger.info(f"🔀 Routed to: {target_layer} | L0={routing['use_layer0']}, "
                    f"L1={routing['use_layer1']}, Gemini={routing['use_gemini']}, "
                    f"Type={routing['query_type']}")
+        
+        # Ignore filler/non-command utterances (e.g., "yeah", "thanks", "um")
+        if target_layer == "ignore":
+            logger.debug(f"Ignoring filler utterance: '{query}'")
+            return
         
         # Notify dashboard of audio event
         if self.ws_client:
@@ -1358,18 +1498,20 @@ class CortexSystem:
                 except Exception as e:
                     logger.error(f"  Layer 0 error: {e}")
             
-            # Request Layer 1 (YOLOE) from laptop via WebSocket
+            # Use cached Layer 1 (YOLOE) results from laptop
             layer1_detections = []
             if routing["use_layer1"] and self.ws_client:
                 try:
-                    # For now, use local layer1 if available (laptop integration via WS is async)
-                    # Full WS integration is in VisionQueryHandler
-                    if self.layer1:
-                        layer1_result = self.layer1.detect(frame)
-                        layer1_detections = layer1_result if layer1_result else []
-                        logger.info(f"  Layer 1: {len(layer1_detections)} detections")
+                    import time as _time
+                    cached = self.ws_client.latest_layer1_detections
+                    cache_age = _time.time() - self.ws_client._layer1_cache_time
+                    if cached and cache_age < 5.0:
+                        layer1_detections = cached
+                        logger.info(f"  Layer 1 (cached from laptop): {len(layer1_detections)} detections ({cache_age:.1f}s old)")
+                    else:
+                        logger.info(f"  Layer 1: No recent cached results from laptop (age={cache_age:.1f}s)")
                 except Exception as e:
-                    logger.error(f"  Layer 1 error: {e}")
+                    logger.error(f"  Layer 1 cache error: {e}")
             
             # Aggregate detections
             if DetectionAggregator:
@@ -1389,69 +1531,106 @@ class CortexSystem:
                 else:
                     response = "I don't see anything specific right now."
             
-            # Speak via TTS
+            # Append OCR text if available (e.g., "I see 2 people. I can read: Exit, Floor 3.")
+            if self.ocr_pipeline and self.ocr_pipeline.is_available:
+                try:
+                    ocr_results = self.ocr_pipeline.read_text(frame)
+                    ocr_text = self.ocr_pipeline.format_for_speech(ocr_results)
+                    if ocr_text:
+                        response = response.rstrip('.') + ". " + ocr_text
+                        logger.info(f"  OCR appended: {ocr_text}")
+                except Exception as e:
+                    logger.debug(f"OCR in Layer 1 failed: {e}")
+            
+            # Speak via Kokoro TTS (local, fast)
             if TTSRouter and response:
                 tts = TTSRouter()
-                await tts.speak_async(response)
+                await tts.speak_async(response, engine_override="kokoro")
             
             # Store to memory
             if self.memory_manager:
-                await self.memory_manager.store_query(
-                    user_query=query,
-                    transcribed_text=query,
-                    routed_layer=target_layer,
-                    routing_confidence=0.95,
-                    detection_mode=routing["query_type"],
-                    ai_response=response
-                )
+                try:
+                    await self.memory_manager.store_query(
+                        user_query=query,
+                        transcribed_text=query,
+                        routed_layer=target_layer,
+                        routing_confidence=0.95,
+                        detection_mode=routing["query_type"],
+                        ai_response=response
+                    )
+                except Exception as e:
+                    logger.warning(f"Memory store failed: {e}")
 
         # =================================================================
         # Layer 2: Deep analysis queries ("explain what you see")
         # =================================================================
         elif target_layer == "layer2":
-            logger.info("🧠 Processing Layer 2 analysis query...")
+            logger.info("Processing Layer 2 analysis query...")
+            
+            # OCR shortcut: Use local Hailo OCR for "read" queries instead of Gemini
+            if routing["query_type"] == "analysis_ocr" and self.ocr_pipeline and self.ocr_pipeline.is_available:
+                try:
+                    ocr_results = self.ocr_pipeline.read_text(frame)
+                    if ocr_results:
+                        response = self.ocr_pipeline.format_for_speech(ocr_results)
+                        logger.info(f"  OCR response (local Hailo, {self.ocr_pipeline.avg_latency_ms:.0f}ms): {response}")
+                        if TTSRouter and response:
+                            tts = TTSRouter()
+                            await tts.speak_async(response, engine_override="kokoro")
+                        # Store to memory
+                        if self.memory_manager:
+                            try:
+                                await self.memory_manager.store_query(
+                                    user_query=query,
+                                    transcribed_text=query,
+                                    routed_layer=target_layer,
+                                    routing_confidence=0.95,
+                                    ai_response=response,
+                                    tier_used='hailo_ocr'
+                                )
+                            except Exception as e:
+                                logger.warning(f"Memory store failed: {e}")
+                        return  # Skip Gemini — OCR handled locally
+                except Exception as e:
+                    logger.debug(f"Local OCR failed, falling back to Gemini vision: {e}")
             
             if routing["use_gemini"]:
                 try:
-                    # Use Gemini for vision analysis
-                    if self.layer2:
-                        response = await self.layer2.send_query(query, frame)
-                        logger.info(f"  Gemini response: {response[:100]}...")
-                    else:
-                        # Fallback to GeminiTTS vision handler
-                        try:
-                            from rpi5.layer2_thinker.gemini_tts_handler import GeminiTTS
-                            from PIL import Image
-                            
-                            gemini = GeminiTTS()
-                            pil_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                            response = gemini.generate_text_from_image(pil_image, query)
-                            
-                            if response:
-                                logger.info(f"  Gemini vision response: {response[:100]}...")
-                            else:
-                                response = "I couldn't analyze the scene."
-                        except Exception as e:
-                            logger.error(f"  Gemini vision error: {e}")
-                            response = "I encountered an error analyzing the scene."
+                    # Use GeminiTTS vision handler (Gemini 2.0 Flash vision -> text)
+                    from rpi5.layer2_thinker.gemini_tts_handler import GeminiTTS
+                    from PIL import Image
                     
-                    # Speak via TTS (route based on length)
+                    gemini = GeminiTTS()
+                    pil_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                    response = gemini.generate_text_from_image(pil_image, query)
+                    
+                    if response:
+                        logger.info(f"  Gemini vision response: {response[:100]}...")
+                    else:
+                        response = "I couldn't analyze the scene."
+                    
+                    # Speak via TTS — let TTSRouter decide engine based on length
+                    # Short (<300 chars) -> Gemini TTS (natural voice)
+                    # Long (>=300 chars) -> Kokoro TTS (fast local)
                     if TTSRouter and response:
                         tts = TTSRouter()
                         await tts.speak_async(response)
                     
                     # Store to memory
                     if self.memory_manager:
-                        await self.memory_manager.store_query(
-                            user_query=query,
-                            transcribed_text=query,
-                            routed_layer=target_layer,
-                            routing_confidence=0.95,
-                            ai_response=response,
-                            tier_used='gemini'
-                        )
+                        try:
+                            await self.memory_manager.store_query(
+                                user_query=query,
+                                transcribed_text=query,
+                                routed_layer=target_layer,
+                                routing_confidence=0.95,
+                                ai_response=response,
+                                tier_used='gemini'
+                            )
+                        except Exception as e:
+                            logger.warning(f"Memory store failed: {e}")
                 except Exception as e:
-                    logger.error(f"❌ Layer 2 error: {e}")
+                    logger.error(f"Layer 2 error: {e}")
                     response = "I encountered an error processing your request."
                     if TTSRouter:
                         tts = TTSRouter()
@@ -1501,6 +1680,14 @@ class CortexSystem:
         # Stop interactive status display
         if self.status_display:
             self.status_display.stop()
+
+        # Cleanup Hailo depth estimator and OCR
+        if self.depth_estimator:
+            self.depth_estimator.cleanup()
+        if self.audio_alerts:
+            self.audio_alerts.cleanup()
+        if self.ocr_pipeline:
+            self.ocr_pipeline.cleanup()
 
         logger.info("✅ ProjectCortex v2.0 stopped")
         logger.info(f"📊 Total detections: {self.detection_count}")
