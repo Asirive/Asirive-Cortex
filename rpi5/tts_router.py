@@ -143,7 +143,8 @@ class TTSRouter:
         self,
         text: str,
         play_audio: bool = True,
-        save_path: Optional[str] = None
+        save_path: Optional[str] = None,
+        engine_override: Optional[str] = None
     ) -> Tuple[bool, str, Optional[bytes]]:
         """
         Synthesize and optionally play text using the appropriate TTS engine.
@@ -152,11 +153,13 @@ class TTSRouter:
             text: Text to speak
             play_audio: If True, play audio immediately
             save_path: Optional path to save audio file
+            engine_override: Force a specific engine ("gemini" or "kokoro"),
+                             bypassing the automatic selection logic.
             
         Returns:
             Tuple of (success, engine_used, audio_bytes)
         """
-        engine = self.select_engine(text)
+        engine = engine_override or self.select_engine(text)
         logger.info(f"TTS routing '{text[:50]}...' to {engine} ({len(text)} chars)")
         
         success = False

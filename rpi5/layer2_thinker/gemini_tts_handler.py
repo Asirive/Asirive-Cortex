@@ -107,22 +107,35 @@ class GeminiTTS:
         self.kokoro_initialized = False
         self.using_fallback = False  # Track if currently using fallback
         
-        # API Key Rotation Pool (6 backup keys for rate limit fallback)
-        self.api_key_pool = [
-            api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"),
-            "AIzaSyBXVG2Tky2SaG1CTJBDUPhEEDFrjobLa60",
-            "AIzaSyBybuyQNzcIMgM1vnrgsFOYJPLLQIC5UU0",
-            "AIzaSyAq6Ptnnc2kkffYJiciWrPprCGuR1G7__Y",
-            "AIzaSyB2ScnKpE0n6Skg2tTKdl2Gn_tQaWroWZY",
-            "AIzaSyDW1_v-OKCybux0arOHr1aLWLAtyQmQBTQ"
-        ]
+        # API Key Rotation Pool - loaded entirely from environment variables
+        # Reads GEMINI_API_KEY (primary), then GEMINI_API_KEY_2, _3, ... _10
+        # Falls back to GOOGLE_API_KEY if GEMINI_API_KEY is not set
+        self.api_key_pool = []
         
-        # Remove None/empty keys from pool
-        self.api_key_pool = [key for key in self.api_key_pool if key]
+        # Primary key: from constructor arg, GEMINI_API_KEY, or GOOGLE_API_KEY
+        primary_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        if primary_key:
+            self.api_key_pool.append(primary_key)
+        
+        # Additional keys: GEMINI_API_KEY_2 through GEMINI_API_KEY_10
+        for i in range(2, 11):
+            key = os.getenv(f"GEMINI_API_KEY_{i}")
+            if key:
+                self.api_key_pool.append(key)
+        
+        # Deduplicate while preserving order
+        seen = set()
+        deduped_pool = []
+        for key in self.api_key_pool:
+            if key not in seen:
+                seen.add(key)
+                deduped_pool.append(key)
+        self.api_key_pool = deduped_pool
         
         if not self.api_key_pool:
             raise ValueError(
                 "No API keys available. Set GEMINI_API_KEY in .env file.\n"
+                "Add more keys as GEMINI_API_KEY_2, GEMINI_API_KEY_3, etc.\n"
                 "Get your API key from: https://aistudio.google.com/app/apikey"
             )
         
@@ -131,17 +144,8 @@ class GeminiTTS:
         self.api_key = self.api_key_pool[0]
         self.failed_keys = {}  # Track failed keys with timestamps
         
-        logger.info(f"🔑 API Key Pool: {len(self.api_key_pool)} keys available")
-        logger.info(f"🔑 Active Key: #{self.current_key_index + 1} ({self.api_key[:12]}...{self.api_key[-4:]})")
-        
-        # Get API key (try GEMINI_API_KEY first, then GOOGLE_API_KEY for compatibility)
-        # self.api_key = api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        # 
-        # if not self.api_key:
-        #     raise ValueError(
-        #         "Google API key not found. Set GEMINI_API_KEY in .env file.\n"
-        #         "Get your API key from: https://aistudio.google.com/app/apikey"
-        #     )
+        logger.info(f"API Key Pool: {len(self.api_key_pool)} keys loaded from environment")
+        logger.info(f"Active Key: #{self.current_key_index + 1} ({self.api_key[:12]}...{self.api_key[-4:]})")
         
         self.voice_name = voice_name
         self.output_dir = Path(output_dir)
@@ -555,7 +559,14 @@ class GeminiTTS:
                     model='gemini-3-flash-preview',  # Most intelligent Gemini model
                     contents=contents,
                     config=types.GenerateContentConfig(
-                        response_modalities=["TEXT"]  # Get text response only
+                        response_modalities=["TEXT"],  # Get text response only
+                        max_output_tokens=150,  # Cap at ~300 chars for concise responses
+                        system_instruction=(
+                            "You are a concise visual assistant for a visually impaired user. "
+                            "Respond in 2-3 short sentences. Focus on what matters most for "
+                            "safety and spatial awareness. Mention people, obstacles, text/signs, "
+                            "and the general environment."
+                        )
                     )
                 )
             

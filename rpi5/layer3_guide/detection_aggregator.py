@@ -143,7 +143,8 @@ class DetectionAggregator:
         Aggregate detections into counts by class name.
         
         Args:
-            detections: List of detection dicts with 'class_name' and 'confidence' keys
+            detections: List of detection dicts with 'class_name' and 'confidence' keys.
+                        May also contain 'distance_m' (float) from depth estimation.
             source_label: Optional label (e.g., "layer0", "layer1")
             
         Returns:
@@ -152,6 +153,7 @@ class DetectionAggregator:
                 - total: Total number of detections
                 - text: Human-readable string
                 - items: List of (class_name, count) tuples sorted
+                - distances: Dict[class_name, min_distance_m] (closest per class)
         """
         # Filter by confidence
         filtered = [
@@ -162,6 +164,15 @@ class DetectionAggregator:
         # Count by class name
         class_names = [d.get('class_name', d.get('class', 'unknown')) for d in filtered]
         counts = Counter(class_names)
+        
+        # Track closest distance per class (from depth estimation)
+        distances: Dict[str, float] = {}
+        for d in filtered:
+            name = d.get('class_name', d.get('class', 'unknown'))
+            dist = d.get('distance_m', -1.0)
+            if dist > 0:
+                if name not in distances or dist < distances[name]:
+                    distances[name] = dist
         
         # Sort
         if self.sort_by_count:
@@ -182,42 +193,65 @@ class DetectionAggregator:
         # Limit items
         limited_items = sorted_items[:self.max_items_to_speak]
         
-        # Generate text
-        text = self._generate_text(limited_items)
+        # Generate text (with distance qualifiers if available)
+        text = self._generate_text(limited_items, distances)
         
         return {
             "counts": dict(counts),
             "total": sum(counts.values()),
             "text": text,
             "items": limited_items,
+            "distances": distances,
             "source": source_label,
             "filtered_count": len(filtered),
             "original_count": len(detections)
         }
     
-    def _generate_text(self, items: List[tuple]) -> str:
+    def _generate_text(self, items: List[tuple], distances: Optional[Dict[str, float]] = None) -> str:
         """
         Generate human-readable text from (class_name, count) items.
         
+        Includes distance qualifiers when depth data is available:
+        - <1m: "very close"
+        - 1-3m: "nearby"
+        - 3-8m: "about X meters away"
+        - >8m: omitted (too far to be relevant)
+        
         Examples:
-            [(box, 3), (person, 1)] -> "3 boxes and 1 person"
-            [(chair, 2)] -> "2 chairs"
+            [(box, 3), (person, 1)] -> "3 boxes and 1 person very close"
+            [(chair, 2)] -> "2 chairs nearby"
             [] -> "nothing detected"
         """
         if not items:
             return "nothing detected"
         
+        if distances is None:
+            distances = {}
+        
         parts = []
         for class_name, count in items:
             plural_name = pluralize(class_name, count)
-            parts.append(f"{count} {plural_name}")
+            part = f"{count} {plural_name}"
+            
+            # Append distance qualifier if available
+            dist = distances.get(class_name, -1.0)
+            if dist > 0:
+                if dist < 1.0:
+                    part += " very close"
+                elif dist < 3.0:
+                    part += " nearby"
+                elif dist < 8.0:
+                    part += f" about {int(round(dist))} meters away"
+                # >8m: omit distance (not useful for navigation)
+            
+            parts.append(part)
         
         if len(parts) == 1:
             return parts[0]
         elif len(parts) == 2:
             return f"{parts[0]} and {parts[1]}"
         else:
-            # "3 boxes, 2 chairs, and 1 person"
+            # "3 boxes very close, 2 chairs nearby, and 1 person"
             return ", ".join(parts[:-1]) + f", and {parts[-1]}"
     
     def merge_layers(
@@ -250,6 +284,14 @@ class DetectionAggregator:
         for class_name, count in layer1_agg["counts"].items():
             merged_counts[class_name] = max(merged_counts[class_name], count)
         
+        # Merge distances (take closest per class from either layer)
+        merged_distances: Dict[str, float] = {}
+        for layer_agg in (layer0_agg, layer1_agg):
+            for class_name, dist in layer_agg.get("distances", {}).items():
+                if dist > 0:
+                    if class_name not in merged_distances or dist < merged_distances[class_name]:
+                        merged_distances[class_name] = dist
+        
         # Sort merged
         if self.sort_by_count:
             sorted_items = sorted(merged_counts.items(), key=lambda x: (-x[1], x[0]))
@@ -258,13 +300,14 @@ class DetectionAggregator:
         
         # Limit and generate text
         limited_items = sorted_items[:self.max_items_to_speak]
-        text = self._generate_text(limited_items)
+        text = self._generate_text(limited_items, merged_distances)
         
         return {
             "counts": dict(merged_counts),
             "total": sum(merged_counts.values()),
             "text": text,
             "items": limited_items,
+            "distances": merged_distances,
             "layer0": layer0_agg,
             "layer1": layer1_agg,
             "source": "merged"
@@ -402,3 +445,20 @@ if __name__ == "__main__":
     print(f"  Merged counts: {merged['counts']}")
     print(f"  Merged text: {merged['text']}")
     print(f"  Speech: {aggregator.format_for_speech(merged)}")
+    
+    # Test with distance data (depth estimation)
+    print("\n=== Distance-Aware Tests ===")
+    
+    detections_with_depth = [
+        {"class_name": "person", "confidence": 0.95, "distance_m": 0.8},
+        {"class_name": "person", "confidence": 0.88, "distance_m": 2.5},
+        {"class_name": "car", "confidence": 0.82, "distance_m": 5.2},
+        {"class_name": "door", "confidence": 0.70, "distance_m": 1.5},
+        {"class_name": "chair", "confidence": 0.65, "distance_m": 12.0},  # >8m, omitted
+    ]
+    
+    result_depth = aggregator.aggregate(detections_with_depth, "layer0")
+    print(f"  Input: {len(detections_with_depth)} detections with depth")
+    print(f"  Distances: {result_depth['distances']}")
+    print(f"  Text: {result_depth['text']}")
+    print(f"  Speech: {aggregator.format_for_speech(result_depth)}")

@@ -55,7 +55,7 @@ def load_rpi_config():
                 
                 rpi_config = config.get('rpi5_device', {})
                 return {
-                    'host': rpi_config.get('host', '10.17.233.31'),
+                    'host': rpi_config.get('host', '10.52.86.31'),
                     'user': rpi_config.get('user', 'cortex'),
                     'path': rpi_config.get('path', '/home/cortex/ProjectCortex'),
                 }
@@ -65,7 +65,7 @@ def load_rpi_config():
     # Fallback to defaults
     print("Warning: Could not load config.yaml, using defaults")
     return {
-        'host': '10.17.233.31',
+        'host': '10.52.86.31',
         'user': 'cortex',
         'path': '/home/cortex/ProjectCortex',
     }

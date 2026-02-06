@@ -22,3 +22,5 @@ mobileclip_blt.ts filter=lfs diff=lfs merge=lfs -text
 models/**/*.ncnn.bin filter=lfs diff=lfs merge=lfs -text
 models/**/*.pt filter=lfs diff=lfs merge=lfs -text
 models/**/*.onnx filter=lfs diff=lfs merge=lfs -text
+*.hef filter=lfs diff=lfs merge=lfs -text
+mobileclip2_b.ts filter=lfs diff=lfs merge=lfs -text

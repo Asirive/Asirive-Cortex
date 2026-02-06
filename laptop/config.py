@@ -11,7 +11,7 @@ Author: Haziq (@IRSPlays)
 Date: January 8, 2026
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List
 
 
@@ -82,6 +82,84 @@ class DashboardConfig:
     supabase_url: str = "https://ziarxgoansbhesdypfic.supabase.co"
     supabase_key: str = "sb_publishable_ErFxooa2JFiE8eXtd4hx3Q_Yll74lv_"
     supabase_fetch_interval: int = 60  # seconds (for historical data)
+
+
+@dataclass
+class YOLOEConfig:
+    """YOLOE text-prompt configuration for Layer 1 (Learner) on laptop GPU"""
+
+    # Model
+    model_path: str = "models/yoloe-26x-seg.pt"   # Text-prompt variant (NOT -pf)
+    device: str = "cuda:0"
+    confidence: float = 0.40                       # Raised from 0.25 to reduce false positives
+    use_half: bool = True                          # FP16 on GPU
+
+    # ~118 curated classes for visually-impaired navigation
+    text_prompts: List[str] = field(default_factory=lambda: [
+        # ── People & Body ──
+        "person", "child", "baby", "face", "hand",
+
+        # ── Vehicles ──
+        "car", "truck", "bus", "van", "motorcycle", "bicycle",
+        "scooter", "skateboard", "wheelchair", "stroller", "shopping cart",
+
+        # ── Animals ──
+        "dog", "cat", "bird",
+
+        # ── Road & Sidewalk ──
+        "traffic light", "stop sign", "fire hydrant", "parking meter",
+        "bench", "pole", "bollard", "crosswalk", "curb", "pothole",
+        "construction cone", "barrier", "fence", "gate", "wall",
+
+        # ── Doors & Access ──
+        "door", "metal gate", "wooden door", "stairs", "step",
+        "railing", "handrail", "elevator", "escalator",
+        "peephole", "doorbell",
+
+        # ── Indoor Furniture ──
+        "chair", "table", "desk", "couch", "bed", "shelf",
+        "cabinet", "drawer", "counter", "nightstand",
+
+        # ── Common Carried Objects ──
+        "backpack", "handbag", "suitcase", "umbrella", "wallet",
+        "keys", "glasses", "sunglasses", "hat", "shoe", "cane", "crutch",
+
+        # ── Kitchen & Food ──
+        "bottle", "cup", "glass", "plate", "bowl",
+        "fork", "knife", "spoon",
+        "oven", "microwave", "refrigerator",
+
+        # ── Bathroom ──
+        "sink", "faucet", "toilet", "bathtub", "mirror", "towel",
+
+        # ── Electronics ──
+        "phone", "laptop", "monitor", "keyboard", "mouse",
+        "remote", "television", "speaker", "camera",
+
+        # ── Household ──
+        "book", "clock", "plant", "vase", "lamp", "fan",
+        "box", "basket", "trash can", "fire extinguisher",
+        "pillow", "blanket", "curtain", "rug",
+
+        # ── Signs ──
+        "sign", "banner", "poster", "notice board",
+
+        # ── Singapore: HDB & Home ──
+        "blast door", "refuse chute", "bamboo pole",
+        "clothes drying rack", "circuit breaker", "letterbox",
+
+        # ── Singapore: Neighbourhood ──
+        "stone table", "recycling bin", "electrical box",
+        "digital display", "vending machine",
+
+        # ── Singapore: Transport ──
+        "card reader", "gantry", "push button", "bus stop",
+        "priority seat", "emergency button", "route map",
+
+        # ── Singapore: Malls & Food Courts ──
+        "tray return station", "tissue packet",
+        "nursing room", "energy label",
+    ])
 
 
 # Default configuration instance

@@ -206,7 +206,8 @@ class LaptopWebSocketServer(AsyncWebSocketServer):
                  on_metrics: Optional[Callable] = None,
                  on_detection: Optional[Callable] = None,
                  on_connect: Optional[Callable] = None,
-                 on_disconnect: Optional[Callable] = None):
+                 on_disconnect: Optional[Callable] = None,
+                 on_status: Optional[Callable] = None):
         super().__init__(config)
         self._connection_manager = None  # Will be set when first client connects
         self._websockets = {}  # Fix: Initialize storage for raw websockets
@@ -217,6 +218,7 @@ class LaptopWebSocketServer(AsyncWebSocketServer):
         self._on_detection_cb = on_detection
         self._on_connect_cb = on_connect
         self._on_disconnect_cb = on_disconnect
+        self._on_status_cb = on_status
 
         # Register default handlers (that call our custom ones)
         self.on_connect = self._handle_connect
@@ -236,9 +238,9 @@ class LaptopWebSocketServer(AsyncWebSocketServer):
         logger.info(f"Client disconnected: {client_id} ({reason})")
         if self._on_disconnect_cb:
             if asyncio.iscoroutinefunction(self._on_disconnect_cb):
-                await self._on_disconnect_cb(client_id, reason)
+                await self._on_disconnect_cb(client_id)
             else:
-                self._on_disconnect_cb(client_id, reason)
+                self._on_disconnect_cb(client_id)
 
     async def _handle_video_frame(self, client_id: str, message: BaseMessage):
         """Handle incoming video frame"""
@@ -306,6 +308,13 @@ class LaptopWebSocketServer(AsyncWebSocketServer):
         status = data.get("status", "unknown")
         msg = data.get("message", "")
         logger.info(f"Status from {client_id}: {status} - {msg}")
+        
+        # Forward to callback (e.g., for MODE_CHANGE notifications)
+        if self._on_status_cb:
+            if asyncio.iscoroutinefunction(self._on_status_cb):
+                await self._on_status_cb(status, msg)
+            else:
+                self._on_status_cb(status, msg)
 
     async def _handle_audio_event(self, client_id: str, message: BaseMessage):
         """Handle AUDIO_EVENT messages from RPi5."""

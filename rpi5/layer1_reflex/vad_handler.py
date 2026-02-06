@@ -18,9 +18,26 @@ Project: Cortex v2.0 - YIA 2026
 import logging
 import time
 import threading
+import os
+import sys
+import contextlib
 from typing import Optional, Callable, List, Dict, Any
 from queue import Queue
 import numpy as np
+
+# Context manager to suppress ALSA/JACK error noise
+@contextlib.contextmanager
+def suppress_alsa_errors():
+    """Redirect stderr to devnull to silence ALSA/JACK library warnings."""
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    old_stderr = os.dup(sys.stderr.fileno())
+    try:
+        os.dup2(devnull, sys.stderr.fileno())
+        yield
+    finally:
+        os.dup2(old_stderr, sys.stderr.fileno())
+        os.close(devnull)
+        os.close(old_stderr)
 
 try:
     import pyaudio
@@ -343,7 +360,7 @@ class VADHandler:
         Start listening for voice activity.
         
         Args:
-            device_index: Input device index (None = default device)
+            device_index: Input device index (None = search for best)
             
         Returns:
             True if started successfully, False otherwise
@@ -359,19 +376,35 @@ class VADHandler:
         try:
             logger.info("🎤 Starting VAD listening...")
             
-            # Initialize PyAudio
-            self.pyaudio_instance = pyaudio.PyAudio()
-            
-            # Open audio stream with callback
-            self.audio_stream = self.pyaudio_instance.open(
-                format=pyaudio.paInt16,
-                channels=1,  # Mono
-                rate=self.sample_rate,
-                input=True,
-                input_device_index=device_index,
-                frames_per_buffer=self.chunk_size,
-                stream_callback=self._audio_callback
-            )
+            with suppress_alsa_errors():
+                # Initialize PyAudio
+                self.pyaudio_instance = pyaudio.PyAudio()
+                
+                # If index is None, try to find the best input device (Bluetooth preferably)
+                if device_index is None:
+                    try:
+                        count = self.pyaudio_instance.get_device_count()
+                        for i in range(count):
+                            info = self.pyaudio_instance.get_device_info_by_index(i)
+                            name = info.get('name', '')
+                            # Priority for Bluetooth/Headset sources
+                            if info.get('maxInputChannels') > 0 and any(k in name for key in ['bluez', 'Headset', 'CMF Buds']):
+                                logger.info(f"🎧 Auto-selected Bluetooth Input: [{i}] {name}")
+                                device_index = i
+                                break
+                    except Exception:
+                        pass
+
+                # Open audio stream with callback
+                self.audio_stream = self.pyaudio_instance.open(
+                    format=pyaudio.paInt16,
+                    channels=1,  # Mono
+                    rate=self.sample_rate,
+                    input=True,
+                    input_device_index=device_index,
+                    frames_per_buffer=self.chunk_size,
+                    stream_callback=self._audio_callback
+                )
             
             # Start processing thread
             self.stop_event.clear()
@@ -385,7 +418,7 @@ class VADHandler:
             self.audio_stream.start_stream()
             self.is_listening = True
             
-            logger.info("✅ VAD listening started")
+            logger.info(f"✅ VAD listening started (Device: {device_index if device_index is not None else 'Default'})")
             return True
             
         except Exception as e:

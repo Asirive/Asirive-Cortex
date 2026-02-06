@@ -6,8 +6,8 @@
 - [x] Task: Conductor - User Manual Verification 'Phase 1' (Protocol in workflow.md)
 
 ## Phase 2: Communication & Sync
-- [ ] Task: Optimize WebSocket message payload for NPF detection metadata.
-- [ ] Task: Verify detection latency from Laptop to RPi5 TUI.
+- [x] Task: Optimize WebSocket message payload for NPF detection metadata. 9111bfe
+- [~] Task: Verify detection latency from Laptop to RPi5 TUI.
 - [ ] Task: Conductor - User Manual Verification 'Phase 2' (Protocol in workflow.md)
 
 ## Phase 3: Production Mode Verification

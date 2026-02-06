@@ -14,7 +14,8 @@ Project: Cortex v2.0 - YIA 2026
 """
 
 import logging
-from typing import Tuple, Dict, Any
+import re
+from typing import Tuple, Dict, Any, Set
 from difflib import SequenceMatcher
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,29 @@ class IntentRouter:
     Decides which AI layer should handle a user command.
     Uses fuzzy matching to handle variations (e.g., 'what u see', 'what do you see').
     """
+
+    # Filler phrases that should NOT trigger any layer processing.
+    # These are common STT artifacts, acknowledgements, and non-command utterances.
+    FILLER_PHRASES: Set[str] = {
+        # Acknowledgements
+        "yeah", "yep", "yup", "yes", "no", "nope", "nah",
+        "ok", "okay", "sure", "right", "alright", "got it",
+        "cool", "nice", "great", "good", "fine", "perfect",
+        # Greetings / farewells
+        "hello", "hi", "hey", "bye", "goodbye", "see you",
+        "good morning", "good night",
+        # Filler sounds / hesitations
+        "um", "uh", "uh huh", "hmm", "hm", "ah", "oh", "eh",
+        "mm", "mmm", "mhm",
+        # Polite / social
+        "thanks", "thank you", "thanks for watching",
+        "please", "sorry", "excuse me",
+        # Conversational noise
+        "i see", "oh well", "never mind", "you know",
+        "i guess", "i think", "i mean", "well",
+        "anyway", "so", "like", "whatever", "nothing",
+        "that's it", "that's all", "done", "okay bye",
+    }
 
     def __init__(self, memory_manager=None):
         """
@@ -75,6 +99,9 @@ class IntentRouter:
             # Text reading (OCR required)
             "read", "read text", "read this", "what does it say",
             "text", "sign", "label", "writing", "words",
+            "what's written", "what is written", "can you read",
+            "scan text", "read the", "read that",
+            "letter", "menu", "price", "receipt",
             # Deep understanding (removed "what am i looking at" - too ambiguous)
             "tell me about", "explain this scene",
             "is this safe to", "should i", "can i",
@@ -99,6 +126,54 @@ class IntentRouter:
         ]
         
         self.fuzzy_threshold = 0.7  # 70% similarity required
+
+    def is_filler(self, text: str) -> bool:
+        """
+        Check if text is a non-command filler utterance that should be ignored.
+        
+        Strips punctuation and checks against known filler phrases.
+        Single words that match a Layer priority keyword (e.g., "look", "stop")
+        are NOT treated as filler — they are legitimate short commands.
+        
+        Args:
+            text: User utterance (raw from STT)
+            
+        Returns:
+            True if filler (should be ignored), False if potential command
+        """
+        # Strip punctuation and normalize
+        cleaned = re.sub(r'[^\w\s]', '', text.lower().strip())
+        
+        # Very short text (< 2 chars after cleaning) is always filler
+        if len(cleaned) < 2:
+            return True
+        
+        # Check if it's a single word that matches a priority keyword — NOT filler
+        # This protects legitimate commands like "look", "stop", "count", "identify"
+        words = cleaned.split()
+        if len(words) == 1:
+            word = words[0]
+            if word in {kw for kw in self.layer1_priority_keywords if ' ' not in kw}:
+                return False
+            # Also check Layer 2/3 single-word priority keywords
+            if word in {"analyze", "navigate", "describe", "explain", "read"}:
+                return False
+        
+        # Check against filler phrases (exact match after cleaning)
+        if cleaned in self.FILLER_PHRASES:
+            return True
+        
+        # Check if the entire utterance is just filler words combined
+        filler_words = {
+            "um", "uh", "hmm", "hm", "ah", "oh", "eh", "mm", "like",
+            "so", "well", "yeah", "yes", "no", "ok", "okay", "and",
+            "the", "a", "an", "i", "is", "it", "that", "this", "just",
+        }
+        meaningful_words = [w for w in words if w not in filler_words]
+        if len(meaningful_words) == 0:
+            return True
+        
+        return False
 
     def fuzzy_match(self, text: str, pattern: str) -> float:
         """
@@ -135,6 +210,14 @@ class IntentRouter:
         text = text.lower().strip()
         
         # =================================================================
+        # PHASE 0: FILLER FILTER — Reject non-command utterances
+        # Prevents "yeah", "thanks for watching", "um" from defaulting to Layer 1
+        # =================================================================
+        if self.is_filler(text):
+            logger.debug(f"[ROUTER] Filler detected, ignoring: '{text}'")
+            return "ignore"
+        
+        # =================================================================
         # PHASE 1: KEYWORD PRIORITY OVERRIDE (CRITICAL FIX: CHECK MOST SPECIFIC FIRST)
         # Order matters! Check Layer 2/3 keywords BEFORE Layer 1 to prevent false matches.
         # Example: "explain what you see" should match "explain" (L2) not "what you see" (L1)
@@ -143,7 +226,8 @@ class IntentRouter:
         # Layer 2 priority keywords (deep analysis, OCR, reasoning) - CHECK FIRST
         layer2_priority_keywords = [
             "describe the scene", "describe the room", "describe everything",
-            "analyze", "read this", "read text", "what does it say",
+            "analyze", "read this", "read text", "read the", "read that",
+            "what does it say", "what's written", "can you read",
             "explain", "explain what's happening", "is this safe", "should i"
         ]
         
@@ -378,6 +462,19 @@ class IntentRouter:
         layer = self.route(text)
         text_lower = text.lower().strip()
         
+        # Handle filler/ignored utterances — return immediately with all flags off
+        if layer == "ignore":
+            return {
+                "layer": "ignore",
+                "text": text,
+                "use_layer0": False,
+                "use_layer1": False,
+                "use_gemini": False,
+                "use_spatial_audio": False,
+                "query_type": "filler",
+                "description": "Ignored (filler/non-command)"
+            }
+        
         # Default flags
         result = {
             "layer": layer,
@@ -414,7 +511,13 @@ class IntentRouter:
             result["query_type"] = "analysis"
             
             # Check for specific analysis sub-types
-            if any(kw in text_lower for kw in ["read", "text", "sign", "label", "what does it say"]):
+            ocr_keywords = [
+                "read", "text", "sign", "label", "writing", "words",
+                "what does it say", "what's written", "what is written",
+                "can you read", "scan text", "read the", "read that",
+                "letter", "menu", "price", "receipt",
+            ]
+            if any(kw in text_lower for kw in ocr_keywords):
                 result["query_type"] = "analysis_ocr"
             elif any(kw in text_lower for kw in ["describe", "explain", "tell me about"]):
                 result["query_type"] = "analysis_describe"
