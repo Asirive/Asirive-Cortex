@@ -560,12 +560,14 @@ class GeminiTTS:
                     contents=contents,
                     config=types.GenerateContentConfig(
                         response_modalities=["TEXT"],  # Get text response only
-                        max_output_tokens=150,  # Cap at ~300 chars for concise responses
+                        max_output_tokens=300,  # Allow enough room for ~150 char detailed responses
                         system_instruction=(
-                            "You are a concise visual assistant for a visually impaired user. "
-                            "Respond in 2-3 short sentences. Focus on what matters most for "
-                            "safety and spatial awareness. Mention people, obstacles, text/signs, "
-                            "and the general environment."
+                            "You are a visual assistant for a visually impaired user wearing a camera. "
+                            "Describe the scene in 2-4 sentences, around 100-150 characters total. "
+                            "Be specific and useful: name objects, their positions (left, right, ahead), "
+                            "distances, colors, text on signs, and any hazards. "
+                            "Never give vague responses like 'a person is sitting'. Instead say what "
+                            "they're doing, where they are, and what's around them."
                         )
                     )
                 )
