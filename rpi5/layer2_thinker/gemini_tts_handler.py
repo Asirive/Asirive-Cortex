@@ -560,20 +560,32 @@ class GeminiTTS:
                     contents=contents,
                     config=types.GenerateContentConfig(
                         response_modalities=["TEXT"],  # Get text response only
-                        max_output_tokens=300,  # Allow enough room for ~150 char detailed responses
                         system_instruction=(
                             "You are a visual assistant for a visually impaired user wearing a camera. "
-                            "Describe the scene in 2-4 sentences, around 100-150 characters total. "
-                            "Be specific and useful: name objects, their positions (left, right, ahead), "
-                            "distances, colors, text on signs, and any hazards. "
-                            "Never give vague responses like 'a person is sitting'. Instead say what "
-                            "they're doing, where they are, and what's around them."
+                            "Be specific and detailed: name objects, their positions (left, right, ahead), "
+                            "distances, colors, text on signs, and any hazards."
                         )
                     )
                 )
             
             vision_response = self._retry_api_call(_vision_api_call)
             text_description = vision_response.text
+            
+            # Hard-cap at ~150 chars, truncating at the nearest sentence boundary
+            if text_description and len(text_description) > 150:
+                truncated = text_description[:150]
+                # Find last sentence-ending punctuation within the limit
+                for end_char in ['. ', '! ', '? ']:
+                    idx = truncated.rfind(end_char)
+                    if idx > 30:  # Keep at least 30 chars
+                        truncated = truncated[:idx + 1]
+                        break
+                else:
+                    # No sentence boundary found — cut at last space and add period
+                    last_space = truncated.rfind(' ')
+                    if last_space > 30:
+                        truncated = truncated[:last_space] + '.'
+                text_description = truncated.strip()
             
             logger.info(f"✅ Text generated ({len(text_description)} chars)")
             return text_description
