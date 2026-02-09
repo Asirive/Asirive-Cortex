@@ -15,9 +15,50 @@ Project: Cortex v2.0 - YIA 2026
 """
 
 import logging
+import os
 import time
 from typing import Optional, List, Generator
 import numpy as np
+
+# --- Force system espeak-ng BEFORE any kokoro/phonemizer imports ---
+# The pip package espeakng-loader bundles its own espeak-ng library but the
+# bundled data path points to a non-existent CI build directory:
+#   /home/runner/work/espeakng-loader/.../espeak-ng-data/phontab
+# This causes a segfault when Kokoro tries to phonemize text.
+# Fix: tell phonemizer to use the system espeak-ng library and data instead.
+_SYSTEM_ESPEAK_LIB = "/usr/lib/aarch64-linux-gnu/libespeak-ng.so.1"
+_SYSTEM_ESPEAK_DATA = "/usr/share/espeak-ng-data"
+
+if os.path.exists(_SYSTEM_ESPEAK_LIB):
+    os.environ["PHONEMIZER_ESPEAK_LIBRARY"] = _SYSTEM_ESPEAK_LIB
+    logging.getLogger(__name__).info(
+        f"Using system espeak-ng library: {_SYSTEM_ESPEAK_LIB}"
+    )
+if os.path.exists(_SYSTEM_ESPEAK_DATA):
+    os.environ["ESPEAK_DATA_PATH"] = _SYSTEM_ESPEAK_DATA
+    logging.getLogger(__name__).info(
+        f"Using system espeak-ng data: {_SYSTEM_ESPEAK_DATA}"
+    )
+
+# --- Monkey-patch EspeakWrapper BEFORE importing kokoro_onnx ---
+# kokoro-onnx 0.4.9/0.5.0 calls EspeakWrapper.set_data_path() which doesn't
+# exist in phonemizer-fork 3.3.2. We add it here so the import succeeds.
+# The patched method points to the system espeak-ng-data directory.
+try:
+    from phonemizer.backend.espeak.wrapper import EspeakWrapper
+    if not hasattr(EspeakWrapper, 'set_data_path'):
+        @classmethod
+        def _set_data_path(cls, path):
+            # Ignore the bundled path; use system espeak-ng-data instead
+            cls._data_path = _SYSTEM_ESPEAK_DATA if os.path.exists(_SYSTEM_ESPEAK_DATA) else path
+        EspeakWrapper.set_data_path = _set_data_path
+        logging.getLogger(__name__).info(
+            "Patched EspeakWrapper.set_data_path (phonemizer-fork compat)"
+        )
+except ImportError:
+    pass  # phonemizer not installed — kokoro import will fail on its own
+# --- End monkey-patch ---
+
 try:
     from kokoro_onnx import Kokoro
     KOKORO_AVAILABLE = True

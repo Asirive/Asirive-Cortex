@@ -166,6 +166,9 @@ class GeminiTTS:
         logger.info(f"   Output Dir: {self.output_dir}")
         # Removed duplicate API key logging (already shown above with pool info)
         
+        # Memory: store full untruncated response for conversation history
+        self.last_full_response = None
+        
         self._initialized = True
     
     def _parse_retry_delay(self, error_message: str) -> float:
@@ -516,15 +519,32 @@ class GeminiTTS:
     def generate_text_from_image(
         self,
         image: Image.Image,
-        prompt: str = "Describe what you see in this image"
+        prompt: str = "Describe what you see in this image",
+        conversation_history: list = None,
+        system_instruction: str = None,
+        enable_code_execution: bool = False,
+        max_response_chars: int = 150,
+        reference_images: list = None,
     ) -> Optional[str]:
         """
         Generate TEXT ONLY from image + prompt (no TTS).
-        Used when you want Gemini vision analysis but will use a different TTS engine.
+        
+        Supports multi-turn conversation history, dynamic system instructions,
+        agentic vision (code execution), context-aware response length, and
+        reference images for object recall (comparing historical vs current view).
+        
+        After returning, the full untruncated response is available as
+        self.last_full_response (used for memory storage).
         
         Args:
-            image: PIL Image to analyze
+            image: PIL Image to analyze (current camera frame)
             prompt: Text prompt to guide the description
+            conversation_history: List of prior turns [{"role": "user"|"model", "content": str}]
+            system_instruction: Dynamic system prompt (None = default)
+            enable_code_execution: Enable Gemini code execution for agentic vision
+            max_response_chars: Max response length in chars (0 = no limit)
+            reference_images: Optional list of historical images for object recall.
+                Each item: {"image": PIL.Image, "context": str}
         
         Returns:
             Text description from Gemini vision model, or None if failed
@@ -534,46 +554,146 @@ class GeminiTTS:
                 return None
         
         try:
+            has_history = conversation_history and len(conversation_history) > 0
+            has_references = reference_images and len(reference_images) > 0
             logger.info(f"👁️ Generating text from image (vision only)...")
             logger.info(f"   Prompt: '{prompt[:50]}...'")
+            logger.info(f"   History: {len(conversation_history) if has_history else 0} turns")
+            logger.info(f"   Reference images: {len(reference_images) if has_references else 0}")
+            logger.info(f"   Code execution: {enable_code_execution}")
+            logger.info(f"   Max chars: {max_response_chars if max_response_chars > 0 else 'unlimited'}")
             self.request_count += 1
             
-            # Convert PIL Image to base64
+            # Convert PIL Image to bytes for Gemini API
             import io
             buffered = io.BytesIO()
             image.save(buffered, format="PNG")
-            image_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
+            image_bytes = buffered.getvalue()
             
-            # Create parts: image + prompt
-            contents = [
-                types.Part.from_bytes(
-                    data=base64.b64decode(image_base64),
-                    mime_type='image/png'
-                ),
-                types.Part.from_text(text=prompt)
-            ]
+            # Build image part
+            image_part = types.Part.from_bytes(
+                data=image_bytes,
+                mime_type='image/png'
+            )
+            
+            # Build reference image parts (for object recall)
+            ref_parts = []
+            if has_references:
+                for ref in reference_images:
+                    ref_buf = io.BytesIO()
+                    ref["image"].save(ref_buf, format="JPEG")
+                    ref_image_part = types.Part.from_bytes(
+                        data=ref_buf.getvalue(),
+                        mime_type='image/jpeg'
+                    )
+                    ref_context_part = types.Part.from_text(
+                        text=f"[Historical observation] {ref['context']}"
+                    )
+                    ref_parts.extend([ref_image_part, ref_context_part])
+            
+            # =====================================================
+            # BUILD MULTI-TURN CONTENTS
+            # =====================================================
+            if has_history:
+                # Multi-turn: TEXT-ONLY history + current turn with image
+                # Design: history is text-only (no images) to save tokens/bandwidth.
+                # Only the CURRENT turn gets the live camera image.
+                contents = []
+                
+                # Add prior turns as text-only alternating user/model messages
+                for turn in conversation_history:
+                    contents.append(types.Content(
+                        role=turn["role"],
+                        parts=[types.Part.from_text(text=turn["content"])]
+                    ))
+                
+                # Add current turn: reference images (if any) + current image + prompt
+                current_parts = ref_parts + [
+                    types.Part.from_text(text="[Current camera view]"),
+                    image_part,
+                    types.Part.from_text(text=prompt),
+                ]
+                contents.append(types.Content(
+                    role="user",
+                    parts=current_parts
+                ))
+            else:
+                # Single-turn: reference images (if any) + current image + prompt
+                if has_references:
+                    contents = ref_parts + [
+                        types.Part.from_text(text="[Current camera view]"),
+                        image_part,
+                        types.Part.from_text(text=prompt),
+                    ]
+                else:
+                    contents = [image_part, types.Part.from_text(text=prompt)]
+            
+            # =====================================================
+            # BUILD TOOLS (Agentic Vision)
+            # =====================================================
+            tools = None
+            if enable_code_execution:
+                tools = [types.Tool(code_execution=types.ToolCodeExecution())]
+                logger.info("   Agentic Vision: code_execution tool enabled")
+            
+            # =====================================================
+            # BUILD CONFIG
+            # =====================================================
+            default_system = (
+                "You are a visual assistant for a visually impaired user wearing a camera. "
+                "Be specific and detailed: name objects, their positions (left, right, ahead), "
+                "distances, colors, text on signs, and any hazards."
+            )
+            
+            # When NOT using code execution, disable thinking for speed (~200-500ms savings)
+            thinking_config = None
+            if not enable_code_execution:
+                thinking_config = types.ThinkingConfig(thinking_budget=0)
+            
+            config = types.GenerateContentConfig(
+                response_modalities=["TEXT"],
+                system_instruction=system_instruction or default_system,
+                tools=tools,
+                thinking_config=thinking_config,
+            )
             
             # Use VISION model (gemini-3-flash-preview) with retry on rate limits
             def _vision_api_call():
                 return self.client.models.generate_content(
-                    model='gemini-3-flash-preview',  # Most intelligent Gemini model
+                    model='gemini-3-flash-preview',
                     contents=contents,
-                    config=types.GenerateContentConfig(
-                        response_modalities=["TEXT"],  # Get text response only
-                        system_instruction=(
-                            "You are a visual assistant for a visually impaired user wearing a camera. "
-                            "Be specific and detailed: name objects, their positions (left, right, ahead), "
-                            "distances, colors, text on signs, and any hazards."
-                        )
-                    )
+                    config=config,
                 )
             
             vision_response = self._retry_api_call(_vision_api_call)
-            text_description = vision_response.text
             
-            # Hard-cap at ~150 chars, truncating at the nearest sentence boundary
-            if text_description and len(text_description) > 150:
-                truncated = text_description[:150]
+            # Extract text from response (handle code execution results)
+            text_description = ""
+            if vision_response and vision_response.candidates:
+                for part in vision_response.candidates[0].content.parts:
+                    if hasattr(part, 'text') and part.text:
+                        text_description += part.text
+                    elif hasattr(part, 'executable_code') and part.executable_code:
+                        # Log but don't include raw code in speech
+                        logger.debug(f"   Code executed: {part.executable_code.code[:100]}...")
+                    elif hasattr(part, 'code_execution_result') and part.code_execution_result:
+                        # Include execution output if meaningful
+                        result_output = part.code_execution_result.output
+                        if result_output:
+                            logger.info(f"   Code result: {result_output[:100]}...")
+            
+            if not text_description:
+                # Fallback to .text property
+                text_description = vision_response.text if vision_response else ""
+            
+            # Store full untruncated response for memory (before truncation)
+            self.last_full_response = text_description
+            
+            # =====================================================
+            # CONTEXT-AWARE RESPONSE TRUNCATION
+            # =====================================================
+            if max_response_chars > 0 and text_description and len(text_description) > max_response_chars:
+                truncated = text_description[:max_response_chars]
                 # Find last sentence-ending punctuation within the limit
                 for end_char in ['. ', '! ', '? ']:
                     idx = truncated.rfind(end_char)
@@ -581,11 +701,12 @@ class GeminiTTS:
                         truncated = truncated[:idx + 1]
                         break
                 else:
-                    # No sentence boundary found — cut at last space and add period
+                    # No sentence boundary found -- cut at last space and add period
                     last_space = truncated.rfind(' ')
                     if last_space > 30:
                         truncated = truncated[:last_space] + '.'
                 text_description = truncated.strip()
+                logger.debug(f"   Truncated to {len(text_description)} chars (limit: {max_response_chars})")
             
             logger.info(f"✅ Text generated ({len(text_description)} chars)")
             return text_description

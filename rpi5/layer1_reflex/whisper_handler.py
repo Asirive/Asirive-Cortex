@@ -209,7 +209,12 @@ class WhisperSTT:
                 audio,
                 language=self.language,
                 fp16=self.fp16,
-                verbose=False  # Suppress Whisper's verbose output
+                verbose=False,  # Suppress Whisper's verbose output
+                temperature=0.0,  # Greedy decoding — more deterministic
+                no_speech_threshold=0.8,  # Higher = filter out noise-only segments
+                initial_prompt="Voice command for a navigation assistant.",  # Bias toward expected vocab
+                compression_ratio_threshold=2.0,  # Lower = catch more hallucinated repetitive text
+                logprob_threshold=-0.5,  # Higher = reject low-confidence transcriptions
             )
             
             inference_time = (time.time() - start_time) * 1000  # Convert to ms

@@ -55,7 +55,7 @@ def load_rpi_config():
                 
                 rpi_config = config.get('rpi5_device', {})
                 return {
-                    'host': rpi_config.get('host', '10.52.86.31'),
+                    'host': rpi_config.get('host', '10.133.246.31'),
                     'user': rpi_config.get('user', 'cortex'),
                     'path': rpi_config.get('path', '/home/cortex/ProjectCortex'),
                 }
@@ -65,7 +65,7 @@ def load_rpi_config():
     # Fallback to defaults
     print("Warning: Could not load config.yaml, using defaults")
     return {
-        'host': '10.52.86.31',
+        'host': '10.133.246.31',
         'user': 'cortex',
         'path': '/home/cortex/ProjectCortex',
     }
@@ -405,10 +405,11 @@ def install_deps_on_rpi():
     return True
 
 def sync_from_rpi():
-    """Sync files FROM Raspberry Pi (for getting logs/data)."""
+    """Sync files FROM Raspberry Pi (logs, tts_recordings, memory_images)."""
     print("\n" + "="*60)
     print("SYNCING FROM RASPBERRY PI 5")
     print("="*60)
+    print("Downloading: logs/, tts_recordings/, memory_images/")
 
     if PARAMIKO_AVAILABLE:
         print("Using Paramiko for download...")
@@ -418,37 +419,56 @@ def sync_from_rpi():
             
         sftp = ssh.open_sftp()
         try:
-            # Recursive download is tricky with paramiko sftp, 
-            # might be easier to zip regarding folders and download
-            print("Downloading logs (zipping remote first)...")
-            ssh.exec_command(f"cd {RPI_PATH} && tar -czf /tmp/logs.tar.gz logs")
+            # Tar all data directories (2>/dev/null ignores missing dirs)
+            print("Packaging remote data (logs, tts_recordings, memory_images)...")
+            tar_cmd = f"cd {RPI_PATH} && tar -czf /tmp/rpi_data.tar.gz logs tts_recordings memory_images 2>/dev/null; true"
+            stdin, stdout, stderr = ssh.exec_command(tar_cmd)
+            stdout.channel.recv_exit_status()  # Wait for completion
             
-            local_tar = os.path.join(LAPTOP_PATH, "logs.tar.gz")
-            sftp.get("/tmp/logs.tar.gz", local_tar)
+            local_tar = os.path.join(LAPTOP_PATH, "rpi_data.tar.gz")
+            sftp.get("/tmp/rpi_data.tar.gz", local_tar)
             
             # Extract local
             with tarfile.open(local_tar, "r:gz") as tar:
                 tar.extractall(LAPTOP_PATH)
             
             os.remove(local_tar)
-            ssh.exec_command("rm /tmp/logs.tar.gz")
-            print("Logs downloaded!")
+            ssh.exec_command("rm -f /tmp/rpi_data.tar.gz")
+            
+            # Report what was downloaded
+            for dirname in ["logs", "tts_recordings", "memory_images"]:
+                local_dir = os.path.join(LAPTOP_PATH, dirname)
+                if os.path.isdir(local_dir):
+                    file_count = sum(1 for f in os.listdir(local_dir) if not f.startswith('.'))
+                    print(f"  {dirname}/: {file_count} items")
+                else:
+                    print(f"  {dirname}/: (not present on RPi5)")
+            
+            print("Download complete!")
+            sftp.close()
+            ssh.close()
             return True
         except Exception as e:
             print(f"Download failed: {e}")
+            sftp.close()
+            ssh.close()
             return False
 
-    # Only sync logs and data folders
+    # Fallback: rsync each directory
     ssh_full_cmd = get_ssh_cmd()
-    cmd = (
-        f"rsync -avz --progress "
-        f"-e '{ssh_full_cmd}' "
-        f"{RPI_HOST}:{RPI_PATH}/logs/ "
-        f"{LAPTOP_PATH}/logs/"
-    )
-
-    print(f"Source: {RPI_HOST}:{RPI_PATH}/logs/")
-    return run_command(cmd)
+    success = True
+    for dirname in ["logs", "tts_recordings", "memory_images"]:
+        print(f"\nSyncing {dirname}/...")
+        cmd = (
+            f"rsync -avz --progress "
+            f"-e '{ssh_full_cmd}' "
+            f"{RPI_HOST}:{RPI_PATH}/{dirname}/ "
+            f"{LAPTOP_PATH}/{dirname}/"
+        )
+        if not run_command(cmd, check=False):
+            print(f"  {dirname}/ sync skipped (may not exist on RPi5)")
+        
+    return success
 
 def main():
     print("="*60)
@@ -465,7 +485,7 @@ def main():
         print("\nUsage: python sync_rpi5.py <command>")
         print("\nCommands:")
         print("  to-rpi      - Sync files TO RPi5 (default)")
-        print("  from-rpi    - Sync files FROM RPi5 (logs)")
+        print("  from-rpi    - Sync files FROM RPi5 (logs, tts_recordings, memory_images)")
         print("  install     - Install dependencies on RPi5")
         print("  full        - Sync to RPi5 AND install deps")
         print("\nSync paths:")

@@ -25,12 +25,14 @@ class VoiceCoordinator:
     Calls a callback with the transcribed text.
     """
     
-    def __init__(self, on_command_detected: Callable[[str], None]):
+    def __init__(self, on_command_detected: Callable[[str], None], config: Optional[dict] = None):
         """
         Args:
             on_command_detected: Async callback function(text: str) -> None
+            config: Optional config dict (from config.yaml 'audio' section)
         """
         self.on_command_detected = on_command_detected
+        self.config = config or {}
         self.vad = None
         self.stt = None
         self.is_active = False
@@ -43,23 +45,38 @@ class VoiceCoordinator:
     def initialize(self):
         """Initialize VAD and Whisper models"""
         try:
-            # Initialize VAD
+            # Read VAD config (with tuned defaults for noisy environments)
+            vad_config = self.config.get('vad', {})
+            vad_threshold = vad_config.get('threshold', 0.65)
+            vad_min_speech = vad_config.get('min_speech_duration_ms', 400)
+            vad_min_silence = vad_config.get('min_silence_duration_ms', 500)
+            vad_padding = vad_config.get('padding_duration_ms', 200)
+            
+            # Initialize VAD with config-driven params
             self.vad = VADHandler(
-                threshold=0.5,
-                min_speech_duration_ms=250,
+                threshold=vad_threshold,
+                min_speech_duration_ms=vad_min_speech,
+                min_silence_duration_ms=vad_min_silence,
+                padding_duration_ms=vad_padding,
                 on_speech_end=self._on_speech_end
             )
+            logger.info(
+                f"VAD config: threshold={vad_threshold}, "
+                f"min_speech={vad_min_speech}ms, min_silence={vad_min_silence}ms, "
+                f"padding={vad_padding}ms"
+            )
             if not self.vad.load_model():
-                logger.error("❌ Failed to load VAD model")
+                logger.error("Failed to load VAD model")
                 
-            # Initialize Whisper (Tiny model for fast RPi5 inference ~1s latency)
-            self.stt = WhisperSTT(model_size="tiny")
+            # Initialize Whisper (base model for better accuracy on RPi5)
+            whisper_model = self.config.get('whisper', {}).get('model_size', 'base')
+            self.stt = WhisperSTT(model_size=whisper_model)
             if not self.stt.load_model():
-                logger.error("❌ Failed to load Whisper model")
+                logger.error("Failed to load Whisper model")
                 
-            logger.info("✅ Voice Coordinator Initialized")
+            logger.info("Voice Coordinator Initialized")
         except Exception as e:
-            logger.error(f"❌ Voice Coordinator Init Failed: {e}", exc_info=True)
+            logger.error(f"Voice Coordinator Init Failed: {e}", exc_info=True)
 
     def start(self):
         """Start listening loop (VAD)"""

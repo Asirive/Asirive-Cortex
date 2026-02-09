@@ -30,6 +30,7 @@ google-generativeai>=0.8.6  # Legacy Gemini support
 openai>=1.60.1              # OpenAI Client
 gradio-client>=1.7.0        # Hugging Face Interface
 requests>=2.32.3            # HTTP Client
+cartesia>=1.0.0             # Cartesia Sonic 3 TTS (ultra-low latency)
 
 # ===== Local AI Models =====
 openai-whisper>=20240930    # STT (requires system ffmpeg)

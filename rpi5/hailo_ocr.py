@@ -32,6 +32,7 @@ try:
         InputVStreamParams,
         OutputVStreamParams,
         FormatType,
+        InferVStreams,
     )
     HAILO_AVAILABLE = True
 except ImportError:
@@ -87,6 +88,7 @@ class HailoOCRPipeline:
         recognition_hef_path: str = "models/hailo/paddle_ocr_v3_recognition.hef",
         confidence_threshold: float = 0.5,
         max_text_regions: int = 20,
+        vdevice=None,
     ):
         """
         Initialize the OCR pipeline.
@@ -95,6 +97,8 @@ class HailoOCRPipeline:
             recognition_hef_path: Path to PaddleOCR v3 recognition HEF
             confidence_threshold: Minimum confidence for recognized text
             max_text_regions: Maximum text regions to process per frame
+            vdevice: Shared Hailo VDevice (if None, creates its own — will fail
+                     if another module already holds the device)
         """
         self.recognition_hef_path = recognition_hef_path
         self.confidence_threshold = confidence_threshold
@@ -107,9 +111,14 @@ class HailoOCRPipeline:
         # Hailo recognition model
         self._rec_hef = None
         self._rec_vdevice = None
+        self._rec_owns_vdevice = False  # True if we created the VDevice ourselves
+        self._external_vdevice = vdevice  # Shared VDevice from caller
         self._rec_network_group = None
         self._rec_input_info = None
         self._rec_output_info = None
+        self._rec_input_params = None
+        self._rec_output_params = None
+        self._rec_pipeline = None  # Persistent InferVStreams (opened once, kept alive)
         self._rec_initialized = False
 
         # Character dictionary for CTC decoding
@@ -134,7 +143,16 @@ class HailoOCRPipeline:
             logger.info(f"Loading Hailo OCR recognition model: {hef_path}")
 
             self._rec_hef = HEF(str(hef_path))
-            self._rec_vdevice = VDevice()
+
+            # Use shared VDevice or create our own
+            if self._external_vdevice is not None:
+                self._rec_vdevice = self._external_vdevice
+                self._rec_owns_vdevice = False
+                logger.info("  OCR using shared Hailo VDevice")
+            else:
+                self._rec_vdevice = VDevice()
+                self._rec_owns_vdevice = True
+                logger.info("  OCR created dedicated Hailo VDevice")
 
             configure_params = ConfigureParams.create_from_hef(
                 hef=self._rec_hef,
@@ -147,10 +165,30 @@ class HailoOCRPipeline:
             self._rec_input_info = self._rec_hef.get_input_vstream_infos()
             self._rec_output_info = self._rec_hef.get_output_vstream_infos()
 
+            # Pre-create VStream params (reused every inference call)
+            self._rec_input_params = InputVStreamParams.make(
+                self._rec_network_group,
+                format_type=FormatType.FLOAT32,
+            )
+            self._rec_output_params = OutputVStreamParams.make(
+                self._rec_network_group,
+                format_type=FormatType.FLOAT32,
+            )
+
             for info in self._rec_input_info:
                 logger.info(f"  OCR Input: {info.name}, shape={info.shape}")
             for info in self._rec_output_info:
                 logger.info(f"  OCR Output: {info.name}, shape={info.shape}")
+
+            # Open InferVStreams pipeline ONCE and keep it alive.
+            # Opening/closing per call causes "Memory size ... does not match frame count" errors.
+            self._rec_pipeline = InferVStreams(
+                self._rec_network_group,
+                self._rec_input_params,
+                self._rec_output_params,
+            )
+            self._rec_pipeline.__enter__()
+            logger.info("  OCR InferVStreams pipeline opened (persistent)")
 
             self._rec_initialized = True
             logger.info("Hailo OCR recognition model initialized")
@@ -334,19 +372,9 @@ class HailoOCRPipeline:
             # Add batch dimension: (1, 48, 320, 3)
             batch = np.expand_dims(padded, axis=0)
 
-            # Run Hailo inference
-            input_params = InputVStreamParams.make(
-                self._rec_network_group,
-                format_type=FormatType.FLOAT32,
-            )
-            output_params = OutputVStreamParams.make(
-                self._rec_network_group,
-                format_type=FormatType.FLOAT32,
-            )
-
-            with self._rec_network_group.activate():
-                input_dict = {self._rec_input_info[0].name: batch}
-                raw_output = self._rec_network_group.infer(input_dict)
+            # Run Hailo inference on the persistent pipeline
+            input_dict = {self._rec_input_info[0].name: batch}
+            raw_output = self._rec_pipeline.infer(input_dict)
 
             # Extract output logits
             output_name = self._rec_output_info[0].name
@@ -442,10 +470,20 @@ class HailoOCRPipeline:
     def cleanup(self):
         """Release Hailo and PaddleOCR resources."""
         try:
+            # Close the persistent InferVStreams pipeline first
+            if self._rec_pipeline:
+                try:
+                    self._rec_pipeline.__exit__(None, None, None)
+                except Exception as e:
+                    logger.debug(f"OCR pipeline exit error (non-fatal): {e}")
+                self._rec_pipeline = None
             if self._rec_network_group:
                 self._rec_network_group = None
-            if self._rec_vdevice:
+            # Only release VDevice if we created it ourselves
+            if self._rec_owns_vdevice and self._rec_vdevice:
                 self._rec_vdevice = None
+            self._rec_input_params = None
+            self._rec_output_params = None
             self._rec_initialized = False
             self._detector = None
             self._detector_loaded = False
