@@ -483,6 +483,7 @@ class IntentRouter:
             "use_layer1": False,  # YOLOE on Laptop
             "use_gemini": False,  # Gemini API
             "use_spatial_audio": False,  # 3D audio
+            "enable_code_execution": False,  # Agentic Vision (Gemini code execution)
             "query_type": "unknown",
             "description": self.get_layer_description(layer)
         }
@@ -523,6 +524,13 @@ class IntentRouter:
                 result["query_type"] = "analysis_describe"
             elif any(kw in text_lower for kw in ["is this safe", "should i", "can i"]):
                 result["query_type"] = "analysis_safety"
+            
+            # Hardcoded code execution routing:
+            # - Reading/OCR = Agentic (code execution ON) — needs structured text parsing
+            # - Describe = Agentic (code execution ON) — benefits from analysis
+            # - Safety = Fast (code execution OFF) — needs instant response
+            if result["query_type"] in ("analysis_ocr", "analysis_describe"):
+                result["enable_code_execution"] = True
         
         # =================================================================
         # Layer 3: Navigation and spatial audio
@@ -555,6 +563,6 @@ class IntentRouter:
         
         logger.info(f"🎯 [ROUTER] Flags: L0={result['use_layer0']}, L1={result['use_layer1']}, "
                    f"Gemini={result['use_gemini']}, Spatial={result['use_spatial_audio']}, "
-                   f"Type={result['query_type']}")
+                   f"CodeExec={result['enable_code_execution']}, Type={result['query_type']}")
         
         return result

@@ -183,8 +183,14 @@ audio:
   vad:
     enabled: true
     model: "silero"  # Options: 'silero' (offline), 'webrtc' (online)
-    threshold: 0.5  # Speech probability threshold (0-1)
-    frame_duration_ms: 30  # Frame duration for VAD
+    threshold: 0.65  # Speech probability threshold (0-1) — higher = reject more noise
+    min_speech_duration_ms: 400  # Minimum speech length to accept (filters short noise bursts)
+    min_silence_duration_ms: 500  # Silence gap before speech end (longer = more tolerant)
+    padding_duration_ms: 200  # Audio padding around speech segments
+
+  # Whisper STT
+  whisper:
+    model_size: "base"  # Options: 'tiny' (39M), 'base' (74M, recommended), 'small' (244M)
 
 # =====================================================
 # SPATIAL AUDIO CONFIGURATION
@@ -298,7 +304,7 @@ development:
 # LAPTOP SERVER CONFIGURATION
 # =====================================================
 laptop_server:
-  host: "10.52.86.101"  # Laptop IP address - UPDATE THIS for your network
+  host: "10.133.246.101"  # Laptop IP address - UPDATE THIS for your network
   port: 8765
 
 # =====================================================
@@ -313,7 +319,7 @@ zmq:
 # RPI5 DEVICE CONFIGURATION (for sync tools)
 # =====================================================
 rpi5_device:
-  host: "10.52.86.31"  # RPi5 IP address - used by sync tools
+  host: "10.133.246.31"  # RPi5 IP address - used by sync tools
   user: "cortex"  # SSH username for sync
   path: "/home/cortex/ProjectCortex"  # Remote path for sync
 
@@ -329,10 +335,63 @@ bluetooth:
   scan_duration: 15  # Seconds to scan for new devices
 
 # =====================================================
+# CARTESIA SONIC 3 TTS (Layer 2 Primary Voice Engine)
+# =====================================================
+cartesia:
+  enabled: true
+  model_id: "sonic-3"
+  voice_id: "f786b574-daa5-4673-aa0c-cbe3e8534c02"  # Katie (stable, realistic)
+  language: "en"
+  sample_rate: 24000
+  generation_config:
+    speed: 1.0
+    emotion: "calm"
+
+# =====================================================
+# CONVERSATION MEMORY & PERSONALIZATION
+# =====================================================
+conversation:
+  enabled: true
+  session_timeout_seconds: 1800    # 30 min runtime silence -> new session (startup always restores)
+  max_turns: null                 # null = entire session (no limit)
+  cleanup_days: 7                 # Delete conversations older than 7 days
+  memory_images_dir: "memory_images"                   # Directory to store camera frames for recall
+  context_compression_threshold_chars: 250000          # ~1MB, compress older turns above this
+
+  # Agentic Vision (Gemini 3 Flash code execution)
+  # Safety = Fast (no code exec), Reading/Describe = Agentic (code exec)
+  agentic_vision:
+    enabled: true
+    # Query types that trigger code execution (zoom, crop, annotate)
+    enabled_query_types:
+      - "analysis_ocr"
+      - "analysis_describe"
+
+  # Response length limits (chars) by query type
+  response_limits:
+    detection_full: 150
+    detection_count: 100
+    analysis_ocr: 0              # No cap - read exactly what's there
+    analysis_describe: 400
+    analysis_safety: 300
+    follow_up: 400               # When conversation has prior context
+    default: 200
+
+  # Personalization
+  personalization:
+    enabled: true
+    extract_facts: true           # Auto-extract personal facts from conversation
+    default_system_instruction: >
+      You are Cortex, a personal AI assistant for a visually impaired user
+      wearing smart glasses with a camera. Be specific about positions
+      (left, right, ahead), distances, colors, text on signs, and hazards.
+      Speak naturally and refer to past conversation when relevant.
+
+# =====================================================
 # HAILO NPU CONFIGURATION (Hailo-8L M.2 HAT)
 # =====================================================
 hailo:
-  enabled: true
+  enabled: false  # Disabled — Hailo inference API needs migration to create_infer_model
   device_id: null  # Auto-detect (null = first available device)
 
   # Depth Estimation (fast_depth model)

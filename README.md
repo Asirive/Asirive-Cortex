@@ -1,202 +1,286 @@
 <div align="center">
 
-# 🧠 Project-Cortex v2.0
-### The "Gold Medal" AI Wearable for the Visually Impaired
+# Gemini-Cortex
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+### Real-Time AI Vision Assistant for the Visually Impaired — Powered by Gemini
+
+[![Google Gemini](https://img.shields.io/badge/Powered%20by-Gemini%203%20Flash-4285F4?logo=google&logoColor=white)](https://ai.google.dev/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![Hardware: RPi 5](https://img.shields.io/badge/Hardware-Raspberry%20Pi%205%20(4GB)-red.svg)](https://www.raspberrypi.com/products/raspberry-pi-5/)
-[![Status: Active Development](https://img.shields.io/badge/Status-Active%20Development-green.svg)](https://github.com/IRSPlays/ProjectCortexV2)
-[![Competition: YIA 2026](https://img.shields.io/badge/Competition-YIA%2026-purple.svg)](https://www.yia.org.sg/)
+[![Hardware: RPi 5](https://img.shields.io/badge/Edge-Raspberry%20Pi%205-red.svg)](https://www.raspberrypi.com/products/raspberry-pi-5/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-**Democratizing Assistive Technology**  
-Building a **<$150 AI wearable** to disrupt the **$4,000+ premium device market** (OrCam, eSight).  
-*Powered by Raspberry Pi 5, Gemini 2.5 Flash, and Adaptive Edge AI.*
-
-[**Explore Architecture**](docs/architecture/UNIFIED-SYSTEM-ARCHITECTURE.md) • [**View Roadmap**](docs/project-management/todo-full-implementation.md) • [**Read Documentation**](docs/README.md)
+**A <$150 wearable that gives visually impaired users real-time scene understanding, object memory, and natural conversation — all powered by Gemini's multimodal intelligence.**
 
 </div>
 
 ---
 
-## 📑 Table of Contents
+## What It Does
 
-- [🎯 Mission & Vision](#-mission--vision)
-- [✨ Key Innovation Highlights](#-key-innovation-highlights)
-- [🧠 The 4-Layer AI Brain](#-the-4-layer-ai-brain)
-- [🏗️ System Architecture](#-system-architecture)
-- [🚀 Quick Start](#-quick-start)
-- [📊 Performance & Benchmarks](#-performance--benchmarks)
-- [📚 Documentation](#-documentation)
-- [🤝 Contributing](#-contributing)
+Gemini-Cortex is a chest-mounted wearable camera connected to a Raspberry Pi 5 that continuously captures the world around a visually impaired user. When the user speaks a question — *"What's in front of me?"*, *"Read that sign"*, *"Where did I leave my keys?"* — the system sends the live camera frame + voice query to **Gemini 3 Flash Preview** and speaks the answer back through Bluetooth earbuds in under 1 second.
 
----
-
-## 🎯 Mission & Vision
-
-**Project-Cortex** is an open-source assistive wearable designed for the **Young Innovators Awards (YIA) 2026**. Our goal is to provide **real-time scene understanding, object detection, and navigation** for the visually impaired using commodity hardware.
-
-### Why We Built This
-Commercial devices like OrCam MyEye cost **$4,000+**, making them inaccessible to 90% of the visually impaired population. Cortex achieves comparable (and often superior) performance for **<$150**.
-
-| Feature | Project-Cortex v2.0 | Commercial Devices |
-|:---|:---:|:---:|
-| **Cost** | **<$150** 🏆 | $4,000 - $5,500 |
-| **Learning** | **Adaptive (Real-Time)** | Static (Pre-trained only) |
-| **Latency** | **<100ms (Safety)** | Variable |
-| **Audio** | **Body-Relative 3D Spatial** | Mono / Stereo |
-| **Connectivity** | **Hybrid Edge + Cloud** | Cloud-Dependent or Offline-Only |
+**Demo flow:**
+1. User asks: *"What do you see?"*
+2. Silero VAD detects speech, Whisper transcribes it
+3. Intent Router classifies it as a vision query
+4. Camera frame + prompt sent to **Gemini 3 Flash Preview** (multimodal)
+5. Gemini analyzes the scene and returns a natural description
+6. **Gemini 2.5 Flash TTS** converts the response to speech
+7. Audio plays through Bluetooth earbuds — total latency ~800ms
 
 ---
 
-## ✨ Key Innovation Highlights
+## How Gemini Is Used
 
-### 1. Adaptive Dual-Model Vision (Layer 0 + Layer 1)
-Unlike traditional systems that use a single static model, Cortex uses a **parallel cascade**:
-*   **Layer 0 (Guardian):** Static **YOLO11x** for safety-critical hazards (cars, stairs). Runs 100% offline, <100ms latency.
-*   **Layer 1 (Learner):** Adaptive **YOLOE-11s** that *learns new objects in real-time* from Gemini descriptions and Google Maps POI data.
+This project uses **three Gemini capabilities** via the `google-genai` SDK:
 
-### 2. Native Audio-to-Audio Conversation (Layer 2)
-Powered by **Gemini 2.5 Flash Live API** over WebSocket:
-*   **<500ms Latency:** 83% faster than traditional HTTP pipelines (3s).
-*   **Full Duplex:** Users can interrupt the AI naturally.
-*   **Multimodal:** Streams video + audio continuously for deep context.
+### 1. Gemini 3 Flash Preview — Multimodal Vision Brain
 
-### 3. Body-Relative Spatial Audio (Layer 3)
-*   **Chest-Mounted Camera:** Navigation cues are relative to your *torso*, not your head.
-*   **Audio Beacons:** "Follow the sound" to find specific objects.
-*   **Proximity Alerts:** Dynamic warning tones for obstacles.
+The core intelligence. Every vision query sends a PNG frame + text prompt to `gemini-3-flash-preview`:
+
+```python
+from google import genai
+from google.genai import types
+
+client = genai.Client(api_key=api_key)
+
+response = client.models.generate_content(
+    model='gemini-3-flash-preview',
+    contents=[
+        types.Part.from_bytes(data=image_bytes, mime_type='image/png'),
+        types.Part.from_text(text=user_query)
+    ],
+    config=types.GenerateContentConfig(
+        response_modalities=["TEXT"],
+        system_instruction="You are a visual assistant for a visually impaired user...",
+        thinking_config=types.ThinkingConfig(thinking_budget=0),  # Speed optimization
+    )
+)
+```
+
+**Key features used:**
+- **Multi-turn conversation** — rolling history of user/model turns for contextual follow-ups
+- **System instructions** — dynamic persona with spatial guidance rules, object recall behavior, and personalization (user's name, preferences extracted from speech)
+- **ThinkingConfig** — `thinking_budget=0` disables internal reasoning for ~200-500ms latency savings on simple queries
+- **Reference image comparison** — for object recall ("Where's my wallet?"), historical frames tagged `[Historical observation]` are sent alongside the current view so Gemini can compare locations
+
+### 2. Gemini 2.5 Flash Preview TTS — Natural Speech Output
+
+Text responses are converted to speech using Gemini's native TTS:
+
+```python
+response = client.models.generate_content(
+    model='gemini-2.5-flash-preview-tts',
+    contents=text_description,
+    config=types.GenerateContentConfig(
+        response_modalities=["AUDIO"],
+        speech_config=types.SpeechConfig(
+            voice_config=types.VoiceConfig(
+                prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                    voice_name="Kore"
+                )
+            )
+        )
+    )
+)
+
+# Extract raw PCM audio (24kHz, 16-bit mono)
+audio_data = response.candidates[0].content.parts[0].inline_data.data
+```
+
+### 3. Smart TTS Routing (Gemini + Local Fallback)
+
+A TTS router intelligently selects the engine based on response length:
+
+| Response Length | Engine | Why |
+|:---|:---|:---|
+| < 300 chars | **Gemini 2.5 Flash TTS** | Natural voice, low latency for short phrases |
+| >= 300 chars | **Kokoro-82M** (local ONNX) | Faster for long text, no API quota cost |
+| All keys exhausted | **Kokoro-82M** (automatic) | Graceful offline degradation |
 
 ---
 
-## 🧠 The 4-Layer AI Brain
+## Architecture
 
-Our architecture is divided into four specialized layers to balance **safety, intelligence, and speed**.
+```
+                    User (Visually Impaired)
+                           |
+                    [Bluetooth Earbuds]
+                           |
+               +-----------+-----------+
+               |   Raspberry Pi 5 (4GB)|
+               |                       |
+               |  Camera Module 3 Wide |
+               |         |             |
+               |    [Frame Capture]    |
+               |         |             |
+               |  +------+------+      |
+               |  | Intent      |      |
+               |  | Router      |      |
+               |  +------+------+      |
+               |         |             |
+               |    Layer 0: YOLO      |  <-- Safety detection (offline, <100ms)
+               |    Layer 2: Gemini--->|---> Gemini 3 Flash Preview (cloud)
+               |    Layer 4: Memory    |  <-- SQLite + object recall
+               |                       |
+               +-----------------------+
+```
 
-| Layer | Name | Function | Technology | Latency |
-|:---|:---|:---|:---|:---|
-| **L0** | **The Guardian** | **Safety-Critical Detection** | YOLO11x (Local) | **<100ms** ⚡ |
-| **L1** | **The Learner** | **Adaptive Context** | YOLOE-11s (Local) | ~120ms |
-| **L2** | **The Thinker** | **Deep Reasoning & QA** | Gemini Live (Cloud) | <500ms |
-| **L3** | **The Guide** | **Navigation & 3D Audio** | PyOpenAL + VIO/SLAM | Real-time |
-| **L4** | **The Memory** | **Persistence** | SQLite + Vector DB | <10ms |
+### The 4-Layer Pipeline
 
----
+| Layer | Name | Role | Technology |
+|:---|:---|:---|:---|
+| **L0** | Guardian | Safety-critical object detection (cars, stairs, obstacles) | YOLO v26n NCNN (local, <100ms) |
+| **L2** | Thinker | Scene understanding, reading, Q&A | **Gemini 3 Flash Preview** |
+| **L3** | Router | Classifies user intent to the right layer | Fuzzy keyword matching (97.7% accuracy) |
+| **L4** | Memory | Conversation history, object location recall | SQLite + Gemini reference images |
 
-## 🏗️ System Architecture
+### Voice Pipeline
 
-### Hardware Stack (Edge Unit)
-*   **Compute:** Raspberry Pi 5 (4GB RAM)
-*   **Vision:** IMX415 / Camera Module 3 (Wide)
-*   **Audio:** Bluetooth Headphones (OpenAL Spatial Output)
-*   **Power:** 30,000mAh USB-C PD Power Bank (`usb_max_current_enable=1`)
-*   **Sensors:** BNO055 IMU (Torso Orientation), GPS
-
-### Hybrid-Edge Topology
-```mermaid
-graph TD
-    User((User)) <-->|Audio/Haptics| RPi[Raspberry Pi 5]
-    RPi <-->|WebSocket| Laptop[Laptop Server (Optional)]
-    RPi <-->|Live API| Gemini[Gemini Cloud]
-    
-    subgraph "Raspberry Pi 5 (Wearable)"
-        L0[Layer 0: Guardian]
-        L1[Layer 1: Learner]
-        L2[Layer 2: Thinker]
-        L4[Layer 4: Memory]
-    end
-    
-    subgraph "Laptop Server (Heavy Compute)"
-        L3_SLAM[Layer 3: VIO/SLAM]
-        Dash[Web Dashboard]
-    end
+```
+Microphone --> Silero VAD --> Whisper STT --> Intent Router --> Gemini Vision
+                                                                    |
+Bluetooth Speaker <-- Audio Playback <-- Gemini TTS / Kokoro <-- Response
 ```
 
 ---
 
-## 🚀 Quick Start
+## Gemini API Features Used
+
+| Feature | How We Use It | File |
+|:---|:---|:---|
+| **Multimodal input** (image + text) | Send camera frame + voice query | `rpi5/layer2_thinker/gemini_tts_handler.py` |
+| **Multi-turn conversation** | Rolling session history for context | `rpi5/conversation_manager.py` |
+| **Dynamic system instructions** | Personalized persona with spatial guidance | `rpi5/conversation_manager.py` |
+| **ThinkingConfig** | Disable thinking for latency optimization | `rpi5/layer2_thinker/gemini_tts_handler.py` |
+| **Native TTS output** | `response_modalities=["AUDIO"]` with voice config | `rpi5/layer2_thinker/gemini_tts_handler.py` |
+| **API key rotation** | Pool of up to 10 keys with automatic failover | `rpi5/layer2_thinker/gemini_tts_handler.py` |
+| **Rate limit retry** | Exponential backoff + key rotation on 429/503 | `rpi5/layer2_thinker/gemini_tts_handler.py` |
+| **Reference image comparison** | Historical frames for object recall queries | `rpi5/conversation_manager.py` |
+| **Personal fact extraction** | "My name is..." extracted and stored | `rpi5/conversation_manager.py` |
+
+---
+
+## Quick Start
 
 ### Prerequisites
-*   **Hardware:** Raspberry Pi 5 (4GB) OR Windows Laptop (Dev Mode)
-*   **API Keys:** Google Gemini API Key
-*   **Python:** 3.11+
+
+- **Hardware:** Raspberry Pi 5 (4GB) with Camera Module 3 Wide
+- **Audio:** Bluetooth earbuds/headphones
+- **API Key:** [Get a Gemini API key](https://aistudio.google.com/app/apikey)
+- **Python:** 3.11+
 
 ### Installation
 
-1.  **Clone the Repository**
-    ```bash
-    git clone https://github.com/IRSPlays/ProjectCortexV2.git
-    cd ProjectCortexV2
-    ```
+```bash
+git clone https://github.com/IRSPlays/Gemini-Cortex.git
+cd Gemini-Cortex
 
-2.  **Install Dependencies**
-    ```bash
-    python -m venv venv
-    # Windows:
-    venv\Scripts\activate
-    # Linux/Mac:
-    source venv/bin/activate
-    
-    pip install -r requirements.txt
-    ```
+python -m venv venv
+source venv/bin/activate   # Linux/RPi
+pip install -r requirements.txt
 
-3.  **Configure Environment**
-    ```bash
-    cp .env.example .env
-    # Edit .env and add your GEMINI_API_KEY
-    ```
+# RPi5 only:
+sudo apt install python3-picamera2 espeak-ng
+```
 
-4.  **Run Development GUI**
-    ```bash
-    python src/cortex_gui.py
-    ```
+### Configuration
 
----
+```bash
+# Create .env with your Gemini API key(s)
+echo "GEMINI_API_KEY=your_key_here" > .env
 
-## 📊 Performance & Benchmarks
+# Optional: add backup keys for rate limit rotation
+echo "GEMINI_API_KEY_2=second_key" >> .env
+echo "GEMINI_API_KEY_3=third_key" >> .env
+```
 
-Measured on **Raspberry Pi 5 (4GB)** running production code:
+### Run
 
-| Component | Target | **Actual** | Status |
-|:---|:---|:---|:---|
-| **Safety Detection (L0)** | <100ms | **60-80ms** | ✅ EXCEEDED |
-| **Adaptive Detection (L1)** | <150ms | **90-130ms** | ✅ PASSED |
-| **Gemini Live Response** | <700ms | **~450ms** | ✅ EXCEEDED |
-| **Haptic Trigger** | <10ms | **3-5ms** | ✅ INSTANT |
-| **RAM Usage** | <4GB | **~3.6GB** | ✅ OPTIMIZED |
+```bash
+# Full system on RPi5
+python -m rpi5 all
+
+# With debug logging
+python rpi5/main.py --debug
+```
 
 ---
 
-## 📚 Documentation
+## Project Structure
 
-Detailed technical documentation is available in the `docs/` directory.
-
-*   📘 **[Unified System Architecture](docs/architecture/UNIFIED-SYSTEM-ARCHITECTURE.md)** - The master blueprint.
-*   ⚡ **[Adaptive YOLOE Implementation](docs/implementation/ADAPTIVE-YOLOE-IMPLEMENTATION-PLAN.md)** - How the self-learning vision works.
-*   🗣️ **[Gemini Live API Plan](docs/implementation/layer2-live-api-plan.md)** - WebSocket audio streaming details.
-*   🎧 **[Spatial Audio Guide](docs/implementation/spatial-audio-guide.md)** - Body-relative navigation explained.
-*   🛠️ **[Router Fix & Logic](docs/implementation/ROUTER-FIX-V2-RESEARCH-DRIVEN.md)** - How we route user intents.
+```
+Gemini-Cortex/
+├── rpi5/                           # Wearable device code (Raspberry Pi 5)
+│   ├── main.py                     # Main orchestrator
+│   ├── conversation_manager.py     # Multi-turn Gemini history + object recall
+│   ├── voice_coordinator.py        # VAD + Whisper STT coordination
+│   ├── tts_router.py               # Smart Gemini/Kokoro TTS routing
+│   ├── config/config.yaml          # Central configuration
+│   ├── layer0_guardian/            # YOLO safety detection (offline)
+│   ├── layer1_reflex/              # Kokoro TTS + Whisper STT + VAD
+│   │   ├── kokoro_handler.py       # Local TTS fallback (82M ONNX)
+│   │   ├── whisper_handler.py      # Speech-to-text
+│   │   └── vad_handler.py          # Voice activity detection
+│   ├── layer2_thinker/             # Gemini integration
+│   │   └── gemini_tts_handler.py   # Gemini 3 Flash vision + TTS
+│   ├── layer3_guide/               # Intent router
+│   │   └── router.py               # Voice command classification
+│   └── layer4_memory/              # SQLite persistence
+├── shared/                         # Shared utilities
+├── models/                         # YOLO model weights
+├── requirements.txt
+└── .env                            # API keys (not committed)
+```
 
 ---
 
-## 🤝 Contributing
+## Performance
 
-This project is built for the **Young Innovators Awards 2026**.
-Contributions are welcome! Please read our [Development Workflow](docs/DEVELOPMENT_WORKFLOW.md).
+Measured on Raspberry Pi 5 (4GB RAM), Bluetooth audio, production code:
 
-1.  Fork the Project
-2.  Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3.  Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4.  Push to the Branch (`git push origin feature/AmazingFeature`)
-5.  Open a Pull Request
+| Metric | Result |
+|:---|:---|
+| **End-to-end latency** (ask question -> hear answer) | ~800ms - 1.2s |
+| **Gemini vision response** | ~400-600ms |
+| **Gemini TTS generation** | ~200-400ms |
+| **Safety detection (YOLO, local)** | 60-80ms |
+| **Intent routing** | <5ms |
+| **RAM usage** | ~3.6GB / 4GB |
+| **Total hardware cost** | <$150 |
+
+---
+
+## Key Technical Decisions
+
+**Why Gemini 3 Flash Preview?**
+- Multimodal (image + text) in a single API call — no separate vision pipeline needed
+- Fast enough for real-time (<600ms typical response)
+- High-quality scene descriptions with spatial awareness
+- Native TTS output eliminates a separate speech synthesis step
+
+**Why local YOLO alongside Gemini?**
+- Safety-critical detection (cars, stairs) must work offline with <100ms latency
+- Gemini adds ~500ms network latency — too slow for "a car is approaching" alerts
+- YOLO handles the reflexes, Gemini handles the thinking
+
+**Why Kokoro-82M as TTS fallback?**
+- Gemini API has rate limits (especially free tier)
+- Kokoro runs locally on RPi5 with zero API cost
+- Automatic failover: if all API keys are exhausted, TTS degrades gracefully
+
+---
+
+## License
+
+MIT License. See [LICENSE](LICENSE) for details.
 
 ---
 
 <div align="center">
 
-**Built with 💙 for Accessibility.**  
-*"Failing with Honour, Pain First, Rest Later"*
+**Built for accessibility. Powered by Gemini.**
 
-[⬆ Back to Top](#-project-cortex-v20)
+*Gemini-Cortex by [@IRSPlays](https://github.com/IRSPlays)*
 
 </div>

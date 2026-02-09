@@ -123,6 +123,32 @@ class HybridMemoryManager:
             ON detections_local(synced, timestamp)
         """)
 
+        # Conversations table (for ConversationManager)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS conversations_local (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL,
+                query_type TEXT,
+                timestamp REAL NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_conversations_session
+            ON conversations_local(session_id, timestamp)
+        """)
+
+        # User profile table (for personalization)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_profile (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                key TEXT UNIQUE NOT NULL,
+                value TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            )
+        """)
+
         conn.commit()
         logger.info("✅ Local SQLite database initialized")
         return conn
@@ -522,6 +548,155 @@ class HybridMemoryManager:
             if self.sync_task:
                 self.sync_task.cancel()
             logger.info("⏹️ Sync worker stopped")
+
+    # =================================================================
+    # CONVERSATION MEMORY METHODS
+    # =================================================================
+
+    def store_conversation_turn(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        query_type: Optional[str] = None
+    ):
+        """
+        Store a single conversation turn to local SQLite.
+        
+        Args:
+            session_id: UUID session identifier
+            role: 'user' or 'model'
+            content: Text content of the turn
+            query_type: Optional query type (e.g., 'analysis_ocr')
+        """
+        try:
+            cursor = self.local_db.cursor()
+            cursor.execute("""
+                INSERT INTO conversations_local
+                (session_id, role, content, query_type, timestamp)
+                VALUES (?, ?, ?, ?, ?)
+            """, (session_id, role, content, query_type, time.time()))
+            self.local_db.commit()
+            logger.debug(f"💬 Conversation turn stored: {role} ({len(content)} chars)")
+        except Exception as e:
+            logger.error(f"❌ Failed to store conversation turn: {e}")
+
+    def get_session_turns(self, session_id: str) -> List[Dict[str, Any]]:
+        """
+        Get all turns for a given session.
+        
+        Args:
+            session_id: UUID session identifier
+            
+        Returns:
+            List of turn dicts with role, content, query_type, timestamp
+        """
+        try:
+            cursor = self.local_db.cursor()
+            cursor.execute("""
+                SELECT role, content, query_type, timestamp
+                FROM conversations_local
+                WHERE session_id = ?
+                ORDER BY timestamp ASC
+            """, (session_id,))
+            
+            rows = cursor.fetchall()
+            return [
+                {
+                    'role': row[0],
+                    'content': row[1],
+                    'query_type': row[2],
+                    'timestamp': row[3],
+                }
+                for row in rows
+            ]
+        except Exception as e:
+            logger.error(f"❌ Failed to get session turns: {e}")
+            return []
+
+    def get_latest_session_id(self) -> Optional[Dict[str, Any]]:
+        """
+        Get the most recent session_id and its last timestamp.
+        
+        Returns:
+            Dict with 'session_id' and 'last_timestamp', or None
+        """
+        try:
+            cursor = self.local_db.cursor()
+            cursor.execute("""
+                SELECT session_id, MAX(timestamp) as last_ts
+                FROM conversations_local
+                GROUP BY session_id
+                ORDER BY last_ts DESC
+                LIMIT 1
+            """)
+            row = cursor.fetchone()
+            if row and row[0]:
+                return {
+                    'session_id': row[0],
+                    'last_timestamp': row[1],
+                }
+            return None
+        except Exception as e:
+            logger.error(f"❌ Failed to get latest session: {e}")
+            return None
+
+    def store_user_profile(self, key: str, value: str):
+        """
+        Store a user profile fact (upsert).
+        
+        Args:
+            key: Profile key (e.g., 'name', 'allergy')
+            value: Profile value
+        """
+        try:
+            cursor = self.local_db.cursor()
+            cursor.execute("""
+                INSERT INTO user_profile (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = ?
+            """, (key, value, time.time(), value, time.time()))
+            self.local_db.commit()
+            logger.info(f"👤 User profile updated: {key} = '{value}'")
+        except Exception as e:
+            logger.error(f"❌ Failed to store user profile: {e}")
+
+    def get_user_profile(self) -> Dict[str, str]:
+        """
+        Get all user profile key-value pairs.
+        
+        Returns:
+            Dict of profile facts
+        """
+        try:
+            cursor = self.local_db.cursor()
+            cursor.execute("SELECT key, value FROM user_profile")
+            rows = cursor.fetchall()
+            return {row[0]: row[1] for row in rows}
+        except Exception as e:
+            logger.error(f"❌ Failed to get user profile: {e}")
+            return {}
+
+    def cleanup_old_conversations(self, days: int = 7):
+        """
+        Delete conversations older than N days from local SQLite.
+        
+        Args:
+            days: Delete conversations older than this many days
+        """
+        cutoff = time.time() - (days * 86400)
+        try:
+            cursor = self.local_db.cursor()
+            cursor.execute(
+                "DELETE FROM conversations_local WHERE timestamp < ?",
+                (cutoff,)
+            )
+            deleted = cursor.rowcount
+            self.local_db.commit()
+            if deleted > 0:
+                logger.info(f"🧹 Cleaned up {deleted} conversation turns older than {days} days")
+        except Exception as e:
+            logger.error(f"❌ Failed to cleanup old conversations: {e}")
 
     def cleanup(self):
         """Cleanup resources"""

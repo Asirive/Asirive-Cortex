@@ -170,6 +170,13 @@ except ImportError as e:
     logger.error(f"[DEBUG] ❌ Layer 4 (Memory) import failed: {e}")
     HybridMemoryManager = None
 
+try:
+    from rpi5.conversation_manager import ConversationManager
+    logger.info("[DEBUG] ✅ ConversationManager imported successfully")
+except ImportError as e:
+    logger.warning(f"[DEBUG] ⚠️ ConversationManager import failed: {e}")
+    ConversationManager = None
+
 logger.info("[DEBUG] ===== LAYER IMPORTS COMPLETE =====")
 
 # =====================================================
@@ -230,6 +237,15 @@ try:
 except ImportError as e:
     logger.warning(f"[DEBUG] ⚠️ HailoDepthEstimator import failed: {e}")
     HailoDepthEstimator = None
+
+try:
+    from hailo_platform import VDevice as HailoVDevice, HailoSchedulingAlgorithm
+    HAILO_VDEVICE_AVAILABLE = True
+    logger.info("[DEBUG] ✅ Hailo VDevice import successful")
+except ImportError:
+    HAILO_VDEVICE_AVAILABLE = False
+    HailoVDevice = None
+    HailoSchedulingAlgorithm = None
 
 try:
     from rpi5.audio_alerts import AudioAlertManager
@@ -554,14 +570,18 @@ class CameraHandler:
             )
             self.camera.configure(config)
             
-            # 3. Enable Continuous Auto-Focus (AfMode=2) & Auto-Exposure
-            # 0=Manual, 1=Auto(Single), 2=Continuous
+            # 3. Enable Continuous Auto-Focus, Auto-Exposure, Auto White Balance
+            # AfMode: 0=Manual, 1=Auto(Single), 2=Continuous
+            # AwbMode: 0=Auto, 1=Incandescent, 2=Tungsten, 3=Fluorescent,
+            #          4=Indoor, 5=Daylight, 6=Cloudy
             try:
                 self.camera.set_controls({
                     "AfMode": 2,
-                    "AeEnable": True
+                    "AeEnable": True,
+                    "AwbEnable": True,
+                    "AwbMode": 0,       # Auto — let ISP pick CCM from tuning file
                 })
-                logger.info("✅ Picamera2: Continuous Auto-Focus & AE Enabled")
+                logger.info("✅ Picamera2: AF + AE + AWB Enabled (IMX708 Wide)")
             except Exception as e:
                 logger.warning(f"⚠️ Could not set Camera Controls: {e}")
 
@@ -600,7 +620,12 @@ class CameraHandler:
                             buffer_count=4
                         )
                         self.camera.configure(config)
-                        self.camera.set_controls({"AfMode": 2, "AeEnable": True})
+                        self.camera.set_controls({
+                            "AfMode": 2,
+                            "AeEnable": True,
+                            "AwbEnable": True,
+                            "AwbMode": 0,
+                        })
                         self.camera.start()
                         
                         # Start thread
@@ -674,9 +699,15 @@ class CameraHandler:
         self.capture_thread.start()
 
     def _picamera_capture_loop(self):
-        """Continuous capture loop for Picamera2"""
+        """Continuous capture loop for Picamera2.
+        
+        Picamera2 outputs RGB888 natively, but the entire downstream pipeline
+        (YOLO, cv2.imencode, Hailo, video streamer) expects BGR (OpenCV convention).
+        We convert RGB→BGR here so get_frame() always returns BGR regardless of backend.
+        """
         while self.running:
-            frame = self.camera.capture_array()
+            frame = self.camera.capture_array()       # RGB888
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)  # → BGR
             with self.frame_lock:
                 self.latest_frame = frame
             time.sleep(1.0 / self.fps)
@@ -773,6 +804,21 @@ class CortexSystem:
             self.memory_manager = None
             logger.warning("⚠️  Layer 4 not available, running without cloud storage")
         logger.info("[DEBUG] ===== LAYER 4 INITIALIZATION COMPLETE =====")
+
+        # Initialize Conversation Manager
+        self.conversation_manager = None
+        conv_config = self.config.get('conversation', {})
+        if conv_config.get('enabled', True) and ConversationManager:
+            try:
+                self.conversation_manager = ConversationManager(
+                    db_path=self.config['supabase']['local_db_path'],
+                    session_timeout=conv_config.get('session_timeout_seconds', 300),
+                    max_turns=conv_config.get('max_turns', None),
+                    config=conv_config,
+                )
+                logger.info("✅ ConversationManager initialized")
+            except Exception as e:
+                logger.error(f"❌ ConversationManager init failed: {e}")
 
         # Initialize Layer 0: Guardian (Safety-Critical Detection)
         logger.info("[DEBUG] ===== LAYER 0 INITIALIZATION START =====")
@@ -894,8 +940,12 @@ class CortexSystem:
         self.running = False
         self.detection_count = 0
 
-        # Initialize Voice Coordinator
-        self.voice_coordinator = VoiceCoordinator(on_command_detected=self.handle_voice_command)
+        # Initialize Voice Coordinator (with audio config for VAD/Whisper tuning)
+        audio_config = self.config.get('audio', {})
+        self.voice_coordinator = VoiceCoordinator(
+            on_command_detected=self.handle_voice_command,
+            config=audio_config
+        )
         self.voice_coordinator.initialize()
         
         # Initialize Bluetooth Manager (will be connected in start() if configured)
@@ -912,8 +962,23 @@ class CortexSystem:
         self.depth_estimator = None
         self.audio_alerts = None
         self.ocr_pipeline = None
+        self._shared_hailo_vdevice = None  # Shared across depth + OCR
         hailo_config = self.config.get('hailo', {})
         if hailo_config.get('enabled', False):
+            # Create a single shared VDevice for all Hailo modules
+            # Hailo-8L has only ONE physical device — can't create multiple VDevices
+            if HAILO_VDEVICE_AVAILABLE:
+                try:
+                    # Enable ROUND_ROBIN scheduler so multiple HEFs (depth + OCR)
+                    # can time-share the single Hailo-8L device
+                    vdevice_params = HailoVDevice.create_params()
+                    vdevice_params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+                    self._shared_hailo_vdevice = HailoVDevice(vdevice_params)
+                    logger.info("✅ Shared Hailo VDevice created (ROUND_ROBIN scheduler, depth + OCR)")
+                except Exception as e:
+                    logger.error(f"❌ Failed to create shared Hailo VDevice: {e}")
+                    self._shared_hailo_vdevice = None
+
             depth_config = hailo_config.get('depth', {})
             if depth_config.get('enabled', False) and HailoDepthEstimator:
                 try:
@@ -926,6 +991,7 @@ class CortexSystem:
                         dropoff_threshold=hazard_cfg.get('dropoff_threshold', 3.0),
                         approach_rate_threshold=hazard_cfg.get('approach_rate_threshold', 0.1),
                         alert_cooldown=hazard_cfg.get('alert_cooldown', 3.0),
+                        vdevice=self._shared_hailo_vdevice,
                     )
                     if self.depth_estimator.is_available:
                         logger.info("✅ Hailo depth estimator initialized")
@@ -953,6 +1019,7 @@ class CortexSystem:
                     self.ocr_pipeline = HailoOCRPipeline(
                         recognition_hef_path=ocr_config.get('recognition_model_path', 'models/hailo/paddle_ocr_v3_recognition.hef'),
                         confidence_threshold=ocr_config.get('confidence', 0.5),
+                        vdevice=self._shared_hailo_vdevice,
                     )
                     if self.ocr_pipeline.is_available:
                         logger.info("✅ Hailo OCR pipeline initialized (detector lazy-loaded)")
@@ -1463,6 +1530,13 @@ class CortexSystem:
             logger.debug(f"Ignoring filler utterance: '{query}'")
             return
         
+        # TEMPORARY: Force all queries to Layer 2 (Gemini vision)
+        # Remove this block to restore normal intent routing
+        if target_layer != "layer2":
+            logger.info(f"⚡ OVERRIDE: Forcing {target_layer} -> layer2 (temporary)")
+            target_layer = "layer2"
+            routing["use_gemini"] = True
+        
         # Notify dashboard of audio event
         if self.ws_client:
             try:
@@ -1601,20 +1675,93 @@ class CortexSystem:
                     from PIL import Image
                     
                     gemini = GeminiTTS()
+                    # Frame is BGR (normalized at capture time) — convert to RGB for PIL
                     pil_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                    response = gemini.generate_text_from_image(pil_image, query)
                     
-                    if response:
-                        logger.info(f"  Gemini vision response: {response[:100]}...")
-                    else:
+                    # --- Save camera frame for memory recall ---
+                    saved_image_path = None
+                    if self.conversation_manager:
+                        saved_image_path = self.conversation_manager.save_image(pil_image)
+                        if saved_image_path:
+                            logger.info(f"  [MEMORY] Frame saved: {saved_image_path}")
+                    
+                    # --- Object recall: check if this is a search query ---
+                    reference_images = None
+                    if self.conversation_manager:
+                        search_obj = self.conversation_manager.extract_search_object(query)
+                        if search_obj:
+                            logger.info(f"  [MEMORY] Object recall: searching for '{search_obj}' in history...")
+                            matches = self.conversation_manager.search_object_in_history(search_obj)
+                            if matches:
+                                reference_images = []
+                                for match in matches:
+                                    if match.get("image_path") and os.path.exists(match["image_path"]):
+                                        ref_img = Image.open(match["image_path"])
+                                        context = match.get("full_response") or match.get("content", "")
+                                        # Truncate context to ~500 chars for token efficiency
+                                        reference_images.append({
+                                            "image": ref_img,
+                                            "context": context[:500] if context else "Object was seen here previously."
+                                        })
+                                logger.info(f"  [MEMORY] Loaded {len(reference_images)} reference images from history")
+                        else:
+                            logger.info(f"  [MEMORY] Not a search query, skipping object recall")
+                    
+                    # --- Conversation memory integration ---
+                    history = None
+                    system_instruction = None
+                    enable_code_exec = routing.get("enable_code_execution", False)
+                    max_chars = 150  # default
+                    
+                    if self.conversation_manager:
+                        history = self.conversation_manager.get_history_for_gemini()
+                        system_instruction = self.conversation_manager.build_system_instruction()
+                        max_chars = self.conversation_manager.get_response_limit(routing["query_type"])
+                        # Override code execution from ConversationManager config
+                        enable_code_exec = self.conversation_manager.should_enable_code_execution(routing["query_type"])
+                        logger.info(
+                            f"  [MEMORY] History: {len(history) if history else 0} turns, "
+                            f"refs: {len(reference_images) if reference_images else 0}, "
+                            f"max_chars: {max_chars}, code_exec: {enable_code_exec}"
+                        )
+                    
+                    response = gemini.generate_text_from_image(
+                        pil_image, query,
+                        conversation_history=history,
+                        system_instruction=system_instruction,
+                        enable_code_execution=enable_code_exec,
+                        max_response_chars=max_chars,
+                        reference_images=reference_images,
+                    )
+                    
+                    # --- Fallback if Gemini returned nothing ---
+                    if not response:
                         response = "I couldn't analyze the scene."
                     
-                    # Speak via TTS — let TTSRouter decide engine based on length
-                    # Short (<300 chars) -> Gemini TTS (natural voice)
-                    # Long (>=300 chars) -> Kokoro TTS (fast local)
+                    logger.info(f"  [L2] Gemini response: {response[:100]}...")
+                    
+                    # --- Store turns in conversation manager (with image + full response) ---
+                    # Always store, even if Gemini failed — preserves the image record
+                    if self.conversation_manager:
+                        full_resp = getattr(gemini, 'last_full_response', response)
+                        self.conversation_manager.add_turn(
+                            "user", query,
+                            query_type=routing["query_type"],
+                            image_path=saved_image_path,
+                        )
+                        self.conversation_manager.add_turn(
+                            "model", response,
+                            query_type=routing["query_type"],
+                            full_response=full_resp,
+                        )
+                        # Extract personal facts from user query
+                        self.conversation_manager.extract_personal_facts(query)
+                    
+                    # Speak via TTS — Cartesia Sonic 3 for Layer 2 (ultra-low latency cloud)
+                    # Fallback chain: Cartesia -> Kokoro -> Gemini
                     if TTSRouter and response:
                         tts = TTSRouter()
-                        await tts.speak_async(response)
+                        await tts.speak_async(response, engine_override="cartesia")
                     
                     # Store to memory
                     if self.memory_manager:
@@ -1657,7 +1804,9 @@ class CortexSystem:
 
     def stop(self):
         """Graceful shutdown"""
-        logger.info("🛑 Stopping ProjectCortex v2.0...")
+        turn_count = len(self.conversation_manager.turns) if self.conversation_manager else 0
+        print(f"\n[Cortex] Shutting down... ({turn_count} turns saved to SQLite)")
+        logger.info("Stopping ProjectCortex v2.0...")
 
         self.running = False
 
@@ -1677,6 +1826,15 @@ class CortexSystem:
             self.memory_manager.stop_sync_worker()
             self.memory_manager.cleanup()
 
+        # Save conversation session and cleanup old data
+        if self.conversation_manager:
+            self.conversation_manager.save_session()
+            cleanup_days = self.config.get('conversation', {}).get('cleanup_days', 7)
+            self.conversation_manager.cleanup_old_conversations(days=cleanup_days)
+            session_id = self.conversation_manager.session_id[:8]
+            print(f"[Cortex] Session {session_id}... saved. Data is safe.")
+            logger.info("Conversation session saved")
+
         # Stop interactive status display
         if self.status_display:
             self.status_display.stop()
@@ -1688,6 +1846,10 @@ class CortexSystem:
             self.audio_alerts.cleanup()
         if self.ocr_pipeline:
             self.ocr_pipeline.cleanup()
+        # Release shared Hailo VDevice AFTER both modules are cleaned up
+        if self._shared_hailo_vdevice:
+            self._shared_hailo_vdevice = None
+            logger.info("Shared Hailo VDevice released")
 
         logger.info("✅ ProjectCortex v2.0 stopped")
         logger.info(f"📊 Total detections: {self.detection_count}")

@@ -6,6 +6,9 @@ Routes text to the appropriate TTS engine based on text length:
 - Short text (<300 chars): Gemini 2.5 Flash TTS (cloud, natural voice)
 - Long text (>=300 chars): Kokoro TTS (local, faster for long text)
 
+Auto-saves every TTS output as a pristine .wav file to tts_recordings/
+for video editing (mute camera audio, drag in the .wav).
+
 Author: Haziq (@IRSPlays)
 Project: Cortex v2.0 - YIA 2026
 Date: January 27, 2026
@@ -13,6 +16,8 @@ Date: January 27, 2026
 
 import logging
 import asyncio
+import time
+import re
 from typing import Optional, Tuple, Callable
 from pathlib import Path
 
@@ -53,6 +58,25 @@ def _get_kokoro_tts():
     return _kokoro_tts
 
 
+_cartesia_tts = None
+
+
+def _get_cartesia_tts():
+    """Lazy load Cartesia Sonic 3 TTS handler."""
+    global _cartesia_tts
+    if _cartesia_tts is None:
+        try:
+            from rpi5.layer2_thinker.cartesia_handler import CartesiaTTS
+            _cartesia_tts = CartesiaTTS()
+            if _cartesia_tts.available:
+                logger.info("Loaded Cartesia Sonic 3 TTS")
+            else:
+                _cartesia_tts = None
+        except Exception as e:
+            logger.warning(f"Failed to load Cartesia TTS: {e}")
+    return _cartesia_tts
+
+
 class TTSRouter:
     """
     Smart TTS router that selects the best TTS engine based on text length.
@@ -60,7 +84,10 @@ class TTSRouter:
     Routing logic:
     - Short text (<300 chars): Gemini 2.5 Flash TTS (natural, cloud-based)
     - Long text (>=300 chars): Kokoro TTS (local, faster for long responses)
+    - Cartesia Sonic 3: Ultra-low latency cloud TTS for Layer 2 (via engine_override)
     - Fallback: If primary engine fails, use the other
+    
+    Engine override options: "gemini", "kokoro", "cartesia"
     """
     
     _instance = None  # Singleton
@@ -94,15 +121,64 @@ class TTSRouter:
         self.audio_output_dir = Path(audio_output_dir)
         self.audio_output_dir.mkdir(exist_ok=True)
         
+        # TTS recordings directory — pristine .wav files for video editing
+        self.recordings_dir = Path("tts_recordings")
+        self.recordings_dir.mkdir(exist_ok=True)
+        self._recording_counter = 0  # Sequential numbering for easy sorting
+        
         self._gemini_available = False
         self._kokoro_available = False
+        self._cartesia_available = False
         
         self._initialized = True
         logger.info(f"TTSRouter initialized (threshold: {length_threshold} chars)")
+        logger.info(f"TTS recordings will be saved to: {self.recordings_dir.absolute()}")
+    
+    def _save_recording(self, audio_data: bytes, engine: str, text: str):
+        """
+        Save a pristine copy of TTS audio for video editing.
+        
+        Files are saved as: tts_recordings/NNN_engine_textsnippet.wav
+        A companion .txt file stores the full text for reference.
+        
+        Args:
+            audio_data: WAV audio bytes
+            engine: Engine name ("kokoro", "cartesia", "gemini")
+            text: Full text that was spoken
+        """
+        try:
+            self._recording_counter += 1
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            
+            # Sanitize text for filename (keep only alphanum + spaces, truncate)
+            safe_text = re.sub(r'[^a-zA-Z0-9 ]', '', text)[:40].strip().replace(' ', '_')
+            if not safe_text:
+                safe_text = "response"
+            
+            basename = f"{self._recording_counter:04d}_{timestamp}_{engine}_{safe_text}"
+            wav_path = self.recordings_dir / f"{basename}.wav"
+            txt_path = self.recordings_dir / f"{basename}.txt"
+            
+            # Save pristine WAV
+            with open(wav_path, 'wb') as f:
+                f.write(audio_data)
+            
+            # Save companion text file (full text + metadata)
+            with open(txt_path, 'w', encoding='utf-8') as f:
+                f.write(f"Engine: {engine}\n")
+                f.write(f"Timestamp: {timestamp}\n")
+                f.write(f"Text length: {len(text)} chars\n")
+                f.write(f"Audio size: {len(audio_data)} bytes\n")
+                f.write(f"---\n")
+                f.write(text)
+            
+            logger.info(f"TTS recording saved: {wav_path.name} ({len(audio_data)} bytes)")
+        except Exception as e:
+            logger.warning(f"Failed to save TTS recording: {e}")
     
     def initialize(self) -> Tuple[bool, bool]:
         """
-        Pre-initialize both TTS engines.
+        Pre-initialize all TTS engines.
         
         Returns:
             Tuple of (gemini_available, kokoro_available)
@@ -113,7 +189,10 @@ class TTSRouter:
         kokoro = _get_kokoro_tts()
         self._kokoro_available = kokoro is not None
         
-        logger.info(f"TTS Engines: Gemini={self._gemini_available}, Kokoro={self._kokoro_available}")
+        cartesia = _get_cartesia_tts()
+        self._cartesia_available = cartesia is not None
+        
+        logger.info(f"TTS Engines: Gemini={self._gemini_available}, Kokoro={self._kokoro_available}, Cartesia={self._cartesia_available}")
         
         return self._gemini_available, self._kokoro_available
     
@@ -153,7 +232,7 @@ class TTSRouter:
             text: Text to speak
             play_audio: If True, play audio immediately
             save_path: Optional path to save audio file
-            engine_override: Force a specific engine ("gemini" or "kokoro"),
+            engine_override: Force a specific engine ("gemini", "kokoro", or "cartesia"),
                              bypassing the automatic selection logic.
             
         Returns:
@@ -166,7 +245,17 @@ class TTSRouter:
         audio_data = None
         
         try:
-            if engine == "gemini":
+            if engine == "cartesia":
+                success, audio_data = await self._speak_cartesia(text, play_audio, save_path)
+                if not success:
+                    logger.warning("Cartesia TTS failed, falling back to Kokoro")
+                    engine = "kokoro"
+                    success, audio_data = await self._speak_kokoro(text, play_audio, save_path)
+                    if not success:
+                        logger.warning("Kokoro TTS also failed, falling back to Gemini")
+                        engine = "gemini"
+                        success, audio_data = await self._speak_gemini(text, play_audio, save_path)
+            elif engine == "gemini":
                 success, audio_data = await self._speak_gemini(text, play_audio, save_path)
                 if not success:
                     logger.warning("Gemini TTS failed, falling back to Kokoro")
@@ -181,6 +270,10 @@ class TTSRouter:
         
         except Exception as e:
             logger.error(f"TTS error: {e}")
+        
+        # Auto-save pristine recording for video editing
+        if success and audio_data:
+            self._save_recording(audio_data, engine, text)
         
         return success, engine, audio_data
     
@@ -301,6 +394,41 @@ class TTSRouter:
             
         except Exception as e:
             logger.error(f"Kokoro TTS error: {e}")
+            return False, None
+    
+    async def _speak_cartesia(
+        self,
+        text: str,
+        play_audio: bool,
+        save_path: Optional[str]
+    ) -> Tuple[bool, Optional[bytes]]:
+        """Use Cartesia Sonic 3 TTS to synthesize speech."""
+        cartesia = _get_cartesia_tts()
+        if not cartesia:
+            return False, None
+        
+        try:
+            # CartesiaTTS.generate_speech() returns WAV bytes directly
+            audio_bytes = await asyncio.to_thread(cartesia.generate_speech, text)
+            
+            if audio_bytes:
+                if save_path:
+                    with open(save_path, 'wb') as f:
+                        f.write(audio_bytes)
+                
+                if play_audio:
+                    # Save to temp file and play via sounddevice
+                    temp_path = str(self.audio_output_dir / "cartesia_temp.wav")
+                    with open(temp_path, 'wb') as f:
+                        f.write(audio_bytes)
+                    await self._play_audio_file(temp_path)
+                
+                return True, audio_bytes
+            
+            return False, None
+            
+        except Exception as e:
+            logger.error(f"Cartesia TTS error: {e}")
             return False, None
     
     async def _play_audio_file(self, audio_path: str):

@@ -388,7 +388,7 @@ class VADHandler:
                             info = self.pyaudio_instance.get_device_info_by_index(i)
                             name = info.get('name', '')
                             # Priority for Bluetooth/Headset sources
-                            if info.get('maxInputChannels') > 0 and any(k in name for key in ['bluez', 'Headset', 'CMF Buds']):
+                            if info.get('maxInputChannels') > 0 and any(key in name for key in ['bluez', 'Headset', 'CMF Buds']):
                                 logger.info(f"🎧 Auto-selected Bluetooth Input: [{i}] {name}")
                                 device_index = i
                                 break
