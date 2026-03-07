@@ -250,6 +250,80 @@ class UptimeWidget(QWidget):
             self.lbl_time.setText(f"{hours:02}:{minutes:02}:{seconds:02}")
             self.lbl_time.setStyleSheet(f"color: {Theme.NEON_GREEN}; font-family: {Theme.FONT_MONO};")
 
+
+class SensorStatusCard(GlassCard):
+    """GPS/IMU/Button status panel for the dashboard."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("HARDWARE SENSORS", objectName="Title"))
+
+        grid = QGridLayout()
+        grid.setSpacing(6)
+
+        # GPS
+        grid.addWidget(QLabel("GPS"), 0, 0)
+        self.lbl_lat = QLabel("--")
+        self.lbl_lat.setStyleSheet(f"color: {Theme.NEON_GREEN}; font-family: {Theme.FONT_MONO};")
+        grid.addWidget(QLabel("Lat:"), 0, 1)
+        grid.addWidget(self.lbl_lat, 0, 2)
+
+        self.lbl_lon = QLabel("--")
+        self.lbl_lon.setStyleSheet(f"color: {Theme.NEON_GREEN}; font-family: {Theme.FONT_MONO};")
+        grid.addWidget(QLabel("Lon:"), 1, 1)
+        grid.addWidget(self.lbl_lon, 1, 2)
+
+        self.lbl_alt = QLabel("--")
+        self.lbl_alt.setStyleSheet(f"color: {Theme.TEXT_GRAY}; font-family: {Theme.FONT_MONO};")
+        grid.addWidget(QLabel("Alt:"), 2, 1)
+        grid.addWidget(self.lbl_alt, 2, 2)
+
+        # IMU
+        grid.addWidget(QLabel("IMU"), 3, 0)
+        self.lbl_accel = QLabel("--")
+        self.lbl_accel.setStyleSheet(f"color: {Theme.NEON_CYAN}; font-family: {Theme.FONT_MONO};")
+        grid.addWidget(QLabel("Accel:"), 3, 1)
+        grid.addWidget(self.lbl_accel, 3, 2)
+
+        self.lbl_gyro = QLabel("--")
+        self.lbl_gyro.setStyleSheet(f"color: {Theme.NEON_CYAN}; font-family: {Theme.FONT_MONO};")
+        grid.addWidget(QLabel("Gyro:"), 4, 1)
+        grid.addWidget(self.lbl_gyro, 4, 2)
+
+        self.lbl_mag = QLabel("--")
+        self.lbl_mag.setStyleSheet(f"color: {Theme.NEON_CYAN}; font-family: {Theme.FONT_MONO};")
+        grid.addWidget(QLabel("Mag:"), 5, 1)
+        grid.addWidget(self.lbl_mag, 5, 2)
+
+        layout.addLayout(grid)
+
+    def update_data(self, data: dict):
+        """Update labels from GPS/IMU data dict."""
+        gps = data.get("gps", {})
+        imu = data.get("imu", {})
+
+        lat = gps.get("latitude")
+        lon = gps.get("longitude")
+        alt = gps.get("altitude")
+        self.lbl_lat.setText(f"{lat:.6f}" if lat is not None else "--")
+        self.lbl_lon.setText(f"{lon:.6f}" if lon is not None else "--")
+        self.lbl_alt.setText(f"{alt:.1f} m" if alt is not None else "--")
+
+        accel = imu.get("accelerometer")
+        gyro = imu.get("gyroscope")
+        mag = imu.get("magnetometer")
+        self.lbl_accel.setText(
+            f"{accel[0]:.1f}, {accel[1]:.1f}, {accel[2]:.1f}" if accel else "--"
+        )
+        self.lbl_gyro.setText(
+            f"{gyro[0]:.1f}, {gyro[1]:.1f}, {gyro[2]:.1f}" if gyro else "--"
+        )
+        self.lbl_mag.setText(
+            f"{mag[0]:.1f}, {mag[1]:.1f}, {mag[2]:.1f}" if mag else "--"
+        )
+
+
 class ProductionToggle(QWidget):
     """Large Toggle Switch for Production Mode"""
     toggled = pyqtSignal(bool)
@@ -506,7 +580,11 @@ class DashboardOverviewWidget(QWidget):
         
         right_col.addWidget(status_panel)
         
-        # 2. Layer Control
+        # 2. Hardware Sensors
+        self.sensor_card = SensorStatusCard()
+        right_col.addWidget(self.sensor_card)
+        
+        # 3. Layer Control
         control_panel = GlassCard()
         control_layout = QVBoxLayout(control_panel)
         control_layout.addWidget(QLabel("LAYER CONTROL", objectName="Title"))
@@ -811,6 +889,7 @@ class DashboardSignals(QObject):
     client_disconnected = pyqtSignal(str)
     send_command = pyqtSignal(dict) # UI -> Server
     mode_changed = pyqtSignal(str)  # Server -> UI (PRODUCTION / DEV)
+    gps_imu_update = pyqtSignal(dict)  # GPS/IMU sensor data from RPi5
 
 class CortexDashboard(QMainWindow):
     def __init__(self, config: DashboardConfig = None):
@@ -867,6 +946,7 @@ class CortexDashboard(QMainWindow):
         self.signals.client_connected.connect(self.on_client_connected)
         self.signals.client_disconnected.connect(self.on_client_disconnected)
         self.signals.mode_changed.connect(self.on_mode_changed)
+        self.signals.gps_imu_update.connect(self.on_gps_imu_update)
         
         # M22: Frame rate throttling (30fps max)
         self._last_frame_time = 0.0
@@ -888,6 +968,7 @@ class CortexDashboard(QMainWindow):
             self.signals.client_connected.disconnect(self.on_client_connected)
             self.signals.client_disconnected.disconnect(self.on_client_disconnected)
             self.signals.mode_changed.disconnect(self.on_mode_changed)
+            self.signals.gps_imu_update.disconnect(self.on_gps_imu_update)
         except (TypeError, RuntimeError):
             pass  # Already disconnected
         super().closeEvent(event)
@@ -1039,6 +1120,12 @@ class CortexDashboard(QMainWindow):
         if hasattr(self, 'view_overview') and self.view_overview:
             if hasattr(self.view_overview, 'prod_toggle') and self.view_overview.prod_toggle:
                 self.view_overview.prod_toggle.set_mode_state(mode)
+
+    def on_gps_imu_update(self, data: dict):
+        """Handle GPS/IMU sensor data from RPi5."""
+        if hasattr(self, 'view_overview') and self.view_overview:
+            if hasattr(self.view_overview, 'sensor_card'):
+                self.view_overview.sensor_card.update_data(data)
         
 if __name__ == "__main__":
     app = QApplication(sys.argv)

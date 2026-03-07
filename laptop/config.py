@@ -67,7 +67,7 @@ class DashboardConfig:
     enable_video: bool = True
     enable_metrics: bool = True
     enable_detections: bool = True
-    enable_gps: bool = False
+    enable_gps: bool = True
     enable_audio: bool = False
 
     # Colors (Dark Theme)

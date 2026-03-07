@@ -217,7 +217,8 @@ class LaptopWebSocketServer(AsyncWebSocketServer):
                  on_detection: Optional[Callable] = None,
                  on_connect: Optional[Callable] = None,
                  on_disconnect: Optional[Callable] = None,
-                 on_status: Optional[Callable] = None):
+                 on_status: Optional[Callable] = None,
+                 on_gps_imu: Optional[Callable] = None):
         super().__init__(config)
         self._connection_manager = None  # Will be set when first client connects
         self._websockets = {}  # Fix: Initialize storage for raw websockets
@@ -229,6 +230,7 @@ class LaptopWebSocketServer(AsyncWebSocketServer):
         self._on_connect_cb = on_connect
         self._on_disconnect_cb = on_disconnect
         self._on_status_cb = on_status
+        self._on_gps_imu_cb = on_gps_imu
 
         # Register default handlers (that call our custom ones)
         self.on_connect = self._handle_connect
@@ -349,7 +351,21 @@ class LaptopWebSocketServer(AsyncWebSocketServer):
     async def _handle_gps_imu(self, client_id: str, message: BaseMessage):
         """Handle GPS_IMU messages from RPi5."""
         data = message.data
-        logger.debug(f"GPS/IMU from {client_id}: lat={data.get('latitude')}, lon={data.get('longitude')}")
+        gps = data.get('gps', {})
+        imu = data.get('imu', {})
+        logger.debug(
+            f"GPS/IMU from {client_id}: "
+            f"lat={gps.get('latitude')}, lon={gps.get('longitude')}, "
+            f"accel={imu.get('accelerometer')}"
+        )
+        if self._on_gps_imu_cb:
+            try:
+                if asyncio.iscoroutinefunction(self._on_gps_imu_cb):
+                    await self._on_gps_imu_cb(data)
+                else:
+                    self._on_gps_imu_cb(data)
+            except Exception as e:
+                logger.error(f"Error in GPS/IMU callback: {e}")
 
     async def _handle_layer_response(self, client_id: str, message: BaseMessage):
         """Handle LAYER_RESPONSE messages from RPi5."""

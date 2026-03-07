@@ -263,6 +263,15 @@ except ImportError as e:
     logger.warning(f"[DEBUG] ⚠️ HailoOCRPipeline import failed: {e}")
     HailoOCRPipeline = None
 
+try:
+    from rpi5.hardware import GPSHandler, IMUHandler, ButtonHandler
+    logger.info("[DEBUG] ✅ Hardware peripherals (GPS, IMU, Button) imported successfully")
+except ImportError as e:
+    logger.warning(f"[DEBUG] ⚠️ Hardware peripherals import failed: {e}")
+    GPSHandler = None
+    IMUHandler = None
+    ButtonHandler = None
+
 
 # =====================================================
 # ASYNC HELPER FUNCTION
@@ -983,6 +992,63 @@ class CortexSystem:
                 logger.error(f"❌ Failed to init Navigator: {e}")
                 self.navigator = None
 
+        # =====================================================
+        # HARDWARE PERIPHERALS (GPS, IMU, Button)
+        # =====================================================
+        sensor_cfg = self.config.get('sensors', {})
+
+        # GPS Handler
+        self.gps = None  # type: Optional[GPSHandler]
+        gps_cfg = sensor_cfg.get('gps', {})
+        if GPSHandler and gps_cfg.get('enabled', False):
+            try:
+                self.gps = GPSHandler(
+                    port=gps_cfg.get('port', '/dev/ttyAMA0'),
+                    baudrate=gps_cfg.get('baudrate', 9600),
+                    timeout=gps_cfg.get('timeout', 1.0),
+                )
+                # Wire GPS into Navigator so get_gps_location() returns real data
+                if self.navigator and hasattr(self.navigator, 'set_gps_handler'):
+                    self.navigator.set_gps_handler(self.gps)
+                logger.info("✅ GPS Handler initialized (will start in start())")
+            except Exception as e:
+                logger.error(f"❌ Failed to init GPS: {e}")
+                self.gps = None
+
+        # IMU Handler
+        self.imu = None  # type: Optional[IMUHandler]
+        imu_cfg = sensor_cfg.get('imu', {})
+        if IMUHandler and imu_cfg.get('enabled', False):
+            try:
+                self.imu = IMUHandler(
+                    i2c_address=int(imu_cfg.get('i2c_address', 0x28)),
+                    poll_hz=float(imu_cfg.get('poll_hz', 25.0)),
+                )
+                # Fall-detection wired to haptic + TTS alert
+                self.imu.on_fall_detected = self._on_fall_detected
+                logger.info("✅ IMU Handler initialized (will start in start())")
+            except Exception as e:
+                logger.error(f"❌ Failed to init IMU: {e}")
+                self.imu = None
+
+        # Button Handler
+        self.button = None  # type: Optional[ButtonHandler]
+        btn_cfg = sensor_cfg.get('button', {})
+        if ButtonHandler and btn_cfg.get('enabled', False):
+            try:
+                self.button = ButtonHandler(
+                    gpio_pin=btn_cfg.get('gpio_pin', 16),
+                    auto_shutdown=btn_cfg.get('auto_shutdown', True),
+                )
+                # Short press → activate voice command listen
+                self.button.on_short_press = self._on_button_short_press
+                # Long press → graceful system stop (not OS shutdown — auto_shutdown handles that)
+                self.button.on_long_press = self._on_button_long_press
+                logger.info("✅ Button Handler initialized (will start in start())")
+            except Exception as e:
+                logger.error(f"❌ Failed to init Button: {e}")
+                self.button = None
+
         # Initialize Hailo Depth Estimator (lazy — only if config enabled)
         self.depth_estimator = None
         self.audio_alerts = None
@@ -1055,6 +1121,34 @@ class CortexSystem:
                     self.ocr_pipeline = None
 
         logger.info("✅ ProjectCortex v2.0 initialized successfully")
+
+    # ------------------------------------------------------------------
+    # Hardware peripheral callbacks
+    # ------------------------------------------------------------------
+
+    def _on_button_short_press(self) -> None:
+        """Short button press: activate voice command listen."""
+        logger.info("🔘 Button short press → triggering voice command listen")
+        if self.voice_coordinator:
+            self.voice_coordinator.start()  # Re-activates VAD listening
+
+    def _on_button_long_press(self) -> None:
+        """Long button press (3–5s): graceful application stop."""
+        logger.info("🔘 Button long press → stopping system (graceful)")
+        self.stop()
+
+    def _on_fall_detected(self) -> None:
+        """IMU fall detection callback: alert user and caregiver."""
+        logger.warning("⚠️ Free-fall / fall detected by IMU!")
+        # Haptic alert if available
+        if self.layer0 and hasattr(self.layer0, 'haptic') and self.layer0.haptic:
+            self.layer0.haptic.pulse(intensity=100, duration=0.5)
+        # TTS alert
+        if self.tts:
+            try:
+                self.tts.speak("Warning: fall detected. Are you okay?")
+            except Exception as exc:
+                logger.error(f"TTS fall alert error: {exc}")
 
     def handle_dashboard_command(self, cmd: Dict[str, Any]):
         """Handle incoming commands from dashboard"""
@@ -1257,6 +1351,14 @@ class CortexSystem:
         # This handles: Bluetooth init, voice coordinator start, layer thresholds
         self.set_mode("PRODUCTION")
 
+        # Start hardware peripherals
+        if self.gps:
+            self.gps.start()
+        if self.imu:
+            self.imu.start()
+        if self.button:
+            self.button.start()
+
         # Pre-initialize TTS engines to avoid 5.5s spike on first voice query
         if self.tts:
             logger.info("🔊 Pre-loading TTS engines (Kokoro + Gemini)...")
@@ -1282,6 +1384,7 @@ class CortexSystem:
         fps_tracker = []
         last_sync_time = time.time()
         last_metrics_time = time.time()
+        last_sensor_time = time.time()
 
         try:
             while self.running:
@@ -1376,7 +1479,27 @@ class CortexSystem:
                     )
                     last_metrics_time = time.time()
 
-                # 6. Track FPS for Logging and Status Display
+                # 6. Stream GPS/IMU sensor data (every 2s)
+                if time.time() - last_sensor_time > 2.0 and self.ws_client and self.ws_client.is_connected:
+                    try:
+                        gps_fix = self.gps.get_fix() if self.gps else None
+                        imu_reading = self.imu.get_reading() if self.imu else None
+
+                        if gps_fix or imu_reading:
+                            self.ws_client.send_gps_imu(
+                                latitude=gps_fix.latitude if gps_fix else 0.0,
+                                longitude=gps_fix.longitude if gps_fix else 0.0,
+                                altitude=gps_fix.altitude if gps_fix else None,
+                                accuracy=None,
+                                accelerometer=list(imu_reading.accelerometer) if imu_reading and imu_reading.accelerometer else None,
+                                gyroscope=list(imu_reading.gyroscope) if imu_reading and imu_reading.gyroscope else None,
+                                magnetometer=list(imu_reading.magnetometer) if imu_reading and imu_reading.magnetometer else None,
+                            )
+                    except Exception as e:
+                        logger.debug(f"Sensor streaming error: {e}")
+                    last_sensor_time = time.time()
+
+                # 7. Track FPS for Logging and Status Display
                 loop_time = time.time() - loop_start
                 fps = 1.0 / loop_time if loop_time > 0 else 0
                 fps_tracker.append(fps)
@@ -1875,6 +1998,14 @@ class CortexSystem:
         # Stop Navigator (spatial audio)
         if self.navigator:
             self.navigator.stop()
+
+        # Stop hardware peripherals
+        if self.gps:
+            self.gps.stop()
+        if self.imu:
+            self.imu.stop()
+        if self.button:
+            self.button.stop()
 
         # Cleanup Hailo depth estimator and OCR
         if self.depth_estimator:

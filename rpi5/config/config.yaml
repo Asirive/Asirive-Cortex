@@ -214,22 +214,34 @@ spatial_audio:
     far_distance: 1.5         # Meters (slow pulse)
 
 # =====================================================
-# GPS/IMU CONFIGURATION
+# GPS/IMU/BUTTON CONFIGURATION
 # =====================================================
 sensors:
-  # GPS (NEO6MV2)
+  # GPS (NEO-6M / GT-U7) — UART serial
+  # Wire: GPS TX → RPi5 GPIO15 (Pin 10), GPS RX → RPi5 GPIO14 (Pin 8)
+  # Enable UART via raspi-config → Interface Options → Serial
   gps:
     enabled: true
-    device: "/dev/ttyACM0"  # UART device
-    baudrate: 9600
-    timeout: 5  # Seconds
+    port: "/dev/ttyAMA0"   # Primary UART on RPi5
+    baudrate: 9600          # NEO-6M / GT-U7 default baud rate
+    timeout: 1.0            # Serial read timeout (seconds)
 
-  # IMU (BNO055)
+  # IMU (BNO055) — I2C
+  # Wire: SDA → GPIO2 (Pin 3), SCL → GPIO3 (Pin 5)
+  # Enable I2C via raspi-config → Interface Options → I2C
+  # Verify with: i2cdetect -y 1  (should show "28")
   imu:
     enabled: true
-    device: "/dev/i2c-1"  # I2C bus
-    address: 0x28  # I2C address
-    mode: "NDOF"  # 9-DOF fusion mode
+    i2c_address: 0x28       # 0x28 (ADDR pin low) or 0x29 (ADDR pin high)
+    poll_hz: 25             # Polling frequency (BNO055 supports up to 100Hz)
+
+  # Physical Button — momentary push-button to GND
+  # Wire: one leg to GPIO16 (Pin 36), other leg to GND (Pin 34)
+  # Internal pull-up keeps pin HIGH at rest; press pulls it LOW
+  button:
+    enabled: true
+    gpio_pin: 16            # BCM pin number
+    auto_shutdown: true     # Very-long press (≥5s) triggers OS shutdown
 
 # =====================================================
 # DATA RECORDER CONFIGURATION

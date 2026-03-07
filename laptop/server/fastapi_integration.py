@@ -44,6 +44,7 @@ class FastAPISignals(QObject):
     client_disconnected = pyqtSignal(str)  # device_id, reason
     video_streaming_changed = pyqtSignal(bool)  # enabled
     status_update = pyqtSignal(str, str)  # status, message (e.g. MODE_CHANGE, PRODUCTION)
+    gps_imu_update = pyqtSignal(dict)  # GPS/IMU sensor data
 
 
 # ============================================================================
