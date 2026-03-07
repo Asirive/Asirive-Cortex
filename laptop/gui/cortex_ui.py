@@ -867,6 +867,9 @@ class CortexDashboard(QMainWindow):
         self.signals.client_connected.connect(self.on_client_connected)
         self.signals.client_disconnected.connect(self.on_client_disconnected)
         self.signals.mode_changed.connect(self.on_mode_changed)
+        
+        # M22: Frame rate throttling (30fps max)
+        self._last_frame_time = 0.0
 
     def switch_tab(self, index):
         self.stack.setCurrentIndex(index)
@@ -875,9 +878,30 @@ class CortexDashboard(QMainWindow):
         # Emit signal for Application to pick up and send
         self.signals.send_command.emit(cmd)
 
+    def closeEvent(self, event):
+        """M21: Disconnect all signals to prevent memory leaks."""
+        try:
+            self.signals.video_frame.disconnect(self.on_video_frame)
+            self.signals.metrics_update.disconnect(self.on_metrics_update)
+            self.signals.detection_log.disconnect(self.on_detection)
+            self.signals.system_log.disconnect(self.on_system_log)
+            self.signals.client_connected.disconnect(self.on_client_connected)
+            self.signals.client_disconnected.disconnect(self.on_client_disconnected)
+            self.signals.mode_changed.disconnect(self.on_mode_changed)
+        except (TypeError, RuntimeError):
+            pass  # Already disconnected
+        super().closeEvent(event)
+
     # --- Slot Handlers ---
 
     def on_video_frame(self, frame_data, w, h, detections):
+        # M22: Throttle to 30fps
+        import time as _time
+        now = _time.time()
+        if now - self._last_frame_time < 0.033:
+            return
+        self._last_frame_time = now
+        
         logger.debug(f"[UI] on_video_frame received: {len(frame_data)} bytes, {w}x{h}, {len(detections)} detections")
         image = QImage.fromData(frame_data)
         if not image.isNull():

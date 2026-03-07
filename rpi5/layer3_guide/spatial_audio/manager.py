@@ -365,6 +365,11 @@ class SpatialAudioManager:
             # oalInit initializes the default device and creates a context
             # OpenAL-Soft will use HRTF automatically if available for headphones
             oalInit()
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize OpenAL (no audio device?): {e}")
+            return False
+        
+        try:
             self._initialized = True
             
             # Log which audio device is being used

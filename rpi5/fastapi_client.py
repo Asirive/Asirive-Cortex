@@ -168,11 +168,9 @@ class RPi5Client(AsyncWebSocketClient):
                 return parse_message(message)
         except ConnectionClosed:
             return None
-        except Exception:
+        except Exception as e:
+            logger.debug(f"WebSocket receive error: {e}")
             return None
-
-    # =========================================================================
-    # Message Handlers
     # =========================================================================
 
     async def _handle_command(self, message: BaseMessage):

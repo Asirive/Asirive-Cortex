@@ -254,9 +254,17 @@ class BaseMessage:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "BaseMessage":
-        """Create from dictionary."""
+        """Create from dictionary with input validation."""
+        if not isinstance(data, dict):
+            raise ValueError(f"Expected dict, got {type(data).__name__}")
+        if "type" not in data:
+            raise ValueError("Missing required field 'type' in message")
+        try:
+            msg_type = MessageType(data["type"])
+        except ValueError:
+            raise ValueError(f"Unknown message type: {data['type']}")
         return cls(
-            type=MessageType(data["type"]),
+            type=msg_type,
             timestamp=data.get("timestamp", datetime.now(timezone.utc).isoformat()),
             message_id=data.get("message_id", str(uuid.uuid4())),
             data=data.get("data", {}),
@@ -264,8 +272,12 @@ class BaseMessage:
 
     @classmethod
     def from_json(cls, json_str: str) -> "BaseMessage":
-        """Deserialize from JSON string."""
-        return cls.from_dict(json.loads(json_str))
+        """Deserialize from JSON string with validation."""
+        try:
+            data = json.loads(json_str)
+        except (json.JSONDecodeError, TypeError) as e:
+            raise ValueError(f"Invalid JSON message: {e}")
+        return cls.from_dict(data)
 
 
 # Convenience factory functions

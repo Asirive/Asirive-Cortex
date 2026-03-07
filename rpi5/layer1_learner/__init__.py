@@ -256,7 +256,7 @@ class YOLOELearner:
 
         # Load adaptive vocabulary from prompt manager
         if self.prompt_manager:
-            self.current_classes = self.prompt_manager.get_all_classes()
+            self.current_classes = self.prompt_manager.get_current_prompts()
             logger.info(f"   Loaded {len(self.current_classes)} adaptive classes")
         else:
             # Fallback to base vocabulary
@@ -636,10 +636,16 @@ class YOLOELearner:
         old_mode = self.mode
         self.mode = new_mode
         
+        # H14 fix: Release old model before loading new one to prevent OOM on 4GB RPi5
+        if hasattr(self, 'model') and self.model is not None:
+            del self.model
+            self.model = None
+            import gc
+            gc.collect()
+        
         # Reset mode-specific state
         if new_mode == YOLOEMode.PROMPT_FREE:
             # Switching TO Prompt Free -> Load ONNX
-            self.mode = new_mode
             self._load_model_with_fallback("models/converted/yoloe_26s_seg_pf", self.device)
             
             self.current_classes = []
@@ -650,7 +656,6 @@ class YOLOELearner:
         
         elif new_mode == YOLOEMode.TEXT_PROMPTS:
             # Switching TO Text Prompts -> Load NCNN
-            self.mode = new_mode
             self._load_model_with_fallback("models/converted/yoloe_26s_seg_ncnn_model", self.device)
             
             if old_mode == YOLOEMode.PROMPT_FREE:
@@ -664,7 +669,6 @@ class YOLOELearner:
         
         elif new_mode == YOLOEMode.VISUAL_PROMPTS:
              # Switching TO Visual Prompts -> Load NCNN (Same as Text Prompts usually)
-             self.mode = new_mode
              # Ensure NCNN is loaded (if coming from PF)
              if old_mode == YOLOEMode.PROMPT_FREE:
                  self._load_model_with_fallback("models/converted/yoloe_26s_seg_ncnn_model", self.device)
@@ -713,8 +717,8 @@ class YOLOELearner:
                     
                     # Store prompts for inference
                     self.visual_prompts = {
-                        "bboxes": [prompt.bboxes],
-                        "cls": [prompt.cls]
+                        "bboxes": prompt.bboxes,
+                        "cls": prompt.cls
                     }
                     
                     # Store reference image path

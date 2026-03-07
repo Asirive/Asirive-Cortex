@@ -392,8 +392,8 @@ class VADHandler:
                                 logger.info(f"🎧 Auto-selected Bluetooth Input: [{i}] {name}")
                                 device_index = i
                                 break
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"PyAudio device enumeration error: {e}")
 
                 # Open audio stream with callback
                 self.audio_stream = self.pyaudio_instance.open(

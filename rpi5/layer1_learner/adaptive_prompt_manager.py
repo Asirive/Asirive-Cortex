@@ -360,6 +360,7 @@ class AdaptivePromptManager:
     def prune_old_prompts(self) -> int:
         """
         Remove prompts older than prune_age_hours with use_count < min_use_count.
+        Preserves at least 5 dynamic prompts to avoid total vocabulary collapse.
         
         Returns:
             Number of prompts removed
@@ -373,6 +374,13 @@ class AdaptivePromptManager:
             
             if timestamp < cutoff_time and info['use_count'] < self.min_use_count:
                 to_remove.append(prompt)
+        
+        # H12 fix: Never prune below 5 dynamic prompts
+        max_removable = max(0, len(self.dynamic_prompts) - 5)
+        if len(to_remove) > max_removable:
+            # Sort by use_count ascending so we keep the most-used ones
+            to_remove.sort(key=lambda p: self.dynamic_prompts[p]['use_count'])
+            to_remove = to_remove[:max_removable]
         
         for prompt in to_remove:
             del self.dynamic_prompts[prompt]
@@ -400,7 +408,7 @@ class AdaptivePromptManager:
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
     
     def _save_prompts(self) -> None:
-        """Save dynamic prompts to JSON file."""
+        """Save dynamic prompts to JSON file atomically (write temp, then rename)."""
         try:
             # Ensure directory exists
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -410,8 +418,13 @@ class AdaptivePromptManager:
                 'last_updated': datetime.now().isoformat()
             }
             
-            with open(self.storage_path, 'w', encoding='utf-8') as f:
+            # H13 fix: Atomic write — write to temp file, then rename
+            tmp_path = self.storage_path.with_suffix('.tmp')
+            with open(tmp_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
+            
+            import os
+            os.replace(str(tmp_path), str(self.storage_path))
             
             logger.debug(f"💾 Saved {len(self.dynamic_prompts)} dynamic prompts to {self.storage_path}")
         except Exception as e:

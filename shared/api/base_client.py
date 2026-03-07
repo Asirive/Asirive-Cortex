@@ -579,20 +579,21 @@ class SyncWebSocketClient(AsyncWebSocketClient):
         )
         return self.send_sync(message, timeout)
 
-    # Abstract method implementations (override per use case)
+    # Abstract method stubs — subclasses MUST override with actual implementation
+    # M26: Clearly documented as requiring subclass implementation
 
     async def _connect_impl(self):
-        """Override in subclass with actual WebSocket library."""
-        raise NotImplementedError
+        """Override in subclass with actual WebSocket library (e.g., websockets)."""
+        raise NotImplementedError("Subclass must implement _connect_impl()")
 
     async def _send_impl(self, message: BaseMessage):
         """Override in subclass with actual WebSocket library."""
-        raise NotImplementedError
+        raise NotImplementedError("Subclass must implement _send_impl()")
 
     async def _disconnect_impl(self):
         """Override in subclass with actual WebSocket library."""
-        raise NotImplementedError
+        raise NotImplementedError("Subclass must implement _disconnect_impl()")
 
     async def _receive_impl(self) -> Optional[BaseMessage]:
         """Override in subclass with actual WebSocket library."""
-        raise NotImplementedError
+        raise NotImplementedError("Subclass must implement _receive_impl()")

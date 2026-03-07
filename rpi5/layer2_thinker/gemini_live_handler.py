@@ -94,8 +94,8 @@ class GeminiLiveHandler:
         self.session_handle: Optional[str] = None  # For resumption
         self.interrupted = False
 
-        # Audio output queue (thread-safe)
-        self.audio_queue = asyncio.Queue()
+        # Audio output queue (thread-safe, bounded to prevent memory leak)
+        self.audio_queue = asyncio.Queue(maxsize=100)
 
         # Callback for status updates (optional)
         self.status_callback: Optional[Callable[[str], None]] = None

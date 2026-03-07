@@ -11,9 +11,10 @@
 # =====================================================
 supabase:
   enabled: true  # Set to false to disable cloud sync entirely
-  # Project Credentials (from https://supabase.com/dashboard/project/ziarxgoansbhesdypfic)
-  url: "https://ziarxgoansbhesdypfic.supabase.co"
-  anon_key: "sb_publishable_ErFxooa2JFiE8eXtd4hx3Q_Yll74lv_"
+  # Credentials loaded from environment variables (SUPABASE_URL, SUPABASE_ANON_KEY)
+  # Set them in .env file or export in shell
+  url: ""  # Overridden by SUPABASE_URL env var
+  anon_key: ""  # Overridden by SUPABASE_ANON_KEY env var
   device_id: "rpi5-cortex-001"  # Unique device ID (change per device)
 
   # Sync Settings
@@ -273,8 +274,8 @@ performance:
   thread_pool_size: 2
   
   # Number of CPU threads for NCNN/ONNX (OMP_NUM_THREADS)
-  # User requested: 6 threads (High Performance / Over-subscription)
-  cpu_threads: 6
+  # RPi5 has 4 cores — match physical core count to avoid over-subscription
+  cpu_threads: 4
 
   # Frame queue size
   frame_queue_size: 2
@@ -391,7 +392,7 @@ conversation:
 # HAILO NPU CONFIGURATION (Hailo-8L M.2 HAT)
 # =====================================================
 hailo:
-  enabled: false  # Disabled — Hailo inference API needs migration to create_infer_model
+  enabled: true  # Migrated to modern create_infer_model API
   device_id: null  # Auto-detect (null = first available device)
 
   # Depth Estimation (fast_depth model)

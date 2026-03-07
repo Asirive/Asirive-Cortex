@@ -81,6 +81,29 @@ def load_config(config_path: str = None) -> Dict[str, Any]:
             if key not in config:
                 config[key] = default_config[key]
 
+        # Override Supabase credentials from environment variables
+        if 'supabase' in config:
+            env_url = os.getenv('SUPABASE_URL', '')
+            env_key = os.getenv('SUPABASE_ANON_KEY', '')
+            if env_url:
+                config['supabase']['url'] = env_url
+            if env_key:
+                config['supabase']['anon_key'] = env_key
+
+        # M27: Resolve relative paths against project root so cwd doesn't matter
+        project_root = Path(__file__).parent.parent.parent  # ProjectCortex/
+        _path_keys = [
+            ('supabase', 'local_db_path'),
+            ('layer0', 'model_path'),
+            ('layer1', 'model_path'),
+            ('layer1', 'pt_model_path'),
+        ]
+        for section, key in _path_keys:
+            if section in config and key in config[section]:
+                val = config[section][key]
+                if val and not os.path.isabs(val):
+                    config[section][key] = str(project_root / val)
+
         _config_cache[config_path] = config
         return config
 

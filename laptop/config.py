@@ -13,6 +13,7 @@ Date: January 8, 2026
 
 from dataclasses import dataclass, field
 from typing import List
+import os
 
 
 @dataclass
@@ -79,8 +80,8 @@ class DashboardConfig:
     color_info: str = "#9cdcfe"
 
     # Supabase (Optional - for historical data)
-    supabase_url: str = "https://ziarxgoansbhesdypfic.supabase.co"
-    supabase_key: str = "sb_publishable_ErFxooa2JFiE8eXtd4hx3Q_Yll74lv_"
+    supabase_url: str = os.getenv("SUPABASE_URL", "")
+    supabase_key: str = os.getenv("SUPABASE_ANON_KEY", "")
     supabase_fetch_interval: int = 60  # seconds (for historical data)
 
 

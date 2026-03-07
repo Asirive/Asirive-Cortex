@@ -27,6 +27,7 @@ Competition: Young Innovators Awards (YIA) 2026
 
 import logging
 import time
+from collections import deque
 from typing import List, Dict, Any, Optional
 import numpy as np
 
@@ -122,6 +123,7 @@ class YOLOGuardian:
                 if len(names_dict) <= 1:
                     logger.error(f"   ❌ ONLY {len(names_dict)} class(es) loaded! metadata.yaml may be missing!")
                     logger.error(f"   Expected 80 COCO classes. Check: {model_path}/metadata.yaml")
+                    raise RuntimeError(f"Safety-critical model has only {len(names_dict)} class(es). ""metadata.yaml likely missing from {model_path}")
             else:
                 logger.error("   ❌ Model has NO 'names' attribute - class labels will be wrong!")
             
@@ -139,7 +141,7 @@ class YOLOGuardian:
         self.memory_manager = memory_manager
 
         # Performance tracking
-        self.inference_times = []
+        self.inference_times = deque(maxlen=100)
         
         logger.info("✅ Layer 0 Guardian initialized")
         logger.info(f"   Model: {model_path}")
@@ -175,17 +177,12 @@ class YOLOGuardian:
                 ...
             ]
         """
-        start_time = time.time()
+        start_time = time.perf_counter()
         
         conf = confidence if confidence is not None else self.confidence
         
         try:
-            # DEBUG: Backend Inspection
-            # Check if this is really the NCNN specific wrapper or Ultralytics generic
-            # logger.debug(f"DEBUG: Layer 0 Model Type: {type(self.model)}")
-            
             # Predict
-            start_debug = time.perf_counter()
             results = self.model.predict(
                 source=frame,
                 conf=conf,
@@ -193,13 +190,6 @@ class YOLOGuardian:
                 device=self.device,
                 task='detect'
             )
-            lat = (time.perf_counter() - start_debug) * 1000
-            
-            # Verify Latency
-            if lat > 150:
-                 logger.warning(f"⚠️ Layer 0 High Latency: {lat:.1f}ms (Expected <100ms)")
-            else:
-                 logger.debug(f"⚡ Layer 0 Inference: {lat:.1f}ms")
 
             # Extract detections
             detections = []
@@ -282,12 +272,15 @@ class YOLOGuardian:
                                 })
             
             # Track performance
-            latency = (time.time() - start_time) * 1000  # Convert to ms
+            latency = (time.perf_counter() - start_time) * 1000  # Convert to ms
             self.inference_times.append(latency)
             
             # Log warning if latency exceeds 100ms (safety requirement)
             if latency > 100:
                 logger.warning(f"⚠️ Layer 0 latency: {latency:.1f}ms (exceeds 100ms safety target!)")
+            
+            # Trigger haptic feedback based on detections
+            self.trigger_haptic_feedback(detections)
             
             return detections
         
@@ -359,7 +352,7 @@ class YOLOGuardian:
         """
         if not self.inference_times:
             return 0.0
-        return np.mean(self.inference_times)
+        return np.mean(list(self.inference_times))
     
     def cleanup(self) -> None:
         """Release resources."""

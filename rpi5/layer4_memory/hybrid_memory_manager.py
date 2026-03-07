@@ -78,6 +78,9 @@ class HybridMemoryManager:
         # Cloud: Supabase (lazy initialization)
         self.supabase_client = None
         self.supabase_available = True # Assume available until proven otherwise
+        self._supabase_backoff = 1  # H23: Exponential backoff seconds
+        self._supabase_disabled_at = None  # H26: Track when supabase was disabled
+        self._supabase_retry_cooldown = 300  # H26: Retry after 5 minutes
 
         # Upload queue (for offline mode)
         self.upload_queue = []
@@ -96,7 +99,7 @@ class HybridMemoryManager:
         """Initialize local SQLite database with schema"""
         conn = sqlite3.connect(self.local_db_path, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")  # Enable WAL for better concurrency
-        conn.execute("PRAGMA synchronous=NORMAL")  # Faster writes
+        conn.execute("PRAGMA synchronous=FULL")  # Safe for power-failure scenarios (wearable device)
         conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
 
         # Create tables
@@ -155,8 +158,19 @@ class HybridMemoryManager:
 
     async def init_supabase(self):
         """Lazy initialization of Supabase client"""
+        # H26: If disabled, check if cooldown has elapsed for retry
         if not self.supabase_available:
-            return
+            if self._supabase_disabled_at is not None:
+                elapsed = time.time() - self._supabase_disabled_at
+                if elapsed >= self._supabase_retry_cooldown:
+                    logger.info("🔄 Supabase cooldown elapsed, retrying connection...")
+                    self.supabase_available = True
+                    self._supabase_backoff = 1
+                    self._supabase_disabled_at = None
+                else:
+                    return
+            else:
+                return
 
         if self.supabase_client is None:
             try:
@@ -166,12 +180,13 @@ class HybridMemoryManager:
                     self.supabase_key
                 )
                 logger.info("✅ Supabase client initialized")
+                self._supabase_backoff = 1  # Reset backoff on success
             except ImportError:
                 logger.warning("⚠️ supabase package not installed. Cloud sync disabled.")
                 self.supabase_available = False
             except Exception as e:
                 logger.error(f"❌ Failed to initialize Supabase: {e}")
-                self.supabase_available = False
+                self._disable_supabase_with_cooldown()
 
     def store_detection(self, detection: Dict[str, Any]) -> None:
         """
@@ -215,22 +230,35 @@ class HybridMemoryManager:
         write_time = (time.time() - start_time) * 1000
         logger.debug(f"💾 Local write: {write_time:.2f}ms")
 
-        # 2. Queue for cloud upload (non-blocking)
-        self.upload_queue.append({
-            'table': 'detections',
-            'data': {**detection, 'device_id': self.device_id}
-        })
+        # 2. Queue for cloud upload (non-blocking, capped to prevent OOM)
+        row_id = cursor.lastrowid
+        if len(self.upload_queue) < self.local_cache_size * 2:
+            self.upload_queue.append({
+                'table': 'detections',
+                'row_id': row_id,
+                'data': {**detection, 'device_id': self.device_id}
+            })
+        else:
+            logger.warning(f"Upload queue full ({len(self.upload_queue)} items), dropping oldest")
+            self.upload_queue.pop(0)
+            self.upload_queue.append({
+                'table': 'detections',
+                'row_id': row_id,
+                'data': {**detection, 'device_id': self.device_id}
+            })
 
         # 3. Cleanup old local rows (keep last 1000)
         self._cleanup_old_rows()
 
     def _cleanup_old_rows(self):
-        """Delete old rows to keep local cache size under limit"""
+        """Delete old synced rows to keep local cache size under limit.
+        Only deletes rows that have been synced to cloud (synced=1)."""
         cursor = self.local_db.cursor()
         cursor.execute(f"""
             DELETE FROM detections_local
-            WHERE id NOT IN (
+            WHERE synced = 1 AND id NOT IN (
                 SELECT id FROM detections_local
+                WHERE synced = 1
                 ORDER BY id DESC
                 LIMIT {self.local_cache_size}
             )
@@ -239,7 +267,7 @@ class HybridMemoryManager:
         self.local_db.commit()
 
         if deleted > 0:
-            logger.debug(f"🧹 Cleaned up {deleted} old rows from local DB")
+            logger.debug(f"🧹 Cleaned up {deleted} old synced rows from local DB")
 
     async def _sync_worker(self):
         """
@@ -268,8 +296,11 @@ class HybridMemoryManager:
                 try:
                     await self._upload_batch(batch)
 
-                    # Mark as synced locally
-                    self._mark_as_synced(batch)
+                    # M19: Mark as synced — if this fails, rows will be re-uploaded (safe duplicate)
+                    try:
+                        self._mark_as_synced(batch)
+                    except Exception as mark_err:
+                        logger.error(f"Failed to mark batch as synced: {mark_err}. Rows may re-upload.")
 
                     # Remove from queue
                     self.upload_queue = self.upload_queue[len(batch):]
@@ -278,7 +309,9 @@ class HybridMemoryManager:
                     logger.info(f"⏳ Queue size: {len(self.upload_queue)} rows remaining")
 
                 except Exception as e:
-                    logger.error(f"❌ Batch upload failed: {e}, will retry in {self.sync_interval}s")
+                    logger.error(f"❌ Batch upload failed: {e}, backoff {self._supabase_backoff}s")
+                    self._handle_supabase_failure()
+                    await asyncio.sleep(self._supabase_backoff)
 
             except Exception as e:
                 logger.error(f"❌ Sync worker error: {e}")
@@ -288,13 +321,15 @@ class HybridMemoryManager:
 
     async def _upload_batch(self, batch: List[Dict[str, Any]]):
         """
-        Upload batch of detections to Supabase
+        Upload batch of detections to Supabase with timeout and backoff.
 
         Args:
             batch: List of detection dicts
         """
         if not self.supabase_client:
             await self.init_supabase()
+        if not self.supabase_client:
+            return
 
         # Extract data from batch
         detections = [item['data'] for item in batch]
@@ -303,49 +338,55 @@ class HybridMemoryManager:
         for det in detections:
             det['created_at'] = datetime.utcnow().isoformat()
 
-        # Batch insert
+        # H25: Batch insert with timeout
         start_time = time.time()
-        result = await self.supabase_client.table('detections').insert(detections).execute()
+        try:
+            result = await asyncio.wait_for(
+                self.supabase_client.table('detections').insert(detections).execute(),
+                timeout=15.0
+            )
+        except asyncio.TimeoutError:
+            logger.error("❌ Supabase upload timed out (15s)")
+            self._handle_supabase_failure()
+            raise
         upload_time = (time.time() - start_time) * 1000
+        self._supabase_backoff = 1  # Reset backoff on success
 
         logger.debug(f"⬆️ Upload: {len(detections)} rows in {upload_time:.2f}ms")
 
     def _mark_as_synced(self, batch: List[Dict[str, Any]]):
         """
-        Mark detections as synced in local DB
+        Mark detections as synced in local DB using row_id.
 
         Args:
-            batch: List of detection dicts with timestamp
+            batch: List of detection dicts with row_id
         """
         cursor = self.local_db.cursor()
 
-        for item in batch:
-            timestamp = item['data'].get('timestamp')
-            if timestamp:
-                cursor.execute("""
-                    UPDATE detections_local
-                    SET synced = 1
-                    WHERE timestamp = ?
-                """, (timestamp,))
+        row_ids = [item.get('row_id') for item in batch if item.get('row_id') is not None]
+        if row_ids:
+            placeholders = ','.join('?' * len(row_ids))
+            cursor.execute(f"""
+                UPDATE detections_local
+                SET synced = 1
+                WHERE id IN ({placeholders})
+            """, row_ids)
 
         self.local_db.commit()
 
     def _is_wifi_connected(self) -> bool:
         """
-        Check if WiFi is connected (placeholder implementation)
-
-        TODO: Implement actual WiFi detection
-        - For RPi: Check /sys/class/net/wlan0/operstate
-        - For laptop: Check network interfaces
-
-        For now, returns True (assume connected)
+        Check if WiFi/network is actually connected.
         """
-        # TODO: Implement actual WiFi detection
-        # import os
-        # if os.path.exists('/sys/class/net/wlan0/operstate'):
-        #     with open('/sys/class/net/wlan0/operstate') as f:
-        #         return f.read().strip() == 'up'
-        return True
+        import socket
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(2)
+            sock.connect(("8.8.8.8", 53))
+            sock.close()
+            return True
+        except (socket.error, OSError):
+            return False
 
     async def fetch_recent_detections(self, limit: int = 100) -> List[Dict[str, Any]]:
         """
@@ -525,6 +566,7 @@ class HybridMemoryManager:
                 pass
             else:
                 logger.warning(f"⚠️ Heartbeat skipped: {e}")
+                self._handle_supabase_failure()
 
     def start_sync_worker(self):
         """Start background sync worker"""
@@ -698,12 +740,34 @@ class HybridMemoryManager:
         except Exception as e:
             logger.error(f"❌ Failed to cleanup old conversations: {e}")
 
+    def _disable_supabase_with_cooldown(self):
+        """H26: Disable Supabase with auto-retry cooldown."""
+        self.supabase_available = False
+        self._supabase_disabled_at = time.time()
+        logger.warning(f"⚠️ Supabase disabled, will retry in {self._supabase_retry_cooldown}s")
+
+    def _handle_supabase_failure(self):
+        """H23: Exponential backoff on Supabase failures."""
+        self._supabase_backoff = min(self._supabase_backoff * 2, 300)  # Cap at 5 min
+        logger.warning(f"⚠️ Supabase failure, backoff: {self._supabase_backoff}s")
+        if self._supabase_backoff >= 60:
+            self._disable_supabase_with_cooldown()
+
     def cleanup(self):
         """Cleanup resources"""
         logger.info("🧹 Cleaning up Hybrid Memory Manager...")
 
         # Stop sync worker
         self.stop_sync_worker()
+
+        # H24: Close Supabase client if initialized
+        if self.supabase_client:
+            try:
+                # Supabase async client doesn't have sync close, but we clear the reference
+                self.supabase_client = None
+                logger.info("✅ Supabase client released")
+            except Exception as e:
+                logger.warning(f"⚠️ Error releasing Supabase client: {e}")
 
         # Close local DB
         if self.local_db:
