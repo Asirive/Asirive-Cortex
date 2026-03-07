@@ -71,10 +71,12 @@ class Navigator:
                 self.spatial_audio = None
         
         # TODO: Initialize other subsystems
-        # self.gps = GPSModule()
         # self.tts = TTSEngine()
         # self.stt = STTEngine()
-        
+
+        # GPS handler — injected by CortexSystem after hardware init
+        self._gps_handler = None
+
         logger.info("✅ Layer 3 initialized")
     
     def start(self) -> bool:
@@ -179,13 +181,26 @@ class Navigator:
     def get_gps_location(self) -> Optional[Tuple[float, float]]:
         """
         Get current GPS coordinates.
-        
+
         Returns:
             (latitude, longitude) or None if unavailable
         """
-        # M13: GPS hardware not yet connected — return None with log
+        # GPS hardware is handled externally via rpi5.hardware.GPSHandler;
+        # CortexSystem passes the handler in here via set_gps_handler().
+        if self._gps_handler is not None:
+            return self._gps_handler.get_location()
         logger.debug("GPS not available: hardware not connected")
         return None
+
+    def set_gps_handler(self, gps_handler) -> None:
+        """
+        Attach an active GPSHandler so get_gps_location() returns real data.
+
+        Args:
+            gps_handler: rpi5.hardware.gps_handler.GPSHandler instance
+        """
+        self._gps_handler = gps_handler
+        logger.info("✅ GPS handler attached to Navigator")
         
     def cleanup(self) -> None:
         """Release resources."""

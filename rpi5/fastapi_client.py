@@ -48,9 +48,12 @@ from shared.api import (
     Detection,
     BoundingBox,
     SystemMetrics,
+    GPSData,
+    IMUData,
     create_video_frame,
     create_metrics,
     create_detections,
+    create_gps_imu,
     create_command,
     parse_message,
 )
@@ -465,6 +468,48 @@ class RPi5Client(AsyncWebSocketClient):
         """Enable/disable video streaming (local control)."""
         self._send_video = enabled
         logger.info(f"Video streaming {'enabled' if enabled else 'disabled'}")
+
+    def send_gps_imu(
+        self,
+        latitude: float,
+        longitude: float,
+        altitude: float = None,
+        accuracy: float = None,
+        accelerometer: list = None,
+        gyroscope: list = None,
+        magnetometer: list = None,
+    ):
+        """
+        Send GPS + IMU sensor data to laptop dashboard.
+
+        Args:
+            latitude: GPS latitude (decimal degrees)
+            longitude: GPS longitude (decimal degrees)
+            altitude: GPS altitude in metres (optional)
+            accuracy: GPS accuracy / HDOP (optional)
+            accelerometer: [x, y, z] m/s² (optional)
+            gyroscope: [x, y, z] deg/s (optional)
+            magnetometer: [x, y, z] µT (optional)
+        """
+        gps = GPSData(
+            latitude=latitude,
+            longitude=longitude,
+            altitude=altitude,
+            accuracy=accuracy,
+        )
+        imu = None
+        if accelerometer or gyroscope:
+            imu = IMUData(
+                accelerometer=accelerometer or [0, 0, 0],
+                gyroscope=gyroscope or [0, 0, 0],
+                magnetometer=magnetometer,
+            )
+
+        msg = create_gps_imu(self.device_id, gps, imu)
+
+        if self._async_loop:
+            import asyncio
+            asyncio.run_coroutine_threadsafe(self.send(msg), self._async_loop)
 
     def send_status(self, status: str, message: str):
         """Send status update to laptop."""
