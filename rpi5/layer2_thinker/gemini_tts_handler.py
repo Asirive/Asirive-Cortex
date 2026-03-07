@@ -170,6 +170,11 @@ class GeminiTTS:
         self.last_full_response = None
         
         self._initialized = True
+        
+        # M11: Pre-initialize Kokoro fallback in background to avoid delay on first failure
+        if KOKORO_AVAILABLE:
+            import threading
+            threading.Thread(target=self._initialize_kokoro_fallback, daemon=True).start()
     
     def _parse_retry_delay(self, error_message: str) -> float:
         """

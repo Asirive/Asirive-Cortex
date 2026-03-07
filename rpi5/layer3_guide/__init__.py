@@ -183,7 +183,8 @@ class Navigator:
         Returns:
             (latitude, longitude) or None if unavailable
         """
-        # TODO: Implement GPS reading
+        # M13: GPS hardware not yet connected — return None with log
+        logger.debug("GPS not available: hardware not connected")
         return None
         
     def cleanup(self) -> None:

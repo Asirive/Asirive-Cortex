@@ -42,7 +42,7 @@ from .base_server import (
 
 from .exceptions import (
     CortexException,
-    ConnectionError,
+    CortexConnectionError,
     ConnectionTimeout,
     ConnectionRefused,
     DisconnectedError,
@@ -99,7 +99,7 @@ __all__ = [
     "FastAPIWebSocketServer",
     # Exceptions
     "CortexException",
-    "ConnectionError",
+    "CortexConnectionError",
     "ConnectionTimeout",
     "ConnectionRefused",
     "DisconnectedError",

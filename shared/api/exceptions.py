@@ -11,20 +11,20 @@ class CortexException(Exception):
         self.details = details or {}
 
 
-class ConnectionError(CortexException):
+class CortexConnectionError(CortexException):
     """Connection-related errors."""
     def __init__(self, message: str = "Connection failed", details: dict = None):
         super().__init__(message, details)
 
 
-class ConnectionTimeout(ConnectionError):
+class ConnectionTimeout(CortexConnectionError):
     """Connection timed out."""
     def __init__(self, timeout: float, details: dict = None):
         super().__init__(f"Connection timed out after {timeout}s", details)
         self.timeout = timeout
 
 
-class ConnectionRefused(ConnectionError):
+class ConnectionRefused(CortexConnectionError):
     """Connection was refused."""
     def __init__(self, host: str, port: int, details: dict = None):
         super().__init__(f"Connection refused to {host}:{port}", details)

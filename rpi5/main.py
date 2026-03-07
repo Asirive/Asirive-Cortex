@@ -157,11 +157,13 @@ except ImportError as e:
 try:
     from rpi5.layer3_guide.router import IntentRouter
     from rpi5.layer3_guide.detection_router import DetectionRouter
-    logger.info("[DEBUG] ✅ Layer 3 (Router) imported successfully")
+    from rpi5.layer3_guide import Navigator
+    logger.info("[DEBUG] ✅ Layer 3 (Router + Navigator) imported successfully")
 except ImportError as e:
     logger.error(f"[DEBUG] ❌ Layer 3 (Router) import failed: {e}")
     IntentRouter = None
     DetectionRouter = None
+    Navigator = None
 
 try:
     from rpi5.layer4_memory.hybrid_memory_manager import HybridMemoryManager
@@ -215,7 +217,7 @@ try:
     logger.info("[DEBUG] ✅ VisionQueryHandler imported successfully")
 except ImportError as e:
     logger.warning(f"[DEBUG] ⚠️ VisionQueryHandler import failed: {e}")
-    VisionQueryHandler = None
+    VisionQueryHandler = None  # H5: kept import for future use; guarded usage
 
 try:
     from rpi5.tts_router import TTSRouter
@@ -364,8 +366,8 @@ class StatusDisplay:
             try:
                 self._live.stop()
                 self._started = False
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Rich live stop error: {e}")
     
     def update_layer0(self, detections: List[Dict], latency_ms: float = 0.0):
         """Update Layer 0 detection info (thread-safe)."""
@@ -486,8 +488,8 @@ class StatusDisplay:
         
         try:
             self._live.update(self._render())
-        except Exception:
-            pass  # Ignore refresh errors
+        except Exception as e:
+            logger.debug(f"Rich live refresh error: {e}")
     
     def print_above(self, message: str, style: str = None):
         """Print a message above the status line (for important logs)."""
@@ -497,8 +499,9 @@ class StatusDisplay:
                     self._console.print(message, style=style)
                 else:
                     self._console.print(message)
-            except Exception:
+            except Exception as e:
                 print(message)
+                logger.debug(f"Console print error: {e}")
         else:
             print(message)
 
@@ -648,8 +651,8 @@ class CameraHandler:
             try:
                 import types
                 logger.error(f"   picamera2 in modules? {'picamera2' in sys.modules}")
-            except Exception:
-                 pass
+            except Exception as e:
+                 logger.debug(f"Module check error: {e}")
             self.use_picamera = False
             self._start_opencv()
         except Exception as e:
@@ -677,8 +680,8 @@ class CameraHandler:
                         break
                     else:
                         self.camera.release()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Camera index {idx} failed: {e}")
         
         if not found_camera:
             # Last ditch attempt with default backend at original index
@@ -733,6 +736,8 @@ class CameraHandler:
         self.running = False
         if self.capture_thread:
             self.capture_thread.join(timeout=2.0)
+            if self.capture_thread.is_alive():
+                logger.warning("Camera capture thread did not exit within 2s, forcing camera release")
 
         if self.camera:
             if self.use_picamera:
@@ -771,31 +776,33 @@ class CortexSystem:
 
         # Initialize Layer 4: Memory Manager (Hybrid)
         logger.info("[DEBUG] ===== LAYER 4 INITIALIZATION START =====")
-        supabase_enabled = self.config['supabase'].get('enabled', True)
+        sb_cfg = self.config.get('supabase', {})
+        supabase_enabled = sb_cfg.get('enabled', True)
         if HybridMemoryManager and supabase_enabled:
             logger.info("💾 Initializing Layer 4: Memory Manager...")
-            logger.info(f"[DEBUG] Layer 4 config: url={self.config['supabase']['url'][:30]}..., device_id={self.config['supabase']['device_id']}")
+            sb_url = sb_cfg.get('url', '')
+            logger.info(f"[DEBUG] Layer 4 config: url={sb_url[:30]}..., device_id={sb_cfg.get('device_id', 'rpi5-001')}")
             self.memory_manager = HybridMemoryManager(
-                supabase_url=self.config['supabase']['url'],
-                supabase_key=self.config['supabase']['anon_key'],
-                device_id=self.config['supabase']['device_id'],
-                local_db_path=self.config['supabase']['local_db_path'],
-                sync_interval=self.config['supabase']['sync_interval_seconds'],
-                batch_size=self.config['supabase']['batch_size'],
-                local_cache_size=self.config['supabase']['local_cache_size']
+                supabase_url=sb_url,
+                supabase_key=sb_cfg.get('anon_key', ''),
+                device_id=sb_cfg.get('device_id', 'rpi5-001'),
+                local_db_path=sb_cfg.get('local_db_path', 'cortex_local.db'),
+                sync_interval=sb_cfg.get('sync_interval_seconds', 60),
+                batch_size=sb_cfg.get('batch_size', 50),
+                local_cache_size=sb_cfg.get('local_cache_size', 1000)
             )
             self.memory_manager.start_sync_worker()
             logger.info("✅ Layer 4 initialized")
         elif HybridMemoryManager and not supabase_enabled:
             logger.info("💾 Initializing Layer 4: Memory Manager (local only, Supabase disabled)...")
             self.memory_manager = HybridMemoryManager(
-                supabase_url=self.config['supabase']['url'],
-                supabase_key=self.config['supabase']['anon_key'],
-                device_id=self.config['supabase']['device_id'],
-                local_db_path=self.config['supabase']['local_db_path'],
-                sync_interval=self.config['supabase']['sync_interval_seconds'],
-                batch_size=self.config['supabase']['batch_size'],
-                local_cache_size=self.config['supabase']['local_cache_size']
+                supabase_url=sb_cfg.get('url', ''),
+                supabase_key=sb_cfg.get('anon_key', ''),
+                device_id=sb_cfg.get('device_id', 'rpi5-001'),
+                local_db_path=sb_cfg.get('local_db_path', 'cortex_local.db'),
+                sync_interval=sb_cfg.get('sync_interval_seconds', 60),
+                batch_size=sb_cfg.get('batch_size', 50),
+                local_cache_size=sb_cfg.get('local_cache_size', 1000)
             )
             # Disable Supabase sync but keep local storage
             self.memory_manager.supabase_available = False
@@ -811,7 +818,7 @@ class CortexSystem:
         if conv_config.get('enabled', True) and ConversationManager:
             try:
                 self.conversation_manager = ConversationManager(
-                    db_path=self.config['supabase']['local_db_path'],
+                    db_path=sb_cfg.get('local_db_path', 'cortex_local.db'),
                     session_timeout=conv_config.get('session_timeout_seconds', 300),
                     max_turns=conv_config.get('max_turns', None),
                     config=conv_config,
@@ -824,13 +831,14 @@ class CortexSystem:
         logger.info("[DEBUG] ===== LAYER 0 INITIALIZATION START =====")
         if YOLOGuardian:
             logger.info("🛡️  Initializing Layer 0: Guardian...")
-            logger.info(f"[DEBUG] Layer 0 config: model_path={self.config['layer0']['model_path']}, device={self.config['layer0']['device']}")
+            layer0_cfg = self.config.get('layer0', {})
+            logger.info(f"[DEBUG] Layer 0 config: model_path={layer0_cfg.get('model_path', 'N/A')}, device={layer0_cfg.get('device', 'cpu')}")
             self.layer0 = YOLOGuardian(
-                model_path=self.config['layer0']['model_path'],
-                device=self.config['layer0']['device'],
-                confidence=self.config['layer0']['confidence'],
-                enable_haptic=self.config['layer0']['enable_haptic'],
-                gpio_pin=self.config['layer0']['gpio_pin'],
+                model_path=layer0_cfg.get('model_path', 'models/yolo26n.pt'),
+                device=layer0_cfg.get('device', 'cpu'),
+                confidence=layer0_cfg.get('confidence', 0.5),
+                enable_haptic=layer0_cfg.get('enable_haptic', False),
+                gpio_pin=layer0_cfg.get('gpio_pin', 18),
                 memory_manager=self.memory_manager
             )
             logger.info("✅ Layer 0 initialized")
@@ -841,20 +849,21 @@ class CortexSystem:
 
         # Initialize Layer 1: Learner (Adaptive Detection)
         logger.info("[DEBUG] ===== LAYER 1 INITIALIZATION START =====")
-        layer1_enabled = self.config['layer1'].get('enabled', True)
+        layer1_cfg = self.config.get('layer1', {})
+        layer1_enabled = layer1_cfg.get('enabled', True)
         if YOLOELearner and YOLOEMode and layer1_enabled:
             logger.info("🎯 Initializing Layer 1: Learner...")
-            logger.info(f"[DEBUG] Layer 1 config: model_path={self.config['layer1']['model_path']}, mode={self.config['layer1']['mode']}")
+            logger.info(f"[DEBUG] Layer 1 config: model_path={layer1_cfg.get('model_path', 'N/A')}, mode={layer1_cfg.get('mode', 'TEXT_PROMPTS')}")
             mode_map = {
                 'PROMPT_FREE': YOLOEMode.PROMPT_FREE,
                 'TEXT_PROMPTS': YOLOEMode.TEXT_PROMPTS,
                 'VISUAL_PROMPTS': YOLOEMode.VISUAL_PROMPTS
             }
             self.layer1 = YOLOELearner(
-                model_path=self.config['layer1']['model_path'],
-                device=self.config['layer1']['device'],
-                confidence=self.config['layer1']['confidence'],
-                mode=mode_map.get(self.config['layer1']['mode'], YOLOEMode.TEXT_PROMPTS),
+                model_path=layer1_cfg.get('model_path', 'models/yoloe-26s-seg.pt'),
+                device=layer1_cfg.get('device', 'cpu'),
+                confidence=layer1_cfg.get('confidence', 0.25),
+                mode=mode_map.get(layer1_cfg.get('mode', 'TEXT_PROMPTS'), YOLOEMode.TEXT_PROMPTS),
                 memory_manager=self.memory_manager
             )
             logger.info("✅ Layer 1 initialized")
@@ -867,9 +876,10 @@ class CortexSystem:
         logger.info("[DEBUG] ===== LAYER 2 INITIALIZATION START =====")
         if GeminiLiveHandler:
             logger.info("🧠 Initializing Layer 2: Thinker...")
+            layer2_cfg = self.config.get('layer2', {})
             logger.info(f"[DEBUG] Layer 2 config: api_key={'*' * 10} (hidden)")
             self.layer2 = GeminiLiveHandler(
-                api_key=self.config['layer2']['gemini_api_key']
+                api_key=layer2_cfg.get('gemini_api_key', '')
             )
             logger.info("✅ Layer 2 initialized")
         else:
@@ -892,21 +902,24 @@ class CortexSystem:
 
         # Initialize Camera Handler
         logger.info("📸 Initializing Camera...")
+        cam_cfg = self.config.get('camera', {})
         self.camera = CameraHandler(
-            camera_id=self.config['camera']['device_id'],
-            use_picamera=self.config['camera']['use_picamera'],
-            resolution=tuple(self.config['camera']['resolution']),
-            fps=self.config['camera']['fps']
+            camera_id=cam_cfg.get('device_id', 0),
+            use_picamera=cam_cfg.get('use_picamera', False),
+            resolution=tuple(cam_cfg.get('resolution', [640, 480])),
+            fps=cam_cfg.get('fps', 30)
         )
 
         # Initialize WebSocket Client (for laptop dashboard) - Use FastAPI client
         self.ws_client = None
+        server_cfg = self.config.get('laptop_server', {})
+        supabase_cfg = self.config.get('supabase', {})
         if CortexFastAPIClient:
             logger.info("🌐 Initializing FastAPI Client...")
             self.ws_client = CortexFastAPIClient(
-                host=self.config['laptop_server']['host'],
-                port=self.config['laptop_server']['port'],
-                device_id=self.config['supabase']['device_id']
+                host=server_cfg.get('host', 'localhost'),
+                port=server_cfg.get('port', 8765),
+                device_id=supabase_cfg.get('device_id', 'rpi5-001')
             )
             # Link command handler
             self.ws_client.on_command = self.handle_dashboard_command
@@ -914,18 +927,16 @@ class CortexSystem:
         elif RPiWebSocketClient:
             logger.info("🌐 Initializing legacy WebSocket Client...")
             self.ws_client = RPiWebSocketClient(
-                host=self.config['laptop_server']['host'],
-                port=self.config['laptop_server']['port'],
-                device_id=self.config['supabase']['device_id']
+                host=server_cfg.get('host', 'localhost'),
+                port=server_cfg.get('port', 8765),
+                device_id=supabase_cfg.get('device_id', 'rpi5-001')
             )
             logger.info("✅ Legacy WebSocket client initialized")
         # Initialize ZMQ Video Streamer
         self.video_streamer = None
         try:
             from rpi5.video_streamer import VideoStreamer
-            # Use laptop host from config. Port 5555 is hardcoded for now or add to config?
-            # Using 5555 as agreed.
-            host = self.config['laptop_server']['host']
+            host = server_cfg.get('host', 'localhost')
             logger.info(f"🎥 Initializing ZMQ Streamer to {host}:5555...")
             self.video_streamer = VideoStreamer(host, 5555)
             logger.info(f"✅ ZMQ Streamer initialized: {self.video_streamer is not None}")
@@ -939,6 +950,9 @@ class CortexSystem:
         # System state
         self.running = False
         self.detection_count = 0
+
+        # TTS singleton (M1 fix: avoid re-instantiation on every voice command)
+        self.tts = TTSRouter() if TTSRouter else None
 
         # Initialize Voice Coordinator (with audio config for VAD/Whisper tuning)
         audio_config = self.config.get('audio', {})
@@ -957,6 +971,17 @@ class CortexSystem:
         # Initialize interactive status display
         self.status_display = init_status_display()
         logger.info("📊 Interactive status display initialized")
+
+        # Initialize Navigator (Layer 3 spatial audio)
+        self.navigator = None
+        if Navigator:
+            try:
+                self.navigator = Navigator(enable_spatial_audio=True)
+                self.navigator.start()
+                logger.info("✅ Navigator (spatial audio) initialized")
+            except Exception as e:
+                logger.error(f"❌ Failed to init Navigator: {e}")
+                self.navigator = None
 
         # Initialize Hailo Depth Estimator (lazy — only if config enabled)
         self.depth_estimator = None
@@ -1187,8 +1212,11 @@ class CortexSystem:
         # Connect to laptop dashboard
         if self.ws_client:
             try:
-                self.ws_client.start()
-                logger.info("Connected to laptop dashboard (FastAPI)")
+                result = self.ws_client.start()
+                if result is False:
+                    logger.warning("WebSocket client start() returned False — dashboard may be unavailable")
+                else:
+                    logger.info("Connected to laptop dashboard (FastAPI)")
 
                 # Send initial status
                 self.ws_client.send_status("ONLINE", "RPi5 System Started")
@@ -1213,8 +1241,11 @@ class CortexSystem:
             api_key = os.getenv("GEMINI_API_KEY", "")
             if api_key and not api_key.startswith("YOUR_"):
                 try:
-                    run_async_safe(self.layer2.connect())
-                    logger.info("✅ Gemini Live API connected")
+                    result = run_async_safe(self.layer2.connect())
+                    if result is False:
+                        logger.warning("⚠️ Gemini Live API connection returned False")
+                    else:
+                        logger.info("✅ Gemini Live API connected")
                 except Exception as e:
                     logger.warning(f"⚠️ Gemini Live API failed: {e}")
             else:
@@ -1227,10 +1258,9 @@ class CortexSystem:
         self.set_mode("PRODUCTION")
 
         # Pre-initialize TTS engines to avoid 5.5s spike on first voice query
-        if TTSRouter:
+        if self.tts:
             logger.info("🔊 Pre-loading TTS engines (Kokoro + Gemini)...")
-            tts = TTSRouter()
-            gemini_ok, kokoro_ok = tts.initialize()
+            gemini_ok, kokoro_ok = self.tts.initialize()
             logger.info(f"🔊 TTS ready — Kokoro: {'OK' if kokoro_ok else 'FAIL'}, Gemini: {'OK' if gemini_ok else 'FAIL'}")
 
         logger.info("✅ System started")
@@ -1305,11 +1335,18 @@ class CortexSystem:
                                     and self.layer0 and hasattr(self.layer0, 'haptic')
                                     and self.layer0.haptic):
                                     try:
-                                        self.layer0.haptic.pulse(intensity=100, duration=300)
-                                    except Exception:
-                                        pass
+                                        self.layer0.haptic.pulse(intensity=100, duration=0.3)
+                                    except Exception as e:
+                                        logger.debug(f"Haptic pulse error: {e}")
                     except Exception as e:
                         logger.debug(f"Depth processing error: {e}")
+
+                # 2c. Update spatial audio with current detections
+                if self.navigator and all_detections:
+                    try:
+                        self.navigator.update_detections(all_detections)
+                    except Exception as e:
+                        logger.debug(f"Spatial audio update error: {e}")
 
                 # 3. Send to laptop dashboard via ZMQ (Hybrid Architecture)
                 if self.video_streamer:
@@ -1363,7 +1400,8 @@ class CortexSystem:
         try:
             with open("/sys/class/thermal/thermal_zone0/temp", "r") as f:
                 return float(f.read()) / 1000.0
-        except Exception:
+        except Exception as e:
+            logger.debug(f"CPU temp read error: {e}")
             return 0.0
 
     def _run_dual_detection(self, frame: np.ndarray) -> List[Dict[str, Any]]:
@@ -1459,15 +1497,15 @@ class CortexSystem:
             # This allows the laptop to receive detections from RPi's local layers (Guardian)
             # even if video comes via ZMQ.
             for det in enriched_detections:
-                # CRITICAL FIX: Unpack dict to match send_detection signature
-                    self.ws_client.send_detection(
-                        class_name=det.get('class', 'unknown'),
-                        confidence=det.get('confidence', 0.0),
-                        bbox=[det.get('x1', 0), det.get('y1', 0), det.get('x2', 0), det.get('y2', 0)],
-                        layer=0 if det.get('layer', 'layer0') == 'layer0' else 1,
-                        width=self.camera.resolution[0] if self.camera else 640,
-                        height=self.camera.resolution[1] if self.camera else 480
-                    )
+                # Send each detection to laptop dashboard
+                self.ws_client.send_detection(
+                    class_name=det.get('class', 'unknown'),
+                    confidence=det.get('confidence', 0.0),
+                    bbox=[det.get('x1', 0), det.get('y1', 0), det.get('x2', 0), det.get('y2', 0)],
+                    layer=0 if det.get('layer', 'layer0') == 'layer0' else 1,
+                    width=self.camera.resolution[0] if self.camera else 640,
+                    height=self.camera.resolution[1] if self.camera else 480
+                )
 
         except Exception as e:
             logger.debug(f"⚠️  Failed to send to laptop: {e}")
@@ -1530,28 +1568,22 @@ class CortexSystem:
             logger.debug(f"Ignoring filler utterance: '{query}'")
             return
         
-        # TEMPORARY: Force all queries to Layer 2 (Gemini vision)
-        # Remove this block to restore normal intent routing
-        if target_layer != "layer2":
-            logger.info(f"⚡ OVERRIDE: Forcing {target_layer} -> layer2 (temporary)")
-            target_layer = "layer2"
-            routing["use_gemini"] = True
+        # Intent routing now active (Layer 2 force override removed)
         
         # Notify dashboard of audio event
         if self.ws_client:
             try:
                 # Send voice command event
                 pass  # TODO: Implement send_audio_event on FastAPI client
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Audio event send error: {e}")
 
         frame = self.camera.get_frame()
         if frame is None:
             logger.warning("⚠️  No frame available")
             # Speak error via TTS
-            if TTSRouter:
-                tts = TTSRouter()
-                await tts.speak_async("I couldn't capture an image from the camera.")
+            if self.tts:
+                await self.tts.speak_async("I couldn't capture an image from the camera.")
             return
 
         response = ""
@@ -1617,9 +1649,8 @@ class CortexSystem:
                     logger.debug(f"OCR in Layer 1 failed: {e}")
             
             # Speak via Kokoro TTS (local, fast)
-            if TTSRouter and response:
-                tts = TTSRouter()
-                await tts.speak_async(response, engine_override="kokoro")
+            if self.tts and response:
+                await self.tts.speak_async(response, engine_override="kokoro")
             
             # Store to memory
             if self.memory_manager:
@@ -1648,9 +1679,8 @@ class CortexSystem:
                     if ocr_results:
                         response = self.ocr_pipeline.format_for_speech(ocr_results)
                         logger.info(f"  OCR response (local Hailo, {self.ocr_pipeline.avg_latency_ms:.0f}ms): {response}")
-                        if TTSRouter and response:
-                            tts = TTSRouter()
-                            await tts.speak_async(response, engine_override="kokoro")
+                        if self.tts and response:
+                            await self.tts.speak_async(response, engine_override="kokoro")
                         # Store to memory
                         if self.memory_manager:
                             try:
@@ -1666,7 +1696,7 @@ class CortexSystem:
                                 logger.warning(f"Memory store failed: {e}")
                         return  # Skip Gemini — OCR handled locally
                 except Exception as e:
-                    logger.debug(f"Local OCR failed, falling back to Gemini vision: {e}")
+                    logger.warning(f"Local OCR failed, falling back to Gemini vision: {e}")
             
             if routing["use_gemini"]:
                 try:
@@ -1759,9 +1789,8 @@ class CortexSystem:
                     
                     # Speak via TTS — Cartesia Sonic 3 for Layer 2 (ultra-low latency cloud)
                     # Fallback chain: Cartesia -> Kokoro -> Gemini
-                    if TTSRouter and response:
-                        tts = TTSRouter()
-                        await tts.speak_async(response, engine_override="cartesia")
+                    if self.tts and response:
+                        await self.tts.speak_async(response, engine_override="cartesia")
                     
                     # Store to memory
                     if self.memory_manager:
@@ -1779,9 +1808,8 @@ class CortexSystem:
                 except Exception as e:
                     logger.error(f"Layer 2 error: {e}")
                     response = "I encountered an error processing your request."
-                    if TTSRouter:
-                        tts = TTSRouter()
-                        await tts.speak_async(response)
+                    if self.tts:
+                        await self.tts.speak_async(response)
         
         # =================================================================
         # Layer 3: Navigation and spatial audio
@@ -1789,16 +1817,21 @@ class CortexSystem:
         elif target_layer == "layer3":
             logger.info("🧭 Processing Layer 3 navigation query...")
             
-            if routing["use_spatial_audio"]:
-                # TODO: Implement spatial audio for object localization
-                response = "Spatial audio navigation is coming soon."
-            else:
-                # TODO: Implement GPS/navigation
+            if routing["use_spatial_audio"] and self.navigator:
+                # Extract target object from query (e.g. "find the door" → "door")
+                target = routing.get("target_object", query.split()[-1])
+                started = self.navigator.start_navigation_beacon(target)
+                if started:
+                    response = f"Guiding you to {target} with spatial audio."
+                else:
+                    response = f"I can't locate {target} right now. Try asking me to look around first."
+            elif self.navigator:
                 response = "Navigation features are coming soon."
+            else:
+                response = "Spatial audio system is not available."
             
-            if TTSRouter and response:
-                tts = TTSRouter()
-                await tts.speak_async(response)
+            if self.tts and response:
+                await self.tts.speak_async(response)
         
         logger.info(f"✅ Voice command processed: '{response[:50]}...'" if len(response) > 50 else f"✅ Voice command processed: '{response}'")
 
@@ -1815,7 +1848,7 @@ class CortexSystem:
 
         # Disconnect Layer 2
         if self.layer2:
-            run_async_safe(self.layer2.disconnect())
+            run_async_safe(self.layer2.close())
 
         # Disconnect WebSocket
         if self.ws_client:
@@ -1839,6 +1872,10 @@ class CortexSystem:
         if self.status_display:
             self.status_display.stop()
 
+        # Stop Navigator (spatial audio)
+        if self.navigator:
+            self.navigator.stop()
+
         # Cleanup Hailo depth estimator and OCR
         if self.depth_estimator:
             self.depth_estimator.cleanup()
@@ -1850,6 +1887,18 @@ class CortexSystem:
         if self._shared_hailo_vdevice:
             self._shared_hailo_vdevice = None
             logger.info("Shared Hailo VDevice released")
+
+        # Cleanup temp audio files to save storage
+        try:
+            import shutil
+            for temp_dir in ['temp_audio']:
+                temp_path = Path(temp_dir)
+                if temp_path.exists():
+                    for f in temp_path.glob('*.wav'):
+                        f.unlink(missing_ok=True)
+                    logger.info(f"🧹 Cleaned up temp audio in {temp_dir}/")
+        except Exception as e:
+            logger.debug(f"Temp audio cleanup error: {e}")
 
         logger.info("✅ ProjectCortex v2.0 stopped")
         logger.info(f"📊 Total detections: {self.detection_count}")

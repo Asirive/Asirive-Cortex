@@ -17,6 +17,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
 import numpy as np
@@ -25,17 +26,7 @@ logger = logging.getLogger(__name__)
 
 # ─── Hailo Runtime Import (graceful degradation) ────────────────────────────
 try:
-    from hailo_platform import (
-        HEF,
-        VDevice,
-        HailoStreamInterface,
-        ConfigureParams,
-        InputVStreamParams,
-        OutputVStreamParams,
-        FormatType,
-        HailoSchedulingAlgorithm,
-        InferVStreams,
-    )
+    from hailo_platform import VDevice, FormatType, HailoSchedulingAlgorithm
     HAILO_AVAILABLE = True
     logger.info("Hailo RT imported successfully")
 except ImportError:
@@ -141,18 +132,12 @@ class HailoDepthEstimator:
         self.approach_rate_threshold = approach_rate_threshold
         self.alert_cooldown = alert_cooldown
 
-        # Hailo resources
+        # Hailo resources (modern create_infer_model API)
         self._vdevice = None
         self._owns_vdevice = False  # True if we created the VDevice ourselves
         self._external_vdevice = vdevice  # Shared VDevice from caller
-        self._network_group = None
-        self._input_vstreams = None
-        self._output_vstreams = None
-        self._input_vstream_info = None
-        self._output_vstream_info = None
-        self._input_vstream_params = None
-        self._output_vstream_params = None
-        self._infer_pipeline = None  # Persistent InferVStreams (opened once, kept alive)
+        self._infer_model = None
+        self._configured_infer_model = None
 
         # Model dimensions (fast_depth)
         self.input_height = 224
@@ -170,12 +155,14 @@ class HailoDepthEstimator:
             self._initialize()
 
     def _initialize(self):
-        """Load HEF and configure Hailo device."""
+        """Load HEF and configure Hailo device using modern create_infer_model API."""
         try:
             logger.info(f"Loading Hailo depth model: {self.hef_path}")
             
-            # Load the HEF
-            self._hef = HEF(self.hef_path)
+            # Validate HEF file exists
+            if not Path(self.hef_path).exists():
+                logger.error(f"❌ HEF file not found: {self.hef_path}")
+                return
             
             # Use shared VDevice or create our own
             if self._external_vdevice is not None:
@@ -187,42 +174,18 @@ class HailoDepthEstimator:
                 self._owns_vdevice = True
                 logger.info("  Created dedicated Hailo VDevice")
             
-            # Configure network group
-            configure_params = ConfigureParams.create_from_hef(
-                hef=self._hef,
-                interface=HailoStreamInterface.PCIe
-            )
-            self._network_group = self._vdevice.configure(self._hef, configure_params)[0]
-            
-            # Get stream info
-            self._input_vstream_info = self._hef.get_input_vstream_infos()
-            self._output_vstream_info = self._hef.get_output_vstream_infos()
-            
-            # Pre-create VStream params (reused every inference call)
-            self._input_vstream_params = InputVStreamParams.make(
-                self._network_group,
-                format_type=FormatType.FLOAT32
-            )
-            self._output_vstream_params = OutputVStreamParams.make(
-                self._network_group,
-                format_type=FormatType.FLOAT32
-            )
+            # Modern API: create_infer_model from HEF path
+            self._infer_model = self._vdevice.create_infer_model(self.hef_path)
+            self._infer_model.input().set_format_type(FormatType.FLOAT32)
+            self._infer_model.output().set_format_type(FormatType.FLOAT32)
             
             # Log model info
-            for info in self._input_vstream_info:
-                logger.info(f"  Input: {info.name}, shape={info.shape}, format={info.format}")
-            for info in self._output_vstream_info:
-                logger.info(f"  Output: {info.name}, shape={info.shape}, format={info.format}")
+            logger.info(f"  Input: shape={self._infer_model.input().shape}")
+            logger.info(f"  Output: shape={self._infer_model.output().shape}")
             
-            # Open InferVStreams pipeline ONCE and keep it alive for all frames.
-            # Opening/closing per frame causes "Memory size ... does not match frame count" errors.
-            self._infer_pipeline = InferVStreams(
-                self._network_group,
-                self._input_vstream_params,
-                self._output_vstream_params,
-            )
-            self._infer_pipeline.__enter__()
-            logger.info("  InferVStreams pipeline opened (persistent)")
+            # Configure once, keep alive for all frames
+            self._configured_infer_model = self._infer_model.configure()
+            logger.info("  Configured InferModel (persistent)")
             
             self._is_initialized = True
             logger.info("Hailo depth estimator initialized successfully")
@@ -272,13 +235,15 @@ class HailoDepthEstimator:
             # Add batch dimension: (1, 224, 224, 3)
             input_data = np.expand_dims(input_data, axis=0)
 
-            # Run inference on the persistent pipeline
-            input_dict = {self._input_vstream_info[0].name: input_data}
-            raw_output = self._infer_pipeline.infer(input_dict)
+            # Run inference using modern API with bindings
+            bindings = self._configured_infer_model.create_bindings()
+            bindings.input().set_buffer(input_data)
+            output_buffer = np.empty(self._infer_model.output().shape, dtype=np.float32)
+            bindings.output().set_buffer(output_buffer)
+            self._configured_infer_model.run([bindings], timeout_ms=5000)
             
-            # Extract depth map from output
-            output_name = self._output_vstream_info[0].name
-            depth_map = raw_output[output_name]
+            # Extract depth map from output buffer
+            depth_map = output_buffer
             
             # Remove batch dimension and squeeze to 2D
             depth_map = np.squeeze(depth_map)
@@ -742,20 +707,17 @@ class HailoDepthEstimator:
     def cleanup(self):
         """Release Hailo device resources."""
         try:
-            # Close the persistent InferVStreams pipeline first
-            if self._infer_pipeline:
+            # Release configured model context
+            if self._configured_infer_model:
                 try:
-                    self._infer_pipeline.__exit__(None, None, None)
+                    self._configured_infer_model.shutdown()
                 except Exception as e:
-                    logger.debug(f"Pipeline exit error (non-fatal): {e}")
-                self._infer_pipeline = None
-            if self._network_group:
-                self._network_group = None
+                    logger.debug(f"ConfiguredInferModel shutdown error (non-fatal): {e}")
+                self._configured_infer_model = None
+            self._infer_model = None
             # Only release VDevice if we created it ourselves
             if self._owns_vdevice and self._vdevice:
                 self._vdevice = None
-            self._input_vstream_params = None
-            self._output_vstream_params = None
             self._is_initialized = False
             logger.info("Hailo depth estimator cleaned up")
         except Exception as e:

@@ -1,29 +1,32 @@
 # Project-Cortex v2.0 - Unified System Architecture
 
-**Last Updated:** January 25, 2026
+**Last Updated:** March 7, 2026
 **Author:** Haziq (@IRSPlays)
-**Status:** Production Ready - RPi5 with AI Hat+ Integration
-**Target:** Young Innovators Award (YIA) 2026 Competition + Innovation Project
-**Innovation:** Layer 0 (Guardian) + Layer 1 (Learner with 3 Detection Modes) + **Supabase Cloud Backend** - First AI wearable that learns without retraining, supports prompt-free discovery, contextual learning, personal object recognition, AND provides real-time cloud sync, remote monitoring, and scalable analytics.
+**Status:** MVP Sprint In Progress — Safety Features + SNAP-C1 + Caretaker Telemetry
+**Target:** Tan Kah Kee YIA 2026, MOE Innovation Programme, SAVH Usability Testing
+**Innovation:** Layer 0 (Guardian + Hailo Depth) + Layer 1 (Learner 3-Mode) + Layer 3 (SNAP-C1 Offline Survival + 3D Acoustic UI) + **Caretaker Safety Net** — First AI wearable that learns without retraining, survives offline with local action decoding, and provides silent real-time caretaker telemetry.
 
-**LATEST CHANGE (Jan 25, 2026):** **FULL PRODUCTION IMPLEMENTATION** - All 4 layers operational with NCNN models, FastAPI + WebSocket server, PyQt6 glassmorphic dashboard, and hybrid SQLite + Supabase memory management.
+**LATEST CHANGE (Mar 7, 2026):** **MVP SPRINT** — Phase 0 foundation fixes (L2 override removal, SpatialAudio wiring), Phase 1 Acoustic UI (wall hum + drop-off override), Phase 2 Hailo depth unification, Phase 3 GPS audio beacons, Phase 4 SNAP-C1 ONNX action decoder, Phase 5 Caretaker telemetry backend. See `docs/plans/IMPLEMENTATION_PLAN_MVP_SPRINT.md`.
 
 ---
 
 ## 📋 EXECUTIVE SUMMARY
 
-Project-Cortex v2.0 is a **$250 AI wearable** for the visually impaired, disrupting the $4,000+ OrCam market through:
+Project-Cortex v2.0 is a **<$150 AI wearable** for the visually impaired, disrupting the $4,000+ OrCam market through:
 - **Adaptive Self-Learning**: Dual-model cascade learns new objects without retraining (Layer 0 + Layer 1)
-- **Edge-First Computing**: Raspberry Pi 5 + **AI Hat+** (Hailo-8L NPU, 13 TOPS) handles all user-facing features (YOLO, YOLOE, Whisper, Gemini Live API)
-- **Hybrid Offloading**: Laptop server handles heavy spatial compute (VIO/SLAM post-processing, pytq6 dashboard)
-- **Revolutionary Layer 2**: Gemini 2.5 Flash Live API for <500ms audio-to-audio conversations (vs 2-3s HTTP pipeline) or Gemini 3 flash + Gemini 2.5 flash tts/kokoro tts
+- **Edge-First Computing**: Raspberry Pi 5 + **Hailo-8L NPU** (13 TOPS via PCIe M.2) — YOLO + Monocular Depth at 30+ FPS with CPU at <20% utilization
+- **Acoustic UI**: 3D spatial audio replaces slow TTS for navigation — wall proximity hum, drop-off chirp (<50ms), GPS audio beacons
+- **Offline Survival (SNAP-C1)**: Quantized ONNX action decoder + ChromaDB GPS breadcrumbs navigate user to safety when cellular drops
+- **Caretaker Safety Net**: Silent 5-second telemetry + IMU fall detection + stationary-zone SOS → two-way VoIP (Rokr app)
+- **Revolutionary Layer 2**: Gemini 3 Flash Preview vision + Gemini 2.5 Flash Live API for <500ms audio-to-audio, 3-tier fallback (Gemini → Kokoro → GLM-4.6V)
 - **Local-First Safety**: Layer 0 Guardian works 100% offline with <100ms latency (no network dependency)
 
 **Architecture Modes:**
 1. **Standalone (RPi-only)**: Full operation without server (degrades VIO/SLAM to GPS-only, Supabase sync disabled)
 2. **Hybrid (RPi + Supabase + Laptop)**: Full features with VIO/SLAM post-processing + cloud sync + remote monitoring ⭐ **RECOMMENDED**
-3. **Development (Laptop-only)**: Fast iteration without deploying to RPi
-4. **Multi-Device (Multiple RPi + Supabase)**: Future expansion - coordinate multiple wearables via cloud
+3. **Offline Survival (SNAP-C1 only)**: No internet — SNAP-C1 + ChromaDB route user to nearest known safe zone
+4. **Development (Laptop-only)**: Fast iteration without deploying to RPi
+5. **Multi-Device (Multiple RPi + Supabase)**: Future expansion - coordinate multiple wearables via cloud
 
 ---
 
@@ -216,9 +219,19 @@ elif distance < 1.5m: vibrate(intensity=40%, pattern="pulse_slow")
 |---------|--------|-------|
 | YOLO26n-ncnn Model | **IMPLEMENTED** | 2.8 MB, 80 COCO classes |
 | Haptic Controller | **IMPLEMENTED** | GPIO 18, PWM at 1kHz |
-| Safety Classes Filter | **IMPLEMENTED** | person, car, stairs, etc. |
-| Proximity Detection | **IMPLEMENTED** | bbox_area-based thresholds |
-| Mock Mode (Laptop) | **IMPLEMENTED** | For testing without RPi
+| Safety Classes Filter | ⚠️ **EXPANDING** | 21→28 classes (MVP Sprint Step 8) |
+| Proximity Detection | ⚠️ **UPGRADING** | bbox-area heuristic → real metric depth (Step 7) |
+| Mock Mode (Laptop) | **IMPLEMENTED** | For testing without RPi |
+| Hailo Depth Integration | 🔲 **IN SPRINT** | `hailo_depth.py` wired into Guardian (Step 7) |
+| Hailo YOLO Path | 🔲 **OPTIONAL** | yolo26n.hef if compiled → 60ms → 5ms (Step 9) |
+| Fall Detector | 🔲 **IN SPRINT** | IMU >3g spike + stillness → SOS trigger (Step 19) |
+
+### Expanded Safety Classes (MVP Sprint Step 8):
+Current (`SAFETY_CLASSES`, 21 classes) + additions:
+- **Tripping hazards**: `fire hydrant`, `parking meter`, `bench`
+- **Orientation aids**: `traffic light`, `stop sign`
+- **Pedestrian collision**: `suitcase`, `backpack`
+- **Note**: `curb` and `drop-off` are NOT in COCO-80 → handled exclusively by Hailo depth estimation
 
 ---
 
@@ -882,14 +895,50 @@ Based on research (Gemini API docs + googleapis/python-genai):
 
 ## 📋 LAYER 3: THE ROUTER [RUNS ON RASPBERRY PI 5]
 
-**Purpose:** Intelligent Intent Routing - Decides which AI layer handles each user command
+**Purpose:** Intelligent Intent Routing — Decides which AI layer handles each user command
 
-### Technical Stack:
-- **Routing Algorithm:** Fuzzy matching with SequenceMatcher
-- **Decision Latency:** <5ms (pure Python)
-- **Confidence Threshold:** 0.7 (70% similarity required)
+### Technical Stack (Current → MVP Sprint Upgrade):
+- **Current:** Fuzzy matching with SequenceMatcher (`router.py`), 97.7% accuracy, <1ms
+- **MVP Sprint:** SNAP-C1 quantized ONNX action decoder (replaces fuzzy router as primary, IntentRouter becomes fallback)
 
-### Routing Logic:
+### SNAP-C1: Offline Action Decoder (MVP Sprint Phase 4)
+
+**Architecture:** TF-IDF features → 3-layer MLP → softmax → 25 action tokens, exported as INT8 ONNX
+**Inference:** <5ms on RPi5 CPU
+**Offline Survival Mode:** If cellular drops, SNAP-C1 is the ONLY path — combines mic text + YOLO threat level + GPS → direct action token, no Gemini fallback
+
+**Action Token Vocabulary (~25 tokens):**
+```python
+ACTION_TOKENS = [
+    "NAVIGATE_LEFT", "NAVIGATE_RIGHT", "NAVIGATE_FORWARD", "NAVIGATE_STOP",
+    "IDENTIFY_OBJECT", "READ_TEXT", "DESCRIBE_SCENE", "COUNT_OBJECTS",
+    "STORE_MEMORY", "RECALL_MEMORY", "LIST_MEMORIES",
+    "EMERGENCY_STOP", "CALL_CARETAKER",
+    "REPEAT_LAST", "INCREASE_VOLUME", "DECREASE_VOLUME",
+    "FILLER_IGNORE", "UNKNOWN",
+    "ROUTE_LAYER0", "ROUTE_LAYER1", "ROUTE_LAYER2", "ROUTE_LAYER3",
+]
+```
+
+**Routing with fallback:**
+```python
+# Primary: SNAP-C1
+action, confidence = snap_c1.decode(text)
+if confidence < 0.7:
+    action = intent_router.route(text)  # IntentRouter fallback
+
+# Offline survival:
+if self.is_offline:
+    action = snap_c1.decode_offline(text, yolo_threat_level, last_gps_fix)
+    # No Gemini fallback — direct action token only
+```
+
+### ChromaDB Fast Brain (GPS Breadcrumbs)
+- Local ChromaDB collection (no server) stores GPS coord + description per location visited
+- On offline activation: retrieve nearest safe-zone GPS fix → compute heading → `AudioBeacon.start()`
+- Guides user back to last known safe zone without any network
+
+### Routing Logic (Current Fuzzy Router — remains as fallback):
 
 | Priority | Keywords | Target Layer | Use Case |
 |----------|----------|--------------|----------|
@@ -900,20 +949,65 @@ Based on research (Gemini API docs + googleapis/python-genai):
 ### Current Implementation Status:
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Fuzzy Matching | **IMPLEMENTED** | SequenceMatcher, 0.7 threshold |
+| IntentRouter (fuzzy) | **IMPLEMENTED** | SequenceMatcher, 0.7 threshold, 97.7% accuracy |
 | Priority Keywords | **IMPLEMENTED** | Three-tier priority system |
 | Mode Recommendation | **IMPLEMENTED** | TEXT_PROMPTS, VISUAL_PROMPTS, PROMPT_FREE |
-| Memory Integration | **IMPLEMENTED** | Logs routing decisions to cloud |
-| Routing Accuracy | **97.7%** | Based on test suite validation |
+| L2 Force Override | ⚠️ **REMOVING** | Active debug override in main.py (Sprint Step 1) |
+| SNAP-C1 ONNX Decoder | 🔲 **IN SPRINT** | MLP → ONNX, IntentRouter as teacher (Steps 12–15) |
+| ChromaDB Fast Brain | 🔲 **IN SPRINT** | Local GPS breadcrumb store (Step 16) |
+| Offline Survival Mode | 🔲 **IN SPRINT** | SNAP-C1 + ChromaDB only when offline (Step 15) |
 
 ### Implementation Files:
-- `rpi5/layer3_guide/router.py` - IntentRouter class with 3-layer decision logic
+- `rpi5/layer3_guide/router.py` — IntentRouter (fuzzy, fallback)
+- `rpi5/layer3_guide/snap_c1/decoder.py` — SnapC1Decoder (primary, ONNX) 🔲
+- `rpi5/layer3_guide/snap_c1/fast_brain.py` — ChromaDB GPS breadcrumbs 🔲
+- `rpi5/layer3_guide/snap_c1/action_tokens.py` — Action token vocabulary 🔲
 
 ---
 
 ## 📋 LAYER 3: THE NAVIGATOR [HYBRID: SERVER + RASPBERRY PI 5]
 
-**Purpose:** Spatial Guidance & 3D Audio Rendering
+**Purpose:** Spatial Guidance, 3D Acoustic UI, GPS Audio Beacons
+
+### Acoustic UI — Core Philosophy
+Project-Cortex **eliminates slow, high-cognitive-load TTS for immediate physical navigation**. Instead:
+- **Continuous spatial hum** → maps wall proximity to HRTF-processed tone (body-relative, subconscious)
+- **Drop-off chirp** → instant dual-ear alert forces user to freeze (<50ms)
+- **GPS audio beacon** → directional ping the user follows (no "turn left" instructions)
+
+### Wall Proximity Force-Field Hum (MVP Sprint Step 4)
+- Hailo depth matrix → read leftmost/rightmost columns for wall proximity
+- Map `0–2m` range → OpenAL mono source `AL_PITCH 0.5–2.0`, `AL_GAIN` proportional
+- Mono source = processed by HRTF → right wall produces right-ear hum
+- Updates every frame; continuous loop (not threshold-triggered clips)
+- New method: `SpatialAudioManager.update_wall_hum(left_depth_m, right_depth_m)`
+
+### Drop-Off Audio Override (MVP Sprint Step 5)
+Triggered when `HailoDepthEstimator` returns `DROPOFF` or `STAIRS_DOWN` (CRITICAL/HIGH):
+1. `AL_STOP` on ALL active sources including hum
+2. Dual-ear 1kHz chirp (`_generate_chirp()`, both channels — bypasses HRTF directionality)
+3. 500ms audio silence (force freeze)
+4. Resume normal hum
+- **Target latency:** <50ms from hazard detection to chirp onset
+
+### GPS Audio Beacon (MVP Sprint Step 10)
+- `IntentRouter` returns `use_spatial_audio=True` or `query_type="navigate"`
+- Gemini handles POI lookup → parses destination
+- Compute azimuth from current GPS + IMU heading → destination
+- `AudioBeacon.start(target_position)` — ping accelerates 1Hz (far) → 8Hz (arrival)
+- IMU compass heading → `SpatialAudioManager.update_heading()` → OpenAL listener orientation updated in real time (objects stay body-relative as user turns)
+
+### Current Spatial Audio Status:
+| Feature | Status | Notes |
+|---------|--------|-------|
+| SpatialAudioManager (module) | ⚠️ **WIRING** | Code complete, not instantiated in CortexSystem (Sprint Step 3) |
+| Wall Force-Field Hum | 🔲 **IN SPRINT** | Continuous depth-driven tone (Step 4) |
+| Drop-Off Audio Override | 🔲 **IN SPRINT** | Dual-ear chirp + freeze (Step 5) |
+| GPS Audio Beacon | 🔲 **IN SPRINT** | AudioBeacon wired to GPS nav (Step 10) |
+| IMU Heading → Listener | 🔲 **IN SPRINT** | Body-relative audio as user turns (Step 11) |
+| AudioBeacon module | **IMPLEMENTED** | fully coded, awaiting wiring |
+| ProximityAlertSystem | **IMPLEMENTED** | discrete threshold clips, being extended |
+| HRTF / OpenAL | **IMPLEMENTED** | INVERSE_DISTANCE_CLAMPED model |
 
 ### Split-Task Architecture:
 
@@ -2626,6 +2720,159 @@ curl http://localhost:8765/api/v1/status
 
 ---
 
+## 🛡️ LAYER 5: CARETAKER SAFETY NET [SUPABASE + ROKR APP]
+
+**Purpose:** Silent real-time safety monitoring for caretakers — no interaction required from the user.
+
+### Architecture Overview
+
+```
+RPi5 Wearable
+  └── layer4_memory/caretaker_telemetry.py          ← 5-second state vector push
+        ├── GPS position (lat/lon/accuracy)
+        ├── IMU last reading (accel mag)
+        ├── YOLO threat level (0–3: clear/warning/danger/critical)
+        ├── Audio mode (hum/beacon/chirp/idle)
+        ├── Battery % estimate
+        └── timestamp
+
+            ↓ Supabase.upsert() (caretaker_state table)
+
+Supabase PostgreSQL
+  ├── caretaker_state       ← Live 5s state vector (1 row per device)
+  ├── caretaker_events      ← Log of SOS, fall, stationary triggers
+  └── realtime subscription ← Pushes diffs to Rokr app via WS
+
+            ↓ Realtime WS
+
+Rokr App (iOS/Android) ← Built by separate agent / codebase
+  ├── Live map with user dot
+  ├── Falls & SOS alerts (push notification)
+  └── Two-way VoIP call button
+```
+
+### Supabase Schema (New Tables — MVP Sprint Step 17)
+
+```sql
+-- Real-time state vector (upserted every 5 seconds)
+CREATE TABLE caretaker_state (
+    device_id       TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL,
+    lat             DOUBLE PRECISION,
+    lon             DOUBLE PRECISION,
+    gps_accuracy_m  REAL,
+    imu_accel_mag   REAL,          -- g-force magnitude
+    yolo_threat     SMALLINT,      -- 0=clear 1=warning 2=danger 3=critical
+    audio_mode      TEXT,          -- hum / beacon / chirp / idle
+    battery_pct     SMALLINT,
+    updated_at      TIMESTAMPTZ DEFAULT now()
+);
+
+-- Event log (falls, SOS, stationary triggers)
+CREATE TABLE caretaker_events (
+    id              BIGSERIAL PRIMARY KEY,
+    device_id       TEXT NOT NULL,
+    event_type      TEXT NOT NULL,  -- fall / sos / stationary / low_battery
+    lat             DOUBLE PRECISION,
+    lon             DOUBLE PRECISION,
+    severity        TEXT,           -- critical / warning / info
+    details         JSONB,
+    created_at      TIMESTAMPTZ DEFAULT now()
+);
+```
+
+### Fall Detector (MVP Sprint Step 19)
+
+**File:** `rpi5/layer0_guardian/fall_detector.py`
+
+```python
+# IMU BNO055 at 200Hz
+# Trigger: accel_magnitude > 3.0g for ≥2 consecutive samples
+#          THEN accel_magnitude < 1.2g for ≥1s (lying still)
+# Action:
+#   1. CRITICAL haptic pulse (5×)
+#   2. Gemini TTS "Are you okay? Say SOS to alert your caretaker"
+#   3. 10s response window → if no voice → caretaker_events.insert(type='fall')
+#   4. Push notification via Supabase → Rokr app
+```
+
+### Stationary Zone Trigger
+
+- IMU detects no motion >5 minutes in open area (threat_level > 0)
+- Insert `caretaker_events` row `type=stationary`
+- Gentle vibration prompt: "Are you still exploring? Press button to confirm."
+
+### Implementation Status:
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Caretaker Supabase tables | 🔲 **IN SPRINT** | New SQL schema (Step 17) |
+| 5s telemetry push loop | 🔲 **IN SPRINT** | `caretaker_telemetry.py` (Step 17) |
+| Fall detector (IMU) | 🔲 **IN SPRINT** | `fall_detector.py`, BNO055 (Step 19) |
+| Stationary trigger | 🔲 **IN SPRINT** | 5-min no-motion + threat (Step 19) |
+| SOS voice command | 🔲 **IN SPRINT** | IntentRouter "call caretaker" token (Step 20) |
+| Rokr app integration | 🔲 **EXTERNAL** | Separate agent/repo — consumes Supabase Realtime |
+
+---
+
+## 🗺️ V2.0 BACKLOG: SERVER-SIDE SLAM
+
+**Purpose:** Build a persistent spatial map of frequently visited environments (home, school route). Enables object recall with real metric coordinates ("Your keys are 1.2m to your left").
+
+> **Scope:** This is a BACKLOG item — not in MVP Sprint. Current GPS-only navigation is sufficient for YIA 2026 demo.
+
+### Architecture Plan
+
+```
+RPi5 (Data Collection)
+  └── IMU 200Hz keyframes     → cached in SQLite ring buffer (last 10 min)
+  └── Visual keyframes (YOLO) → bounding boxes + depth (Hailo)
+
+            ↓ Wi-Fi upload trigger (home detected via GPS geofence)
+
+Laptop Server (SLAM Processing — 1GB+ RAM needed)
+  └── OpenVINS or VINS-Fusion posterior optimization
+  └── Output: 3D point cloud + object coordinates
+  └── Upload result to Supabase (spatial_map table)
+
+RPi5 (Map Consumption)
+  └── Query "where are my keys?" → Supabase spatial_map lookup → relative direction
+  └── AudioBeacon.start(target_3d_position)
+```
+
+### Why Server-Side Only
+- OpenVINS requires ~1GB RAM + AVX CPU instructions → impossible on RPi5 (4GB total, arm64)
+- Online SLAM options (ORB-SLAM3 lite) tested at 3–4GB resident on RPi5 → OOM
+- VIO/SLAM must be deferred to laptop with 8GB+ RAM and RTX 2050
+
+### Planned Files
+- `laptop/server/slam_processor.py` — OpenVINS wrappers, post-processing job
+- `rpi5/layer4_memory/imu_keyframe_cache.py` — ring buffer, Wi-Fi upload trigger
+- `supabase/spatial_map` — Supabase table for 3D object coordinates
+
+### Current Status: NOT STARTED — post-MVP Sprint
+
+---
+
+## 📊 MVP SPRINT — OVERALL IMPLEMENTATION STATUS
+
+**Sprint Start:** March 7, 2026
+
+| Phase | Name | Status | Steps |
+|-------|------|--------|-------|
+| Phase 0 | Foundation Fixes | 🔲 NOT STARTED | 3 steps (L2 override, SpatialAudio wiring, test suite) |
+| Phase 1 | Acoustic UI | 🔲 NOT STARTED | 3 steps (wall hum, drop-off chirp, safety integration) |
+| Phase 2 | Hailo Depth | 🔲 NOT STARTED | 3 steps (enable hailo, Guardian wiring, SAFETY_CLASSES) |
+| Phase 3 | GPS Navigation | 🔲 NOT STARTED | 3 steps (GPS + IMU, AudioBeacon, GeminiLive wiring) |
+| Phase 4 | SNAP-C1 | 🔲 NOT STARTED | 4 steps (train MLP, export ONNX, ChromaDB, offline mode) |
+| Phase 5 | Caretaker | 🔲 NOT STARTED | 4 steps (Supabase schema, telemetry, fall detector, SOS) |
+
+**Reference:** `docs/plans/IMPLEMENTATION_PLAN_MVP_SPRINT.md` for full 22-step breakdown.
+
+---
+
 **End of Document**
-**Last Updated:** January 25, 2026 (AI Hat+ Hardware Acceleration + FastAPI Integration)
-**See Also:** `docs/implementation/AI-HAT-PLUS.md` for dedicated AI Hat+ implementation guide
+**Last Updated:** March 7, 2026 (MVP Sprint Architecture — Hailo Depth + Acoustic UI + SNAP-C1 + Caretaker Safety Net)
+**See Also:**
+- `docs/plans/IMPLEMENTATION_PLAN_MVP_SPRINT.md` — Full 22-step sprint plan
+- `docs/implementation/AI-HAT-PLUS.md` — AI Hat+ / Hailo implementation guide
+- `docs/architecture/UNIFIED-SYSTEM-ARCHITECTURE.md` — This file

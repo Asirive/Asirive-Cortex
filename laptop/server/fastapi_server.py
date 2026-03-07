@@ -17,8 +17,10 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
@@ -61,7 +63,7 @@ app = FastAPI(
 # CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:8765", "http://127.0.0.1:8765"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -71,6 +73,14 @@ app.add_middleware(
 _connection_manager: Optional["FastAPIConnectionManager"] = None
 _server: Optional["LaptopWebSocketServer"] = None
 _dashboard_runner: Optional[Any] = None  # Reference to DashboardRunner for loop capture
+
+# WebSocket auth token (set via CORTEX_WS_TOKEN env var; empty = no auth)
+_WS_AUTH_TOKEN: str = os.environ.get("CORTEX_WS_TOKEN", "")
+
+# Per-client rate limiting state: device_id -> list of message timestamps
+_client_msg_timestamps: Dict[str, List[float]] = {}
+_RATE_LIMIT_WINDOW = 10.0   # seconds
+_RATE_LIMIT_MAX_MSGS = 200  # max messages per window
 
 
 def set_server_instance(server: "LaptopWebSocketServer"):
@@ -259,6 +269,11 @@ class LaptopWebSocketServer(AsyncWebSocketServer):
                 frame_bytes = base64.b64decode(frame_b64)
                 logger.debug(f"DEBUG: Decoded Frame Bytes: {len(frame_bytes)}")
                 
+                # H29: Validate JPEG header before processing
+                if len(frame_bytes) < 2 or frame_bytes[:2] != b'\xff\xd8':
+                    logger.warning(f"Corrupted JPEG frame from {client_id} ({len(frame_bytes)} bytes), skipping")
+                    return
+                
                 # Call callback
                 if asyncio.iscoroutinefunction(self._on_video_frame_cb):
                     await self._on_video_frame_cb(frame_bytes, width, height, detections)
@@ -420,6 +435,14 @@ async def websocket_endpoint(websocket: WebSocket, device_id: str):
 
     logger.debug(f"WebSocket Connect Request from: {device_id} ({websocket.client.host if websocket.client else 'Unknown'})")
 
+    # --- H27 fix: token-based auth on handshake ---
+    if _WS_AUTH_TOKEN:
+        token = websocket.query_params.get("token", "")
+        if token != _WS_AUTH_TOKEN:
+            await websocket.close(code=4003, reason="Unauthorized")
+            logger.warning(f"Rejected WebSocket from {device_id}: bad token")
+            return
+
     # Fix: Initialize connection manager if not exists (lazy initialization)
     if _connection_manager is None:
         _connection_manager = FastAPIConnectionManager()
@@ -469,6 +492,18 @@ async def websocket_endpoint(websocket: WebSocket, device_id: str):
         while True:
             try:
                 data = await websocket.receive_text()
+
+                # --- H28 fix: per-client rate limiting ---
+                now = time.time()
+                timestamps = _client_msg_timestamps.setdefault(device_id, [])
+                timestamps.append(now)
+                # Prune old timestamps outside the window
+                cutoff = now - _RATE_LIMIT_WINDOW
+                _client_msg_timestamps[device_id] = [t for t in timestamps if t > cutoff]
+                if len(_client_msg_timestamps[device_id]) > _RATE_LIMIT_MAX_MSGS:
+                    logger.warning(f"Rate limit exceeded for {device_id}, dropping message")
+                    continue
+
                 message = parse_message(data)
 
                 # Process via shared server

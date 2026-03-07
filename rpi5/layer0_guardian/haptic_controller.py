@@ -25,6 +25,7 @@ Competition: Young Innovators Awards (YIA) 2026
 import logging
 import time
 import sys
+import threading
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -102,29 +103,26 @@ class HapticController:
         self,
         intensity: int = 70,
         duration: float = 0.2,
-        repeat: bool = True
     ) -> None:
         """
-        Pulsed vibration (near/far objects).
+        Pulsed vibration (near/far objects). Non-blocking, single pulse.
         
         Args:
             intensity: Vibration intensity (0-100%)
             duration: Pulse duration in seconds
-            repeat: Repeat pulse continuously (True) or single pulse (False)
         """
+        def _do_pulse():
+            if self.enabled and self.pwm:
+                try:
+                    self.pwm.ChangeDutyCycle(intensity)
+                    time.sleep(duration)
+                    self.pwm.ChangeDutyCycle(0)
+                    logger.debug(f"🔊 Haptic: PULSE ({intensity}%, {duration}s)")
+                except Exception as e:
+                    logger.error(f"❌ Haptic control failed: {e}")
+
         if self.enabled and self.pwm:
-            try:
-                # Single pulse
-                self.pwm.ChangeDutyCycle(intensity)
-                time.sleep(duration)
-                self.pwm.ChangeDutyCycle(0)
-                time.sleep(duration)
-                
-                logger.debug(f"🔊 Haptic: PULSE ({intensity}%, {duration}s)")
-                
-                # Note: Continuous pulsing handled by caller in loop
-            except Exception as e:
-                logger.error(f"❌ Haptic control failed: {e}")
+            threading.Thread(target=_do_pulse, daemon=True).start()
         else:
             # Mock mode (laptop)
             logger.info(f"🔊 [MOCK] Haptic: PULSE ({intensity}%, {duration}s)")

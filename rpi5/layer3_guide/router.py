@@ -81,7 +81,7 @@ class IntentRouter:
             "show me objects", "what objects", "any objects",
             # Object queries (YOLOE adaptive learning)
             "is there a", "do you see a", "can you see",
-            "how many", "count the", "find a", "spot a",
+            "how many", "count the", "spot a",
             # Quick identification
             "what's in front", "what's ahead", "what's nearby",
             "objects around me", "things around me",
@@ -300,11 +300,11 @@ class IntentRouter:
         layer3_score = max([self.fuzzy_match(text, p) for p in self.layer3_patterns])
         
         # Log fuzzy scores for debugging
-        logger.info(f"📊 [ROUTER] Fuzzy scores: L1={layer1_score:.2f}, L2={layer2_score:.2f}, L3={layer3_score:.2f} (threshold={self.fuzzy_threshold})")
+        logger.debug(f"📊 [ROUTER] Fuzzy scores: L1={layer1_score:.2f}, L2={layer2_score:.2f}, L3={layer3_score:.2f} (threshold={self.fuzzy_threshold})")
         
         # Route to highest scoring layer (must exceed threshold)
         if layer3_score >= self.fuzzy_threshold and layer3_score >= max(layer1_score, layer2_score):
-            logger.info(f"🎯 [ROUTER] Fuzzy match: Layer 3 (Navigation) - score={layer3_score:.2f}")
+            logger.debug(f"🎯 [ROUTER] Fuzzy match: Layer 3 (Navigation) - score={layer3_score:.2f}")
             # Log routing decision to memory manager
             if self.memory_manager:
                 self.memory_manager.store_detection({
@@ -317,7 +317,7 @@ class IntentRouter:
                 })
             return "layer3"
         elif layer2_score >= layer1_score and layer2_score >= self.fuzzy_threshold:
-            logger.info(f"🎯 [ROUTER] Fuzzy match: Layer 2 (Thinker) - score={layer2_score:.2f}")
+            logger.debug(f"🎯 [ROUTER] Fuzzy match: Layer 2 (Thinker) - score={layer2_score:.2f}")
             # Log routing decision to memory manager
             if self.memory_manager:
                 self.memory_manager.store_detection({
@@ -330,7 +330,7 @@ class IntentRouter:
                 })
             return "layer2"
         elif layer1_score >= self.fuzzy_threshold:
-            logger.info(f"🎯 [ROUTER] Fuzzy match: Layer 1 (Reflex) - score={layer1_score:.2f}")
+            logger.debug(f"🎯 [ROUTER] Fuzzy match: Layer 1 (Reflex) - score={layer1_score:.2f}")
             # Log routing decision to memory manager
             if self.memory_manager:
                 self.memory_manager.store_detection({
@@ -344,7 +344,7 @@ class IntentRouter:
             return "layer1"
 
         # Default to Layer 1 if no clear match (faster, offline)
-        logger.info(f"⚠️ [ROUTER] No clear match (all scores < {self.fuzzy_threshold}), defaulting to Layer 1 (offline fallback)")
+        logger.debug(f"⚠️ [ROUTER] No clear match (all scores < {self.fuzzy_threshold}), defaulting to Layer 1 (offline fallback)")
         # Log routing decision to memory manager
         if self.memory_manager:
             self.memory_manager.store_detection({
