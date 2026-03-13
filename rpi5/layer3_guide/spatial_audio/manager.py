@@ -43,6 +43,13 @@ from pathlib import Path
 import logging
 from enum import Enum
 
+# Numpy for depth processing
+try:
+    import numpy as np
+    NUMPY_AVAILABLE = True
+except ImportError:
+    NUMPY_AVAILABLE = False
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SpatialAudio")
@@ -313,6 +320,16 @@ class SpatialAudioManager:
         # Listener orientation (yaw, pitch, roll in degrees)
         self._listener_orientation = (0.0, 0.0, 0.0)
         
+        # ---- Wall hum state (for update_from_depth) ----
+        # Tracks whether each channel region is actively humming
+        self._hum_active: Dict[str, bool] = {"left": False, "center": False, "right": False}
+        # Background thread for non-blocking hum playback
+        self._hum_thread: Optional[threading.Thread] = None
+        self._hum_stop_event = threading.Event()
+        # Current hum parameters (region → (frequency, left_gain, right_gain))
+        self._hum_params: Dict[str, Tuple[float, float, float]] = {}
+        self._hum_lock = threading.Lock()
+
         # Load configuration if provided
         if config_path and os.path.exists(config_path):
             self._load_config(config_path)
@@ -1346,13 +1363,153 @@ class SpatialAudioManager:
             import traceback
             traceback.print_exc()
     
+    # ========== WALL FORCE-FIELD HUM ==========
+
+    def update_from_depth(self, depth_map: "np.ndarray") -> None:
+        """
+        Update wall force-field hum based on depth map from Hailo depth estimation.
+
+        Divides the depth map into left/center/right thirds. For each region,
+        if mean depth < 2.0m a continuous directional hum is generated:
+        - Frequency: 200Hz (2m away) → 80Hz (0m / contact) — closer = lower pitch hum
+        - Gain: 1.0 (0m) → 0.0 (2m) — closer = louder
+        - Left wall → left channel only
+        - Right wall → right channel only
+        - Center wall → both channels
+
+        Audio is produced by SoundGenerator.play_tone_stereo() in a background
+        thread so this method returns immediately.
+
+        Args:
+            depth_map: 2D numpy float32 array of depth values in meters
+                       (shape: [H, W], values 0.0–∞)
+        """
+        if not NUMPY_AVAILABLE:
+            logger.warning("numpy not available — cannot process depth map")
+            return
+
+        if depth_map is None or depth_map.size == 0:
+            return
+
+        h, w = depth_map.shape[:2]
+        third = w // 3
+
+        regions = {
+            "left":   depth_map[:, :third],
+            "center": depth_map[:, third: 2 * third],
+            "right":  depth_map[:, 2 * third:],
+        }
+
+        WALL_THRESHOLD = 2.0   # metres — below this we hum
+        FREQ_NEAR = 200.0      # Hz when depth=0 (contact)
+        FREQ_FAR  = 80.0       # Hz when depth=2m (far edge of hum zone)
+
+        new_params: Dict[str, Tuple[float, float, float]] = {}
+
+        for region, data in regions.items():
+            valid = data[np.isfinite(data)]
+            if valid.size == 0:
+                continue
+            mean_depth = float(np.mean(valid))
+
+            if mean_depth < WALL_THRESHOLD:
+                # Map depth 0→2m to freq 200→80 Hz (closer = higher freq)
+                t = max(0.0, min(1.0, mean_depth / WALL_THRESHOLD))  # 0=near,1=far
+                freq = FREQ_NEAR + t * (FREQ_FAR - FREQ_NEAR)
+                # Gain: 1.0 when depth=0, 0.0 when depth=2m
+                gain = 1.0 - t
+
+                if region == "left":
+                    new_params["left"] = (freq, gain, 0.0)
+                elif region == "right":
+                    new_params["right"] = (freq, 0.0, gain)
+                else:  # center
+                    new_params["center"] = (freq, gain, gain)
+
+        with self._hum_lock:
+            changed = new_params != self._hum_params
+            self._hum_params = new_params
+
+        if changed:
+            self._restart_hum_thread()
+
+    def _restart_hum_thread(self) -> None:
+        """Stop any running hum thread and start a new one with current params."""
+        # Signal old thread to stop
+        self._hum_stop_event.set()
+        if self._hum_thread and self._hum_thread.is_alive():
+            self._hum_thread.join(timeout=0.15)
+
+        # Reset stop event for the new thread
+        self._hum_stop_event.clear()
+
+        with self._hum_lock:
+            params_snapshot = dict(self._hum_params)
+
+        if not params_snapshot:
+            # Nothing to hum — thread exits immediately
+            return
+
+        self._hum_thread = threading.Thread(
+            target=self._hum_worker,
+            args=(params_snapshot,),
+            daemon=True,
+            name="cortex-wall-hum"
+        )
+        self._hum_thread.start()
+
+    def _hum_worker(self, params: Dict[str, Tuple[float, float, float]]) -> None:
+        """
+        Background worker: plays continuous directional hum tones until stopped.
+
+        Each region contributes a 100ms stereo tone chunk. We cycle through
+        active regions and loop until _hum_stop_event is set.
+        """
+        try:
+            from .sound_generator import SoundGenerator
+            sg = SoundGenerator()
+        except Exception as e:
+            logger.warning(f"SoundGenerator unavailable for hum worker: {e}")
+            return
+
+        CHUNK_MS = 100  # Each tone chunk length
+
+        while not self._hum_stop_event.is_set():
+            with self._hum_lock:
+                current_params = dict(self._hum_params)
+
+            if not current_params:
+                break  # No active hum regions — exit thread
+
+            for region, (freq, left_gain, right_gain) in current_params.items():
+                if self._hum_stop_event.is_set():
+                    return
+                try:
+                    sg.play_tone_stereo(
+                        left_gain=left_gain,
+                        right_gain=right_gain,
+                        frequency=freq,
+                        duration_ms=CHUNK_MS,
+                    )
+                except Exception as e:
+                    logger.debug(f"Hum playback error ({region}): {e}")
+
+    def stop_hum(self) -> None:
+        """Stop wall force-field hum immediately."""
+        self._hum_stop_event.set()
+        with self._hum_lock:
+            self._hum_params.clear()
+
+    # ========== CONTEXT MANAGER ==========
+
     def __enter__(self):
         """Context manager entry."""
         self.start()
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
+        self.stop_hum()
         self.stop()
         return False
 
