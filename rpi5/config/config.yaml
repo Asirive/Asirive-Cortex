@@ -317,7 +317,7 @@ development:
 # LAPTOP SERVER CONFIGURATION
 # =====================================================
 laptop_server:
-  host: "10.133.246.101"  # Laptop IP address - UPDATE THIS for your network
+  host: "10.201.86.101"  # Laptop IP address - UPDATE THIS for your network
   port: 8765
 
 # =====================================================
@@ -332,7 +332,7 @@ zmq:
 # RPI5 DEVICE CONFIGURATION (for sync tools)
 # =====================================================
 rpi5_device:
-  host: "10.133.246.31"  # RPi5 IP address - used by sync tools
+  host: "10.201.86.31"  # RPi5 IP address - used by sync tools
   user: "cortex"  # SSH username for sync
   path: "/home/cortex/ProjectCortex"  # Remote path for sync
 
