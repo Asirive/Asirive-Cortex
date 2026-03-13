@@ -17,12 +17,14 @@ import numpy as np
 from typing import Optional, Dict, Tuple
 import io
 import logging
+import threading
 
 logger = logging.getLogger("SoundGenerator")
 
 # Try to import audio libraries
 SCIPY_AVAILABLE = False
 PYOPENAL_AVAILABLE = False
+SOUNDDEVICE_AVAILABLE = False
 
 try:
     from scipy.io import wavfile
@@ -35,6 +37,12 @@ try:
     PYOPENAL_AVAILABLE = True
 except ImportError:
     pass
+
+try:
+    import sounddevice as sd
+    SOUNDDEVICE_AVAILABLE = True
+except ImportError:
+    logger.warning("sounddevice not available — SoundGenerator audio output disabled")
 
 
 class ProceduralSoundGenerator:
@@ -506,6 +514,136 @@ class ProceduralSoundGenerator:
             f.write(wav_bytes)
 
 
+class SoundGenerator:
+    """
+    Real-time audio output using sounddevice.
+
+    Provides:
+    - play_dropoff_warning(): Sharp dual-ear 1kHz chirp (100ms) + 500ms silence.
+      Target latency <50ms from call to first audio sample.
+    - generate_tone(): Returns a float32 numpy array for a pure sine tone.
+    - play_tone_stereo(): Blocking stereo tone playback with per-channel gain.
+
+    Falls back gracefully if sounddevice is not installed.
+    """
+
+    SAMPLE_RATE = 44100
+
+    def __init__(self, sample_rate: int = 44100):
+        self.sample_rate = sample_rate
+        # Event used to signal the hum to resume after a dropoff warning
+        self._hum_resume_event = threading.Event()
+        self._hum_resume_event.set()  # Default: hum is allowed to play
+
+    # ------------------------------------------------------------------
+    # Core helpers
+    # ------------------------------------------------------------------
+
+    def generate_tone(
+        self,
+        frequency: float,
+        duration_ms: int,
+        gain: float = 1.0,
+    ) -> np.ndarray:
+        """
+        Generate a pure sine tone as a float32 mono array.
+
+        Args:
+            frequency:   Frequency in Hz.
+            duration_ms: Duration in milliseconds.
+            gain:        Amplitude 0.0–1.0.
+
+        Returns:
+            1-D numpy float32 array, values in [-gain, +gain].
+        """
+        n = int(self.sample_rate * duration_ms / 1000)
+        t = np.linspace(0.0, duration_ms / 1000.0, n, endpoint=False)
+        wave = (np.sin(2.0 * np.pi * frequency * t) * gain).astype(np.float32)
+
+        # Short fade-in/out (5ms) to avoid clicks
+        fade_n = min(int(self.sample_rate * 0.005), n // 4)
+        if fade_n > 0:
+            fade = np.linspace(0.0, 1.0, fade_n, dtype=np.float32)
+            wave[:fade_n] *= fade
+            wave[-fade_n:] *= fade[::-1]
+
+        return wave
+
+    def play_tone_stereo(
+        self,
+        left_gain: float,
+        right_gain: float,
+        frequency: float,
+        duration_ms: int,
+    ) -> None:
+        """
+        Play a stereo tone with independent per-channel gains (blocking).
+
+        Intended for directional wall hum:
+        - Left wall  → left_gain=<value>, right_gain=0.0
+        - Right wall → left_gain=0.0,     right_gain=<value>
+        - Center     → both gains equal
+
+        Args:
+            left_gain:   Amplitude for the left channel (0.0–1.0).
+            right_gain:  Amplitude for the right channel (0.0–1.0).
+            frequency:   Tone frequency in Hz.
+            duration_ms: Duration in milliseconds.
+        """
+        if not SOUNDDEVICE_AVAILABLE:
+            return
+
+        mono = self.generate_tone(frequency, duration_ms, gain=1.0)
+        stereo = np.column_stack([
+            mono * float(left_gain),
+            mono * float(right_gain),
+        ])  # shape: (n_samples, 2), float32
+
+        try:
+            sd.play(stereo, samplerate=self.sample_rate, blocking=True)
+        except Exception as e:
+            logger.debug(f"play_tone_stereo error: {e}")
+
+    def play_dropoff_warning(self) -> None:
+        """
+        Play a sharp dual-ear 1kHz chirp (100ms) followed by 500ms silence,
+        then signal any paused hum to resume.
+
+        Designed for <50ms latency from call to first audio sample.
+        Runs in a dedicated daemon thread so the call is non-blocking.
+        """
+        def _play() -> None:
+            if not SOUNDDEVICE_AVAILABLE:
+                logger.warning("sounddevice not available — dropoff warning skipped")
+                return
+
+            # Pause hum during warning
+            self._hum_resume_event.clear()
+
+            try:
+                # 1kHz chirp — same gain on both channels for dual-ear effect
+                mono = self.generate_tone(frequency=1000.0, duration_ms=100, gain=0.9)
+                stereo = np.column_stack([mono, mono])
+
+                # Play warning immediately (non-buffered, latency='low')
+                sd.play(stereo, samplerate=self.sample_rate, blocking=True,
+                        latency="low")
+
+                # 500ms silence (let user register the warning)
+                silence_n = int(self.sample_rate * 0.5)
+                silence = np.zeros((silence_n, 2), dtype=np.float32)
+                sd.play(silence, samplerate=self.sample_rate, blocking=True,
+                        latency="low")
+            except Exception as e:
+                logger.error(f"play_dropoff_warning error: {e}")
+            finally:
+                # Signal hum to resume regardless of errors
+                self._hum_resume_event.set()
+
+        t = threading.Thread(target=_play, daemon=True, name="cortex-dropoff-warn")
+        t.start()
+
+
 # Global instance for easy access
 _generator_instance: Optional[ProceduralSoundGenerator] = None
 
@@ -515,6 +653,17 @@ def get_sound_generator() -> ProceduralSoundGenerator:
     if _generator_instance is None:
         _generator_instance = ProceduralSoundGenerator()
     return _generator_instance
+
+
+# Global SoundGenerator instance
+_sound_gen_instance: Optional[SoundGenerator] = None
+
+def get_realtime_sound_generator() -> SoundGenerator:
+    """Get the global real-time SoundGenerator instance (sounddevice-backed)."""
+    global _sound_gen_instance
+    if _sound_gen_instance is None:
+        _sound_gen_instance = SoundGenerator()
+    return _sound_gen_instance
 
 
 # ============================================================================
