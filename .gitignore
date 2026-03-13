@@ -42,3 +42,4 @@ README.old.md
 
 # Windows reserved filename artifact
 nul
+.worktrees/
