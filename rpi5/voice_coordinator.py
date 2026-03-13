@@ -36,6 +36,9 @@ class VoiceCoordinator:
         self.vad = None
         self.stt = None
         self.is_active = False
+        # Optional raw audio callback: fn(audio_bytes: bytes, sample_rate: int) -> None
+        # Set this after init to forward PCM audio to GeminiLiveHandler (audio-to-audio path)
+        self.on_raw_audio: Optional[Callable] = None
     
     @property
     def is_listening(self) -> bool:
@@ -101,9 +104,16 @@ class VoiceCoordinator:
     def _on_speech_end(self, audio: np.ndarray):
         """Callback from VAD when speech segment ends"""
         logger.info(f"🎤 Speech segment detected ({len(audio)} samples), transcribing...")
-        
-        # Determine device (Whisper handler manages this, but we can log)
-        
+
+        # Forward raw PCM to GeminiLiveHandler (audio-to-audio path) if wired
+        if self.on_raw_audio is not None:
+            try:
+                # Convert float32 [-1,1] to int16 PCM bytes at 16kHz
+                pcm_bytes = (audio * 32767).astype(np.int16).tobytes()
+                self.on_raw_audio(pcm_bytes, 16000)
+            except Exception as e:
+                logger.debug(f"Raw audio forwarding error: {e}")
+
         try:
             # Transcribe (this blocks the VAD thread momentarily, which is acceptable for single-user command flow)
             # Ideally offload to another thread, but WhisperSTT handles simple calls well.
