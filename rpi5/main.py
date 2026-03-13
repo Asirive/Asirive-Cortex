@@ -158,12 +158,14 @@ try:
     from rpi5.layer3_guide.router import IntentRouter
     from rpi5.layer3_guide.detection_router import DetectionRouter
     from rpi5.layer3_guide import Navigator
-    logger.info("[DEBUG] ✅ Layer 3 (Router + Navigator) imported successfully")
+    from rpi5.layer3_guide.spatial_audio.manager import SpatialAudioManager
+    logger.info("[DEBUG] ✅ Layer 3 (Router + Navigator + SpatialAudio) imported successfully")
 except ImportError as e:
     logger.error(f"[DEBUG] ❌ Layer 3 (Router) import failed: {e}")
     IntentRouter = None
     DetectionRouter = None
     Navigator = None
+    SpatialAudioManager = None
 
 try:
     from rpi5.layer4_memory.hybrid_memory_manager import HybridMemoryManager
@@ -970,7 +972,15 @@ class CortexSystem:
             config=audio_config
         )
         self.voice_coordinator.initialize()
-        
+
+        # Wire GeminiLiveHandler into voice pipeline (audio-to-audio path).
+        # When VAD captures a speech segment the raw PCM is forwarded to
+        # layer2.send_audio_chunk so Gemini Live can process it in parallel
+        # with the Whisper STT path.
+        if self.layer2 is not None:
+            self.voice_coordinator.on_raw_audio = self._forward_audio_to_gemini
+            logger.info("✅ GeminiLiveHandler wired into voice pipeline (audio-to-audio)")
+
         # Initialize Bluetooth Manager (will be connected in start() if configured)
         self.bt_manager = None
 
@@ -991,6 +1001,16 @@ class CortexSystem:
             except Exception as e:
                 logger.error(f"❌ Failed to init Navigator: {e}")
                 self.navigator = None
+
+        # Initialize SpatialAudioManager (standalone 3D audio engine)
+        self.spatial_audio = None
+        if SpatialAudioManager:
+            try:
+                self.spatial_audio = SpatialAudioManager()
+                logger.info("✅ SpatialAudioManager initialized")
+            except Exception as e:
+                logger.error(f"❌ Failed to init SpatialAudioManager: {e}")
+                self.spatial_audio = None
 
         # =====================================================
         # HARDWARE PERIPHERALS (GPS, IMU, Button)
@@ -1149,6 +1169,25 @@ class CortexSystem:
                 self.tts.speak("Warning: fall detected. Are you okay?")
             except Exception as exc:
                 logger.error(f"TTS fall alert error: {exc}")
+
+    def _forward_audio_to_gemini(self, pcm_bytes: bytes, sample_rate: int) -> None:
+        """
+        Forward raw PCM audio to GeminiLiveHandler (audio-to-audio path).
+        Called by VoiceCoordinator.on_raw_audio for every captured speech segment.
+        Also sends the latest camera frame so Gemini has visual context.
+        """
+        if not self.layer2:
+            return
+        try:
+            run_async_safe(self.layer2.send_audio_chunk(pcm_bytes, sample_rate))
+            # Optionally send current video frame for multimodal context
+            frame = self.camera.get_frame() if self.camera else None
+            if frame is not None:
+                from PIL import Image
+                pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                run_async_safe(self.layer2.send_video_frame(pil_frame))
+        except Exception as e:
+            logger.debug(f"GeminiLive audio forward error: {e}")
 
     def handle_dashboard_command(self, cmd: Dict[str, Any]):
         """Handle incoming commands from dashboard"""
@@ -1690,9 +1729,7 @@ class CortexSystem:
         if target_layer == "ignore":
             logger.debug(f"Ignoring filler utterance: '{query}'")
             return
-        
-        # Intent routing now active (Layer 2 force override removed)
-        
+
         # Notify dashboard of audio event
         if self.ws_client:
             try:
