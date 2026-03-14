@@ -150,6 +150,26 @@ layer3:
     deduplication_enabled: true  # Remove duplicate detections
     dedup_threshold: 0.5         # IoU threshold for deduplication (0-1)
 
+  # Navigation Engine Configuration
+  navigation:
+    enabled: true
+    google_maps_api_key: ""          # Set via GOOGLE_MAPS_API_KEY env var
+    cache_db_path: "nav_cache.db"    # SQLite route cache
+    arrival_threshold_m: 15          # Waypoint arrival radius (meters)
+    destination_threshold_m: 20      # Final destination arrival radius
+    turn_announce_distance_m: 25     # Announce turns this far ahead
+    nav_loop_hz: 10                  # Navigation update frequency
+    voice_cooldown_s: 5              # Minimum seconds between voice announcements
+
+  # Bus Handler Configuration (LTA DataMall)
+  bus:
+    enabled: true
+    lta_api_key: ""                  # Set via LTA_API_KEY env var
+    bus_stops_db_path: "bus_stops.db" # SQLite bus stop database
+    proximity_radius_m: 50           # Auto-activate bus mode within this radius
+    arrival_refresh_s: 30            # Refresh bus arrivals every N seconds
+    announce_interval_s: 60          # Re-announce arrivals every N seconds
+
 # =====================================================
 # CAMERA CONFIGURATION
 # =====================================================
@@ -232,7 +252,7 @@ sensors:
   # Verify with: i2cdetect -y 1  (should show "28")
   imu:
     enabled: true
-    i2c_address: 0x28       # 0x28 (ADDR pin low) or 0x29 (ADDR pin high)
+    i2c_address: 0x29       # 0x29 (ADDR pin high on your board) or 0x28 (ADDR pin low)
     poll_hz: 25             # Polling frequency (BNO055 supports up to 100Hz)
 
   # Physical Button — momentary push-button to GND
@@ -426,6 +446,19 @@ hailo:
     recognition_model_path: "models/hailo/paddle_ocr_v3_recognition.hef"
     detection_method: "paddle"   # CPU-based PaddleOCR text detection
     confidence: 0.5              # Minimum OCR confidence threshold
+
+# =====================================================
+# SAFETY MONITOR CONFIGURATION (Fusion Engine)
+# =====================================================
+# Fuses YOLO detections + Hailo depth to alert on SILENT dangers only.
+# Transparency-mode headphones mean the user already hears cars/people.
+safety:
+  tier2_max_distance: 2.0        # Metres — alert for silent static obstacles closer than this
+  tier3_max_distance: 4.0        # Metres — alert for vehicles closer than this
+  tier3_approach_velocity: 1.0   # m/s — vehicle must be closing at least this fast
+  alert_cooldown: 3.0            # Seconds between repeated alerts of the same type
+  tts_cooldown: 8.0              # Seconds between TTS voice announcements
+  haptic_cooldown: 2.0           # Seconds between haptic pulses
 
 # =====================================================
 # HARDWARE SPECIFIC CONFIGURATIONS
