@@ -259,6 +259,13 @@ except ImportError as e:
     AudioAlertManager = None
 
 try:
+    from rpi5.safety_monitor import SafetyMonitor
+    logger.info("[DEBUG] ✅ SafetyMonitor imported successfully")
+except ImportError as e:
+    logger.warning(f"[DEBUG] ⚠️ SafetyMonitor import failed: {e}")
+    SafetyMonitor = None
+
+try:
     from rpi5.hailo_ocr import HailoOCRPipeline
     logger.info("[DEBUG] ✅ HailoOCRPipeline imported successfully")
 except ImportError as e:
@@ -273,6 +280,27 @@ except ImportError as e:
     GPSHandler = None
     IMUHandler = None
     ButtonHandler = None
+
+try:
+    from rpi5.layer3_guide.navigation_engine import NavigationEngine
+    logger.info("[DEBUG] ✅ NavigationEngine imported successfully")
+except ImportError as e:
+    logger.warning(f"[DEBUG] ⚠️ NavigationEngine import failed: {e}")
+    NavigationEngine = None
+
+try:
+    from rpi5.layer3_guide.bus_handler import BusHandler
+    logger.info("[DEBUG] ✅ BusHandler imported successfully")
+except ImportError as e:
+    logger.warning(f"[DEBUG] ⚠️ BusHandler import failed: {e}")
+    BusHandler = None
+
+try:
+    from rpi5.layer2_thinker.scene_change_detector import SceneChangeDetector
+    logger.info("[DEBUG] ✅ SceneChangeDetector imported successfully")
+except ImportError as e:
+    logger.warning(f"[DEBUG] ⚠️ SceneChangeDetector import failed: {e}")
+    SceneChangeDetector = None
 
 
 # =====================================================
@@ -1069,6 +1097,48 @@ class CortexSystem:
                 logger.error(f"❌ Failed to init Button: {e}")
                 self.button = None
 
+        # =====================================================
+        # NAVIGATION ENGINE + BUS HANDLER + SCENE CHANGE
+        # =====================================================
+        nav_cfg = self.config.get('layer3', {}).get('navigation', {})
+        self.nav_engine = None
+        if NavigationEngine:
+            try:
+                spatial_audio = self.navigator.spatial_audio if self.navigator and hasattr(self.navigator, 'spatial_audio') else None
+                self.nav_engine = NavigationEngine(
+                    api_key=os.environ.get('GOOGLE_MAPS_API_KEY', nav_cfg.get('google_maps_api_key', '')),
+                    gps=self.gps,
+                    imu=self.imu,
+                    spatial_audio=spatial_audio,
+                    tts=self.tts,
+                )
+                logger.info("✅ NavigationEngine initialized")
+            except Exception as e:
+                logger.error(f"❌ Failed to init NavigationEngine: {e}")
+                self.nav_engine = None
+
+        bus_cfg = self.config.get('layer3', {}).get('bus', {})
+        self.bus_handler = None
+        if BusHandler:
+            try:
+                self.bus_handler = BusHandler(
+                    lta_api_key=os.environ.get('LTA_API_KEY', bus_cfg.get('lta_api_key', '')),
+                    tts=self.tts,
+                )
+                logger.info("✅ BusHandler initialized")
+            except Exception as e:
+                logger.error(f"❌ Failed to init BusHandler: {e}")
+                self.bus_handler = None
+
+        self.scene_detector = None
+        if SceneChangeDetector:
+            try:
+                self.scene_detector = SceneChangeDetector()
+                logger.info("✅ SceneChangeDetector initialized")
+            except Exception as e:
+                logger.error(f"❌ Failed to init SceneChangeDetector: {e}")
+                self.scene_detector = None
+
         # Initialize Hailo Depth Estimator (lazy — only if config enabled)
         self.depth_estimator = None
         self.audio_alerts = None
@@ -1139,6 +1209,28 @@ class CortexSystem:
                 except Exception as e:
                     logger.error(f"❌ Failed to init Hailo OCR: {e}")
                     self.ocr_pipeline = None
+
+        # Initialize SafetyMonitor (fusion engine: YOLO + Hailo depth → tiered alerts)
+        self.safety_monitor = None
+        if SafetyMonitor:
+            try:
+                safety_cfg = self.config.get('safety', {})
+                cam_cfg = self.config.get('camera', {})
+                fw = cam_cfg.get('resolution', [1920, 1080])[0]
+                self.safety_monitor = SafetyMonitor(
+                    tier2_max_distance=safety_cfg.get('tier2_max_distance', 2.0),
+                    tier3_max_distance=safety_cfg.get('tier3_max_distance', 4.0),
+                    tier3_approach_velocity=safety_cfg.get('tier3_approach_velocity', 1.0),
+                    alert_cooldown=safety_cfg.get('alert_cooldown', 3.0),
+                    tts_cooldown=safety_cfg.get('tts_cooldown', 8.0),
+                    haptic_cooldown=safety_cfg.get('haptic_cooldown', 2.0),
+                    frame_width=fw,
+                    imu=self.imu,
+                )
+                logger.info("✅ SafetyMonitor initialized (YOLO + Hailo depth fusion)")
+            except Exception as e:
+                logger.error(f"❌ Failed to init SafetyMonitor: {e}")
+                self.safety_monitor = None
 
         logger.info("✅ ProjectCortex v2.0 initialized successfully")
 
@@ -1398,6 +1490,14 @@ class CortexSystem:
         if self.button:
             self.button.start()
 
+        # Start bus handler (download bus stop DB if missing)
+        if self.bus_handler:
+            try:
+                run_async_safe(self.bus_handler.start())
+                logger.info("✅ BusHandler started")
+            except Exception as e:
+                logger.warning(f"⚠️ BusHandler start failed: {e}")
+
         # Pre-initialize TTS engines to avoid 5.5s spike on first voice query
         if self.tts:
             logger.info("🔊 Pre-loading TTS engines (Kokoro + Gemini)...")
@@ -1440,6 +1540,7 @@ class CortexSystem:
 
                 # 2b. Run Hailo depth estimation + hazard detection
                 depth_map = None
+                hazards = []
                 if self.depth_estimator and self.depth_estimator.is_available:
                     try:
                         depth_map = self.depth_estimator.estimate(frame)
@@ -1459,36 +1560,101 @@ class CortexSystem:
                             hazards = self.depth_estimator.analyze_hazards(
                                 depth_map, all_detections, frame.shape
                             )
-                            
-                            # Trigger alerts for critical/warning hazards
-                            if hazards:
-                                # Find highest-severity hazard
-                                top_hazard = hazards[0]  # Already sorted by severity
-                                
-                                # Compare with L0 haptic feedback priority
-                                # L0 haptic runs independently via trigger_haptic_feedback()
-                                # Depth hazards use audio alerts (non-competing channel)
-                                if self.audio_alerts and top_hazard.severity.value in ("critical", "warning"):
-                                    self.audio_alerts.play(top_hazard.alert_key)
-                                
-                                # Haptic boost: if depth hazard is CRITICAL and
-                                # L0 haptic is not already at max, pulse the motor
-                                if (top_hazard.severity.value == "critical" 
-                                    and self.layer0 and hasattr(self.layer0, 'haptic')
-                                    and self.layer0.haptic):
-                                    try:
-                                        self.layer0.haptic.pulse(intensity=100, duration=0.3)
-                                    except Exception as e:
-                                        logger.debug(f"Haptic pulse error: {e}")
                     except Exception as e:
-                        logger.debug(f"Depth processing error: {e}")
+                        logger.warning(f"Depth processing error: {e}")
 
-                # 2c. Update spatial audio with current detections
+                # 2c. Safety Monitor: fuse YOLO + Hailo depth → tiered alerts
+                if self.safety_monitor:
+                    try:
+                        alert = self.safety_monitor.process_frame(
+                            all_detections, hazards, depth_map, frame.shape
+                        )
+                        if alert:
+                            # 3D-positioned warning sound
+                            if self.navigator and alert.position_3d and hasattr(self.navigator, 'spatial_audio'):
+                                sa = self.navigator.spatial_audio
+                                if sa:
+                                    urgency = "critical" if alert.tier == 1 and alert.needs_haptic else (
+                                        "warning" if alert.tier <= 2 else "notice"
+                                    )
+                                    sa.play_directional_alert(alert.position_3d, alert.alert_type, urgency)
+
+                            # TTS voice for first-time Tier 1 hazards
+                            if alert.needs_tts and self.audio_alerts:
+                                self.audio_alerts.play(alert.alert_type)
+
+                            # Haptic pulse for critical Tier 1
+                            if (alert.needs_haptic
+                                and self.layer0 and hasattr(self.layer0, 'haptic')
+                                and self.layer0.haptic):
+                                try:
+                                    self.layer0.haptic.pulse(intensity=100, duration=0.3)
+                                except Exception as e:
+                                    logger.debug(f"Haptic pulse error: {e}")
+
+                            # Send alert to laptop dashboard
+                            if self.ws_client:
+                                self.ws_client.send_safety_alert(
+                                    tier=alert.tier,
+                                    alert_type=alert.alert_type,
+                                    direction=alert.direction,
+                                    distance_m=alert.distance_m,
+                                    score=alert.score,
+                                )
+                    except Exception as e:
+                        logger.error(f"Safety monitor error: {e}")
+
+                # 2d. Update beacon tracking (no per-object pinging)
                 if self.navigator and all_detections:
                     try:
                         self.navigator.update_detections(all_detections)
                     except Exception as e:
-                        logger.debug(f"Spatial audio update error: {e}")
+                        logger.debug(f"Beacon tracking error: {e}")
+
+                # 2e. Bus handler: check YOLO for "bus" class
+                if self.bus_handler and all_detections:
+                    try:
+                        run_async_safe(self.bus_handler.update_detections(all_detections))
+                    except Exception as e:
+                        logger.debug(f"Bus detection update error: {e}")
+
+                # 2f. Scene change detection → proactive Gemini narration
+                if self.scene_detector and self.layer2:
+                    try:
+                        avg_depth = None
+                        if depth_map is not None:
+                            avg_depth = float(depth_map.mean())
+                        nav_event = None
+                        if self.nav_engine:
+                            ctx = self.nav_engine.get_context_string()
+                            if "crossing" in ctx.lower():
+                                nav_event = "road_crossing"
+                        is_navigating = self.nav_engine.state.value if self.nav_engine and hasattr(self.nav_engine, 'state') else False
+                        is_nav_active = is_navigating == "navigating" if isinstance(is_navigating, str) else False
+
+                        if self.scene_detector.should_narrate(all_detections, avg_depth, nav_event, is_nav_active):
+                            trigger = self.scene_detector.get_last_trigger()
+                            logger.info(f"🎙️ Scene change detected ({trigger}), requesting Gemini narration")
+                            # Build context for Gemini
+                            context_parts = []
+                            if self.nav_engine:
+                                context_parts.append(self.nav_engine.get_context_string())
+                            if self.bus_handler:
+                                context_parts.append(self.bus_handler.get_context_string())
+                            det_summary = ", ".join(set(d.get('class', '?') for d in all_detections[:10]))
+                            if det_summary:
+                                context_parts.append(f"[VISIBLE] {det_summary}")
+                            if avg_depth is not None:
+                                context_parts.append(f"[DEPTH] avg={avg_depth:.1f}m")
+
+                            context_str = "\n".join(context_parts)
+                            # Send context to Gemini for proactive narration
+                            if hasattr(self.layer2, 'send_text'):
+                                run_async_safe(self.layer2.send_text(f"[CONTEXT]\n{context_str}"))
+                                if self.scene_detector:
+                                    self.scene_detector.record_speech()
+                    except Exception as e:
+                        logger.debug(f"Scene change detection error: {e}")
 
                 # 3. Send to laptop dashboard via ZMQ (Hybrid Architecture)
                 if self.video_streamer:
@@ -1518,11 +1684,20 @@ class CortexSystem:
                     )
                     last_metrics_time = time.time()
 
-                # 6. Stream GPS/IMU sensor data (every 2s)
-                if time.time() - last_sensor_time > 2.0 and self.ws_client and self.ws_client.is_connected:
+                # 6. Stream GPS/IMU sensor data (every 1s)
+                if time.time() - last_sensor_time > 1.0 and self.ws_client and self.ws_client.is_connected:
                     try:
                         gps_fix = self.gps.get_fix() if self.gps else None
                         imu_reading = self.imu.get_reading() if self.imu else None
+
+                        # Bus proximity check (piggyback on GPS poll)
+                        if gps_fix and self.bus_handler:
+                            try:
+                                run_async_safe(self.bus_handler.check_proximity(
+                                    gps_fix.latitude, gps_fix.longitude
+                                ))
+                            except Exception as e:
+                                logger.debug(f"Bus proximity check error: {e}")
 
                         if gps_fix or imu_reading:
                             self.ws_client.send_gps_imu(
@@ -1530,9 +1705,11 @@ class CortexSystem:
                                 longitude=gps_fix.longitude if gps_fix else 0.0,
                                 altitude=gps_fix.altitude if gps_fix else None,
                                 accuracy=None,
-                                accelerometer=list(imu_reading.accelerometer) if imu_reading and imu_reading.accelerometer else None,
-                                gyroscope=list(imu_reading.gyroscope) if imu_reading and imu_reading.gyroscope else None,
-                                magnetometer=list(imu_reading.magnetometer) if imu_reading and imu_reading.magnetometer else None,
+                                accelerometer=[imu_reading.accel_x, imu_reading.accel_y, imu_reading.accel_z] if imu_reading else None,
+                                gyroscope=[imu_reading.gyro_x, imu_reading.gyro_y, imu_reading.gyro_z] if imu_reading else None,
+                                magnetometer=[imu_reading.mag_x, imu_reading.mag_y, imu_reading.mag_z] if imu_reading else None,
+                                euler=[imu_reading.heading, imu_reading.roll, imu_reading.pitch] if imu_reading else None,
+                                calibration=[imu_reading.cal_system, imu_reading.cal_gyro, imu_reading.cal_accel, imu_reading.cal_mag] if imu_reading else None,
                             )
                     except Exception as e:
                         logger.debug(f"Sensor streaming error: {e}")
@@ -1976,9 +2153,70 @@ class CortexSystem:
         # =================================================================
         elif target_layer == "layer3":
             logger.info("🧭 Processing Layer 3 navigation query...")
-            
-            if routing["use_spatial_audio"] and self.navigator:
-                # Extract target object from query (e.g. "find the door" → "door")
+            query_lower = query.lower()
+
+            # --- GPS Navigation: "navigate to [destination]" ---
+            if self.nav_engine and any(kw in query_lower for kw in ["navigate to", "take me to", "directions to", "go to", "how do i get to"]):
+                # Extract destination from query
+                destination = ""
+                for prefix in ["navigate to", "take me to", "directions to", "go to", "how do i get to"]:
+                    if prefix in query_lower:
+                        destination = query[query_lower.index(prefix) + len(prefix):].strip()
+                        break
+                if destination:
+                    # Get current GPS position
+                    gps_fix = self.gps.get_fix() if self.gps else None
+                    if gps_fix and gps_fix.latitude != 0.0:
+                        origin = f"{gps_fix.latitude},{gps_fix.longitude}"
+                        if self.tts:
+                            await self.tts.speak_async(f"Getting directions to {destination}.")
+                        try:
+                            success = await self.nav_engine.start_navigation(origin, destination)
+                            if success:
+                                route = self.nav_engine._current_route
+                                if route:
+                                    response = f"Route found. {route.distance}. {route.duration}. Follow the audio beam."
+                                else:
+                                    response = "Navigation started. Follow the audio beam."
+                            else:
+                                response = f"Sorry, I couldn't find a walking route to {destination}."
+                        except Exception as e:
+                            logger.error(f"Navigation start error: {e}")
+                            response = "Sorry, there was an error getting directions."
+                    else:
+                        response = "I need a GPS fix before I can navigate. Please wait for satellite lock."
+                else:
+                    response = "Where would you like to go? Say navigate to, followed by your destination."
+
+            # --- Stop Navigation ---
+            elif self.nav_engine and any(kw in query_lower for kw in ["stop navigation", "stop navigating", "cancel navigation", "cancel route"]):
+                await self.nav_engine.stop_navigation()
+                response = "Navigation stopped."
+
+            # --- Bus queries: "what bus", "bus arrivals", "next bus" ---
+            elif self.bus_handler and any(kw in query_lower for kw in ["bus", "what bus", "next bus", "bus arrival", "bus stop"]):
+                gps_fix = self.gps.get_fix() if self.gps else None
+                if gps_fix and gps_fix.latitude != 0.0:
+                    try:
+                        await self.bus_handler.start_monitoring(gps_fix.latitude, gps_fix.longitude)
+                        # Give time for first query
+                        await asyncio.sleep(1.0)
+                        context = self.bus_handler.get_context_string()
+                        if "No nearby bus stop" in context:
+                            response = "I can't find any bus stops nearby. Try moving closer to a road."
+                        else:
+                            # Extract the useful info from context
+                            response = context.replace("[BUS] ", "").replace("[/BUS]", "").strip()
+                            if not response:
+                                response = "Checking bus arrivals. I'll announce them as they come."
+                    except Exception as e:
+                        logger.error(f"Bus query error: {e}")
+                        response = "Sorry, I couldn't check bus arrivals right now."
+                else:
+                    response = "I need a GPS fix to find nearby bus stops."
+
+            # --- Spatial audio beacon: "find the [object]" ---
+            elif routing.get("use_spatial_audio") and self.navigator:
                 target = routing.get("target_object", query.split()[-1])
                 started = self.navigator.start_navigation_beacon(target)
                 if started:
@@ -2035,6 +2273,18 @@ class CortexSystem:
         # Stop Navigator (spatial audio)
         if self.navigator:
             self.navigator.stop()
+
+        # Stop navigation engine and bus handler
+        if self.nav_engine:
+            try:
+                run_async_safe(self.nav_engine.stop_navigation())
+            except Exception as e:
+                logger.debug(f"NavigationEngine stop error: {e}")
+        if self.bus_handler:
+            try:
+                run_async_safe(self.bus_handler.stop_monitoring())
+            except Exception as e:
+                logger.debug(f"BusHandler stop error: {e}")
 
         # Stop hardware peripherals
         if self.gps:
