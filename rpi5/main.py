@@ -302,6 +302,13 @@ except ImportError as e:
     logger.warning(f"[DEBUG] ⚠️ SceneChangeDetector import failed: {e}")
     SceneChangeDetector = None
 
+try:
+    from rpi5.layer3_guide.connectivity_monitor import ConnectivityMonitor
+    logger.info("[DEBUG] ✅ ConnectivityMonitor imported successfully")
+except ImportError as e:
+    logger.warning(f"[DEBUG] ⚠️ ConnectivityMonitor import failed: {e}")
+    ConnectivityMonitor = None
+
 
 # =====================================================
 # ASYNC HELPER FUNCTION
@@ -813,6 +820,13 @@ class CortexSystem:
         else:
             self.config = get_config()
 
+        # System-level flags
+        self.privacy_mode = False
+        self._battery_warned = set()  # Track which battery thresholds have been warned
+        self._last_battery_check = 0.0
+        self._camera_blocked_since = 0.0  # Timestamp when dark frames started
+        self._camera_blocked_warned = False
+
         # Initialize Layer 4: Memory Manager (Hybrid)
         logger.info("[DEBUG] ===== LAYER 4 INITIALIZATION START =====")
         sb_cfg = self.config.get('supabase', {})
@@ -1111,6 +1125,8 @@ class CortexSystem:
                     imu=self.imu,
                     spatial_audio=spatial_audio,
                     tts=self.tts,
+                    on_arrival=self._on_nav_arrival,
+                    on_mode_change=self._on_nav_mode_change,
                 )
                 logger.info("✅ NavigationEngine initialized")
             except Exception as e:
@@ -1138,6 +1154,19 @@ class CortexSystem:
             except Exception as e:
                 logger.error(f"❌ Failed to init SceneChangeDetector: {e}")
                 self.scene_detector = None
+
+        self.connectivity_monitor = None
+        if ConnectivityMonitor:
+            try:
+                self.connectivity_monitor = ConnectivityMonitor(
+                    ws_client=self.ws_client,
+                    gemini_handler=self.layer2,
+                    tts=self.tts,
+                )
+                logger.info("✅ ConnectivityMonitor initialized")
+            except Exception as e:
+                logger.error(f"❌ Failed to init ConnectivityMonitor: {e}")
+                self.connectivity_monitor = None
 
         # Initialize Hailo Depth Estimator (lazy — only if config enabled)
         self.depth_estimator = None
@@ -1425,6 +1454,49 @@ class CortexSystem:
         except Exception as e:
             logger.error(f"❌ Bluetooth initialization error: {e}")
 
+    def _on_nav_arrival(self):
+        """Callback when NavigationEngine reaches the destination — play arrival chime."""
+        try:
+            if self.spatial_audio and hasattr(self.spatial_audio, '_play_beacon_melody'):
+                self.spatial_audio._play_beacon_melody("end")
+            elif self.navigator and hasattr(self.navigator, 'spatial_audio'):
+                sa = self.navigator.spatial_audio
+                if sa and hasattr(sa, '_play_beacon_melody'):
+                    sa._play_beacon_melody("end")
+            logger.info("🎵 Arrival chime played")
+        except Exception as e:
+            logger.debug(f"Arrival chime error: {e}")
+
+    def _on_nav_mode_change(self, new_mode):
+        """Callback when NavigationEngine switches mode (OUTDOOR ↔ INDOOR ↔ TRANSIT)."""
+        try:
+            from rpi5.layer3_guide.navigation_engine import NavMode
+            if new_mode == NavMode.INDOOR:
+                # Indoor: stop beacon, increase scene narration frequency
+                logger.info("🏢 Indoor mode — beacon OFF, Gemini Guide Mode active")
+                if self.spatial_audio and hasattr(self.spatial_audio, 'stop_beacon'):
+                    self.spatial_audio.stop_beacon()
+                if self.scene_detector:
+                    self.scene_detector.cooldown_seconds = 3.0  # Narrate more often indoors
+                # Switch BNO055 to gyro-only (avoid magnetic interference)
+                if self.imu and hasattr(self.imu, 'set_gyro_only'):
+                    self.imu.set_gyro_only()
+            elif new_mode == NavMode.TRANSIT:
+                logger.info("🚌 Transit mode — beacon OFF, reduced processing")
+                if self.spatial_audio and hasattr(self.spatial_audio, 'stop_beacon'):
+                    self.spatial_audio.stop_beacon()
+                if self.scene_detector:
+                    self.scene_detector.cooldown_seconds = 15.0  # Less narration on vehicle
+            elif new_mode == NavMode.OUTDOOR:
+                logger.info("🌳 Outdoor mode — beacon resumed")
+                if self.scene_detector:
+                    self.scene_detector.cooldown_seconds = 5.0  # Normal cooldown
+                # Switch BNO055 back to NDOF (full 9-axis fusion)
+                if self.imu and hasattr(self.imu, 'set_ndof_mode'):
+                    self.imu.set_ndof_mode()
+        except Exception as e:
+            logger.debug(f"Nav mode change error: {e}")
+
     def start(self):
         """Start main system loop"""
         logger.info("🚀 Starting ProjectCortex v2.0...")
@@ -1498,6 +1570,13 @@ class CortexSystem:
             except Exception as e:
                 logger.warning(f"⚠️ BusHandler start failed: {e}")
 
+        # Start connectivity monitor
+        if self.connectivity_monitor:
+            try:
+                run_async_safe(self.connectivity_monitor.start())
+            except Exception as e:
+                logger.warning(f"⚠️ ConnectivityMonitor start failed: {e}")
+
         # Pre-initialize TTS engines to avoid 5.5s spike on first voice query
         if self.tts:
             logger.info("🔊 Pre-loading TTS engines (Kokoro + Gemini)...")
@@ -1529,11 +1608,35 @@ class CortexSystem:
             while self.running:
                 loop_start = time.time()
 
+                # Privacy mode: skip all vision, keep sensors running
+                if self.privacy_mode:
+                    time.sleep(0.5)
+                    continue
+
                 # 1. Get frame from camera
                 frame = self.camera.get_frame()
                 if frame is None:
                     time.sleep(0.1)
                     continue
+
+                # 1b. Camera blocked detection (all-dark frame for >3 seconds)
+                avg_brightness = frame.mean()
+                if avg_brightness < 10:  # Very dark frame
+                    if self._camera_blocked_since == 0.0:
+                        self._camera_blocked_since = time.time()
+                    elif time.time() - self._camera_blocked_since > 3.0 and not self._camera_blocked_warned:
+                        self._camera_blocked_warned = True
+                        if self.tts:
+                            run_async_safe(self.tts.speak_async(
+                                "My camera seems blocked. Can you check it? I can't see obstacles, so please use your cane."
+                            ))
+                        logger.warning("📷 Camera blocked detected — dark frames for >3s")
+                else:
+                    if self._camera_blocked_warned:
+                        self._camera_blocked_warned = False
+                        if self.tts:
+                            run_async_safe(self.tts.speak_async("Camera's working again."))
+                    self._camera_blocked_since = 0.0
 
                 # 2. Run Layer 0 + Layer 1 in parallel
                 all_detections = self._run_dual_detection(frame)
@@ -1715,6 +1818,9 @@ class CortexSystem:
                         logger.debug(f"Sensor streaming error: {e}")
                     last_sensor_time = time.time()
 
+                # 6b. Battery monitoring
+                self._check_battery()
+
                 # 7. Track FPS for Logging and Status Display
                 loop_time = time.time() - loop_start
                 fps = 1.0 / loop_time if loop_time > 0 else 0
@@ -1742,6 +1848,56 @@ class CortexSystem:
         except Exception as e:
             logger.debug(f"CPU temp read error: {e}")
             return 0.0
+
+    def _get_battery_percent(self) -> int:
+        """Get battery percentage from UPS HAT or return 100 if wall-powered."""
+        try:
+            # Try common UPS HAT sysfs paths
+            for path in [
+                "/sys/class/power_supply/battery/capacity",
+                "/sys/class/power_supply/BAT0/capacity",
+            ]:
+                try:
+                    with open(path, "r") as f:
+                        return int(f.read().strip())
+                except FileNotFoundError:
+                    continue
+            # Try psutil if available
+            if hasattr(psutil, 'sensors_battery') and psutil.sensors_battery():
+                return int(psutil.sensors_battery().percent)
+        except Exception:
+            pass
+        return 100  # Wall-powered / unknown
+
+    def _check_battery(self):
+        """Check battery level and warn at 20%, 10%, 5% thresholds."""
+        now = time.time()
+        if now - self._last_battery_check < 60.0:  # Check every 60 seconds
+            return
+        self._last_battery_check = now
+        
+        pct = self._get_battery_percent()
+        if pct <= 5 and 5 not in self._battery_warned:
+            self._battery_warned.add(5)
+            if self.tts:
+                run_async_safe(self.tts.speak_async(
+                    "Critical battery. Saving your location."
+                ))
+            # Save state for resume
+            if self.nav_engine and self.nav_engine._breadcrumbs:
+                logger.warning(f"🔋 5% — breadcrumb trail has {len(self.nav_engine._breadcrumbs)} points")
+        elif pct <= 10 and 10 not in self._battery_warned:
+            self._battery_warned.add(10)
+            if self.tts:
+                run_async_safe(self.tts.speak_async(
+                    "Battery at 10 percent. Reduced processing. Navigation still active."
+                ))
+        elif pct <= 20 and 20 not in self._battery_warned:
+            self._battery_warned.add(20)
+            if self.tts:
+                run_async_safe(self.tts.speak_async(
+                    "Battery low. Want me to guide you home?"
+                ))
 
     def _run_dual_detection(self, frame: np.ndarray) -> List[Dict[str, Any]]:
         """Run Layer 0 + Layer 1 detection in parallel"""
@@ -1905,6 +2061,34 @@ class CortexSystem:
         # Ignore filler/non-command utterances (e.g., "yeah", "thanks", "um")
         if target_layer == "ignore":
             logger.debug(f"Ignoring filler utterance: '{query}'")
+            return
+
+        # ---- System-level commands (before routing/frame capture) ----
+        query_lower = query.lower().strip()
+
+        # Privacy mode ON
+        if any(kw in query_lower for kw in ["privacy mode", "camera off", "turn off camera", "turn off the camera"]):
+            self.privacy_mode = True
+            self.camera.stop()
+            if self.gemini_handler and hasattr(self.gemini_handler, 'stop_video'):
+                try:
+                    await self.gemini_handler.stop_video()
+                except Exception:
+                    pass
+            if self.tts:
+                await self.tts.speak_async(
+                    "Camera off. Using sensors only. Say camera on to re-enable."
+                )
+            logger.info("🔒 Privacy mode enabled — camera stopped")
+            return
+
+        # Privacy mode OFF
+        if any(kw in query_lower for kw in ["camera on", "turn on camera", "turn on the camera", "disable privacy"]):
+            self.privacy_mode = False
+            self.camera.start()
+            if self.tts:
+                await self.tts.speak_async("Camera back on. Full system active.")
+            logger.info("🔓 Privacy mode disabled — camera restarted")
             return
 
         # Notify dashboard of audio event
@@ -2193,6 +2377,21 @@ class CortexSystem:
                 await self.nav_engine.stop_navigation()
                 response = "Navigation stopped."
 
+            # --- I'm lost / retrace steps ---
+            elif self.nav_engine and any(kw in query_lower for kw in ["i'm lost", "im lost", "i am lost", "retrace", "take me back", "go back"]):
+                if self.tts:
+                    await self.tts.speak_async("Don't worry. Let me work out where you are.")
+                # Try GPS reverse geocode for context
+                gps_fix = self.gps.get_fix() if self.gps else None
+                if gps_fix and gps_fix.latitude != 0.0:
+                    success = await self.nav_engine.retrace_steps()
+                    if success:
+                        response = "I'm guiding you back the way you came. Follow the audio beam."
+                    else:
+                        response = "I don't have enough trail history. Try saying navigate to, followed by your destination."
+                else:
+                    response = "I can't get a GPS fix. Stay where you are and try again in a moment."
+
             # --- Bus queries: "what bus", "bus arrivals", "next bus" ---
             elif self.bus_handler and any(kw in query_lower for kw in ["bus", "what bus", "next bus", "bus arrival", "bus stop"]):
                 gps_fix = self.gps.get_fix() if self.gps else None
@@ -2285,6 +2484,11 @@ class CortexSystem:
                 run_async_safe(self.bus_handler.stop_monitoring())
             except Exception as e:
                 logger.debug(f"BusHandler stop error: {e}")
+        if self.connectivity_monitor:
+            try:
+                run_async_safe(self.connectivity_monitor.stop())
+            except Exception as e:
+                logger.debug(f"ConnectivityMonitor stop error: {e}")
 
         # Stop hardware peripherals
         if self.gps:

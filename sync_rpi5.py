@@ -94,6 +94,8 @@ SYNC_PATHS = [
     "laptop/",
     "shared/",
     "models/",  # Sync all models including .pt files
+    "tests/",
+    "scripts/",
     "requirements.txt",
     ".env",  # Sync environment variables (API keys)
 ]
