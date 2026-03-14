@@ -36,6 +36,7 @@ class NavMode(Enum):
     OUTDOOR = "outdoor"         # GPS fix available — beam active
     INDOOR = "indoor"           # No GPS fix — Gemini Guide Mode
     BUS_STOP = "bus_stop"       # Near a bus stop — LTA mode
+    TRANSIT = "transit"         # On bus/MRT — stop counting mode
 
 
 class NavState(Enum):
@@ -252,6 +253,11 @@ class NavigationEngine:
         self._last_voice_time = 0.0
         self._turn_announced = set()  # waypoint indices where turn was announced
         self._road_crossing_active = False
+
+        # Breadcrumb trail — GPS position log for "retrace steps" / "I'm lost"
+        self._breadcrumbs: List[Tuple[float, float, float]] = []  # (lat, lng, timestamp)
+        self._breadcrumb_interval = 5.0  # Record every 5 seconds
+        self._last_breadcrumb_time = 0.0
 
         # Route cache database
         self._cache_db_path = cache_db_path
@@ -619,8 +625,27 @@ class NavigationEngine:
                     await asyncio.sleep(interval)
                     continue
 
+                # Record breadcrumb
+                now = time.monotonic()
+                if now - self._last_breadcrumb_time >= self._breadcrumb_interval:
+                    self._breadcrumbs.append((current_pos[0], current_pos[1], time.time()))
+                    self._last_breadcrumb_time = now
+
                 # Ensure outdoor mode when GPS is available
-                if self.mode != NavMode.OUTDOOR:
+                # Check for transit: speed > 15 km/h means vehicle, not walking
+                gps_fix = self.gps.get_fix() if self.gps else None
+                gps_speed = gps_fix.speed_kmh if gps_fix and hasattr(gps_fix, 'speed_kmh') else 0.0
+                if gps_speed > 15.0:
+                    if self.mode != NavMode.TRANSIT:
+                        self._set_mode(NavMode.TRANSIT)
+                        if self.spatial_audio:
+                            self.spatial_audio.stop_beacon()
+                        await self._speak("You're on a vehicle. I'll track your progress.")
+                elif self.mode == NavMode.TRANSIT:
+                    # Speed dropped — exited vehicle
+                    self._set_mode(NavMode.OUTDOOR)
+                    await self._speak("You've stopped. Resuming navigation.")
+                elif self.mode != NavMode.OUTDOOR:
                     self._set_mode(NavMode.OUTDOOR)
 
                 # 2. Get current heading from IMU
@@ -855,6 +880,69 @@ class NavigationEngine:
             "destination": self.route.destination,
             "next_instruction": wp.instruction if wp else "",
         }
+
+    def get_breadcrumbs(self) -> List[Tuple[float, float, float]]:
+        """Return recorded breadcrumb trail [(lat, lng, timestamp), ...]."""
+        return list(self._breadcrumbs)
+
+    async def retrace_steps(self) -> bool:
+        """
+        Start navigating back along the breadcrumb trail (reverse order).
+        
+        Used by "I'm lost" protocol to guide user back to start.
+        Returns True if retrace started successfully.
+        """
+        if len(self._breadcrumbs) < 2:
+            await self._speak("I don't have enough location history to retrace your steps.")
+            return False
+
+        # Stop any current navigation
+        await self.stop_navigation()
+
+        # Build waypoints from reversed breadcrumbs (skip duplicates within 10m)
+        reversed_crumbs = list(reversed(self._breadcrumbs))
+        waypoints = []
+        for i, (lat, lng, _ts) in enumerate(reversed_crumbs):
+            if i == 0:
+                continue  # Skip current position
+            # Skip if too close to previous waypoint
+            if waypoints:
+                prev = waypoints[-1]
+                if haversine_distance(prev.lat, prev.lng, lat, lng) < 10.0:
+                    continue
+            is_final = (i == len(reversed_crumbs) - 1)
+            waypoints.append(Waypoint(
+                lat=lat, lng=lng,
+                instruction="Retrace" if not is_final else "Starting point",
+                distance_text="", maneuver="",
+                is_turn=False,
+            ))
+
+        if not waypoints:
+            await self._speak("Your trail is too short to retrace.")
+            return False
+
+        # Create a synthetic route from breadcrumbs
+        self.route = NavRoute(
+            origin="current",
+            destination="starting point",
+            waypoints=waypoints,
+            distance=f"{len(waypoints)} waypoints",
+            duration="",
+            polyline="",
+        )
+        self.current_waypoint_idx = 0
+        self.state = NavState.NAVIGATING
+        self._running = True
+        self._turn_announced.clear()
+
+        await self._speak(
+            f"Retracing your steps. {len(waypoints)} waypoints back to where you started."
+        )
+
+        # Start the nav loop
+        self._nav_task = asyncio.create_task(self._nav_loop())
+        return True
 
     def get_context_string(self) -> str:
         """

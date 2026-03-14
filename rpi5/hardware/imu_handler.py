@@ -197,6 +197,41 @@ class IMUHandler:
             return r.heading
         return None
 
+    def set_gyro_only(self) -> bool:
+        """
+        Switch BNO055 to gyro-only mode (no magnetometer).
+        
+        Use indoors where metal structures cause magnetic interference.
+        Heading will drift over time but avoids false readings.
+        Returns True on success.
+        """
+        if not self._sensor or not self._enabled:
+            return False
+        try:
+            self._sensor.mode = adafruit_bno055.GYROONLY_MODE
+            logger.info("🧭 IMU switched to GYRO-ONLY mode (indoor)")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to set gyro-only mode: {e}")
+            return False
+
+    def set_ndof_mode(self) -> bool:
+        """
+        Switch BNO055 back to NDOF mode (full 9-axis fusion).
+        
+        Use outdoors where magnetometer readings are reliable.
+        Returns True on success.
+        """
+        if not self._sensor or not self._enabled:
+            return False
+        try:
+            self._sensor.mode = adafruit_bno055.NDOF_MODE
+            logger.info("🧭 IMU switched to NDOF mode (outdoor)")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to set NDOF mode: {e}")
+            return False
+
     @property
     def is_calibrated(self) -> bool:
         """True when system calibration is ≥ 2 (good)."""
