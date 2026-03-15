@@ -103,6 +103,9 @@ class VADHandler:
         """
         if self._initialized:
             logger.debug("VADHandler already initialized, skipping...")
+            if on_speech_end is not None:
+                self.on_speech_end = on_speech_end
+                logger.info("🔄 VAD: refreshed on_speech_end callback")
             return
             
         logger.info("🎤 Initializing VAD Handler...")
@@ -127,6 +130,7 @@ class VADHandler:
         # Callbacks
         self.on_speech_start = on_speech_start
         self.on_speech_end = on_speech_end
+        self._stt_lock = threading.Lock()  # Prevent overlapping STT calls
         
         # VAD model and iterator
         self.vad_model = None
@@ -230,7 +234,20 @@ class VADHandler:
         self.audio_queue.put(audio_chunk)
         
         return (None, pyaudio.paContinue)
-    
+
+    def _safe_speech_end_callback(self, speech_audio: np.ndarray):
+        """Run on_speech_end in a background thread with a lock to prevent overlap."""
+        if not self._stt_lock.acquire(blocking=False):
+            logger.warning("⚠️ STT still processing previous segment, skipping")
+            return
+        try:
+            self.on_speech_end(speech_audio)
+            logger.info("✅ on_speech_end callback completed")
+        except Exception as e:
+            logger.error(f"❌ Error in on_speech_end callback: {e}")
+        finally:
+            self._stt_lock.release()
+
     def _process_audio_chunks(self):
         """
         Process audio chunks from the queue in a separate thread.
@@ -323,14 +340,17 @@ class VADHandler:
                                 f"Status=SENDING_TO_PIPELINE"
                             )
                             
-                            # Trigger callback
+                            # Trigger callback in background thread to avoid blocking VAD
                             if self.on_speech_end:
                                 try:
                                     logger.info("📤 Calling on_speech_end callback...")
-                                    self.on_speech_end(speech_audio)
-                                    logger.info("✅ on_speech_end callback completed")
+                                    threading.Thread(
+                                        target=self._safe_speech_end_callback,
+                                        args=(speech_audio,),
+                                        daemon=True
+                                    ).start()
                                 except Exception as e:
-                                    logger.error(f"❌ Error in on_speech_end callback: {e}")
+                                    logger.error(f"❌ Error launching on_speech_end thread: {e}")
                         else:
                             logger.warning(
                                 f"⚠️ REJECTED SHORT SEGMENT: "

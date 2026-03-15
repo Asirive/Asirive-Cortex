@@ -1,7 +1,7 @@
 ---
 description: "Use when: debugging, finding logic errors, verifying cross-system consistency between rpi5/ laptop/ shared/ folders, auditing previous edits, checking protocol mismatches, validating imports, verifying WebSocket message types match between sender and receiver, finding dead code or broken references. Trigger words: audit, debug, check, verify, consistency, bugs, logic errors, system integration."
 tools: [execute, read, agent, search, 'cognitionai/deepwiki/*', 'io.github.upstash/context7/*', todo]
-model: "Claude Opus 4.6"
+model: "Claude Sonnet 4.6"
 argument-hint: "Describe what to audit: e.g. 'check all recent safety monitor changes' or 'full cross-system audit'"
 ---
 

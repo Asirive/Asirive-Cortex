@@ -151,7 +151,7 @@ class CortexWebSocketServer:
                     parsed_message = parse_message(message)
                     if parsed_message:
                         # 2. Handle System Messages (PING/PONG)
-                        if parsed_message.type == MessageType.PING:
+                        if parsed_message.type == MessageType.PING.value:
                             logger.debug(f"Received PING from {websocket.remote_address}")
                             ping_id = parsed_message.data.get("ping_id")
                             from laptop.protocol import create_pong

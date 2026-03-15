@@ -113,6 +113,13 @@ class FusedGPSHandler:
             self._set_source("m8u")
             return hw_fix
 
+        # Log why we have no fix (periodically)
+        phone_connected = self._phone.is_connected if self._phone else False
+        phone_updates = self._phone.update_count if self._phone else 0
+        logger.debug(
+            f"📍 No GPS fix: hw={'has_fix' if hw_fix else 'none'}, "
+            f"phone_connected={phone_connected}, phone_updates={phone_updates}"
+        )
         self._set_source(None)
         return None
 

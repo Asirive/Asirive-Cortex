@@ -224,9 +224,15 @@ audio:
     min_silence_duration_ms: 500  # Silence gap before speech end (longer = more tolerant)
     padding_duration_ms: 200  # Audio padding around speech segments
 
-  # Whisper STT
+  # Whisper STT (offline fallback)
   whisper:
     model_size: "base"  # Options: 'tiny' (39M), 'base' (74M, recommended), 'small' (244M)
+
+  # STT Pipeline (Cartesia Ink primary, Whisper fallback)
+  stt:
+    cartesia_enabled: true      # Use Cartesia Ink cloud STT as primary
+    cartesia_model: "ink-whisper"  # Cartesia model ID
+    language: "en"              # ISO-639-1 language code
 
 # =====================================================
 # SPATIAL AUDIO CONFIGURATION

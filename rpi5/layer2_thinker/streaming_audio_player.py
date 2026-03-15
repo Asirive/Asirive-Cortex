@@ -66,6 +66,8 @@ class StreamingAudioPlayer:
         self.is_interrupted = False
         self.stream: Optional[sd.OutputStream] = None
         self.playback_thread: Optional[threading.Thread] = None
+        self._silence_count = 0  # Track consecutive silence callbacks
+        self._chunks_played = 0  # Track total chunks played
         
         # Callback for playback events
         self.on_start_callback: Optional[Callable] = None
@@ -82,6 +84,8 @@ class StreamingAudioPlayer:
         
         self.is_playing = True
         self.is_interrupted = False
+        self._silence_count = 0
+        self._chunks_played = 0
         
         # Clear audio queue
         while not self.audio_queue.empty():
@@ -120,10 +124,14 @@ class StreamingAudioPlayer:
                 break
         
         # Close audio stream
-        if self.stream:
-            self.stream.stop()
-            self.stream.close()
-            self.stream = None
+        stream = self.stream
+        self.stream = None
+        if stream:
+            try:
+                stream.stop()
+                stream.close()
+            except Exception as e:
+                logger.debug(f"Stream cleanup in stop(): {e}")
         
         # Wait for playback thread
         if self.playback_thread:
@@ -140,22 +148,19 @@ class StreamingAudioPlayer:
     def add_audio_chunk(self, audio_bytes: bytes):
         """
         Add audio chunk to playback queue.
-        
-        Args:
-            audio_bytes: Raw PCM audio bytes (24kHz, mono, int16)
+        Auto-starts the player if not already playing.
         """
         if not self.is_playing:
-            logger.warning("⚠️ Cannot add audio chunk - player not playing")
-            return
+            logger.info("🔊 Auto-starting audio player for incoming Gemini chunk")
+            self.start()
         
         try:
-            # Convert bytes to numpy array
             audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
-            
-            # Add to queue (non-blocking)
             self.audio_queue.put_nowait(audio_array)
-            logger.debug(f"📥 Added {len(audio_array)} samples to queue")
-            
+            if self._chunks_played == 0 and self.audio_queue.qsize() == 1:
+                logger.info(f"📥 First Gemini audio chunk queued: {len(audio_array)} samples")
+            else:
+                logger.debug(f"📥 Added {len(audio_array)} samples to queue (qsize={self.audio_queue.qsize()})")
         except queue.Full:
             logger.warning("⚠️ Audio queue full - dropping chunk")
         except Exception as e:
@@ -175,73 +180,73 @@ class StreamingAudioPlayer:
             )
             
             self.stream.start()
-            logger.info("🔊 Audio stream opened")
+            logger.info(f"🔊 Audio stream opened (rate={self.sample_rate}, blocksize={self.blocksize}, device={self.device})")
             
             # Keep thread alive while playing
             while self.is_playing:
-                threading.Event().wait(0.1)
+                threading.Event().wait(0.5)
+                # Periodic status log
+                if self._chunks_played > 0 and self._chunks_played % 50 == 0:
+                    logger.info(f"🔊 Audio player: {self._chunks_played} chunks played, qsize={self.audio_queue.qsize()}")
             
         except Exception as e:
             logger.error(f"❌ Audio playback error: {e}")
             self.is_playing = False
         finally:
-            if self.stream:
-                self.stream.stop()
-                self.stream.close()
-                self.stream = None
+            stream = self.stream
+            self.stream = None
+            if stream:
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception as e:
+                    logger.debug(f"Stream cleanup in _playback_loop: {e}")
     
     def _audio_callback(self, outdata, frames, time_info, status):
         """
         Audio callback for sounddevice stream.
         
-        Args:
-            outdata: Output buffer to fill
-            frames: Number of frames to output
-            time_info: Timing info (unused)
-            status: Stream status (check for errors)
+        Runs in audio thread — must be fast, no blocking, no logging.
         """
         if status:
             logger.warning(f"⚠️ Audio stream status: {status}")
         
         # Check for interruption
         if self.is_interrupted:
-            outdata.fill(0)  # Output silence
+            outdata.fill(0)
             return
         
         # Get audio from queue
         try:
-            # Try to get multiple chunks to fill buffer
             audio_data = np.array([], dtype=np.int16)
             
             while len(audio_data) < frames and not self.audio_queue.empty():
                 chunk = self.audio_queue.get_nowait()
                 audio_data = np.concatenate([audio_data, chunk])
             
-            # Fill output buffer
             if len(audio_data) >= frames:
-                # We have enough data
                 outdata[:] = audio_data[:frames].reshape(-1, self.channels)
+                self._silence_count = 0
+                self._chunks_played += 1
                 
                 # Put back remaining data
                 if len(audio_data) > frames:
                     remaining = audio_data[frames:]
                     self.audio_queue.put_nowait(remaining)
             else:
-                # Not enough data - output what we have + silence
+                # Not enough data — pad with silence
                 if len(audio_data) > 0:
                     outdata[:len(audio_data)] = audio_data.reshape(-1, self.channels)
                     outdata[len(audio_data):].fill(0)
+                    self._silence_count = 0
+                    self._chunks_played += 1
                 else:
-                    # No data - output silence
                     outdata.fill(0)
-                    
-                    # Stop playback if queue is empty and not interrupted
-                    if self.audio_queue.empty() and not self.is_interrupted:
-                        self.is_playing = False
+                    self._silence_count += 1
         
         except queue.Empty:
-            # Queue empty - output silence
             outdata.fill(0)
+            self._silence_count += 1
         except Exception as e:
             logger.error(f"❌ Audio callback error: {e}")
             outdata.fill(0)

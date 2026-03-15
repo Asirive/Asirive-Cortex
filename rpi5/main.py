@@ -1080,6 +1080,7 @@ class CortexSystem:
 
             def _on_gemini_audio(audio_bytes: bytes):
                 """Callback: play Gemini audio responses via StreamingAudioPlayer."""
+                logger.info(f"🔊 [AUDIO PIPELINE] Gemini→Player: {len(audio_bytes)} bytes, player_playing={self.gemini_audio_player.is_playing if self.gemini_audio_player else 'N/A'}")
                 if self.gemini_audio_player:
                     self.gemini_audio_player.add_audio_chunk(audio_bytes)
 
@@ -1971,6 +1972,7 @@ class CortexSystem:
                             context_str = "\n".join(context_parts)
                             # Send video frame + explicit narration prompt to Gemini
                             if self.layer2 and self.layer2.is_running:
+                                logger.info(f"🎙️ [SCENE] Sending to Gemini — handler.connected={self.layer2.handler.is_connected}")
                                 # Ensure audio player is ready for Gemini's response
                                 if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
                                     self.gemini_audio_player.start()
@@ -2432,6 +2434,8 @@ class CortexSystem:
             and self.layer2.is_running):
             logger.info("🔇 Gemini Live active — forwarding as text+video: "
                         f"'{query[:60]}'")
+            logger.info(f"🔊 [AUDIO PIPELINE] handler.is_connected={self.layer2.handler.is_connected}, "
+                        f"player.is_playing={self.gemini_audio_player.is_playing if self.gemini_audio_player else 'N/A'}")
             # Ensure audio player is ready to receive Gemini's response
             if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
                 self.gemini_audio_player.start()
