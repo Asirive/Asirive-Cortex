@@ -57,7 +57,7 @@ def load_config(config_path: str = None) -> Dict[str, Any]:
         },
         'layer2': {
             'gemini_api_key': os.getenv('GEMINI_API_KEY', ''),
-            'model': 'gemini-2.0-flash-exp',
+            'model': 'gemini-2.5-flash-native-audio-preview-12-2025',
             'enable_live_api': True
         },
         'camera': {
@@ -84,11 +84,17 @@ def load_config(config_path: str = None) -> Dict[str, Any]:
         # Override Supabase credentials from environment variables
         if 'supabase' in config:
             env_url = os.getenv('SUPABASE_URL', '')
-            env_key = os.getenv('SUPABASE_ANON_KEY', '')
+            env_key = os.getenv('SUPABASE_ANON_KEY', '') or os.getenv('SUPABASE_KEY', '')
             if env_url:
                 config['supabase']['url'] = env_url
             if env_key:
                 config['supabase']['anon_key'] = env_key
+
+        # Override Gemini API key from environment variable
+        if 'layer2' in config:
+            env_gemini = os.getenv('GEMINI_API_KEY', '')
+            if env_gemini:
+                config['layer2']['gemini_api_key'] = env_gemini
 
         # M27: Resolve relative paths against project root so cwd doesn't matter
         project_root = Path(__file__).parent.parent.parent  # ProjectCortex/

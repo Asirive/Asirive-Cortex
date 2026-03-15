@@ -99,7 +99,7 @@ layer1:
 layer2:
   # Gemini API Configuration
   gemini_api_key: "YOUR_GEMINI_API_KEY"  # TODO: Add your API key
-  model: "gemini-2.0-flash-exp"  # Model for Gemini Live API
+  model: "gemini-2.5-flash-native-audio-preview-12-2025"  # Model for Gemini Live API (native audio)
 
   # Live API (WebSocket)
   enable_live_api: true  # Use Gemini Live API (audio-to-audio)
@@ -160,6 +160,21 @@ layer3:
     turn_announce_distance_m: 25     # Announce turns this far ahead
     nav_loop_hz: 10                  # Navigation update frequency
     voice_cooldown_s: 5              # Minimum seconds between voice announcements
+
+    # Saved Locations — used as origin when GPS is unavailable (indoor)
+    # Set default: true on the location you're most often at.
+    # Add aliases for natural speech matching ("grandma" → "Grandma's House")
+    saved_locations:
+      - name: "Home"
+        address: "9 Canberra Drive, Singapore"
+        aliases: ["my house", "my place", "house"]
+        default: true
+      - name: "Relative's House"
+        address: "311 Canberra Road, Singapore"
+        aliases: ["relative", "auntie", "uncle", "relative house"]
+      - name: "School"
+        address: ""   # TODO: fill in school address
+        aliases: ["class", "campus"]
 
   # Bus Handler Configuration (LTA DataMall)
   bus:
@@ -245,6 +260,8 @@ sensors:
     port: "/dev/ttyAMA0"   # Primary UART on RPi5
     baudrate: 9600          # NEO-6M / GT-U7 default baud rate
     timeout: 1.0            # Serial read timeout (seconds)
+    phone_gps_enabled: true # Phone browser GPS as fallback
+    phone_gps_port: 8766    # WebSocket port for phone GPS
 
   # IMU (BNO055) — I2C
   # Wire: SDA → GPIO2 (Pin 3), SCL → GPIO3 (Pin 5)

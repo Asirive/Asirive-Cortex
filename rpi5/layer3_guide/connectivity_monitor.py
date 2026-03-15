@@ -82,6 +82,8 @@ class ConnectivityMonitor:
 
     async def _check_loop(self):
         """Main monitoring loop — checks every N seconds."""
+        # Grace period: let system fully boot before announcing status
+        await asyncio.sleep(15.0)
         while self._running:
             try:
                 await self._measure()

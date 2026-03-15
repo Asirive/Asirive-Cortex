@@ -391,6 +391,9 @@ class RPi5Client(AsyncWebSocketClient):
         battery_percent: float = None,
         temperature: float = None,
         inference_time_ms: float = None,
+        ram_mb: int = None,
+        active_layers: list = None,
+        current_mode: str = None,
     ):
         """
         Send system metrics to laptop.
@@ -402,6 +405,9 @@ class RPi5Client(AsyncWebSocketClient):
             battery_percent: Battery level (if available)
             temperature: CPU temperature (if available)
             inference_time_ms: Last inference time
+            ram_mb: RAM used in MB (optional)
+            active_layers: List of active layers (optional)
+            current_mode: Current operating mode (optional)
         """
         metrics = SystemMetrics(
             fps=fps,
@@ -475,11 +481,16 @@ class RPi5Client(AsyncWebSocketClient):
         longitude: float,
         altitude: float = None,
         accuracy: float = None,
+        speed_kmh: float = None,
+        heading: float = None,
+        fix_quality: int = None,
+        satellites: int = None,
         accelerometer: list = None,
         gyroscope: list = None,
         magnetometer: list = None,
         euler: list = None,
         calibration: list = None,
+        environment: str = None,
     ):
         """
         Send GPS + IMU sensor data to laptop dashboard.
@@ -489,11 +500,16 @@ class RPi5Client(AsyncWebSocketClient):
             longitude: GPS longitude (decimal degrees)
             altitude: GPS altitude in metres (optional)
             accuracy: GPS accuracy / HDOP (optional)
+            speed_kmh: GPS speed in km/h (optional)
+            heading: GPS heading in degrees (optional)
+            fix_quality: GPS fix quality 0-2 (optional)
+            satellites: Number of satellites (optional)
             accelerometer: [x, y, z] m/s² (optional)
             gyroscope: [x, y, z] deg/s (optional)
             magnetometer: [x, y, z] µT (optional)
             euler: [heading, roll, pitch] degrees (optional)
             calibration: [sys, gyro, accel, mag] 0-3 (optional)
+            environment: 'indoor', 'outdoor', or 'unknown' (optional)
         """
         gps = GPSData(
             latitude=latitude,
@@ -512,6 +528,20 @@ class RPi5Client(AsyncWebSocketClient):
             )
 
         msg = create_gps_imu(self.device_id, gps, imu)
+
+        # Inject extra GPS fields and environment into the payload
+        if msg and hasattr(msg, 'data') and isinstance(msg.data, dict):
+            if 'gps' in msg.data:
+                if speed_kmh is not None:
+                    msg.data['gps']['speed_kmh'] = speed_kmh
+                if heading is not None:
+                    msg.data['gps']['heading'] = heading
+                if fix_quality is not None:
+                    msg.data['gps']['fix_quality'] = fix_quality
+                if satellites is not None:
+                    msg.data['gps']['satellites'] = satellites
+            if environment is not None:
+                msg.data['environment'] = environment
 
         if self._async_loop:
             import asyncio

@@ -96,8 +96,8 @@ class HapticController:
             except Exception as e:
                 logger.error(f"❌ Haptic control failed: {e}")
         else:
-            # Mock mode (laptop)
-            logger.info(f"🔊 [MOCK] Haptic: CONTINUOUS ({intensity}%)")
+            # Mock mode (laptop) — debug level to avoid log spam
+            logger.debug(f"🔊 [MOCK] Haptic: CONTINUOUS ({intensity}%)")
     
     def pulse(
         self,
@@ -125,7 +125,7 @@ class HapticController:
             threading.Thread(target=_do_pulse, daemon=True).start()
         else:
             # Mock mode (laptop)
-            logger.info(f"🔊 [MOCK] Haptic: PULSE ({intensity}%, {duration}s)")
+            logger.debug(f"🔊 [MOCK] Haptic: PULSE ({intensity}%, {duration}s)")
     
     def stop(self) -> None:
         """Stop all vibration."""

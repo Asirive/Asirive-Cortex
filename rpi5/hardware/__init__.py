@@ -16,12 +16,14 @@ adafruit-circuitpython-bno055 not installed).
 """
 
 from .gps_handler import GPSHandler, GPSFix
+from .fused_gps import FusedGPSHandler
 from .imu_handler import IMUHandler, IMUReading
 from .button_handler import ButtonHandler
 
 __all__ = [
     "GPSHandler",
     "GPSFix",
+    "FusedGPSHandler",
     "IMUHandler",
     "IMUReading",
     "ButtonHandler",

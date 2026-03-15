@@ -148,11 +148,19 @@ except ImportError as e:
     YOLOEMode = None
 
 try:
-    from rpi5.layer2_thinker.gemini_live_handler import GeminiLiveHandler
+    from rpi5.layer2_thinker.gemini_live_handler import GeminiLiveHandler, GeminiLiveManager
     logger.info("[DEBUG] ✅ Layer 2 (Thinker) imported successfully")
 except ImportError as e:
     logger.error(f"[DEBUG] ❌ Layer 2 (Thinker) import failed: {e}")
     GeminiLiveHandler = None
+    GeminiLiveManager = None
+
+try:
+    from rpi5.layer2_thinker.streaming_audio_player import StreamingAudioPlayer
+    logger.info("[DEBUG] ✅ StreamingAudioPlayer imported successfully")
+except ImportError as e:
+    logger.warning(f"[DEBUG] ⚠️ StreamingAudioPlayer import failed: {e}")
+    StreamingAudioPlayer = None
 
 try:
     from rpi5.layer3_guide.router import IntentRouter
@@ -273,20 +281,26 @@ except ImportError as e:
     HailoOCRPipeline = None
 
 try:
-    from rpi5.hardware import GPSHandler, IMUHandler, ButtonHandler
+    from rpi5.hardware import GPSHandler, FusedGPSHandler, IMUHandler, ButtonHandler
     logger.info("[DEBUG] ✅ Hardware peripherals (GPS, IMU, Button) imported successfully")
 except ImportError as e:
     logger.warning(f"[DEBUG] ⚠️ Hardware peripherals import failed: {e}")
     GPSHandler = None
+    FusedGPSHandler = None
     IMUHandler = None
     ButtonHandler = None
 
 try:
-    from rpi5.layer3_guide.navigation_engine import NavigationEngine
+    from rpi5.layer3_guide.navigation_engine import NavigationEngine, NavState
     logger.info("[DEBUG] ✅ NavigationEngine imported successfully")
 except ImportError as e:
     logger.warning(f"[DEBUG] ⚠️ NavigationEngine import failed: {e}")
     NavigationEngine = None
+
+try:
+    from rpi5.layer3_guide.saved_locations import SavedLocations
+except ImportError:
+    SavedLocations = None
 
 try:
     from rpi5.layer3_guide.bus_handler import BusHandler
@@ -377,6 +391,16 @@ class StatusDisplay:
         self._fps = 0.0
         self._mode = "DEV"
         
+        # GPS/IMU state
+        self._gps_fix_quality = -1  # -1 = no module, 0 = no fix, 1+ = fix
+        self._gps_satellites = 0
+        self._gps_lat = 0.0
+        self._gps_lon = 0.0
+        self._gps_source = ""  # "m8u", "phone", or ""
+        self._imu_heading = 0.0
+        self._imu_calibration = [0, 0, 0, 0]  # sys, gyro, accel, mag
+        self._environment = "unknown"
+        
         # Rich console and live display - use shared console to prevent logging interference
         self._console = _rich_console  # Use the module-level shared console
         self._live = None
@@ -441,6 +465,34 @@ class StatusDisplay:
         """Update mode display (thread-safe)."""
         with self._lock:
             self._mode = mode
+        self._refresh()
+    
+    def update_gps(self, gps_fix, environment: str = "unknown", source: str = ""):
+        """Update GPS display (thread-safe)."""
+        with self._lock:
+            self._environment = environment
+            self._gps_source = source
+            if gps_fix:
+                self._gps_fix_quality = getattr(gps_fix, 'fix_quality', 1)
+                self._gps_satellites = getattr(gps_fix, 'satellites', 0)
+                self._gps_lat = getattr(gps_fix, 'latitude', 0.0)
+                self._gps_lon = getattr(gps_fix, 'longitude', 0.0)
+            else:
+                self._gps_fix_quality = 0
+                self._gps_satellites = 0
+        self._refresh()
+    
+    def update_imu(self, imu_reading):
+        """Update IMU display (thread-safe)."""
+        with self._lock:
+            if imu_reading:
+                self._imu_heading = getattr(imu_reading, 'heading', 0.0)
+                self._imu_calibration = [
+                    getattr(imu_reading, 'cal_system', 0),
+                    getattr(imu_reading, 'cal_gyro', 0),
+                    getattr(imu_reading, 'cal_accel', 0),
+                    getattr(imu_reading, 'cal_mag', 0),
+                ]
         self._refresh()
     
     def _format_classes(self, classes: List[str], max_show: int = 8) -> str:
@@ -516,6 +568,39 @@ class StatusDisplay:
                 table.add_row(row1)
                 table.add_row(row2)
                 table.add_row(row3)
+                
+                # Row 4: GPS status
+                row4 = Text()
+                row4.append("GPS:         ", style="bold green")
+                if self._gps_fix_quality < 0:
+                    row4.append("NO MODULE", style="dim")
+                elif self._gps_fix_quality == 0:
+                    row4.append("NO FIX", style="bold red")
+                    row4.append(f"  sats: {self._gps_satellites}", style="dim")
+                else:
+                    fix_label = "3D FIX" if self._gps_fix_quality >= 2 else "GPS FIX"
+                    row4.append(fix_label, style="bold green")
+                    row4.append(f"  sats: {self._gps_satellites}", style="white")
+                    row4.append(f"  ({self._gps_lat:.5f}, {self._gps_lon:.5f})", style="dim")
+                env_color = "cyan" if self._environment == "indoor" else "yellow" if self._environment == "outdoor" else "dim"
+                row4.append(f"  [{self._environment}]", style=env_color)
+                if self._gps_source:
+                    src_color = "green" if self._gps_source == "m8u" else "yellow"
+                    row4.append(f"  src:{self._gps_source}", style=src_color)
+                
+                # Row 5: IMU status
+                row5 = Text()
+                row5.append("IMU:         ", style="bold blue")
+                cal = self._imu_calibration
+                if any(c > 0 for c in cal):
+                    row5.append(f"hdg: {self._imu_heading:.0f}°", style="bold white")
+                    cal_color = "green" if cal[0] == 3 else "yellow" if cal[0] >= 1 else "red"
+                    row5.append(f"  cal: S{cal[0]} G{cal[1]} A{cal[2]} M{cal[3]}", style=cal_color)
+                else:
+                    row5.append("NO DATA", style="dim")
+                
+                table.add_row(row4)
+                table.add_row(row5)
                 
                 return Panel(
                     table,
@@ -605,12 +690,32 @@ class CameraHandler:
         try:
             # Optimizations for Module 3 Wide (IMX708)
             # 1. Force Wide Tuning File for LSC/Color Correction
-            # This ensures we don't get dark corners or weird colors
-            os.environ["LIBCAMERA_RPI_TUNING_FILE"] = "/usr/share/libcamera/ipa/rpi/vc4/imx708_wide.json"
+            # RPi5 uses the PiSP backend; RPi4 uses vc4. Auto-detect.
+            tuning_file_path = None
+            for backend in ("pisp", "vc4"):
+                tuning_path = f"/usr/share/libcamera/ipa/rpi/{backend}/imx708_wide.json"
+                if os.path.exists(tuning_path):
+                    tuning_file_path = tuning_path
+                    logger.info(f"✅ IMX708 Wide tuning file found: {tuning_path}")
+                    break
+            else:
+                logger.warning("⚠️ IMX708 wide tuning file not found, using libcamera auto-detect")
             
             from picamera2 import Picamera2
 
-            self.camera = Picamera2(self.camera_id)
+            # Load tuning file properly via Picamera2 API (more reliable than env var)
+            if tuning_file_path:
+                tuning = Picamera2.load_tuning_file(tuning_file_path)
+                self.camera = Picamera2(self.camera_id, tuning=tuning)
+                logger.info(f"✅ Picamera2 initialized with explicit tuning: {tuning_file_path}")
+            else:
+                self.camera = Picamera2(self.camera_id)
+                logger.info("✅ Picamera2 initialized with auto-detected tuning")
+            
+            # Log camera model info 
+            cam_info = self.camera.camera_properties
+            logger.info(f"📷 Camera model: {cam_info.get('Model', 'unknown')}, "
+                        f"Rotation: {cam_info.get('Rotation', 'N/A')}")
             
             # 2. Use Video Configuration (Better for high FPS/continuous than preview)
             config = self.camera.create_video_configuration(
@@ -626,6 +731,7 @@ class CameraHandler:
             try:
                 self.camera.set_controls({
                     "AfMode": 2,
+                    "AfSpeed": 1,       # Fast AF
                     "AeEnable": True,
                     "AwbEnable": True,
                     "AwbMode": 0,       # Auto — let ISP pick CCM from tuning file
@@ -635,6 +741,22 @@ class CameraHandler:
                 logger.warning(f"⚠️ Could not set Camera Controls: {e}")
 
             self.camera.start()
+            
+            # 4. Give AWB/AE time to converge, then log actual gains
+            import time as _time
+            _time.sleep(1.0)  # Let ISP settle for 1 second
+            try:
+                metadata = self.camera.capture_metadata()
+                colour_gains = metadata.get("ColourGains", "N/A")
+                exposure_time = metadata.get("ExposureTime", "N/A")
+                analogue_gain = metadata.get("AnalogueGain", "N/A")
+                lux = metadata.get("Lux", "N/A")
+                colour_temp = metadata.get("ColourTemperature", "N/A")
+                logger.info(f"📷 AWB settled → ColourGains={colour_gains}, "
+                            f"ColourTemp={colour_temp}K, Lux={lux}, "
+                            f"Exposure={exposure_time}µs, Gain={analogue_gain}")
+            except Exception as e:
+                logger.debug(f"Could not read camera metadata: {e}")
 
             # Start capture thread
             self.capture_thread = threading.Thread(
@@ -661,7 +783,12 @@ class CameraHandler:
                         logger.info("✅ System libcamera/picamera2 found and loaded!")
                         # If successful, re-attempt starting picamera with the NEWLY loaded module
                         # We must re-instantiate because the class object might have come from the broken module
-                        self.camera = picamera2.Picamera2(self.camera_id)
+                        # Load tuning file if available
+                        if tuning_file_path:
+                            tuning = picamera2.Picamera2.load_tuning_file(tuning_file_path)
+                            self.camera = picamera2.Picamera2(self.camera_id, tuning=tuning)
+                        else:
+                            self.camera = picamera2.Picamera2(self.camera_id)
                         
                         # Re-apply config
                         config = self.camera.create_video_configuration(
@@ -671,6 +798,7 @@ class CameraHandler:
                         self.camera.configure(config)
                         self.camera.set_controls({
                             "AfMode": 2,
+                            "AfSpeed": 1,
                             "AeEnable": True,
                             "AwbEnable": True,
                             "AwbMode": 0,
@@ -826,6 +954,9 @@ class CortexSystem:
         self._last_battery_check = 0.0
         self._camera_blocked_since = 0.0  # Timestamp when dark frames started
         self._camera_blocked_warned = False
+        self._last_env_check = 0.0  # Environment classification timestamp
+        self._last_gemini_frame_time = 0.0  # Last time we sent a frame to Gemini
+        self._last_gemini_context_time = 0.0  # Last time we sent context to Gemini
 
         # Initialize Layer 4: Memory Manager (Hybrid)
         logger.info("[DEBUG] ===== LAYER 4 INITIALIZATION START =====")
@@ -925,16 +1056,44 @@ class CortexSystem:
             logger.warning("⚠️  Layer 1 not available")
         logger.info("[DEBUG] ===== LAYER 1 INITIALIZATION COMPLETE =====")
 
-        # Initialize Layer 2: Thinker (Gemini Live API)
+        # Initialize Layer 2: Thinker (Gemini Live API via Manager)
         logger.info("[DEBUG] ===== LAYER 2 INITIALIZATION START =====")
-        if GeminiLiveHandler:
-            logger.info("🧠 Initializing Layer 2: Thinker...")
+        self.gemini_audio_player = None
+        if GeminiLiveManager:
+            logger.info("🧠 Initializing Layer 2: Thinker (GeminiLiveManager)...")
             layer2_cfg = self.config.get('layer2', {})
+            api_key = os.environ.get('GEMINI_API_KEY', layer2_cfg.get('gemini_api_key', ''))
             logger.info(f"[DEBUG] Layer 2 config: api_key={'*' * 10} (hidden)")
-            self.layer2 = GeminiLiveHandler(
-                api_key=layer2_cfg.get('gemini_api_key', '')
+
+            # Initialize streaming audio player for Gemini output
+            if StreamingAudioPlayer:
+                try:
+                    self.gemini_audio_player = StreamingAudioPlayer(
+                        sample_rate=24000,  # Gemini Live API outputs 24kHz PCM
+                        channels=1,
+                        blocksize=4800,     # 200ms blocks
+                    )
+                    logger.info("✅ StreamingAudioPlayer initialized for Gemini output")
+                except Exception as e:
+                    logger.warning(f"⚠️ StreamingAudioPlayer init failed: {e}")
+                    self.gemini_audio_player = None
+
+            def _on_gemini_audio(audio_bytes: bytes):
+                """Callback: play Gemini audio responses via StreamingAudioPlayer."""
+                if self.gemini_audio_player:
+                    self.gemini_audio_player.add_audio_chunk(audio_bytes)
+
+            self.layer2 = GeminiLiveManager(
+                api_key=api_key,
+                audio_callback=_on_gemini_audio,
             )
-            logger.info("✅ Layer 2 initialized")
+            logger.info("✅ Layer 2 initialized (GeminiLiveManager)")
+        elif GeminiLiveHandler:
+            logger.info("🧠 Initializing Layer 2: Thinker (GeminiLiveHandler fallback)...")
+            layer2_cfg = self.config.get('layer2', {})
+            api_key = os.environ.get('GEMINI_API_KEY', layer2_cfg.get('gemini_api_key', ''))
+            self.layer2 = GeminiLiveHandler(api_key=api_key)
+            logger.info("✅ Layer 2 initialized (fallback)")
         else:
             self.layer2 = None
             logger.warning("⚠️  Layer 2 not available")
@@ -1015,13 +1174,12 @@ class CortexSystem:
         )
         self.voice_coordinator.initialize()
 
-        # Wire GeminiLiveHandler into voice pipeline (audio-to-audio path).
+        # Wire GeminiLiveManager into voice pipeline (audio-to-audio path).
         # When VAD captures a speech segment the raw PCM is forwarded to
-        # layer2.send_audio_chunk so Gemini Live can process it in parallel
-        # with the Whisper STT path.
+        # layer2 so Gemini Live can process it in parallel with Whisper STT.
         if self.layer2 is not None:
             self.voice_coordinator.on_raw_audio = self._forward_audio_to_gemini
-            logger.info("✅ GeminiLiveHandler wired into voice pipeline (audio-to-audio)")
+            logger.info("✅ Gemini Live wired into voice pipeline (audio-to-audio)")
 
         # Initialize Bluetooth Manager (will be connected in start() if configured)
         self.bt_manager = None
@@ -1059,20 +1217,27 @@ class CortexSystem:
         # =====================================================
         sensor_cfg = self.config.get('sensors', {})
 
-        # GPS Handler
-        self.gps = None  # type: Optional[GPSHandler]
+        # GPS Handler (FusedGPS = M8U hardware + phone browser fallback)
+        self.gps = None  # type: Optional[FusedGPSHandler]
         gps_cfg = sensor_cfg.get('gps', {})
-        if GPSHandler and gps_cfg.get('enabled', False):
+        if GPSHandler and FusedGPSHandler and gps_cfg.get('enabled', False):
             try:
-                self.gps = GPSHandler(
+                hw_gps = GPSHandler(
                     port=gps_cfg.get('port', '/dev/ttyAMA0'),
                     baudrate=gps_cfg.get('baudrate', 9600),
                     timeout=gps_cfg.get('timeout', 1.0),
                 )
+                phone_gps_port = gps_cfg.get('phone_gps_port', 8766)
+                phone_gps_enabled = gps_cfg.get('phone_gps_enabled', True)
+                self.gps = FusedGPSHandler(
+                    gps_handler=hw_gps,
+                    phone_gps_port=phone_gps_port,
+                    phone_gps_enabled=phone_gps_enabled,
+                )
                 # Wire GPS into Navigator so get_gps_location() returns real data
                 if self.navigator and hasattr(self.navigator, 'set_gps_handler'):
                     self.navigator.set_gps_handler(self.gps)
-                logger.info("✅ GPS Handler initialized (will start in start())")
+                logger.info("✅ Fused GPS initialized (M8U + Phone fallback, will start in start())")
             except Exception as e:
                 logger.error(f"❌ Failed to init GPS: {e}")
                 self.gps = None
@@ -1116,6 +1281,12 @@ class CortexSystem:
         # =====================================================
         nav_cfg = self.config.get('layer3', {}).get('navigation', {})
         self.nav_engine = None
+        self._pending_destination = None  # Queued destination when no GPS fix
+        self._awaiting_origin = None  # Destination saved while asking user for origin
+        self.saved_locations = None
+        if SavedLocations:
+            locations_cfg = nav_cfg.get('saved_locations', [])
+            self.saved_locations = SavedLocations(locations_cfg)
         if NavigationEngine:
             try:
                 spatial_audio = self.navigator.spatial_audio if self.navigator and hasattr(self.navigator, 'spatial_audio') else None
@@ -1127,6 +1298,7 @@ class CortexSystem:
                     tts=self.tts,
                     on_arrival=self._on_nav_arrival,
                     on_mode_change=self._on_nav_mode_change,
+                    on_nav_event=self._on_nav_event_gemini,
                 )
                 logger.info("✅ NavigationEngine initialized")
             except Exception as e:
@@ -1158,9 +1330,16 @@ class CortexSystem:
         self.connectivity_monitor = None
         if ConnectivityMonitor:
             try:
+                # Pass the underlying handler if layer2 is a GeminiLiveManager
+                gemini_handler_ref = None
+                if self.layer2:
+                    if hasattr(self.layer2, 'handler'):
+                        gemini_handler_ref = self.layer2.handler  # GeminiLiveManager
+                    else:
+                        gemini_handler_ref = self.layer2  # Direct GeminiLiveHandler
                 self.connectivity_monitor = ConnectivityMonitor(
                     ws_client=self.ws_client,
-                    gemini_handler=self.layer2,
+                    gemini_handler=gemini_handler_ref,
                     tts=self.tts,
                 )
                 logger.info("✅ ConnectivityMonitor initialized")
@@ -1293,20 +1472,21 @@ class CortexSystem:
 
     def _forward_audio_to_gemini(self, pcm_bytes: bytes, sample_rate: int) -> None:
         """
-        Forward raw PCM audio to GeminiLiveHandler (audio-to-audio path).
+        Forward raw PCM audio to GeminiLiveManager (audio-to-audio path).
         Called by VoiceCoordinator.on_raw_audio for every captured speech segment.
         Also sends the latest camera frame so Gemini has visual context.
         """
-        if not self.layer2:
+        if not self.layer2 or not self.layer2.is_running:
             return
         try:
-            run_async_safe(self.layer2.send_audio_chunk(pcm_bytes, sample_rate))
-            # Optionally send current video frame for multimodal context
+            # GeminiLiveManager.send_audio() is thread-safe (no async needed)
+            self.layer2.send_audio(pcm_bytes, sample_rate)
+            # Send current video frame for multimodal context
             frame = self.camera.get_frame() if self.camera else None
             if frame is not None:
                 from PIL import Image
                 pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                run_async_safe(self.layer2.send_video_frame(pil_frame))
+                self.layer2.send_video(pil_frame)
         except Exception as e:
             logger.debug(f"GeminiLive audio forward error: {e}")
 
@@ -1497,6 +1677,25 @@ class CortexSystem:
         except Exception as e:
             logger.debug(f"Nav mode change error: {e}")
 
+    def _on_nav_event_gemini(self, event: str, details: dict):
+        """
+        Forward navigation events to Gemini Live as [NAV_EVENT] context messages.
+        Called by NavigationEngine.on_nav_event at key navigation moments.
+        """
+        if not self.layer2 or not self.layer2.is_running:
+            return
+        try:
+            # Build event message for Gemini
+            detail_parts = [f"{k}={v}" for k, v in details.items() if v]
+            detail_str = ", ".join(detail_parts) if detail_parts else ""
+            msg = f"[NAV_EVENT] {event}"
+            if detail_str:
+                msg += f" | {detail_str}"
+            self.layer2.send_text(msg)
+            logger.info(f"🧭➡️🤖 Gemini nav event: {event} ({detail_str})")
+        except Exception as e:
+            logger.debug(f"Nav event Gemini forward error: {e}")
+
     def start(self):
         """Start main system loop"""
         logger.info("🚀 Starting ProjectCortex v2.0...")
@@ -1538,11 +1737,12 @@ class CortexSystem:
             api_key = os.getenv("GEMINI_API_KEY", "")
             if api_key and not api_key.startswith("YOUR_"):
                 try:
-                    result = run_async_safe(self.layer2.connect())
-                    if result is False:
-                        logger.warning("⚠️ Gemini Live API connection returned False")
-                    else:
-                        logger.info("✅ Gemini Live API connected")
+                    # GeminiLiveManager.start() launches background thread (non-blocking)
+                    self.layer2.start()
+                    # Start audio player for Gemini output
+                    if self.gemini_audio_player:
+                        self.gemini_audio_player.start()
+                    logger.info("✅ Gemini Live API started (background thread)")
                 except Exception as e:
                     logger.warning(f"⚠️ Gemini Live API failed: {e}")
             else:
@@ -1562,13 +1762,10 @@ class CortexSystem:
         if self.button:
             self.button.start()
 
-        # Start bus handler (download bus stop DB if missing)
+        # BusHandler doesn't need start() — it uses start_monitoring(lat, lng)
+        # which is called on-demand when the user asks about buses
         if self.bus_handler:
-            try:
-                run_async_safe(self.bus_handler.start())
-                logger.info("✅ BusHandler started")
-            except Exception as e:
-                logger.warning(f"⚠️ BusHandler start failed: {e}")
+            logger.info("✅ BusHandler ready (will activate on bus query)")
 
         # Start connectivity monitor
         if self.connectivity_monitor:
@@ -1663,6 +1860,20 @@ class CortexSystem:
                             hazards = self.depth_estimator.analyze_hazards(
                                 depth_map, all_detections, frame.shape
                             )
+
+                            # Classify indoor/outdoor every ~5 seconds
+                            # GPS = primary signal (fix → outdoor), depth map = fallback
+                            now_env = time.time()
+                            if now_env - self._last_env_check > 5.0:
+                                self._last_env_check = now_env
+                                if self.gps and self.gps.has_fix:
+                                    is_indoor = False  # GPS fix = definitely outdoor
+                                else:
+                                    env = self.depth_estimator.classify_environment(depth_map)
+                                    is_indoor = (env == "indoor")
+                                self.depth_estimator.set_environment(is_indoor)
+                                if self.safety_monitor:
+                                    self.safety_monitor.set_environment(is_indoor)
                     except Exception as e:
                         logger.warning(f"Depth processing error: {e}")
 
@@ -1673,6 +1884,13 @@ class CortexSystem:
                             all_detections, hazards, depth_map, frame.shape
                         )
                         if alert:
+                            # Interrupt Gemini audio on Tier 1 alerts so safety sound is heard
+                            if alert.tier == 1 and self.gemini_audio_player:
+                                try:
+                                    self.gemini_audio_player.stop(interrupted=True)
+                                except Exception:
+                                    pass
+
                             # 3D-positioned warning sound
                             if self.navigator and alert.position_3d and hasattr(self.navigator, 'spatial_audio'):
                                 sa = self.navigator.spatial_audio
@@ -1717,7 +1935,7 @@ class CortexSystem:
                 # 2e. Bus handler: check YOLO for "bus" class
                 if self.bus_handler and all_detections:
                     try:
-                        run_async_safe(self.bus_handler.update_detections(all_detections))
+                        self.bus_handler.update_detections(all_detections)
                     except Exception as e:
                         logger.debug(f"Bus detection update error: {e}")
 
@@ -1751,13 +1969,86 @@ class CortexSystem:
                                 context_parts.append(f"[DEPTH] avg={avg_depth:.1f}m")
 
                             context_str = "\n".join(context_parts)
-                            # Send context to Gemini for proactive narration
-                            if hasattr(self.layer2, 'send_text'):
-                                run_async_safe(self.layer2.send_text(f"[CONTEXT]\n{context_str}"))
+                            # Send video frame + context to Gemini for proactive narration
+                            if self.layer2 and self.layer2.is_running:
+                                # Send current frame so Gemini can SEE what triggered the change
+                                if frame is not None:
+                                    from PIL import Image
+                                    pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                                    self.layer2.send_video(pil_frame)
+                                self.layer2.send_text(f"[CONTEXT]\n{context_str}")
                                 if self.scene_detector:
                                     self.scene_detector.record_speech()
                     except Exception as e:
                         logger.debug(f"Scene change detection error: {e}")
+
+                # 2g. Periodic video frame streaming to Gemini (1 FPS)
+                # Gemini needs continuous visual context to be an effective companion
+                if self.layer2 and self.layer2.is_running and frame is not None:
+                    now_vid = time.time()
+                    if now_vid - self._last_gemini_frame_time >= 1.0:
+                        self._last_gemini_frame_time = now_vid
+                        try:
+                            from PIL import Image
+                            pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                            self.layer2.send_video(pil_frame)
+                        except Exception as e:
+                            logger.debug(f"Periodic Gemini video send error: {e}")
+
+                # 2h. Periodic context injection to Gemini (every 5s)
+                if self.layer2 and self.layer2.is_running:
+                    now_ctx = time.time()
+                    if now_ctx - self._last_gemini_context_time >= 5.0:
+                        self._last_gemini_context_time = now_ctx
+                        try:
+                            ctx_parts = []
+                            # GPS position
+                            if self.gps:
+                                gps_fix = self.gps.get_fix() if hasattr(self.gps, 'get_fix') else None
+                                if gps_fix and hasattr(gps_fix, 'latitude') and gps_fix.latitude:
+                                    ctx_parts.append(
+                                        f"[GPS] {gps_fix.latitude:.6f}°N, {gps_fix.longitude:.6f}°E"
+                                        f" | sats={getattr(gps_fix, 'satellites', '?')}"
+                                        f" | speed={getattr(gps_fix, 'speed_kmh', 0):.1f}km/h"
+                                    )
+                                else:
+                                    ctx_parts.append("[GPS] No fix")
+                            # Navigation status
+                            if self.nav_engine:
+                                ctx_parts.append(self.nav_engine.get_context_string())
+                            # Bus handler status
+                            if self.bus_handler:
+                                bus_ctx = self.bus_handler.get_context_string()
+                                if bus_ctx:
+                                    ctx_parts.append(bus_ctx)
+                            # Mode
+                            mode = "PRIVACY" if self.privacy_mode else "PRODUCTION"
+                            ctx_parts.append(f"[MODE] {mode}")
+                            # Battery (if available via power monitor)
+                            try:
+                                battery_path = Path("/sys/class/power_supply/battery/capacity")
+                                if battery_path.exists():
+                                    battery_pct = battery_path.read_text().strip()
+                                    ctx_parts.append(f"[BATTERY] {battery_pct}%")
+                            except Exception:
+                                pass
+                            # Connectivity
+                            if self.connectivity_monitor:
+                                ctx_parts.append(f"[SIGNAL] {self.connectivity_monitor.level.name}")
+                            # Safety environment
+                            env_label = "indoor" if (self.depth_estimator and hasattr(self.depth_estimator, '_is_indoor') and self.depth_estimator._is_indoor) else "outdoor"
+                            ctx_parts.append(f"[ENV] {env_label}")
+                            # Visible objects summary
+                            if all_detections:
+                                det_summary = ", ".join(set(d.get('class', '?') for d in all_detections[:10]))
+                                ctx_parts.append(f"[VISIBLE] {det_summary}")
+                            if depth_map is not None:
+                                ctx_parts.append(f"[DEPTH] avg={float(depth_map.mean()):.1f}m")
+
+                            context_str = "\n".join(ctx_parts)
+                            self.layer2.send_text(f"[CONTEXT]\n{context_str}")
+                        except Exception as e:
+                            logger.debug(f"Periodic Gemini context injection error: {e}")
 
                 # 3. Send to laptop dashboard via ZMQ (Hybrid Architecture)
                 if self.video_streamer:
@@ -1779,11 +2070,16 @@ class CortexSystem:
                     loop_time = time.time() - loop_start
                     fps = 1.0 / loop_time if loop_time > 0 else 0
                     
+                    mem = psutil.virtual_memory()
                     self.ws_client.send_metrics(
                         fps=fps,
+                        ram_mb=int(mem.used / 1024 / 1024),
+                        ram_percent=mem.percent,
                         cpu_percent=psutil.cpu_percent(),
-                        ram_percent=psutil.virtual_memory().percent,
-                        temperature=self._get_cpu_temp()
+                        battery_percent=self._get_battery_percent(),
+                        temperature=self._get_cpu_temp(),
+                        active_layers=["layer0", "layer1"],
+                        current_mode="PRODUCTION" if not self.privacy_mode else "PRIVACY"
                     )
                     last_metrics_time = time.time()
 
@@ -1792,6 +2088,17 @@ class CortexSystem:
                     try:
                         gps_fix = self.gps.get_fix() if self.gps else None
                         imu_reading = self.imu.get_reading() if self.imu else None
+
+                        # Update TUI status display with sensor data
+                        if self.status_display:
+                            env_label = "unknown"
+                            if self.depth_estimator and hasattr(self.depth_estimator, '_is_indoor'):
+                                env_label = "indoor" if self.depth_estimator._is_indoor else "outdoor"
+                            gps_source = ""
+                            if hasattr(self.gps, 'active_source'):
+                                gps_source = self.gps.active_source or ""
+                            self.status_display.update_gps(gps_fix, environment=env_label, source=gps_source)
+                            self.status_display.update_imu(imu_reading)
 
                         # Bus proximity check (piggyback on GPS poll)
                         if gps_fix and self.bus_handler:
@@ -1802,17 +2109,62 @@ class CortexSystem:
                             except Exception as e:
                                 logger.debug(f"Bus proximity check error: {e}")
 
+                        # Auto-start pending navigation once GPS fix arrives
+                        if gps_fix and gps_fix.latitude != 0.0 and self._pending_destination and self.nav_engine:
+                            dest = self._pending_destination
+                            self._pending_destination = None  # Clear before async to avoid re-trigger
+                            origin = f"{gps_fix.latitude},{gps_fix.longitude}"
+                            logger.info(f"🧭 [NAV] GPS fix acquired — starting queued navigation to {dest} from {origin}")
+                            try:
+                                async def _start_deferred_nav():
+                                    success = await self.nav_engine.start_navigation(origin, dest)
+                                    if success:
+                                        route = self.nav_engine.route
+                                        if route and self.tts:
+                                            dist_str = f"{route.total_distance_m:.0f} meters"
+                                            dur_str = f"{route.total_duration_s / 60:.0f} minutes" if route.total_duration_s else ""
+                                            await self.tts.speak_async(f"GPS signal found. Route to {dest}: {dist_str}, {dur_str}. Follow the audio beam.")
+                                            logger.info(f"🧭 [NAV] Deferred route SUCCESS: {dest}")
+                                    elif self.tts:
+                                        await self.tts.speak_async(f"GPS signal found, but I couldn't find a walking route to {dest}.")
+                                        logger.warning(f"🧭 [NAV] Deferred route FAILED: {dest}")
+                                run_async_safe(_start_deferred_nav())
+                            except Exception as e:
+                                logger.error(f"🧭 [NAV] Deferred navigation error: {e}")
+
                         if gps_fix or imu_reading:
+                            # Determine current environment
+                            env_label = "unknown"
+                            if self.depth_estimator and hasattr(self.depth_estimator, '_is_indoor'):
+                                env_label = "indoor" if self.depth_estimator._is_indoor else "outdoor"
                             self.ws_client.send_gps_imu(
                                 latitude=gps_fix.latitude if gps_fix else 0.0,
                                 longitude=gps_fix.longitude if gps_fix else 0.0,
                                 altitude=gps_fix.altitude if gps_fix else None,
                                 accuracy=None,
+                                speed_kmh=gps_fix.speed_kmh if gps_fix else 0.0,
+                                heading=gps_fix.heading if gps_fix else 0.0,
+                                fix_quality=gps_fix.fix_quality if gps_fix else 0,
+                                satellites=gps_fix.satellites if gps_fix else 0,
                                 accelerometer=[imu_reading.accel_x, imu_reading.accel_y, imu_reading.accel_z] if imu_reading else None,
                                 gyroscope=[imu_reading.gyro_x, imu_reading.gyro_y, imu_reading.gyro_z] if imu_reading else None,
                                 magnetometer=[imu_reading.mag_x, imu_reading.mag_y, imu_reading.mag_z] if imu_reading else None,
                                 euler=[imu_reading.heading, imu_reading.roll, imu_reading.pitch] if imu_reading else None,
                                 calibration=[imu_reading.cal_system, imu_reading.cal_gyro, imu_reading.cal_accel, imu_reading.cal_mag] if imu_reading else None,
+                                environment=env_label,
+                            )
+                        else:
+                            # Always send status even without sensor data so dashboard stays updated
+                            env_label = "unknown"
+                            if self.depth_estimator and hasattr(self.depth_estimator, '_is_indoor'):
+                                env_label = "indoor" if self.depth_estimator._is_indoor else "outdoor"
+                            gps_receiving = self.gps.is_receiving if self.gps and hasattr(self.gps, 'is_receiving') else False
+                            self.ws_client.send_gps_imu(
+                                latitude=0.0,
+                                longitude=0.0,
+                                fix_quality=-1 if not gps_receiving else 0,
+                                satellites=0,
+                                environment=env_label,
                             )
                     except Exception as e:
                         logger.debug(f"Sensor streaming error: {e}")
@@ -2063,6 +2415,31 @@ class CortexSystem:
             logger.debug(f"Ignoring filler utterance: '{query}'")
             return
 
+        # ── Gemini Live dedup: if Gemini Live is active and handling audio,
+        #    skip old-pipeline TTS for layer2 queries to avoid double-speak.
+        #    Send text + video to Gemini so it knows what the user asked.
+        #    System commands (navigate, bus, privacy) still use old pipeline.
+        if (target_layer == "layer2"
+            and self.layer2
+            and hasattr(self.layer2, 'is_running')
+            and self.layer2.is_running):
+            logger.info("🔇 Gemini Live active — forwarding as text+video: "
+                        f"'{query[:60]}'")
+            # Ensure audio player is ready to receive Gemini's response
+            if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
+                self.gemini_audio_player.start()
+                logger.info("🔊 Auto-started Gemini audio player for response")
+            # Send the transcribed text so Gemini has a clear text version
+            self.layer2.send_text(f"[User voice command]: {query}")
+            # Send current video frame for visual context
+            if self.camera:
+                frame = self.camera.get_frame()
+                if frame is not None:
+                    from PIL import Image
+                    pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                    self.layer2.send_video(pil_frame)
+            return
+
         # ---- System-level commands (before routing/frame capture) ----
         query_lower = query.lower().strip()
 
@@ -2070,11 +2447,6 @@ class CortexSystem:
         if any(kw in query_lower for kw in ["privacy mode", "camera off", "turn off camera", "turn off the camera"]):
             self.privacy_mode = True
             self.camera.stop()
-            if self.gemini_handler and hasattr(self.gemini_handler, 'stop_video'):
-                try:
-                    await self.gemini_handler.stop_video()
-                except Exception:
-                    pass
             if self.tts:
                 await self.tts.speak_async(
                     "Camera off. Using sensors only. Say camera on to re-enable."
@@ -2108,6 +2480,78 @@ class CortexSystem:
             return
 
         response = ""
+
+        # =================================================================
+        # Pre-routing intercept: follow-up for pending navigation origin
+        # When _awaiting_origin is set, the user was asked "where are you?"
+        # Their reply (e.g. "home", "I'm at relative's house") may route to
+        # any layer, so we intercept here BEFORE the layer dispatch.
+        # =================================================================
+        if self._awaiting_origin and self.saved_locations:
+            location_input = query_lower
+            for prefix in ["i'm at ", "im at ", "i am at ", "at ", "from "]:
+                if location_input.startswith(prefix):
+                    location_input = location_input[len(prefix):]
+                    break
+
+            loc = self.saved_locations.resolve(location_input)
+            if loc and loc["address"]:
+                destination = self._awaiting_origin
+                self._awaiting_origin = None
+                origin_addr = loc["address"]
+                origin_name = loc["name"]
+                logger.info(f"📍 User said '{location_input}' → matched '{origin_name}' ({origin_addr})")
+                logger.info(f"🧭 [NAV] Follow-up resolved: origin='{origin_name}' ({origin_addr}), destination='{destination}'")
+                try:
+                    success = await self.nav_engine.start_navigation(origin_addr, destination)
+                    if success:
+                        route = self.nav_engine.route
+                        if route:
+                            dist_str = f"{route.total_distance_m:.0f} meters"
+                            dur_str = f"{route.total_duration_s / 60:.0f} minutes" if route.total_duration_s else ""
+                            response = f"You're at {origin_name}. Route to {destination}: {dist_str}, {dur_str}. Head outside and follow the audio beam."
+                        else:
+                            response = f"Navigation started from {origin_name} to {destination}. Head outside and follow the audio beam."
+                        logger.info(f"🧭 [NAV] Follow-up route SUCCESS: {response}")
+                    else:
+                        response = f"Sorry, I couldn't find a walking route from {origin_name} to {destination}."
+                        logger.warning(f"🧭 [NAV] Follow-up route FAILED: {origin_name} → {destination}")
+                except Exception as e:
+                    logger.error(f"🧭 [NAV] Navigation start error (follow-up): {e}")
+                    response = "Sorry, there was an error getting directions."
+                # TTS and return — skip normal layer routing
+                if response and self.tts:
+                    await self.tts.speak_async(response)
+                logger.info(f"✅ Voice command processed: '{response[:50]}...'")
+                return
+            elif location_input.strip():
+                # User gave a raw address string instead of a saved name
+                destination = self._awaiting_origin
+                self._awaiting_origin = None
+                origin_addr = query  # Use the raw query as address
+                logger.info(f"📍 User gave raw address: '{origin_addr}' → navigating to {destination}")
+                logger.info(f"🧭 [NAV] Follow-up raw address: origin='{origin_addr}', destination='{destination}'")
+                try:
+                    success = await self.nav_engine.start_navigation(origin_addr, destination)
+                    if success:
+                        route = self.nav_engine.route
+                        if route:
+                            dist_str = f"{route.total_distance_m:.0f} meters"
+                            dur_str = f"{route.total_duration_s / 60:.0f} minutes" if route.total_duration_s else ""
+                            response = f"Route to {destination}: {dist_str}, {dur_str}. Head outside and follow the audio beam."
+                        else:
+                            response = f"Navigation started to {destination}. Head outside and follow the audio beam."
+                        logger.info(f"🧭 [NAV] Raw-address route SUCCESS: {response}")
+                    else:
+                        response = "Sorry, I couldn't find a walking route to your destination."
+                        logger.warning(f"🧭 [NAV] Raw-address route FAILED")
+                except Exception as e:
+                    logger.error(f"🧭 [NAV] Navigation start error (raw address): {e}")
+                    response = "Sorry, there was an error getting directions."
+                if response and self.tts:
+                    await self.tts.speak_async(response)
+                logger.info(f"✅ Voice command processed: '{response[:50]}...'")
+                return
 
         # =================================================================
         # Layer 1: Detection queries ("what do you see")
@@ -2169,9 +2613,9 @@ class CortexSystem:
                 except Exception as e:
                     logger.debug(f"OCR in Layer 1 failed: {e}")
             
-            # Speak via Kokoro TTS (local, fast)
+            # Speak via TTS (Cartesia cloud preferred — Kokoro CPU starves L0 YOLO)
             if self.tts and response:
-                await self.tts.speak_async(response, engine_override="kokoro")
+                await self.tts.speak_async(response)
             
             # Store to memory
             if self.memory_manager:
@@ -2201,7 +2645,7 @@ class CortexSystem:
                         response = self.ocr_pipeline.format_for_speech(ocr_results)
                         logger.info(f"  OCR response (local Hailo, {self.ocr_pipeline.avg_latency_ms:.0f}ms): {response}")
                         if self.tts and response:
-                            await self.tts.speak_async(response, engine_override="kokoro")
+                            await self.tts.speak_async(response)
                         # Store to memory
                         if self.memory_manager:
                             try:
@@ -2352,23 +2796,60 @@ class CortexSystem:
                     gps_fix = self.gps.get_fix() if self.gps else None
                     if gps_fix and gps_fix.latitude != 0.0:
                         origin = f"{gps_fix.latitude},{gps_fix.longitude}"
-                        if self.tts:
-                            await self.tts.speak_async(f"Getting directions to {destination}.")
+                        logger.info(f"🧭 [NAV] GPS available — origin={origin}, destination='{destination}'")
                         try:
                             success = await self.nav_engine.start_navigation(origin, destination)
                             if success:
-                                route = self.nav_engine._current_route
+                                route = self.nav_engine.route
                                 if route:
-                                    response = f"Route found. {route.distance}. {route.duration}. Follow the audio beam."
+                                    dist_str = f"{route.total_distance_m:.0f} meters"
+                                    dur_str = f"{route.total_duration_s / 60:.0f} minutes" if route.total_duration_s else ""
+                                    response = f"Getting directions to {destination}. Route found. {dist_str}. {dur_str}. Follow the audio beam."
                                 else:
-                                    response = "Navigation started. Follow the audio beam."
+                                    response = f"Getting directions to {destination}. Navigation started. Follow the audio beam."
+                                logger.info(f"🧭 [NAV] Route SUCCESS: {response}")
                             else:
                                 response = f"Sorry, I couldn't find a walking route to {destination}."
+                                logger.warning(f"🧭 [NAV] Route FAILED for destination='{destination}'")
                         except Exception as e:
-                            logger.error(f"Navigation start error: {e}")
+                            logger.error(f"🧭 [NAV] Navigation start error: {e}")
                             response = "Sorry, there was an error getting directions."
                     else:
-                        response = "I need a GPS fix before I can navigate. Please wait for satellite lock."
+                        # No GPS fix — use saved location as origin
+                        default_loc = self.saved_locations.get_default() if self.saved_locations else None
+                        if default_loc and default_loc["address"]:
+                            # Use default saved location (e.g. Home) as origin
+                            origin_addr = default_loc["address"]
+                            origin_name = default_loc["name"]
+                            logger.info(f"🧭 [NAV] No GPS — using saved location '{origin_name}' as origin: {origin_addr}")
+                            try:
+                                success = await self.nav_engine.start_navigation(origin_addr, destination)
+                                if success:
+                                    route = self.nav_engine.route
+                                    if route:
+                                        dist_str = f"{route.total_distance_m:.0f} meters"
+                                        dur_str = f"{route.total_duration_s / 60:.0f} minutes" if route.total_duration_s else ""
+                                        response = f"Using {origin_name} as starting point. Route to {destination}: {dist_str}, {dur_str}. Head outside and follow the audio beam."
+                                    else:
+                                        response = f"Navigation started from {origin_name} to {destination}. Head outside and follow the audio beam."
+                                    logger.info(f"🧭 [NAV] Saved-location route SUCCESS: {response}")
+                                else:
+                                    response = f"Sorry, I couldn't find a walking route from {origin_name} to {destination}."
+                                    logger.warning(f"🧭 [NAV] Saved-location route FAILED: {origin_name} → {destination}")
+                            except Exception as e:
+                                logger.error(f"🧭 [NAV] Navigation start error (saved location): {e}")
+                                response = "Sorry, there was an error getting directions."
+                        elif self.saved_locations and self.saved_locations.list_names():
+                            # No default location — ask user to pick one
+                            self._awaiting_origin = destination
+                            places = self.saved_locations.list_names_spoken()
+                            logger.info(f"🧭 [NAV] No GPS, no default — asking user. Saved: {places}")
+                            response = f"No GPS signal. Where are you right now? Say I'm at {places}, or tell me an address."
+                        else:
+                            # No saved locations at all — queue for GPS
+                            self._pending_destination = destination
+                            logger.info(f"🧭 [NAV] No GPS, no saved locations — queued: {destination}")
+                            response = f"No GPS signal and no saved locations. I'll start navigation to {destination} once GPS connects."
                 else:
                     response = "Where would you like to go? Say navigate to, followed by your destination."
 
@@ -2384,6 +2865,24 @@ class CortexSystem:
                 # Try GPS reverse geocode for context
                 gps_fix = self.gps.get_fix() if self.gps else None
                 if gps_fix and gps_fix.latitude != 0.0:
+                    # Reverse geocode to tell user where they are
+                    try:
+                        maps_key = os.environ.get('GOOGLE_MAPS_API_KEY', '')
+                        if maps_key:
+                            import requests
+                            geo_url = "https://maps.googleapis.com/maps/api/geocode/json"
+                            geo_resp = requests.get(geo_url, params={
+                                'latlng': f"{gps_fix.latitude},{gps_fix.longitude}",
+                                'key': maps_key,
+                            }, timeout=5)
+                            geo_data = geo_resp.json()
+                            if geo_data.get('results'):
+                                address = geo_data['results'][0].get('formatted_address', '')
+                                if address and self.tts:
+                                    await self.tts.speak_async(f"You're near {address}.")
+                    except Exception as e:
+                        logger.debug(f"Reverse geocode error: {e}")
+
                     success = await self.nav_engine.retrace_steps()
                     if success:
                         response = "I'm guiding you back the way you came. Follow the audio beam."
@@ -2413,6 +2912,16 @@ class CortexSystem:
                         response = "Sorry, I couldn't check bus arrivals right now."
                 else:
                     response = "I need a GPS fix to find nearby bus stops."
+
+            # --- Resume / continue navigation ---
+            elif self.nav_engine and any(kw in query_lower for kw in ["resume nav", "resume route", "continue nav", "continue route", "keep going", "keep navigating"]):
+                if self.nav_engine.route and self.nav_engine.state != NavState.NAVIGATING:
+                    await self.nav_engine.resume_navigation()
+                    response = "Resuming navigation. Follow the audio beam."
+                elif self.nav_engine.state == NavState.NAVIGATING:
+                    response = "Navigation is already active."
+                else:
+                    response = "There's no active route to resume. Say navigate to, followed by your destination."
 
             # --- Spatial audio beacon: "find the [object]" ---
             elif routing.get("use_spatial_audio") and self.navigator:
@@ -2445,7 +2954,11 @@ class CortexSystem:
 
         # Disconnect Layer 2
         if self.layer2:
-            run_async_safe(self.layer2.close())
+            self.layer2.stop()
+
+        # Stop Gemini audio player
+        if self.gemini_audio_player:
+            self.gemini_audio_player.stop()
 
         # Disconnect WebSocket
         if self.ws_client:

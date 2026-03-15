@@ -533,7 +533,8 @@ class DashboardApplication:
                     on_connect=fastapi_signals.client_connected.emit,
                     on_disconnect=fastapi_signals.client_disconnected.emit,
                     on_status=fastapi_signals.status_update.emit,
-                    on_gps_imu=fastapi_signals.gps_imu_update.emit
+                    on_gps_imu=fastapi_signals.gps_imu_update.emit,
+                    on_safety_alert=fastapi_signals.safety_alert.emit
                 )
 
                 # Inject into FastAPI app global state

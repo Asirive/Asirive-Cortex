@@ -204,10 +204,14 @@ class TTSRouter:
             text: Text to synthesize
             
         Returns:
-            "gemini" or "kokoro"
+            "cartesia", "kokoro", or "gemini"
         """
         if self.prefer_local:
             return "kokoro"
+        
+        # Primary: Cartesia Sonic 3 (lowest latency cloud TTS)
+        if self._cartesia_available:
+            return "cartesia"
         
         text_length = len(text)
         

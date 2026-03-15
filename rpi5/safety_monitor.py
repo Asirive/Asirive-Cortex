@@ -123,6 +123,12 @@ class SafetyMonitor:
         self.frame_width = frame_width
         self.imu = imu
 
+        # Environment-aware defaults (outdoor)
+        self._outdoor_alert_cooldown = alert_cooldown
+        self._outdoor_tts_cooldown = tts_cooldown
+        self._outdoor_haptic_cooldown = haptic_cooldown
+        self._is_indoor = False
+
         # Velocity tracking  (object_id → TrackedObject)
         self._tracked: Dict[str, TrackedObject] = {}
 
@@ -168,6 +174,10 @@ class SafetyMonitor:
             for h in hazards:
                 # Only care about critical / warning severity
                 if h.severity.value == "info":
+                    continue
+                # Walls are expected indoors — suppress if far enough away
+                # Close walls (<1.0m) still alert to prevent collisions
+                if self._is_indoor and h.type.value == "wall" and h.distance >= 1.0:
                     continue
                 key = f"t1_{h.type.value}_{h.direction}"
                 if self._on_cooldown(key, now):
@@ -350,3 +360,22 @@ class SafetyMonitor:
         x_map = {"left": -2.0, "right": 2.0, "ahead": 0.0, "below": 0.0}
         x = x_map.get(direction, 0.0)
         return (x, 0.0, -distance_m)
+
+    # ── Environment awareness ──────────────────────────────────────────
+
+    def set_environment(self, indoor: bool):
+        """Adjust alert cooldowns for indoor vs outdoor."""
+        if indoor == self._is_indoor:
+            return
+        self._is_indoor = indoor
+        if indoor:
+            self.alert_cooldown = 8.0
+            self.tts_cooldown = 20.0
+            self.haptic_cooldown = 5.0
+        else:
+            self.alert_cooldown = self._outdoor_alert_cooldown
+            self.tts_cooldown = self._outdoor_tts_cooldown
+            self.haptic_cooldown = self._outdoor_haptic_cooldown
+        label = "INDOOR" if indoor else "OUTDOOR"
+        logger.info(f"SafetyMonitor → {label}: cooldowns alert={self.alert_cooldown}s, "
+                    f"tts={self.tts_cooldown}s, haptic={self.haptic_cooldown}s")
