@@ -97,6 +97,7 @@ class GeminiLiveHandler:
         self.is_connected = False
         self.session_handle: Optional[str] = None  # For resumption
         self.interrupted = False
+        self._send_error_logged = False  # Debounce send error logging
 
         # Audio output queue (thread-safe, bounded to prevent memory leak)
         self.audio_queue = asyncio.Queue(maxsize=100)
@@ -240,6 +241,7 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                 ) as session:
                     self.session = session
                     self.is_connected = True
+                    self._send_error_logged = False  # Reset on new connection
                     logger.info(f"✅ Connected to Gemini Live API on attempt {attempt + 1}")
                     
                     if self.status_callback:
@@ -307,14 +309,15 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                 # Handle audio via convenience accessor (PRIMARY OUTPUT)
                 if hasattr(response, 'data') and response.data:
                     audio_bytes = response.data
-                    logger.debug(f"📥 Received {len(audio_bytes)} bytes of audio")
+                    qsize = self.audio_queue.qsize()
+                    logger.info(f"📥 Gemini audio chunk: {len(audio_bytes)} bytes (queue: {qsize})")
                     await self.audio_queue.put(audio_bytes)
                     self._store_response("[Audio response]", 'gemini_live_audio')
                     continue
 
                 # Handle text via convenience accessor
                 if hasattr(response, 'text') and response.text:
-                    logger.debug(f"💬 Text response: {response.text[:100]}...")
+                    logger.info(f"💬 Gemini text response: {response.text[:100]}")
                     self._store_response(response.text, 'gemini_live')
                     continue
 
@@ -402,7 +405,9 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
             return True
 
         except Exception as e:
-            logger.error(f"❌ Failed to send audio: {e}")
+            if not self._send_error_logged:
+                logger.warning(f"⚠️ Gemini send failed (audio), suppressing further: {e}")
+                self._send_error_logged = True
             self.is_connected = False
             return False
     
@@ -427,7 +432,9 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
             return True
             
         except Exception as e:
-            logger.error(f"❌ Failed to send video frame: {e}")
+            if not self._send_error_logged:
+                logger.warning(f"⚠️ Gemini send failed (video), suppressing further: {e}")
+                self._send_error_logged = True
             self.is_connected = False
             return False
     
@@ -461,7 +468,9 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
             return True
 
         except Exception as e:
-            logger.error(f"❌ Failed to send text: {e}")
+            if not self._send_error_logged:
+                logger.warning(f"⚠️ Gemini send failed (text), suppressing further: {e}")
+                self._send_error_logged = True
             self.is_connected = False
             return False
     
@@ -609,6 +618,7 @@ class GeminiLiveManager:
                     
                     if self.audio_callback:
                         # Call audio callback in background thread
+                        logger.info(f"🔊 Forwarding Gemini audio to player: {len(audio_bytes)} bytes")
                         threading.Thread(
                             target=self.audio_callback,
                             args=(audio_bytes,),

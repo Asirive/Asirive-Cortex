@@ -3,210 +3,457 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
     <title>Cortex GPS</title>
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        * { margin:0; padding:0; box-sizing:border-box; }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-            background: #0a0a0a; color: #e0e0e0;
-            display: flex; flex-direction: column; align-items: center;
-            justify-content: center; min-height: 100vh; padding: 20px;
+            background:#0a0a0a; color:#e0e0e0;
+            display:flex; flex-direction:column; align-items:center;
+            min-height:100vh; padding:20px;
         }
-        h1 { font-size: 1.4em; margin-bottom: 16px; color: #4fc3f7; }
+        h1 { font-size:1.4em; margin:12px 0; color:#4fc3f7; }
+        #checks {
+            width:100%; max-width:360px; margin-bottom:14px;
+            background:#111; border-radius:10px; padding:12px 16px;
+        }
+        .chk {
+            display:flex; align-items:center; gap:8px;
+            padding:5px 0; font-size:0.88em; color:#aaa;
+            border-bottom:1px solid #1a1a1a;
+        }
+        .chk:last-child { border-bottom:none; }
+        .chk .ic { font-size:1.05em; min-width:22px; text-align:center; }
+        .chk.pass { color:#a5d6a7; }
+        .chk.fail { color:#ef9a9a; }
+        .chk .dt { font-size:0.72em; color:#777; margin-left:auto; }
         #status {
-            font-size: 1.2em; padding: 16px 24px; border-radius: 12px;
-            margin-bottom: 20px; text-align: center; width: 100%; max-width: 360px;
+            font-size:1.1em; padding:14px 20px; border-radius:10px;
+            margin-bottom:14px; text-align:center; width:100%; max-width:360px;
         }
-        .ok   { background: #1b5e20; color: #a5d6a7; }
-        .warn { background: #e65100; color: #ffcc80; }
-        .err  { background: #b71c1c; color: #ef9a9a; }
+        .ok   { background:#1b5e20; color:#a5d6a7; }
+        .warn { background:#e65100; color:#ffcc80; }
+        .err  { background:#b71c1c; color:#ef9a9a; }
         #info {
-            font-size: 0.85em; color: #999; text-align: center;
-            line-height: 1.6; max-width: 360px;
+            font-size:0.85em; color:#999; text-align:center;
+            line-height:1.6; max-width:360px; width:100%;
         }
-        #info span { color: #bbb; font-family: monospace; }
+        #info span { color:#bbb; font-family:monospace; }
+        #help {
+            display:none; max-width:360px; width:100%;
+            margin-top:10px; padding:14px; background:#1a1a1a;
+            border-radius:10px; font-size:0.82em; color:#ffcc80; line-height:1.7;
+        }
+        #help h3 { color:#ff9800; margin-bottom:6px; font-size:0.95em; }
+        #help ol { padding-left:18px; }
+        #help li { margin-bottom:3px; }
         button {
-            margin-top: 24px; padding: 14px 32px; font-size: 1.1em;
-            border: none; border-radius: 8px; cursor: pointer;
-            background: #1565c0; color: white; width: 100%; max-width: 360px;
+            margin-top:16px; padding:14px 32px; font-size:1.1em;
+            border:none; border-radius:8px; cursor:pointer;
+            background:#1565c0; color:white; width:100%; max-width:360px;
         }
-        button:active { background: #0d47a1; }
+        button:active { background:#0d47a1; }
+        button:disabled { background:#333; color:#666; cursor:not-allowed; }
+        #log {
+            margin-top:14px; width:100%; max-width:360px;
+            max-height:200px; overflow-y:auto;
+            font-size:0.68em; color:#666; font-family:monospace;
+            background:#080808; border-radius:6px; padding:8px;
+        }
     </style>
 </head>
 <body>
     <h1>&#x1F9E0; Cortex GPS Link</h1>
-    <div id="status" class="warn">Tap START to begin</div>
+
+    <div id="checks">
+        <div class="chk" id="c-https"><span class="ic">&#x23F3;</span> Secure Connection (HTTPS)<span class="dt" id="cd-https"></span></div>
+        <div class="chk" id="c-geo"><span class="ic">&#x23F3;</span> Geolocation API<span class="dt" id="cd-geo"></span></div>
+        <div class="chk" id="c-perm"><span class="ic">&#x23F3;</span> Location Permission<span class="dt" id="cd-perm"></span></div>
+        <div class="chk" id="c-srv"><span class="ic">&#x23F3;</span> Cortex Server<span class="dt" id="cd-srv"></span></div>
+    </div>
+
+    <div id="status" class="warn">Running checks...</div>
+
     <div id="info">
-        <p>Lat: <span id="lat">—</span></p>
-        <p>Lng: <span id="lng">—</span></p>
-        <p>Accuracy: <span id="acc">—</span></p>
-        <p>Speed: <span id="spd">—</span></p>
+        <p>Lat: <span id="lat">&mdash;</span></p>
+        <p>Lng: <span id="lng">&mdash;</span></p>
+        <p>Accuracy: <span id="acc">&mdash;</span></p>
+        <p>Speed: <span id="spd">&mdash;</span></p>
+        <p>Source: <span id="mode">&mdash;</span></p>
         <p>Sent: <span id="cnt">0</span> | Failed: <span id="fail">0</span></p>
     </div>
-    <button id="btn" onclick="toggle()">START</button>
+
+    <div id="help">
+        <h3>&#x26A0;&#xFE0F; Xiaomi / MIUI Setup</h3>
+        <ol>
+            <li><b>Location ON:</b> Settings &rarr; Location &rarr; Enable</li>
+            <li><b>High accuracy:</b> Settings &rarr; Location &rarr; Google Location Accuracy &rarr; <b>ON</b></li>
+            <li><b>Chrome permission:</b> Settings &rarr; Apps &rarr; Chrome &rarr; Permissions &rarr; Location &rarr; &ldquo;Allow while using&rdquo;</li>
+            <li><b>Battery:</b> Settings &rarr; Battery &rarr; Chrome &rarr; No restrictions</li>
+            <li>Keep this page <b>visible</b> (don&rsquo;t lock screen)</li>
+        </ol>
+    </div>
+
+    <button id="btn" disabled>START</button>
+
+    <div id="log"></div>
 
     <script>
-        let watchId = null;
-        let count = 0;
-        let failCount = 0;
-        let running = false;
-        let gotFirstFix = false;
-        let sendInProgress = false;
+    (function() {
+        var $ = function(id) { return document.getElementById(id); };
+        var $s = $('status'), $lat = $('lat'), $lng = $('lng');
+        var $acc = $('acc'), $spd = $('spd'), $cnt = $('cnt');
+        var $fail = $('fail'), $btn = $('btn'), $log = $('log');
+        var $help = $('help'), $mode = $('mode');
 
-        const $status = document.getElementById('status');
-        const $lat = document.getElementById('lat');
-        const $lng = document.getElementById('lng');
-        const $acc = document.getElementById('acc');
-        const $spd = document.getElementById('spd');
-        const $cnt = document.getElementById('cnt');
-        const $fail = document.getElementById('fail');
-        const $btn = document.getElementById('btn');
+        var POST_URL = location.origin + '/gps/update';
+        var STATUS_URL = location.origin + '/gps/status';
 
-        const POST_URL = location.protocol + '//' + location.host + '/gps/update';
+        var watchId = null, count = 0, failCount = 0;
+        var running = false, gotFirst = false, sending = false;
+        var wakeLock = null, lastFix = 0;
+        var ipFallbackDone = false, ipFallbackTimer = null;
+        var geoSource = '';
 
-        function setStatus(msg, cls) {
-            $status.textContent = msg;
-            $status.className = cls;
+        /* ---- Logging ---- */
+        function log(msg) {
+            var d = document.createElement('div');
+            d.textContent = new Date().toLocaleTimeString() + ' ' + msg;
+            $log.appendChild(d);
+            $log.scrollTop = $log.scrollHeight;
+            while ($log.children.length > 80) $log.removeChild($log.firstChild);
         }
 
-        function toggle() {
-            if (running) { stop(); } else { start(); }
+        /* ---- Diagnostics ---- */
+        function setChk(id, ok, detail) {
+            var el = $(id);
+            el.className = 'chk ' + (ok ? 'pass' : 'fail');
+            el.querySelector('.ic').textContent = ok ? '\u2705' : '\u274C';
+            var dt = el.querySelector('.dt');
+            if (dt && detail) dt.textContent = detail;
         }
+
+        function setSt(msg, cls) { $s.textContent = msg; $s.className = cls; }
+
+        async function runChecks() {
+            var ok = true;
+
+            var sec = window.isSecureContext;
+            setChk('c-https', sec, sec ? location.protocol : 'NOT SECURE');
+            if (!sec) { log('\u274C Not HTTPS \u2014 geolocation blocked'); ok = false; }
+
+            var geo = !!navigator.geolocation;
+            setChk('c-geo', geo, geo ? 'available' : 'missing');
+            if (!geo) { log('\u274C navigator.geolocation missing'); ok = false; }
+
+            try {
+                if (navigator.permissions) {
+                    var p = await navigator.permissions.query({name:'geolocation'});
+                    var denied = p.state === 'denied';
+                    setChk('c-perm', !denied, p.state);
+                    if (denied) { log('\u274C Location DENIED'); ok = false; $help.style.display = 'block'; }
+                    else { log('\uD83D\uDCCD Permission: ' + p.state); }
+                } else {
+                    setChk('c-perm', true, 'will prompt');
+                }
+            } catch(e) { setChk('c-perm', true, 'unknown'); }
+
+            try {
+                var ac = new AbortController();
+                var t = setTimeout(function(){ ac.abort(); }, 5000);
+                var r = await fetch(STATUS_URL, {signal: ac.signal});
+                clearTimeout(t);
+                setChk('c-srv', r.ok, r.ok ? 'connected' : 'err ' + r.status);
+                if (!r.ok) { log('\u274C Server error: ' + r.status); ok = false; }
+                else { log('\u2705 Cortex server OK'); }
+            } catch(e) {
+                setChk('c-srv', false, 'offline');
+                log('\u274C Server unreachable: ' + e.message);
+                ok = false;
+            }
+
+            $btn.disabled = false;
+            if (ok) { setSt('Ready \u2014 tap START', 'warn'); log('\u2705 All checks passed'); }
+            else { setSt('Some checks failed \u2014 see above', 'err'); $help.style.display = 'block'; }
+        }
+
+        /* ---- Wake Lock ---- */
+        async function lockScreen() {
+            try {
+                if ('wakeLock' in navigator) {
+                    wakeLock = await navigator.wakeLock.request('screen');
+                    log('\uD83D\uDD12 Screen wake lock ON');
+                    wakeLock.addEventListener('release', function() {
+                        log('\uD83D\uDD13 Wake lock released');
+                        if (running) lockScreen();
+                    });
+                }
+            } catch(e) { log('\u26A0\uFE0F Wake lock unavailable'); }
+        }
+        function unlockScreen() { if (wakeLock) { wakeLock.release(); wakeLock = null; } }
+
+        /* ==============================================================
+           GPS STRATEGY (based on StackOverflow + MDN research):
+           
+           CRITICAL RULES:
+           1. NEVER call getCurrentPosition while watchPosition is active
+              (they interfere on Android Chrome and cause both to timeout)
+           2. NEVER restart watchPosition on timeout — it resets the
+              in-progress network location acquisition
+           3. Only use watchPosition — it will fire the success callback
+              whenever a position becomes available
+           4. Use IP geolocation as fallback if browser API fails
+           ============================================================== */
+
+        function toggle() { running ? stop() : start(); }
 
         function start() {
-            if (!navigator.geolocation) {
-                setStatus('Geolocation not supported', 'err');
-                return;
-            }
-
-            running = true;
-            gotFirstFix = false;
+            if (!navigator.geolocation) { setSt('Geolocation not supported', 'err'); return; }
+            running = true; gotFirst = false;
+            count = 0; failCount = 0;
+            ipFallbackDone = false; geoSource = '';
+            $cnt.textContent = '0'; $fail.textContent = '0';
             $btn.textContent = 'STOP';
-            setStatus('Starting GPS...', 'warn');
+            $mode.textContent = 'starting\u2026';
+            setSt('Acquiring location\u2026', 'warn');
+            log('\uD83D\uDEF0\uFE0F === GPS START ===');
+            lockScreen();
 
-            // Also do a one-shot getCurrentPosition for fastest first fix
-            navigator.geolocation.getCurrentPosition(
-                onPosition,
-                function() {},  // ignore error for one-shot
-                { enableHighAccuracy: true, maximumAge: 60000, timeout: 5000 }
-            );
+            /* ---- Strategy: ONLY use watchPosition, NO getCurrentPosition ----
+               watchPosition will call onPos as soon as ANY position is available
+               (network, WiFi, cell tower, OR satellite GPS).
+               MUST use enableHighAccuracy:true on Android Chrome because:
+               - true  → PRIORITY_HIGH_ACCURACY → actively acquires location (icon appears)
+               - false → PRIORITY_BALANCED_POWER → passive mode, may never trigger
+               Long timeout (60s) gives the phone time to get a fix.
+               maximumAge:60000 accepts cached positions up to 1 min old. */
+            log('\uD83D\uDC41\uFE0F Starting watchPosition (high accuracy, 60s timeout)');
+            watchId = navigator.geolocation.watchPosition(onPos, onWatchErr,
+                {enableHighAccuracy: true, maximumAge: 60000, timeout: 60000});
 
-            // Start continuous watch
-            startGeoWatch();
-        }
-
-        function startGeoWatch() {
-            if (watchId !== null) {
-                navigator.geolocation.clearWatch(watchId);
-            }
-            watchId = navigator.geolocation.watchPosition(
-                onPosition,
-                onError,
-                {
-                    enableHighAccuracy: true,
-                    maximumAge: 2000,
-                    timeout: 10000
+            /* ---- IP geolocation fallback (fires after 15s if no fix) ---- */
+            ipFallbackTimer = setTimeout(function() {
+                if (!gotFirst && running) {
+                    log('\u26A0\uFE0F No browser fix after 15s \u2014 trying IP geolocation');
+                    tryIPGeolocation();
                 }
-            );
+            }, 15000);
         }
 
         function stop() {
             running = false;
-            if (watchId !== null) {
-                navigator.geolocation.clearWatch(watchId);
-                watchId = null;
-            }
-            gotFirstFix = false;
+            if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+            if (ipFallbackTimer) { clearTimeout(ipFallbackTimer); ipFallbackTimer = null; }
+            unlockScreen();
+            gotFirst = false;
+            ipFallbackDone = false;
             $btn.textContent = 'START';
-            setStatus('Stopped', 'warn');
+            $mode.textContent = '\u2014';
+            setSt('Stopped', 'warn');
+            document.title = 'Cortex GPS';
+            log('\u23F9\uFE0F === GPS STOPPED ===');
         }
 
-        function onPosition(pos) {
-            var c = pos.coords;
-            var data = {
-                lat: c.latitude,
-                lng: c.longitude,
-                alt: c.altitude,
-                speed: c.speed,
-                heading: c.heading,
-                accuracy: c.accuracy
-            };
+        /* ---- watchPosition error handler ---- */
+        function onWatchErr(err) {
+            if (!running) return;
+            var reasons = ['Permission denied','Position unavailable','Timeout'];
+            var reason = reasons[err.code-1] || 'Unknown';
+            log('\u26A0\uFE0F Watch error: ' + reason + ' (code=' + err.code + ')');
 
-            $lat.textContent = c.latitude.toFixed(6);
-            $lng.textContent = c.longitude.toFixed(6);
-            $acc.textContent = (c.accuracy || 0).toFixed(0) + 'm';
-            $spd.textContent = c.speed ? (c.speed * 3.6).toFixed(1) + ' km/h' : '—';
+            if (err.code === 1) {
+                /* Permission denied — fatal */
+                setSt('Location permission denied', 'err');
+                $help.style.display = 'block';
+                stop();
+                return;
+            }
 
-            gotFirstFix = true;
-            setStatus('Cortex GPS Active \u2705', 'ok');
+            if (err.code === 3) {
+                /* Timeout — DO NOT restart watchPosition!
+                   The watch is still active and will fire onPos if a position
+                   becomes available. Restarting would reset progress. */
+                log('\u23F3 Watch timed out but still listening\u2026');
+                if (!gotFirst) {
+                    setSt('Still acquiring\u2026 (location services may be slow)', 'warn');
+                }
+                /* Try IP fallback if we haven't already */
+                if (!gotFirst && !ipFallbackDone) {
+                    log('\uD83C\uDF10 Trying IP geolocation fallback\u2026');
+                    tryIPGeolocation();
+                }
+                return;
+            }
 
-            // Send via HTTP POST (fire-and-forget, non-blocking)
-            sendGPS(data);
+            if (err.code === 2) {
+                /* Position unavailable — location services disabled */
+                log('\u274C Position unavailable \u2014 location services may be OFF');
+                if (!gotFirst) {
+                    setSt('Location unavailable', 'err');
+                    $help.style.display = 'block';
+                }
+                /* Still try IP fallback */
+                if (!ipFallbackDone) {
+                    log('\uD83C\uDF10 Trying IP geolocation as last resort\u2026');
+                    tryIPGeolocation();
+                }
+            }
         }
 
-        function sendGPS(data) {
-            // Don't queue up requests if one is in flight
-            if (sendInProgress) return;
-            sendInProgress = true;
+        /* ---- IP-based geolocation fallback ---- */
+        function tryIPGeolocation() {
+            if (ipFallbackDone) return;
+            ipFallbackDone = true;
 
-            fetch(POST_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
-            })
-            .then(function(resp) {
-                sendInProgress = false;
-                if (resp.ok) {
-                    count++;
-                    $cnt.textContent = count;
-                } else {
-                    failCount++;
-                    $fail.textContent = failCount;
+            log('\uD83C\uDF10 Fetching IP-based location\u2026');
+
+            /* Try multiple services in sequence for reliability */
+            var services = [
+                { url: 'https://ipapi.co/json/', parse: function(d) { return {lat:d.latitude, lng:d.longitude, acc:d.accuracy || 5000, city:d.city}; } },
+                { url: 'https://ipwho.is/', parse: function(d) { return {lat:d.latitude, lng:d.longitude, acc:5000, city:d.city}; } }
+            ];
+
+            tryNextIPService(services, 0);
+        }
+
+        function tryNextIPService(services, idx) {
+            if (idx >= services.length || !running) {
+                log('\u274C All IP geolocation services failed');
+                if (!gotFirst) {
+                    setSt('Cannot get location \u2014 check phone settings', 'err');
+                    $help.style.display = 'block';
                 }
+                return;
+            }
+
+            var svc = services[idx];
+            log('\uD83C\uDF10 Trying: ' + svc.url);
+
+            var ac = new AbortController();
+            var t = setTimeout(function(){ ac.abort(); }, 8000);
+
+            fetch(svc.url, {signal: ac.signal})
+            .then(function(r) {
+                clearTimeout(t);
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
             })
-            .catch(function() {
-                sendInProgress = false;
-                failCount++;
-                $fail.textContent = failCount;
-                if (failCount > 5 && count === 0) {
-                    setStatus('Cannot reach Cortex — check connection', 'err');
-                }
+            .then(function(data) {
+                if (!running) return;
+                var loc = svc.parse(data);
+                if (!loc.lat || !loc.lng) throw new Error('No coordinates in response');
+
+                geoSource = 'IP (\u00B1' + (loc.acc/1000).toFixed(0) + 'km)';
+                log('\uD83C\uDFAF IP FIX: ' + loc.lat.toFixed(4) + ',' + loc.lng.toFixed(4) + ' [' + (loc.city||'?') + '] \u00B1' + (loc.acc/1000).toFixed(0) + 'km');
+
+                /* Send IP-based location to Cortex — rough but better than nothing */
+                var gpsData = {lat: loc.lat, lng: loc.lng, alt: null,
+                               speed: null, heading: null, accuracy: loc.acc};
+                onPosFromIP(gpsData, loc.acc);
+            })
+            .catch(function(e) {
+                clearTimeout(t);
+                log('\u26A0\uFE0F IP service failed: ' + e.message);
+                tryNextIPService(services, idx + 1);
             });
         }
 
-        function onError(err) {
-            if (!running) return;
-            if (err.code === 3) {
-                // Timeout — retry with lower accuracy for faster fix
-                if (!gotFirstFix) {
-                    setStatus('Acquiring GPS signal...', 'warn');
-                    // Try with relaxed settings for faster initial fix
-                    navigator.geolocation.getCurrentPosition(
-                        onPosition,
-                        function() {},
-                        { enableHighAccuracy: false, maximumAge: 60000, timeout: 5000 }
-                    );
-                }
-                startGeoWatch();
-            } else if (err.code === 1) {
-                setStatus('Location permission denied', 'err');
-                stop();
-            } else {
-                if (!gotFirstFix) {
-                    setStatus('GPS unavailable — retrying...', 'warn');
-                }
-                setTimeout(function() {
-                    if (running) startGeoWatch();
-                }, 3000);
+        function onPosFromIP(data, accuracy) {
+            $lat.textContent = data.lat.toFixed(4);
+            $lng.textContent = data.lng.toFixed(4);
+            $acc.textContent = (accuracy/1000).toFixed(0) + 'km';
+            $spd.textContent = '\u2014';
+            $mode.textContent = '\uD83C\uDF10 IP-based (rough)';
+
+            if (!gotFirst) {
+                gotFirst = true;
+                log('\uD83D\uDFE2 IP LOCATION ACTIVE \u2014 sending to Cortex');
+                log('\u26A0\uFE0F Accuracy is rough (~' + (accuracy/1000).toFixed(0) + 'km). Turn on Google Location Accuracy for better results.');
             }
+            setSt('IP Location \u2705 ~' + (accuracy/1000).toFixed(0) + 'km', 'warn');
+            document.title = 'GPS \u2705 IP (' + count + ')';
+            sendGPS(data);
         }
 
+        /* ---- Browser geolocation success handler ---- */
+        function onPos(pos) {
+            var c = pos.coords;
+            lastFix = Date.now();
+            var accM = (c.accuracy || 9999);
+            var data = {lat: c.latitude, lng: c.longitude, alt: c.altitude,
+                        speed: c.speed, heading: c.heading, accuracy: c.accuracy};
+
+            $lat.textContent = c.latitude.toFixed(6);
+            $lng.textContent = c.longitude.toFixed(6);
+            $acc.textContent = accM.toFixed(0) + 'm';
+            $spd.textContent = c.speed ? (c.speed*3.6).toFixed(1)+' km/h' : '\u2014';
+
+            var src = accM < 20 ? 'GPS \uD83D\uDEF0\uFE0F' : accM < 100 ? 'WiFi \uD83D\uDCF6' : 'Cell \uD83D\uDCE1';
+            geoSource = src;
+            $mode.textContent = src + ' (\u00B1' + accM.toFixed(0) + 'm)';
+
+            if (!gotFirst) {
+                gotFirst = true;
+                if (ipFallbackTimer) { clearTimeout(ipFallbackTimer); ipFallbackTimer = null; }
+                log('\uD83C\uDFAF FIRST BROWSER FIX: ' + c.latitude.toFixed(5) + ',' + c.longitude.toFixed(5) + ' \u00B1' + accM.toFixed(0) + 'm [' + src + ']');
+                log('\uD83D\uDFE2 GPS DATA TRANSFER ACTIVE');
+            } else if (count > 0 && count % 10 === 0) {
+                log('\uD83D\uDCE4 Fix #' + count + ': \u00B1' + accM.toFixed(0) + 'm [' + src + ']');
+            }
+
+            setSt('Active \u2705 ' + src + ' \u00B1' + accM.toFixed(0) + 'm', 'ok');
+            document.title = 'GPS \u2705 (' + count + ')';
+            sendGPS(data);
+        }
+
+        /* ---- Send GPS data to Cortex ---- */
+        function sendGPS(data) {
+            if (sending) return;
+            sending = true;
+            var ac = new AbortController();
+            var t = setTimeout(function(){ ac.abort(); }, 5000);
+
+            fetch(POST_URL, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data),
+                signal: ac.signal
+            })
+            .then(function(r) {
+                clearTimeout(t); sending = false;
+                if (r.ok) {
+                    count++; $cnt.textContent = count;
+                    if (count === 1) log('\u2705 FIRST GPS DATA SENT TO CORTEX!');
+                    else if (count % 20 === 0) log('\uD83D\uDCE4 Sent ' + count + ' fixes to Cortex');
+                } else {
+                    failCount++; $fail.textContent = failCount;
+                    log('\u26A0\uFE0F Server ' + r.status + ' ' + r.statusText);
+                }
+            })
+            .catch(function(e) {
+                clearTimeout(t); sending = false;
+                failCount++; $fail.textContent = failCount;
+                if (e.name === 'AbortError') log('\u23F1\uFE0F Send timeout');
+                else if (failCount <= 3 || failCount % 10 === 0) log('\u274C Send: ' + e.message);
+                if (failCount > 5 && count === 0) setSt('Cannot reach Cortex \u2014 check WiFi', 'err');
+            });
+        }
+
+        /* ---- Tab visibility (MIUI suspends background tabs) ---- */
         document.addEventListener('visibilitychange', function() {
             if (!running) return;
             if (!document.hidden) {
-                startGeoWatch();
+                log('\uD83D\uDCF1 Tab visible');
+                lockScreen();
             }
         });
+
+        /* ---- Init ---- */
+        runChecks();
+        $btn.addEventListener('click', toggle);
+    })();
     </script>
 </body>
 </html>

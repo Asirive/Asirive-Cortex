@@ -16,6 +16,7 @@ import asyncio
 import json
 import logging
 import os
+import socket
 import ssl
 import subprocess
 import threading
@@ -145,31 +146,89 @@ class PhoneGPSReceiver:
             self._loop.close()
 
     def _ensure_ssl_cert(self) -> Optional[ssl.SSLContext]:
-        """Generate a self-signed SSL cert if needed. Returns SSLContext or None."""
+        """Generate a self-signed SSL cert with SAN for all local IPs.
+
+        Chrome requires Subject Alternative Name (SAN) in certificates.
+        Without SAN, Chrome shows NET::ERR_CERT_COMMON_NAME_INVALID.
+        """
         try:
             self._cert_dir.mkdir(parents=True, exist_ok=True)
 
-            if not self._cert_file.exists() or not self._key_file.exists():
-                logger.info("📱 Generating self-signed SSL cert for phone GPS...")
+            current_ips = self._get_local_ips()
+            san_marker = self._cert_dir / "phone_gps_san.txt"
+
+            # Regenerate cert if IPs changed or cert was generated without SAN
+            need_regen = (
+                not self._cert_file.exists()
+                or not self._key_file.exists()
+                or not san_marker.exists()
+                or san_marker.read_text().strip() != ",".join(sorted(current_ips))
+            )
+
+            if need_regen:
+                for f in (self._cert_file, self._key_file):
+                    if f.exists():
+                        f.unlink()
+
+                san_entries = ",".join(f"IP:{ip}" for ip in current_ips)
+                logger.info(f"📱 Generating SSL cert (SAN: {san_entries})")
+
+                # OpenSSL config file with SAN extension
+                conf_file = self._cert_dir / "openssl_gps.cnf"
+                conf_file.write_text(
+                    "[req]\n"
+                    "distinguished_name = dn\n"
+                    "x509_extensions = san_ext\n"
+                    "prompt = no\n\n"
+                    "[dn]\n"
+                    "CN = CortexGPS\n\n"
+                    "[san_ext]\n"
+                    f"subjectAltName = {san_entries}\n"
+                    "basicConstraints = CA:FALSE\n"
+                    "keyUsage = digitalSignature, keyEncipherment\n"
+                )
+
                 subprocess.run(
                     [
                         "openssl", "req", "-x509", "-newkey", "rsa:2048",
                         "-keyout", str(self._key_file),
                         "-out", str(self._cert_file),
                         "-days", "3650", "-nodes",
-                        "-subj", "/CN=CortexGPS",
+                        "-config", str(conf_file),
                     ],
                     check=True,
                     capture_output=True,
                 )
-                logger.info("📱 SSL cert generated")
+                san_marker.write_text(",".join(sorted(current_ips)))
+                logger.info(f"📱 SSL cert generated for: {', '.join(current_ips)}")
 
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ctx.load_cert_chain(str(self._cert_file), str(self._key_file))
             return ctx
-        except (subprocess.CalledProcessError, FileNotFoundError, ssl.SSLError) as e:
+        except (subprocess.CalledProcessError, FileNotFoundError, ssl.SSLError, OSError) as e:
             logger.warning(f"📱 SSL setup failed, falling back to HTTP: {e}")
             return None
+
+    @staticmethod
+    def _get_local_ips() -> list:
+        """Get all non-loopback IPv4 addresses on this machine."""
+        ips = set()
+        try:
+            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                ip = info[4][0]
+                if not ip.startswith("127."):
+                    ips.add(ip)
+        except socket.gaierror:
+            pass
+        if not ips:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                ips.add(s.getsockname()[0])
+                s.close()
+            except Exception:
+                pass
+        return sorted(ips) if ips else ["0.0.0.0"]
 
     async def _serve(self) -> None:
         """Run the aiohttp HTTPS server."""
@@ -187,8 +246,15 @@ class PhoneGPSReceiver:
         site = web.TCPSite(runner, "0.0.0.0", self._port, ssl_context=ssl_ctx)
         await site.start()
 
+        ips = self._get_local_ips()
         logger.info(f"📱 Phone GPS: listening on {proto}://0.0.0.0:{self._port}")
-        logger.info(f"📱 Open {proto}://<rpi5-ip>:{self._port}/gps on your phone")
+        for ip in ips:
+            logger.info(f"📱 → Open on phone: {proto}://{ip}:{self._port}/gps")
+        if not ssl_ctx:
+            logger.warning(
+                "📱 ⚠️ HTTP mode — Chrome will BLOCK geolocation! "
+                "Install openssl to enable HTTPS."
+            )
 
         while self._running:
             await asyncio.sleep(0.5)
@@ -199,25 +265,30 @@ class PhoneGPSReceiver:
         """Serve the GPS HTML page."""
         try:
             html = self._html_path.read_text(encoding="utf-8")
+            logger.info(f"📱 GPS page served to {request.remote} ({len(html)} bytes)")
             return web.Response(text=html, content_type="text/html")
         except FileNotFoundError:
+            logger.error("📱 phone_gps.html NOT FOUND!")
             return web.Response(text="phone_gps.html not found", status=404)
 
     async def _handle_gps_post(self, request: web.Request) -> web.Response:
         """Handle GPS data POST from phone browser."""
         try:
             data = await request.json()
+            lat, lng = data.get('lat'), data.get('lng')
+            acc = data.get('accuracy', '?')
+            logger.info(f"📱 GPS POST #{self._update_count + 1}: lat={lat}, lng={lng}, acc={acc}m from {request.remote}")
             self._update_fix(data)
-            # Mark as connected
             self._connected_phones = 1
             return web.json_response({"ok": True, "count": self._update_count})
         except (json.JSONDecodeError, KeyError, TypeError) as e:
-            logger.debug(f"📱 Bad GPS data from phone: {e}")
+            logger.warning(f"📱 Bad GPS POST from {request.remote}: {e}")
             return web.json_response({"ok": False, "error": str(e)}, status=400)
 
     async def _handle_status(self, request: web.Request) -> web.Response:
         """Health check / status endpoint."""
         fix = self.get_fix()
+        logger.info(f"📱 Status check from {request.remote}: connected={self.is_connected}, has_fix={fix is not None}, updates={self._update_count}")
         return web.json_response({
             "connected": self.is_connected,
             "has_fix": fix is not None,
@@ -263,3 +334,7 @@ class PhoneGPSReceiver:
             f"📱 Phone GPS #{self._update_count}: lat={lat:.6f}, lng={lng:.6f}, "
             f"acc={accuracy:.0f}m, speed={speed_kmh:.1f}km/h, q={fix_quality}"
         )
+        if self._update_count == 1:
+            logger.info(f"📱 ✅ FIRST GPS FIX from phone: ({lat:.6f}, {lng:.6f}) ±{accuracy:.0f}m q={fix_quality}")
+        elif self._update_count % 30 == 0:
+            logger.info(f"📱 GPS update #{self._update_count}: ({lat:.6f}, {lng:.6f}) ±{accuracy:.0f}m")
