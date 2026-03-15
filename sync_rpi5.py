@@ -4,7 +4,7 @@ Sync Project Cortex to Raspberry Pi 5 via rsync or scp.
 Installs dependencies on RPi5 after sync.
 
 Network Configuration:
-- RPi5 IP: 10.201.86.31
+- RPi5 IP: 10.201.86.32
 - Laptop IP: 10.201.86.101
 - RPi5 Password: Haziqshah21
 
@@ -55,7 +55,7 @@ def load_rpi_config():
                 
                 rpi_config = config.get('rpi5_device', {})
                 return {
-                    'host': rpi_config.get('host', '10.201.86.31'),
+                    'host': rpi_config.get('host', '10.201.86.32'),
                     'user': rpi_config.get('user', 'cortex'),
                     'path': rpi_config.get('path', '/home/cortex/ProjectCortex'),
                 }
@@ -65,7 +65,7 @@ def load_rpi_config():
     # Fallback to defaults
     print("Warning: Could not load config.yaml, using defaults")
     return {
-        'host': '10.201.86.31',
+        'host': '10.201.86.32',
         'user': 'cortex',
         'path': '/home/cortex/ProjectCortex',
     }
@@ -88,16 +88,20 @@ def get_rpi_password():
 
 RPI_PASSWORD = get_rpi_password()
 
-# Directories/Files to sync
+# Directories/Files to sync (code only — fast ~1MB)
 SYNC_PATHS = [
     "rpi5/",
     "laptop/",
     "shared/",
-    "models/",  # Sync all models including .pt files
     "tests/",
     "scripts/",
     "requirements.txt",
     ".env",  # Sync environment variables (API keys)
+]
+
+# Additional paths when --with-models is used (~876MB)
+MODEL_PATHS = [
+    "models/",
 ]
 
 # Files to exclude from sync
@@ -210,7 +214,7 @@ def sync_with_paramiko():
         
         # Extract on RPi
         print("Extracting on RPi5...")
-        remote_cmd = f"mkdir -p {RPI_PATH} && rm -rf {RPI_PATH}/rpi5 {RPI_PATH}/laptop {RPI_PATH}/shared {RPI_PATH}/models {RPI_PATH}/.env && cd {RPI_PATH} && tar -xzf /tmp/{tar_name} && rm /tmp/{tar_name}"
+        remote_cmd = f"mkdir -p {RPI_PATH} && rm -rf {RPI_PATH}/rpi5 {RPI_PATH}/laptop {RPI_PATH}/shared {RPI_PATH}/.env && cd {RPI_PATH} && tar -xzf /tmp/{tar_name} && rm /tmp/{tar_name}"
         stdin, stdout, stderr = ssh.exec_command(remote_cmd)
         exit_status = stdout.channel.recv_exit_status()
         
@@ -483,21 +487,34 @@ def main():
     if PARAMIKO_AVAILABLE:
         print("  -> Password-based auth ENABLED (No manual entry required)")
 
-    if len(sys.argv) < 2:
-        print("\nUsage: python sync_rpi5.py <command>")
+    # Parse --with-models flag
+    args = sys.argv[1:]
+    with_models = "--with-models" in args
+    args = [a for a in args if a != "--with-models"]
+
+    if with_models:
+        SYNC_PATHS.extend(MODEL_PATHS)
+        print(f"\n📦 --with-models: Including models/ (~876MB)")
+    else:
+        print(f"\n⚡ Code-only sync (~1MB). Use --with-models to include models/")
+
+    if not args:
+        print("\nUsage: python sync_rpi5.py <command> [--with-models]")
         print("\nCommands:")
         print("  to-rpi      - Sync files TO RPi5 (default)")
         print("  from-rpi    - Sync files FROM RPi5 (logs, tts_recordings, memory_images)")
         print("  install     - Install dependencies on RPi5")
         print("  full        - Sync to RPi5 AND install deps")
+        print("\nFlags:")
+        print("  --with-models  Include models/ folder (~876MB)")
         print("\nSync paths:")
         for path in SYNC_PATHS:
             print(f"  - {path}")
         print("\nExamples:")
-        print("  python sync_rpi5.py full")
-        print("  python sync_rpi5.py to-rpi")
+        print("  python sync_rpi5.py to-rpi                # Code only (fast)")
+        print("  python sync_rpi5.py to-rpi --with-models  # Code + models")
 
-    command = sys.argv[1] if len(sys.argv) > 1 else "to-rpi"
+    command = args[0] if args else "to-rpi"
 
     if command == "to-rpi":
         sync_to_rpi()

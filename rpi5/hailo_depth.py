@@ -99,11 +99,11 @@ class HailoDepthEstimator:
         scale_factor: float = 1.0,
         min_distance: float = 0.3,
         max_distance: float = 20.0,
-        wall_threshold: float = 1.5,
-        stair_gradient_threshold: float = 0.3,
-        dropoff_threshold: float = 3.0,
-        approach_rate_threshold: float = 0.1,
-        alert_cooldown: float = 3.0,
+        wall_threshold: float = 2.5,
+        stair_gradient_threshold: float = 0.04,
+        dropoff_threshold: float = 2.0,
+        approach_rate_threshold: float = 0.25,
+        alert_cooldown: float = 0.5,
         vdevice=None,
     ):
         """
@@ -240,7 +240,7 @@ class HailoDepthEstimator:
             bindings.input().set_buffer(input_data)
             output_buffer = np.empty(self._infer_model.output().shape, dtype=np.float32)
             bindings.output().set_buffer(output_buffer)
-            self._configured_infer_model.run([bindings], timeout_ms=5000)
+            self._configured_infer_model.run([bindings], 5000)
             
             # Extract depth map from output buffer
             depth_map = output_buffer
@@ -412,16 +412,14 @@ class HailoDepthEstimator:
             total_pixels = strip.size
             close_ratio = close_pixels / total_pixels
 
-            if close_ratio > 0.60:
+            if close_ratio > 0.50:
                 median_dist = float(np.median(strip[strip < self.wall_threshold]))
                 
                 # Severity based on distance
-                if median_dist < 0.8:
+                if median_dist < 1.0:
                     severity = HazardSeverity.CRITICAL
-                elif median_dist < 1.2:
-                    severity = HazardSeverity.WARNING
                 else:
-                    severity = HazardSeverity.INFO
+                    severity = HazardSeverity.WARNING
 
                 hazard_key = f"wall_{direction}"
                 if not self._is_on_cooldown(hazard_key, now):
@@ -455,16 +453,16 @@ class HailoDepthEstimator:
         if self._is_on_cooldown("stairs", now) and self._is_on_cooldown("curb", now):
             return hazards
 
-        # Analyze bottom 40% of depth map (floor region)
+        # Analyze bottom 40% — metric distance for linear gradients
         floor_start = int(dh * 0.6)
-        floor_region = depth_map[floor_start:, :]
+        floor_region = dist_map[floor_start:, :]
 
         if floor_region.shape[0] < 5:
             return hazards
 
-        # Compute vertical gradient (how depth changes going down the image)
-        # Positive gradient = depth increases going down = step-down / descending
-        # Negative gradient = depth decreases going down = step-up / ascending
+        # Vertical gradient on metric distance map
+        # Positive = distance increases going down = floor drops away = step-down
+        # Negative = distance decreases going down = surface closer = step-up
         vertical_gradient = np.diff(floor_region, axis=0)
 
         # Analyze center strip (where user is walking)
@@ -606,10 +604,9 @@ class HailoDepthEstimator:
         Regions with significant depth increase (closer) that don't overlap
         with existing YOLO detections are flagged.
         """
-        hazards = []
-        
-        if self._is_on_cooldown("approaching_object", now):
-            return hazards
+        # Disabled: ego-motion (user walking) causes false positives
+        # without IMU compensation. YOLO Tier 3 handles moving objects.
+        return []
 
         prev = self._prev_depth_map
         if prev is None or prev.shape != depth_map.shape:
@@ -647,7 +644,7 @@ class HailoDepthEstimator:
         # Check if any significant approaching region remains
         approach_ratio = approach_mask.sum() / approach_mask.size
         
-        if approach_ratio > 0.03:  # At least 3% of frame is approaching
+        if approach_ratio > 0.08:  # At least 8% of frame is approaching
             # Find the centroid of the approaching region
             approaching_pixels = np.where(approach_mask)
             if len(approaching_pixels[0]) > 0:

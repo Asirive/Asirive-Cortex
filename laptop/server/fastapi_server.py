@@ -218,7 +218,8 @@ class LaptopWebSocketServer(AsyncWebSocketServer):
                  on_connect: Optional[Callable] = None,
                  on_disconnect: Optional[Callable] = None,
                  on_status: Optional[Callable] = None,
-                 on_gps_imu: Optional[Callable] = None):
+                 on_gps_imu: Optional[Callable] = None,
+                 on_safety_alert: Optional[Callable] = None):
         super().__init__(config)
         self._connection_manager = None  # Will be set when first client connects
         self._websockets = {}  # Fix: Initialize storage for raw websockets
@@ -231,6 +232,7 @@ class LaptopWebSocketServer(AsyncWebSocketServer):
         self._on_disconnect_cb = on_disconnect
         self._on_status_cb = on_status
         self._on_gps_imu_cb = on_gps_imu
+        self._on_safety_alert_cb = on_safety_alert
 
         # Register default handlers (that call our custom ones)
         self.on_connect = self._handle_connect
@@ -366,6 +368,25 @@ class LaptopWebSocketServer(AsyncWebSocketServer):
                     self._on_gps_imu_cb(data)
             except Exception as e:
                 logger.error(f"Error in GPS/IMU callback: {e}")
+
+    async def _handle_safety_alert(self, client_id: str, message: BaseMessage):
+        """Handle SAFETY_ALERT messages from RPi5."""
+        data = message.data
+        tier = data.get('tier', 0)
+        alert_type = data.get('alert_type', 'unknown')
+        distance = data.get('distance_m', 0)
+        logger.info(
+            f"Safety alert from {client_id}: "
+            f"tier={tier}, type={alert_type}, distance={distance:.1f}m"
+        )
+        if self._on_safety_alert_cb:
+            try:
+                if asyncio.iscoroutinefunction(self._on_safety_alert_cb):
+                    await self._on_safety_alert_cb(data)
+                else:
+                    self._on_safety_alert_cb(data)
+            except Exception as e:
+                logger.error(f"Error in safety alert callback: {e}")
 
     async def _handle_layer_response(self, client_id: str, message: BaseMessage):
         """Handle LAYER_RESPONSE messages from RPi5."""

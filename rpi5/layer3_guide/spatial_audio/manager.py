@@ -3,9 +3,12 @@ Project-Cortex v2.0 - Spatial Audio Manager
 
 Central orchestrator for all 3D spatial audio features.
 Manages OpenAL context, audio sources, and coordinates all subsystems:
-- Audio Beacons (navigation guidance)
-- Proximity Alerts (distance warnings)
-- Object Tracking (per-object sounds)
+- Audio Beacons (navigation guidance)  
+- Directional Safety Alerts (3D-positioned warnings from SafetyMonitor)
+
+Per-object pinging has been REMOVED. Audio is now reserved for:
+1. Safety alerts — 3D-positioned warnings for silent dangers only
+2. Navigation beacons — guidance to a target object
 
 Uses PyOpenAL with HRTF (Head-Related Transfer Function) for binaural audio
 that works with standard Bluetooth headphones.
@@ -193,6 +196,7 @@ class Detection:
     confidence: float
     bbox: Tuple[float, float, float, float]  # (x1, y1, x2, y2)
     object_id: Optional[str] = None  # For tracking across frames
+    distance_m: Optional[float] = None  # Pre-computed distance from Hailo depth NPU
 
 
 @dataclass
@@ -477,9 +481,12 @@ class SpatialAudioManager:
     
     def update_detections(self, detections: List[Detection]) -> None:
         """
-        Update audio sources based on YOLO detections.
+        Update beacon tracking based on YOLO detections.
         
-        Creates, updates, or removes audio sources to match current detections.
+        Per-object pinging has been REMOVED — safety alerts are now
+        handled by SafetyMonitor + play_directional_alert().
+        This method only tracks closest obstacle distance (for status)
+        and updates the navigation beacon if active.
         
         Args:
             detections: List of Detection objects from YOLO
@@ -488,238 +495,118 @@ class SpatialAudioManager:
             return
         
         with self._lock:
-            current_time = time.time()
-            detected_ids = set()
-            
-            # Update closest obstacle distance for proximity alerts
+            # Update closest obstacle distance for status reporting
             self._closest_obstacle_distance = float('inf')
             
             for detection in detections:
-                # Generate STABLE object ID from bbox center (not memory address!)
-                # This ensures the same object across frames has the same ID
-                cx = int((detection.bbox[0] + detection.bbox[2]) / 2 / 50) * 50  # Round to 50px grid
+                # Convert bbox to 3D position
+                cx = int((detection.bbox[0] + detection.bbox[2]) / 2 / 50) * 50
                 cy = int((detection.bbox[1] + detection.bbox[3]) / 2 / 50) * 50
                 object_id = detection.object_id or f"{detection.class_name}_{cx}_{cy}"
-                detected_ids.add(object_id)
                 
-                # Convert bbox to 3D position
                 position = self.position_calc.bbox_to_3d(
                     detection.bbox,
                     object_class=detection.class_name,
-                    object_id=object_id
+                    object_id=object_id,
+                    hailo_distance_m=detection.distance_m
                 )
                 
                 # Track closest obstacle
                 if position.distance_meters and position.distance_meters < self._closest_obstacle_distance:
                     self._closest_obstacle_distance = position.distance_meters
                 
-                # Update or create audio source
-                if object_id in self._sources:
-                    # EXISTING object - update position and ping interval
-                    self._update_source_position(object_id, position)
-                    # Debug: Show that we're UPDATING (not recreating)
-                    logger.debug(f"📍 UPDATE {object_id}: dist={position.distance_meters:.1f}m")
-                elif len(self._sources) < self.max_sources:
-                    # NEW object - create audio source
-                    self._create_source(object_id, detection.class_name, position)
-                    logger.info(f"🆕 CREATE {object_id}: dist={position.distance_meters:.1f}m")
-                
                 # Update beacon if tracking this object
                 if (self._beacon_active and 
                     self._beacon_target_class and 
                     detection.class_name.lower() == self._beacon_target_class.lower()):
                     self._update_beacon_position(position)
-            
-            # Remove sources for objects no longer detected
-            stale_ids = set(self._sources.keys()) - detected_ids
-            for stale_id in stale_ids:
-                self._remove_source(stale_id)
-            
-            # Update proximity alert level
-            self._update_proximity_alert()
-    
-    def _create_source(self, object_id: str, object_class: str, position: Position3D) -> None:
+
+    def play_directional_alert(
+        self,
+        position: Tuple[float, float, float],
+        alert_type: str,
+        urgency: str = "warning",
+    ) -> None:
         """
-        Create a new audio source for an object with comfort-aware settings.
+        Play a single 3D-positioned warning sound at the threat location.
         
-        CRITICAL FOR HRTF SPATIALIZATION:
-        - Source must be MONO (stereo bypasses HRTF)
-        - Position must be in METERS for perceivable effect
-        - Reference distance should be ~1.0m
-        - Source position is set relative to listener at origin
+        Called by SafetyMonitor when a safety alert is triggered.
+        The sound is a one-shot ping (not looping) positioned in 3D space
+        so the user perceives the direction of the threat via HRTF.
+        
+        Args:
+            position: (x, y, z) in metres — OpenAL coordinates
+            alert_type: Hazard key (e.g. "wall", "stairs_down", "fire hydrant")
+            urgency: "critical", "warning", or "notice"
         """
-        if not OPENAL_AVAILABLE:
+        if not self._running or not OPENAL_AVAILABLE:
             return
         
-        # Check object sound cooldown (rest period between new object sounds)
-        current_time = time.time() * 1000  # Convert to ms
-        if object_class in self._last_object_sound_times:
-            elapsed = current_time - self._last_object_sound_times[object_class]
-            if elapsed < self.comfort.object_sound_cooldown_ms:
-                return  # Skip - still in cooldown
-        
-        try:
-            # Get sound file for object class (MUST be MONO for HRTF!)
-            sound_file = self._get_sound_for_class(object_class)
-            
-            if not sound_file or not os.path.exists(sound_file):
-                logger.debug(f"No sound file for class '{object_class}'")
-                return
-            
-            # Load buffer (cached)
-            buffer = self._load_buffer(sound_file)
-            if buffer is None:
-                return
-            
-            # Create source
-            source = Source(buffer)
-            
-            # CRITICAL: Set 3D position FIRST before other properties
-            # Position is now in METERS (e.g., x=-1.5 = 1.5 meters to the left)
-            source.set_position(position.as_tuple())
-            
-            # IMPORTANT: Use interval pinging, NOT continuous looping!
-            # Continuous sounds cause listener fatigue. Interval pings don't.
-            # The ping rate is controlled by distance (closer = faster pings)
-            source.set_looping(False)  # We manually trigger pings based on distance
-            
-            # Apply comfort settings: volume (stereo_spread is NOT a volume factor!)
-            # stereo_spread is for optional crossfeed effects, not volume reduction
-            effective_volume = (
-                self.comfort.master_volume * 
-                self.comfort.object_volume
-            )
-            source.set_gain(effective_volume)
-            
-            # CRITICAL: Distance attenuation for realistic 3D audio
-            # reference_distance = distance at which gain is 1.0 (full volume)
-            # rolloff_factor = how quickly volume decreases with distance
-            # With inverse distance: gain = ref_dist / (ref_dist + rolloff * (dist - ref_dist))
-            # HRTF RESEARCH: Use smaller ref_distance for more pronounced positioning
-            source.set_reference_distance(0.5)  # Full volume at 0.5 meter (closer = better HRTF)
-            source.set_rolloff_factor(1.5)      # Slightly faster rolloff for distance perception
-            source.set_max_distance(12.0)       # Max attenuation distance
-            
-            # Apply pitch based on distance if enabled
-            if self.comfort.pitch_distance_mapping and position.distance_meters:
-                pitch = self._calculate_pitch_for_distance(position.distance_meters)
-                source.set_pitch(pitch)
-            
-            # Calculate initial ping interval based on distance
-            ping_interval = self._get_object_ping_interval(position.distance_meters)
-            
-            # Start playing immediately (first ping)
-            source.play()
-            
-            # Update cooldown tracking
-            self._last_object_sound_times[object_class] = current_time
-            
-            # Store source info with ping timing
-            self._sources[object_id] = AudioSourceInfo(
-                source=source,
-                buffer=buffer,
-                object_class=object_class,
-                position=position,
-                created_at=time.time(),
-                last_updated=time.time(),
-                last_ping_time=current_time,
-                ping_interval_ms=ping_interval
-            )
-            
-            logger.debug(f"🔊 Created 3D source for {object_class} at {position} (ping every {ping_interval}ms)")
-            
-        except Exception as e:
-            logger.error(f"Failed to create audio source: {e}")
-    
-    def _get_object_ping_interval(self, distance_meters: Optional[float]) -> float:
-        """
-        Calculate ping interval for object sounds based on distance.
-        
-        CLOSER = FASTER PINGS (more urgent feedback)
-        This matches user expectations: rapid beeping means close!
-        
-        Distance thresholds mirror beacon intervals from ComfortSettings.
-        """
-        if distance_meters is None:
-            return 1500.0  # Default: moderate interval
-        
-        # Use same thresholds as beacon but slightly slower for objects
-        # (objects are less urgent than navigation targets)
-        # NOTE: Using <= for close thresholds to ensure boundary values get faster pings
-        if distance_meters <= 0.5:
-            return 150.0   # Very close: rapid pings (almost continuous)
-        elif distance_meters <= 1.0:
-            return 300.0   # Close: fast pings
-        elif distance_meters <= 2.0:
-            return 600.0   # Near: moderate pings
-        elif distance_meters <= 4.0:
-            return 1200.0  # Mid-range: slow pings
-        else:
-            return 2000.0  # Far: very slow pings
+        with self._lock:
+            try:
+                # Generate procedural alert tone
+                sound_gen = get_sound_generator()
+                
+                # Tone properties vary by urgency
+                freq_map = {"critical": 1100, "warning": 880, "notice": 660}
+                dur_map = {"critical": 200, "warning": 150, "notice": 100}
+                amp_map = {"critical": 0.9, "warning": 0.7, "notice": 0.5}
+                
+                freq = freq_map.get(urgency, 880)
+                dur = dur_map.get(urgency, 150)
+                amp = amp_map.get(urgency, 0.7)
+                
+                wav_bytes = sound_gen.generate_beacon_ping(frequency=freq, duration_ms=dur)
+                temp_path = self._get_temp_sound_path(f"safety_{urgency}.wav")
+                sound_gen.save_to_file(wav_bytes, temp_path)
+                
+                if not os.path.exists(temp_path):
+                    return
+                
+                buffer = self._load_buffer(temp_path)
+                if buffer is None:
+                    return
+                
+                # Reuse or create alert source
+                if self._alert_source:
+                    try:
+                        self._alert_source.stop()
+                        self._alert_source.destroy()
+                    except Exception:
+                        pass
+                
+                source = Source(buffer)
+                source.set_position(position)
+                source.set_looping(False)
+                
+                # Volume: critical is louder for safety
+                vol = self.comfort.master_volume * amp
+                if urgency == "critical":
+                    vol = min(1.0, vol * 1.5)
+                source.set_gain(vol)
+                
+                # Distance attenuation
+                source.set_reference_distance(0.5)
+                source.set_rolloff_factor(1.5)
+                source.set_max_distance(12.0)
+                
+                source.play()
+                self._alert_source = source
+                
+                logger.debug(f"🔊 Safety alert: {alert_type} @ {position} ({urgency})")
+                
+            except Exception as e:
+                logger.error(f"Failed to play directional alert: {e}")
     
     def _calculate_pitch_for_distance(self, distance_meters: float) -> float:
         """
         Calculate pitch based on distance (intuitive: closer = higher pitch).
-        
-        This is more intuitive for users than arbitrary pitch changes.
         """
-        # Map distance to pitch: 0m = max_pitch, 10m = min_pitch
         max_dist = 10.0
-        normalized = min(distance_meters / max_dist, 1.0)  # 0.0 (close) to 1.0 (far)
-        
+        normalized = min(distance_meters / max_dist, 1.0)
         pitch_range = self.comfort.max_pitch - self.comfort.min_pitch
         pitch = self.comfort.max_pitch - (normalized * pitch_range)
-        
         return pitch
-    
-    def _update_source_position(self, object_id: str, position: Position3D) -> None:
-        """
-        Update the position of an existing audio source.
-        
-        Also handles distance-based ping timing:
-        - Recalculates ping interval based on new distance
-        - Triggers ping if enough time has elapsed
-        """
-        if object_id not in self._sources:
-            return
-        
-        source_info = self._sources[object_id]
-        source_info.position = position
-        source_info.last_updated = time.time()
-        
-        try:
-            # Update 3D position
-            source_info.source.set_position(position.as_tuple())
-            
-            # Recalculate ping interval based on distance
-            # This makes pings faster as objects get closer!
-            new_interval = self._get_object_ping_interval(position.distance_meters)
-            source_info.ping_interval_ms = new_interval
-            
-            # Update pitch based on distance
-            if self.comfort.pitch_distance_mapping and position.distance_meters:
-                pitch = self._calculate_pitch_for_distance(position.distance_meters)
-                source_info.source.set_pitch(pitch)
-            
-            # Check if it's time for the next ping
-            current_time_ms = time.time() * 1000
-            elapsed = current_time_ms - source_info.last_ping_time
-            
-            if elapsed >= source_info.ping_interval_ms:
-                # Time for next ping - play the sound
-                source_info.source.stop()  # Stop any ongoing playback
-                source_info.source.play()  # Start new ping
-                source_info.last_ping_time = current_time_ms
-                
-                # Debug: Log ping events so user can see rate changes
-                dist = position.distance_meters or 0
-                logger.debug(
-                    f"🔔 PING: {source_info.object_class} "
-                    f"dist={dist:.1f}m interval={source_info.ping_interval_ms:.0f}ms"
-                )
-                
-        except Exception as e:
-            logger.error(f"Failed to update source position: {e}")
     
     def _remove_source(self, object_id: str) -> None:
         """Remove an audio source when object leaves frame."""
@@ -758,58 +645,6 @@ class SpatialAudioManager:
         except Exception as e:
             logger.error(f"Failed to load audio file {sound_file}: {e}")
             return None
-    
-    def _get_sound_for_class(self, object_class: str) -> Optional[str]:
-        """
-        Get the sound file path for an object class.
-        
-        Uses PROCEDURAL SOUND GENERATION - no external WAV files needed!
-        Generates unique frequency-based tones for each object class.
-        """
-        # Use procedural sound generator
-        sound_gen = get_sound_generator()
-        
-        try:
-            # Generate procedural sound bytes for this object class
-            # CRITICAL: Use SHORT sounds (100ms) for distinct, perceivable pings!
-            # Previous 500ms was too long - overlapped with fast ping intervals,
-            # making rate changes imperceptible to the user.
-            # 100ms = crisp, identifiable "ping" that works with 150ms+ intervals
-            # amplitude=0.8 for louder, more noticeable pings (was 0.4 default)
-            wav_bytes = sound_gen.generate_object_tone(object_class, duration_ms=100, amplitude=0.8)
-            
-            # Save to temp file for OpenAL to load
-            temp_path = self._get_temp_sound_path(f"object_{object_class.lower()}_ping_loud.wav")
-            sound_gen.save_to_file(wav_bytes, temp_path)
-            
-            logger.debug(f"Using procedural sound for '{object_class}'")
-            return temp_path
-        except Exception as e:
-            logger.warning(f"Failed to generate procedural sound: {e}")
-        
-        # Fallback: Try loading from assets if they exist
-        sound_map = {
-            "person": "objects/person.wav",
-            "chair": "objects/furniture.wav",
-            "car": "objects/vehicle.wav",
-            "bicycle": "objects/bicycle.wav",
-            "door": "objects/door.wav",
-            "stairs": "objects/stairs.wav",
-        }
-        
-        object_class_lower = object_class.lower()
-        
-        if object_class_lower in sound_map:
-            sound_path = self._assets_path / sound_map[object_class_lower]
-            if sound_path.exists():
-                return str(sound_path)
-        
-        # Try default sound
-        default_path = self._assets_path / "objects" / "generic.wav"
-        if default_path.exists():
-            return str(default_path)
-        
-        return None
     
     def _get_temp_sound_path(self, filename: str) -> str:
         """Get path for temporary sound file."""

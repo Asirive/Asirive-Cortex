@@ -116,6 +116,8 @@ class IntentRouter:
             "where am i", "location", "gps", 
             # Navigation
             "navigate", "go to", "take me", "direction", "route",
+            # Bus
+            "bus stop", "next bus", "bus arrival", "what bus", "which bus",
             # Memory
             "remember", "memory", "save",
             # SPATIAL AUDIO: Object localization queries (NEW!)

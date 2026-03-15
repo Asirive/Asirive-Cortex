@@ -32,6 +32,7 @@ class MessageType(str, Enum):
     MEMORY_EVENT = "MEMORY_EVENT"
     STATUS = "STATUS"
     LAYER_RESPONSE = "LAYER_RESPONSE"
+    SAFETY_ALERT = "SAFETY_ALERT"
 
     # Laptop -> RPi5 (Downstream)
     COMMAND = "COMMAND"
@@ -191,12 +192,16 @@ class IMUData:
     accelerometer: List[float]  # [x, y, z]
     gyroscope: List[float]  # [x, y, z]
     magnetometer: Optional[List[float]] = None
+    euler: Optional[List[float]] = None  # [heading, roll, pitch] degrees
+    calibration: Optional[List[int]] = None  # [sys, gyro, accel, mag] 0-3
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "accelerometer": self.accelerometer,
             "gyroscope": self.gyroscope,
             "magnetometer": self.magnetometer,
+            "euler": self.euler,
+            "calibration": self.calibration,
         }
 
     @classmethod
@@ -205,6 +210,8 @@ class IMUData:
             accelerometer=data["accelerometer"],
             gyroscope=data["gyroscope"],
             magnetometer=data.get("magnetometer"),
+            euler=data.get("euler"),
+            calibration=data.get("calibration"),
         )
 
 

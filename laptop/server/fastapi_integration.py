@@ -45,6 +45,7 @@ class FastAPISignals(QObject):
     video_streaming_changed = pyqtSignal(bool)  # enabled
     status_update = pyqtSignal(str, str)  # status, message (e.g. MODE_CHANGE, PRODUCTION)
     gps_imu_update = pyqtSignal(dict)  # GPS/IMU sensor data
+    safety_alert = pyqtSignal(dict)  # Safety alert from SafetyMonitor
 
 
 # ============================================================================
@@ -117,6 +118,14 @@ class FastAPIIntegration:
         self.signals.client_disconnected.emit(device_id)
         self.signals.system_log.emit(f"Device disconnected: {device_id} ({reason})", "WARNING")
 
+    def _on_gps_imu(self, data: dict):
+        """Handle GPS/IMU sensor data from RPi5"""
+        self.signals.gps_imu_update.emit(data)
+
+    def _on_safety_alert(self, data: dict):
+        """Handle safety alert from RPi5 SafetyMonitor"""
+        self.signals.safety_alert.emit(data)
+
     def start_server(self, host: str = None, port: int = None) -> bool:
         """
         Start FastAPI server in background thread
@@ -146,7 +155,9 @@ class FastAPIIntegration:
                 on_metrics=self._on_metrics,
                 on_detection=self._on_detection,
                 on_connect=self._on_connect,
-                on_disconnect=self._on_disconnect
+                on_disconnect=self._on_disconnect,
+                on_gps_imu=self._on_gps_imu,
+                on_safety_alert=self._on_safety_alert
             )
 
             # CRITICAL FIX: FastAPIServer doesn't have start_background method

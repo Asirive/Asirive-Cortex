@@ -32,7 +32,7 @@ class ConnectionRefused(CortexConnectionError):
         self.port = port
 
 
-class DisconnectedError(ConnectionError):
+class DisconnectedError(CortexConnectionError):
     """Disconnected unexpectedly."""
     def __init__(self, reason: str = "Unknown", details: dict = None):
         super().__init__(f"Disconnected: {reason}", details)
@@ -78,7 +78,11 @@ class RateLimitError(CortexException):
     def __init__(self, client_id: str, limit: int, details: dict = None):
         super().__init__(f"Rate limit exceeded for {client_id} (limit: {limit}/s)", details)
         self.client_id = client_id
-        self.limit = limit
+
+
+# Aliases for backward compatibility
+ConnectionError = CortexConnectionError
+ConnectionTimeoutError = ConnectionTimeout
 
 
 class HeartbeatError(CortexException):
@@ -151,8 +155,3 @@ class AuthenticationError(CortexException):
     """Authentication errors."""
     def __init__(self, message: str = "Authentication failed", details: dict = None):
         super().__init__(message, details)
-
-
-# Alias for common name used in base_client.py
-# CRITICAL FIX: Renamed to avoid shadowing Python's built-in TimeoutError
-ConnectionTimeoutError = ConnectionTimeout
