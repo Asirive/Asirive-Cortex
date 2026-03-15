@@ -400,6 +400,8 @@ class HybridMemoryManager:
         """
         if not self.supabase_client:
             await self.init_supabase()
+        if not self.supabase_client:
+            return []
 
         result = await self.supabase_client.table('detections')\
             .select('*')\
@@ -419,6 +421,8 @@ class HybridMemoryManager:
         """
         if not self.supabase_client:
             await self.init_supabase()
+        if not self.supabase_client:
+            return []
 
         result = await self.supabase_client.table('adaptive_prompts')\
             .select('*')\
@@ -454,6 +458,9 @@ class HybridMemoryManager:
         """
         if not self.supabase_client:
             await self.init_supabase()
+        if not self.supabase_client:
+            logger.debug("Supabase unavailable, skipping query store")
+            return
 
         await self.supabase_client.table('queries').insert({
             'device_id': self.device_id,
@@ -494,6 +501,9 @@ class HybridMemoryManager:
         """
         if not self.supabase_client:
             await self.init_supabase()
+        if not self.supabase_client:
+            logger.debug("Supabase unavailable, skipping system log store")
+            return
 
         await self.supabase_client.table('system_logs').insert({
             'device_id': self.device_id,

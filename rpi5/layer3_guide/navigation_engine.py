@@ -14,6 +14,7 @@ import json
 import logging
 import math
 import sqlite3
+import threading
 import time
 import urllib.request
 import urllib.parse
@@ -273,6 +274,28 @@ class NavigationEngine:
         # Route cache database
         self._cache_db_path = cache_db_path
         self._init_cache_db()
+
+        # Persistent event loop for the navigation loop task
+        self._event_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._loop_thread: Optional[threading.Thread] = None
+        self._ensure_event_loop()
+
+    def _ensure_event_loop(self):
+        """Create a persistent background event loop for nav tasks."""
+        if self._event_loop and self._event_loop.is_running():
+            return
+        self._event_loop = asyncio.new_event_loop()
+        self._loop_thread = threading.Thread(
+            target=self._run_event_loop,
+            name="nav-engine-loop",
+            daemon=True,
+        )
+        self._loop_thread.start()
+
+    def _run_event_loop(self):
+        """Run the persistent event loop (blocking, on background thread)."""
+        asyncio.set_event_loop(self._event_loop)
+        self._event_loop.run_forever()
 
         logger.info("NavigationEngine initialized")
 
@@ -602,14 +625,21 @@ class NavigationEngine:
             "waypoints": len(route.waypoints),
         })
 
-        # Start the navigation loop
-        self._nav_task = asyncio.create_task(self._navigation_loop())
+        # Start the navigation loop on the persistent event loop
+        self._ensure_event_loop()
+        future = asyncio.run_coroutine_threadsafe(
+            self._navigation_loop(), self._event_loop
+        )
+        self._nav_future = future
         logger.info(f"Navigation started: {origin} → {destination}")
         return True
 
     async def stop_navigation(self):
         """Stop the current navigation session."""
         self._running = False
+        if hasattr(self, '_nav_future') and self._nav_future:
+            self._nav_future.cancel()
+            self._nav_future = None
         if self._nav_task:
             self._nav_task.cancel()
             try:
@@ -861,7 +891,7 @@ class NavigationEngine:
         self._last_voice_time = time.time()
         if self.tts:
             try:
-                await self.tts.speak_async(text, engine_override="kokoro")
+                await self.tts.speak_async(text)
             except Exception as e:
                 logger.warning(f"TTS failed: {e}")
         else:

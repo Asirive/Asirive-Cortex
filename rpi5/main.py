@@ -1940,7 +1940,7 @@ class CortexSystem:
                         logger.debug(f"Bus detection update error: {e}")
 
                 # 2f. Scene change detection → proactive Gemini narration
-                if self.scene_detector and self.layer2:
+                if self.scene_detector and self.layer2 and self.layer2.is_running:
                     try:
                         avg_depth = None
                         if depth_map is not None:
@@ -1969,14 +1969,21 @@ class CortexSystem:
                                 context_parts.append(f"[DEPTH] avg={avg_depth:.1f}m")
 
                             context_str = "\n".join(context_parts)
-                            # Send video frame + context to Gemini for proactive narration
+                            # Send video frame + explicit narration prompt to Gemini
                             if self.layer2 and self.layer2.is_running:
+                                # Ensure audio player is ready for Gemini's response
+                                if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
+                                    self.gemini_audio_player.start()
                                 # Send current frame so Gemini can SEE what triggered the change
                                 if frame is not None:
                                     from PIL import Image
                                     pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
                                     self.layer2.send_video(pil_frame)
-                                self.layer2.send_text(f"[CONTEXT]\n{context_str}")
+                                # Send as explicit narration request, not just silent context
+                                self.layer2.send_text(
+                                    f"[SCENE_CHANGE] Trigger: {trigger}. "
+                                    f"Briefly describe what you see that's new or important for a blind user.\n{context_str}"
+                                )
                                 if self.scene_detector:
                                     self.scene_detector.record_speech()
                     except Exception as e:
@@ -2083,13 +2090,13 @@ class CortexSystem:
                     )
                     last_metrics_time = time.time()
 
-                # 6. Stream GPS/IMU sensor data (every 1s)
-                if time.time() - last_sensor_time > 1.0 and self.ws_client and self.ws_client.is_connected:
+                # 6. Stream GPS/IMU sensor data & update TUI (every 1s)
+                if time.time() - last_sensor_time > 1.0:
                     try:
                         gps_fix = self.gps.get_fix() if self.gps else None
                         imu_reading = self.imu.get_reading() if self.imu else None
 
-                        # Update TUI status display with sensor data
+                        # Update TUI status display with sensor data (always, even without WS)
                         if self.status_display:
                             env_label = "unknown"
                             if self.depth_estimator and hasattr(self.depth_estimator, '_is_indoor'):
@@ -2132,7 +2139,7 @@ class CortexSystem:
                             except Exception as e:
                                 logger.error(f"🧭 [NAV] Deferred navigation error: {e}")
 
-                        if gps_fix or imu_reading:
+                        if self.ws_client and self.ws_client.is_connected and (gps_fix or imu_reading):
                             # Determine current environment
                             env_label = "unknown"
                             if self.depth_estimator and hasattr(self.depth_estimator, '_is_indoor'):
@@ -2153,7 +2160,7 @@ class CortexSystem:
                                 calibration=[imu_reading.cal_system, imu_reading.cal_gyro, imu_reading.cal_accel, imu_reading.cal_mag] if imu_reading else None,
                                 environment=env_label,
                             )
-                        else:
+                        elif self.ws_client and self.ws_client.is_connected:
                             # Always send status even without sensor data so dashboard stays updated
                             env_label = "unknown"
                             if self.depth_estimator and hasattr(self.depth_estimator, '_is_indoor'):
