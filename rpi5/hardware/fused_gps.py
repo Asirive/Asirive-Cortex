@@ -102,9 +102,9 @@ class FusedGPSHandler:
             self._set_source("m8u")
             return hw_fix
 
-        # Fallback to phone
+        # Fallback to phone (accept any fix with valid coordinates)
         phone_fix = self._phone.get_fix() if self._phone else None
-        if phone_fix and phone_fix.fix_quality > 0:
+        if phone_fix and (phone_fix.latitude != 0.0 or phone_fix.longitude != 0.0):
             self._set_source("phone")
             return phone_fix
 

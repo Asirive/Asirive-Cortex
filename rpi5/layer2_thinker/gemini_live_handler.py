@@ -383,7 +383,7 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
             bool: True if sent successfully, False otherwise
         """
         if not self.is_connected or not self.session:
-            logger.error("❌ Not connected to Live API")
+            logger.debug("Audio send skipped: not connected")
             return False
 
         try:
@@ -417,7 +417,7 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
             bool: True if sent successfully, False otherwise
         """
         if not self.is_connected or not self.session:
-            logger.error("❌ Not connected to Live API")
+            logger.debug("Video send skipped: not connected")
             return False
         
         try:
@@ -445,7 +445,7 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
             bool: True if sent successfully, False otherwise
         """
         if not self.is_connected or not self.session:
-            logger.error("❌ Not connected to Live API")
+            logger.debug("Text send skipped: not connected")
             return False
 
         try:
@@ -549,31 +549,49 @@ class GeminiLiveManager:
         logger.info("✅ Background event loop started")
     
     def _run_event_loop(self):
-        """Run asyncio event loop in background thread."""
+        """Run asyncio event loop in background thread with auto-reconnection."""
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         
+        reconnect_delay = 3.0  # Start at 3 seconds
+        max_delay = 30.0
+        
         try:
-            # Start audio processing task
-            audio_task = self.loop.create_task(self._process_audio_queue())
+            while self.is_running:
+                audio_task = None
+                try:
+                    # Start audio processing task
+                    audio_task = self.loop.create_task(self._process_audio_queue())
+                    
+                    # Connect to Live API (blocks until disconnection)
+                    self.loop.run_until_complete(self.handler.connect())
+                    
+                    # Connection closed — cancel audio task
+                    logger.warning("🔌 Gemini connection closed, will reconnect...")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Gemini event loop error: {e}")
+                finally:
+                    if audio_task:
+                        audio_task.cancel()
+                        try:
+                            self.loop.run_until_complete(audio_task)
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                
+                # Reconnect if still supposed to be running
+                if not self.is_running:
+                    break
+                
+                logger.info(f"🔄 Gemini reconnecting in {reconnect_delay:.0f}s...")
+                import time
+                time.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 1.5, max_delay)
+                
+                # Reset handler connection state for fresh connect
+                self.handler.is_connected = False
+                self.handler.session = None
             
-            # Connect to Live API (this blocks until disconnection)
-            # The handler.connect() method now handles its own receive loop
-            self.loop.run_until_complete(self.handler.connect())
-            
-            # If we reach here, connection closed
-            logger.info("🔌 Connection closed, stopping audio processing")
-            
-            # Cancel audio task
-            audio_task.cancel()
-            
-            try:
-                self.loop.run_until_complete(audio_task)
-            except asyncio.CancelledError:
-                pass
-            
-        except Exception as e:
-            logger.error(f"❌ Event loop error: {e}")
         finally:
             self.loop.close()
             self.is_running = False

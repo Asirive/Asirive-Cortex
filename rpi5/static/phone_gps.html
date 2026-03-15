@@ -41,17 +41,17 @@
         <p>Lng: <span id="lng">—</span></p>
         <p>Accuracy: <span id="acc">—</span></p>
         <p>Speed: <span id="spd">—</span></p>
-        <p>Updates: <span id="cnt">0</span></p>
+        <p>Sent: <span id="cnt">0</span> | Failed: <span id="fail">0</span></p>
     </div>
     <button id="btn" onclick="toggle()">START</button>
 
     <script>
-        let ws = null;
         let watchId = null;
         let count = 0;
+        let failCount = 0;
         let running = false;
         let gotFirstFix = false;
-        let reconnectTimer = null;
+        let sendInProgress = false;
 
         const $status = document.getElementById('status');
         const $lat = document.getElementById('lat');
@@ -59,7 +59,10 @@
         const $acc = document.getElementById('acc');
         const $spd = document.getElementById('spd');
         const $cnt = document.getElementById('cnt');
+        const $fail = document.getElementById('fail');
         const $btn = document.getElementById('btn');
+
+        const POST_URL = location.protocol + '//' + location.host + '/gps/update';
 
         function setStatus(msg, cls) {
             $status.textContent = msg;
@@ -68,24 +71,6 @@
 
         function toggle() {
             if (running) { stop(); } else { start(); }
-        }
-
-        function connectWS() {
-            if (ws && ws.readyState <= 1) return;
-            const wsProt = location.protocol === 'https:' ? 'wss' : 'ws';
-            const wsUrl = wsProt + '://' + location.hostname + ':' + location.port + '/ws';
-            ws = new WebSocket(wsUrl);
-            ws.onopen = function() {
-                if (!gotFirstFix) {
-                    setStatus('Connected — waiting for GPS...', 'warn');
-                }
-            };
-            ws.onclose = function() {
-                if (running) {
-                    reconnectTimer = setTimeout(connectWS, 2000);
-                }
-            };
-            ws.onerror = function() {};
         }
 
         function start() {
@@ -99,7 +84,14 @@
             $btn.textContent = 'STOP';
             setStatus('Starting GPS...', 'warn');
 
-            connectWS();
+            // Also do a one-shot getCurrentPosition for fastest first fix
+            navigator.geolocation.getCurrentPosition(
+                onPosition,
+                function() {},  // ignore error for one-shot
+                { enableHighAccuracy: true, maximumAge: 60000, timeout: 5000 }
+            );
+
+            // Start continuous watch
             startGeoWatch();
         }
 
@@ -112,8 +104,8 @@
                 onError,
                 {
                     enableHighAccuracy: true,
-                    maximumAge: 10000,
-                    timeout: 30000
+                    maximumAge: 2000,
+                    timeout: 10000
                 }
             );
         }
@@ -124,22 +116,14 @@
                 navigator.geolocation.clearWatch(watchId);
                 watchId = null;
             }
-            if (reconnectTimer) {
-                clearTimeout(reconnectTimer);
-                reconnectTimer = null;
-            }
-            if (ws) {
-                ws.close();
-                ws = null;
-            }
             gotFirstFix = false;
             $btn.textContent = 'START';
             setStatus('Stopped', 'warn');
         }
 
         function onPosition(pos) {
-            const c = pos.coords;
-            const data = {
+            var c = pos.coords;
+            var data = {
                 lat: c.latitude,
                 lng: c.longitude,
                 alt: c.altitude,
@@ -152,23 +136,56 @@
             $lng.textContent = c.longitude.toFixed(6);
             $acc.textContent = (c.accuracy || 0).toFixed(0) + 'm';
             $spd.textContent = c.speed ? (c.speed * 3.6).toFixed(1) + ' km/h' : '—';
-            count++;
-            $cnt.textContent = count;
 
             gotFirstFix = true;
             setStatus('Cortex GPS Active \u2705', 'ok');
 
-            if (!ws || ws.readyState > 1) { connectWS(); }
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify(data));
-            }
+            // Send via HTTP POST (fire-and-forget, non-blocking)
+            sendGPS(data);
+        }
+
+        function sendGPS(data) {
+            // Don't queue up requests if one is in flight
+            if (sendInProgress) return;
+            sendInProgress = true;
+
+            fetch(POST_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            })
+            .then(function(resp) {
+                sendInProgress = false;
+                if (resp.ok) {
+                    count++;
+                    $cnt.textContent = count;
+                } else {
+                    failCount++;
+                    $fail.textContent = failCount;
+                }
+            })
+            .catch(function() {
+                sendInProgress = false;
+                failCount++;
+                $fail.textContent = failCount;
+                if (failCount > 5 && count === 0) {
+                    setStatus('Cannot reach Cortex — check connection', 'err');
+                }
+            });
         }
 
         function onError(err) {
             if (!running) return;
             if (err.code === 3) {
+                // Timeout — retry with lower accuracy for faster fix
                 if (!gotFirstFix) {
                     setStatus('Acquiring GPS signal...', 'warn');
+                    // Try with relaxed settings for faster initial fix
+                    navigator.geolocation.getCurrentPosition(
+                        onPosition,
+                        function() {},
+                        { enableHighAccuracy: false, maximumAge: 60000, timeout: 5000 }
+                    );
                 }
                 startGeoWatch();
             } else if (err.code === 1) {
@@ -187,7 +204,6 @@
         document.addEventListener('visibilitychange', function() {
             if (!running) return;
             if (!document.hidden) {
-                connectWS();
                 startGeoWatch();
             }
         });

@@ -1,12 +1,12 @@
 """
-Phone GPS Receiver - Browser Geolocation → WebSocket → RPi5
+Phone GPS Receiver - Browser Geolocation → HTTP POST → RPi5
 
-Runs a lightweight WebSocket server that receives GPS coordinates from
-a phone's browser (Geolocation API).  The phone connects by opening
-http://<rpi5-ip>:8766/gps in any mobile browser.
+Runs a lightweight HTTPS server (aiohttp) that receives GPS coordinates
+from a phone's browser (Geolocation API).  The phone connects by opening
+https://<rpi5-ip>:8766/gps in any mobile browser.
 
 Data flows:
-    Phone Browser → WebSocket JSON → PhoneGPSReceiver → GPSFix
+    Phone Browser → HTTP POST /gps/update → PhoneGPSReceiver → GPSFix
 
 Author: Haziq (@IRSPlays)
 Date: January 2026
@@ -26,19 +26,11 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 try:
-    import websockets
-    import websockets.server
-    WEBSOCKETS_AVAILABLE = True
-except ImportError:
-    WEBSOCKETS_AVAILABLE = False
-    logger.warning("⚠️ websockets not installed — phone GPS unavailable")
-
-try:
     from aiohttp import web
     AIOHTTP_AVAILABLE = True
 except ImportError:
     AIOHTTP_AVAILABLE = False
-    logger.info("ℹ️ aiohttp not installed — phone GPS HTML served via websockets only")
+    logger.warning("⚠️ aiohttp not installed — phone GPS unavailable")
 
 # Re-use the same GPSFix NamedTuple from gps_handler
 from rpi5.hardware.gps_handler import GPSFix
@@ -46,10 +38,10 @@ from rpi5.hardware.gps_handler import GPSFix
 
 class PhoneGPSReceiver:
     """
-    WebSocket server that receives GPS from a phone browser.
+    HTTP server that receives GPS from a phone browser.
 
     The phone opens a simple HTML page that uses navigator.geolocation
-    and streams {lat, lng, alt, speed, heading, accuracy} at ~1 Hz.
+    and POSTs {lat, lng, alt, speed, heading, accuracy} at ~1 Hz.
 
     Usage:
         receiver = PhoneGPSReceiver(port=8766)
@@ -70,6 +62,7 @@ class PhoneGPSReceiver:
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._connected_phones: int = 0
+        self._update_count: int = 0
 
         # Path to the HTML file served to phones
         self._html_path = Path(__file__).parent.parent / "static" / "phone_gps.html"
@@ -84,9 +77,9 @@ class PhoneGPSReceiver:
     # ------------------------------------------------------------------
 
     def start(self) -> bool:
-        """Start the WebSocket server in a background thread."""
-        if not WEBSOCKETS_AVAILABLE:
-            logger.warning("📱 Phone GPS: websockets not installed, skipping")
+        """Start the HTTP server in a background thread."""
+        if not AIOHTTP_AVAILABLE:
+            logger.warning("📱 Phone GPS: aiohttp not installed, skipping")
             return False
 
         if self._running:
@@ -103,7 +96,7 @@ class PhoneGPSReceiver:
         return True
 
     def stop(self) -> None:
-        """Stop the WebSocket server."""
+        """Stop the HTTP server."""
         self._running = False
         if self._loop:
             self._loop.call_soon_threadsafe(self._loop.stop)
@@ -128,11 +121,16 @@ class PhoneGPSReceiver:
 
     @property
     def is_connected(self) -> bool:
-        """True if at least one phone is connected."""
+        """True if we received a GPS update recently."""
         return self._connected_phones > 0
 
+    @property
+    def update_count(self) -> int:
+        """Total number of GPS updates received."""
+        return self._update_count
+
     # ------------------------------------------------------------------
-    # Internal — WebSocket server
+    # Internal — HTTP server (aiohttp)
     # ------------------------------------------------------------------
 
     def _run_server(self) -> None:
@@ -174,52 +172,59 @@ class PhoneGPSReceiver:
             return None
 
     async def _serve(self) -> None:
-        """Run the WebSocket + HTTP server (HTTPS if openssl available)."""
+        """Run the aiohttp HTTPS server."""
         ssl_ctx = self._ensure_ssl_cert()
-        proto = "wss" if ssl_ctx else "ws"
+        proto = "https" if ssl_ctx else "http"
 
-        async with websockets.server.serve(
-            self._handle_ws,
-            "0.0.0.0",
-            self._port,
-            process_request=self._serve_html,
-            ssl=ssl_ctx,
-            ping_interval=20,
-            ping_timeout=10,
-        ):
-            logger.info(f"📱 Phone GPS: listening on {proto}://0.0.0.0:{self._port}")
-            logger.info(f"📱 Open https://<rpi5-ip>:{self._port}/gps on your phone")
-            while self._running:
-                await asyncio.sleep(0.5)
+        app = web.Application()
+        app.router.add_get("/gps", self._handle_page)
+        app.router.add_get("/gps/", self._handle_page)
+        app.router.add_post("/gps/update", self._handle_gps_post)
+        app.router.add_get("/gps/status", self._handle_status)
 
-    async def _serve_html(self, path, request_headers):
-        """Serve the GPS HTML page on GET /gps."""
-        if path == "/gps" or path == "/gps/":
-            try:
-                html = self._html_path.read_text(encoding="utf-8")
-                return (200, [("Content-Type", "text/html; charset=utf-8")], html.encode())
-            except FileNotFoundError:
-                return (404, [], b"phone_gps.html not found")
-        # Return None to let WebSocket handle the connection
-        return None
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", self._port, ssl_context=ssl_ctx)
+        await site.start()
 
-    async def _handle_ws(self, websocket):
-        """Handle a single phone WebSocket connection."""
-        self._connected_phones += 1
-        remote = websocket.remote_address
-        logger.info(f"📱 Phone GPS connected: {remote}")
+        logger.info(f"📱 Phone GPS: listening on {proto}://0.0.0.0:{self._port}")
+        logger.info(f"📱 Open {proto}://<rpi5-ip>:{self._port}/gps on your phone")
+
+        while self._running:
+            await asyncio.sleep(0.5)
+
+        await runner.cleanup()
+
+    async def _handle_page(self, request: web.Request) -> web.Response:
+        """Serve the GPS HTML page."""
         try:
-            async for message in websocket:
-                try:
-                    data = json.loads(message)
-                    self._update_fix(data)
-                except (json.JSONDecodeError, KeyError, TypeError) as e:
-                    logger.debug(f"📱 Bad GPS data from phone: {e}")
-        except Exception as e:
-            logger.debug(f"📱 Phone GPS disconnected: {remote} ({e})")
-        finally:
-            self._connected_phones = max(0, self._connected_phones - 1)
-            logger.info(f"📱 Phone GPS disconnected: {remote}")
+            html = self._html_path.read_text(encoding="utf-8")
+            return web.Response(text=html, content_type="text/html")
+        except FileNotFoundError:
+            return web.Response(text="phone_gps.html not found", status=404)
+
+    async def _handle_gps_post(self, request: web.Request) -> web.Response:
+        """Handle GPS data POST from phone browser."""
+        try:
+            data = await request.json()
+            self._update_fix(data)
+            # Mark as connected
+            self._connected_phones = 1
+            return web.json_response({"ok": True, "count": self._update_count})
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.debug(f"📱 Bad GPS data from phone: {e}")
+            return web.json_response({"ok": False, "error": str(e)}, status=400)
+
+    async def _handle_status(self, request: web.Request) -> web.Response:
+        """Health check / status endpoint."""
+        fix = self.get_fix()
+        return web.json_response({
+            "connected": self.is_connected,
+            "has_fix": fix is not None,
+            "update_count": self._update_count,
+            "lat": fix.latitude if fix else None,
+            "lng": fix.longitude if fix else None,
+        })
 
     def _update_fix(self, data: dict) -> None:
         """Parse phone GPS JSON and update the fix."""
@@ -233,10 +238,10 @@ class PhoneGPSReceiver:
         speed_kmh = speed_ms * 3.6  # m/s → km/h
 
         # Map accuracy to a pseudo fix_quality
-        # <10m → quality 2 (excellent), <30m → quality 1, else 0
-        if accuracy < 10:
+        # <15m → quality 2 (excellent), <50m → quality 1, else 0
+        if accuracy < 15:
             fix_quality = 2
-        elif accuracy < 30:
+        elif accuracy < 50:
             fix_quality = 1
         else:
             fix_quality = 0
@@ -252,8 +257,9 @@ class PhoneGPSReceiver:
                 satellites=0,  # Browser doesn't report sat count
             )
             self._last_update = time.monotonic()
+            self._update_count += 1
 
         logger.debug(
-            f"📱 Phone GPS: lat={lat:.6f}, lng={lng:.6f}, "
-            f"acc={accuracy:.0f}m, speed={speed_kmh:.1f}km/h"
+            f"📱 Phone GPS #{self._update_count}: lat={lat:.6f}, lng={lng:.6f}, "
+            f"acc={accuracy:.0f}m, speed={speed_kmh:.1f}km/h, q={fix_quality}"
         )

@@ -212,7 +212,6 @@ class WhisperSTT:
                 verbose=False,  # Suppress Whisper's verbose output
                 temperature=0.0,  # Greedy decoding — more deterministic
                 no_speech_threshold=0.8,  # Higher = filter out noise-only segments
-                initial_prompt="Voice command for a navigation assistant.",  # Bias toward expected vocab
                 compression_ratio_threshold=2.0,  # Lower = catch more hallucinated repetitive text
                 logprob_threshold=-0.5,  # Higher = reject low-confidence transcriptions
             )
