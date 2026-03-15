@@ -11,8 +11,15 @@ import pytest
 import os
 import sys
 
-# Add src directory to Python path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+# Add common project import roots to Python path.
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+SRC_ROOT = os.path.join(PROJECT_ROOT, 'src')
+RPI5_ROOT = os.path.join(PROJECT_ROOT, 'rpi5')
+LAPTOP_ROOT = os.path.join(PROJECT_ROOT, 'laptop')
+
+for path in [PROJECT_ROOT, SRC_ROOT, RPI5_ROOT, LAPTOP_ROOT]:
+    if os.path.isdir(path) and path not in sys.path:
+        sys.path.insert(0, path)
 
 # Test constants
 TEST_MODEL_PATH = "models/yolo11x.pt"
