@@ -23,6 +23,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+try:
+    from rpi5.layer3_guide.spatial_audio.position_calculator import Position3D
+except ImportError:
+    Position3D = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -222,6 +227,7 @@ class NavigationEngine:
         tts=None,
         on_mode_change: Optional[Callable] = None,
         on_arrival: Optional[Callable] = None,
+        on_nav_event: Optional[Callable[[str, Dict[str, Any]], None]] = None,
         cache_db_path: str = "nav_cache.db",
     ):
         """
@@ -233,6 +239,7 @@ class NavigationEngine:
             tts: TTSRouter instance
             on_mode_change: Callback(NavMode) when mode changes
             on_arrival: Callback() when destination reached
+            on_nav_event: Callback(event_name, details_dict) for Gemini context injection
             cache_db_path: SQLite path for route caching
         """
         self.api_key = api_key
@@ -242,6 +249,7 @@ class NavigationEngine:
         self.tts = tts
         self.on_mode_change = on_mode_change
         self.on_arrival = on_arrival
+        self.on_nav_event = on_nav_event
 
         # State
         self.state = NavState.INACTIVE
@@ -258,6 +266,9 @@ class NavigationEngine:
         self._breadcrumbs: List[Tuple[float, float, float]] = []  # (lat, lng, timestamp)
         self._breadcrumb_interval = 5.0  # Record every 5 seconds
         self._last_breadcrumb_time = 0.0
+        self._approaching_dest_announced = False  # Track "approaching destination" event
+        self._nav_start_time = 0.0  # When navigation started (for GPS grace period)
+        self._gps_grace_seconds = 30.0  # Don't switch to indoor mode for this long after start
 
         # Route cache database
         self._cache_db_path = cache_db_path
@@ -347,6 +358,35 @@ class NavigationEngine:
     # GOOGLE MAPS API
     # -------------------------------------------------
 
+    @staticmethod
+    def _sanitize_location(loc: str) -> str:
+        """
+        Clean up a location string for Google Maps API.
+        
+        - Strips trailing punctuation from STT artifacts ("North Point." → "North Point")
+        - Appends ", Singapore" to text addresses that don't already specify a region
+          (prevents Google resolving "North Point" to Hong Kong instead of Northpoint City SG)
+        - Leaves "lat,lng" coordinate strings untouched
+        """
+        loc = loc.strip()
+        # Strip trailing punctuation (periods, commas, question marks from STT)
+        loc = loc.rstrip(".,;:!?")
+        # If it looks like coordinates (e.g. "1.3521,103.8198"), leave it alone
+        if "," in loc:
+            parts = loc.split(",")
+            try:
+                float(parts[0].strip())
+                float(parts[1].strip())
+                return loc  # It's coordinates
+            except (ValueError, IndexError):
+                pass
+        # If it already mentions Singapore or a country, leave it
+        loc_lower = loc.lower()
+        if "singapore" in loc_lower or "sg" in loc_lower:
+            return loc
+        # Append ", Singapore" to bias Google Maps correctly
+        return f"{loc}, Singapore"
+
     def fetch_route(self, origin: str, destination: str) -> Optional[NavRoute]:
         """
         Fetch walking directions from Google Maps Directions API.
@@ -364,30 +404,39 @@ class NavigationEngine:
 
         self.state = NavState.LOADING_ROUTE
 
+        # Sanitize destination: strip trailing punctuation from STT,
+        # and append ", Singapore" if no country/region is specified
+        # (prevents Google Maps from resolving to wrong country, e.g. HK)
+        destination = self._sanitize_location(destination)
+        origin = self._sanitize_location(origin)
+
         params = urllib.parse.urlencode({
             "origin": origin,
             "destination": destination,
             "mode": "walking",
+            "region": "sg",  # Bias results toward Singapore
             "key": self.api_key,
         })
         url = f"https://maps.googleapis.com/maps/api/directions/json?{params}"
+        logger.info(f"🧭 [NAV] Google Maps API request: origin='{origin}', destination='{destination}', mode=walking, region=sg")
 
         try:
             req = urllib.request.Request(url, headers={"User-Agent": "ProjectCortex/2.0"})
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode())
         except Exception as e:
-            logger.error(f"Google Maps API request failed: {e}")
+            logger.error(f"🧭 [NAV] Google Maps API request FAILED: {e}")
             # Try cached route
             cached = self._load_cached_route(origin, destination)
             if cached:
-                logger.info("Using cached route as fallback")
+                logger.info("🧭 [NAV] Using cached route as fallback")
                 return cached
             self.state = NavState.ERROR
             return None
 
+        logger.info(f"🧭 [NAV] Google Maps API response status: {data.get('status')}")
         if data.get("status") != "OK" or not data.get("routes"):
-            logger.error(f"Google Maps API error: {data.get('status')}")
+            logger.error(f"🧭 [NAV] Google Maps API error: {data.get('status')}, geocoded_waypoints={data.get('geocoded_waypoints', 'N/A')}")
             cached = self._load_cached_route(origin, destination)
             if cached:
                 logger.info("Using cached route as fallback")
@@ -508,13 +557,13 @@ class NavigationEngine:
                 if loc:
                     origin = f"{loc[0]},{loc[1]}"
                 else:
-                    await self._speak("I can't get your GPS position. Please try again outdoors.")
+                    logger.warning("🧭 [NAV] Cannot resolve 'current' — no GPS position")
                     return False
             else:
-                await self._speak("GPS is not available.")
+                logger.warning("🧭 [NAV] Cannot resolve 'current' — GPS not available")
                 return False
 
-        await self._speak(f"Getting directions. Please wait.")
+        logger.info(f"🧭 [NAV] start_navigation: origin='{origin}', destination='{destination}'")
 
         # Fetch route (blocking I/O, but fast enough for a single HTTP call)
         route = await asyncio.get_event_loop().run_in_executor(
@@ -522,26 +571,36 @@ class NavigationEngine:
         )
 
         if not route or not route.waypoints:
-            await self._speak("I couldn't find a route. Please try a different destination.")
+            logger.warning(f"🧭 [NAV] Route fetch FAILED: origin='{origin}', destination='{destination}'")
             return False
 
         self.route = route
         self.current_waypoint_idx = 0
         self._turn_announced.clear()
         self._road_crossing_active = False
+        self._approaching_dest_announced = False
+        self._nav_start_time = time.time()
         self.state = NavState.NAVIGATING
         self._running = True
 
         total_min = route.total_duration_s / 60
         total_m = route.total_distance_m
-        await self._speak(
-            f"Route found. {total_m:.0f} meters, about {total_min:.0f} minutes walking. "
-            f"Starting navigation."
+        logger.info(
+            f"🧭 [NAV] Route OK: {total_m:.0f}m, ~{total_min:.0f}min, "
+            f"{len(route.waypoints)} waypoints"
         )
 
         # Start beacon sound on spatial audio
         if self.spatial_audio:
             self.spatial_audio.start_beacon("navigation_target")
+
+        # Notify Gemini: navigation starting
+        self._fire_nav_event("navigating_to", {
+            "destination": destination,
+            "distance_m": route.total_distance_m,
+            "duration_min": round(route.total_duration_s / 60, 1),
+            "waypoints": len(route.waypoints),
+        })
 
         # Start the navigation loop
         self._nav_task = asyncio.create_task(self._navigation_loop())
@@ -566,6 +625,7 @@ class NavigationEngine:
         self.route = None
         self.current_waypoint_idx = 0
         await self._speak("Navigation stopped.")
+        self._fire_nav_event("navigation_stopped", {})
         logger.info("Navigation stopped")
 
     async def pause_navigation(self):
@@ -615,8 +675,16 @@ class NavigationEngine:
                 # 1. Get current position
                 current_pos = self._get_current_position()
                 if current_pos is None:
-                    # No GPS — switch to indoor mode
-                    if self.mode != NavMode.INDOOR:
+                    # No GPS — check if we're still in the grace period
+                    elapsed_since_start = time.time() - self._nav_start_time
+                    if elapsed_since_start < self._gps_grace_seconds:
+                        # Grace period: user may still be walking to get GPS fix
+                        logger.debug(
+                            f"No GPS fix yet ({elapsed_since_start:.0f}s / "
+                            f"{self._gps_grace_seconds:.0f}s grace period)"
+                        )
+                    elif self.mode != NavMode.INDOOR:
+                        # Grace period expired — genuinely indoors
                         self._set_mode(NavMode.INDOOR)
                         await self._speak(
                             "I've lost GPS signal. Switching to voice guidance. "
@@ -668,10 +736,13 @@ class NavigationEngine:
                 # 6. Update audio beam position
                 if self.spatial_audio and not self._road_crossing_active:
                     hrtf_pos = angle_to_hrtf_position(rel_angle, dist_to_wp)
-                    # Update beacon position for HRTF
-                    if hasattr(self.spatial_audio, '_beacon') and self.spatial_audio._beacon:
-                        self.spatial_audio._beacon.update_position(hrtf_pos)
-                        self.spatial_audio._beacon.update_distance(dist_to_wp)
+                    # Update beacon via SpatialAudioManager's API
+                    if Position3D and hasattr(self.spatial_audio, '_update_beacon_position'):
+                        pos3d = Position3D(
+                            x=hrtf_pos[0], y=hrtf_pos[1], z=hrtf_pos[2],
+                            distance_meters=dist_to_wp
+                        )
+                        self.spatial_audio._update_beacon_position(pos3d)
 
                 # 7. Check for upcoming turn announcement
                 await self._check_turn_announcement(current_pos, dist_to_wp)
@@ -679,8 +750,23 @@ class NavigationEngine:
                 # 8. Check road crossing
                 await self._check_road_crossing(wp)
 
-                # 9. Check waypoint arrival
+                # 9. Determine if current waypoint is the final one
                 is_final = self.current_waypoint_idx >= len(self.route.waypoints) - 1
+
+                # 10. Check approaching destination (within 50m)
+                if is_final and not self._approaching_dest_announced:
+                    final_wp = self.route.waypoints[-1]
+                    dist_to_dest = haversine_distance(
+                        current_pos[0], current_pos[1], final_wp.lat, final_wp.lng
+                    )
+                    if dist_to_dest < 50.0:
+                        self._approaching_dest_announced = True
+                        self._fire_nav_event("approaching_destination", {
+                            "destination": self.route.destination,
+                            "distance_m": round(dist_to_dest, 0),
+                        })
+
+                # 11. Check waypoint arrival
                 threshold = self.DESTINATION_THRESHOLD if is_final else self.ARRIVAL_THRESHOLD
 
                 if dist_to_wp < threshold:
@@ -691,6 +777,9 @@ class NavigationEngine:
                         if self.spatial_audio:
                             self.spatial_audio.stop_beacon()
                         await self._speak("You've arrived at your destination.")
+                        self._fire_nav_event("arrived", {
+                            "destination": self.route.destination,
+                        })
                         if self.on_arrival:
                             self.on_arrival()
                         logger.info("Destination reached!")
@@ -701,6 +790,11 @@ class NavigationEngine:
                         next_wp = self.route.waypoints[self.current_waypoint_idx]
                         if next_wp.instruction and next_wp.is_turn:
                             await self._speak_turn(next_wp)
+                        self._fire_nav_event("waypoint_reached", {
+                            "index": self.current_waypoint_idx,
+                            "total": len(self.route.waypoints),
+                            "next_instruction": next_wp.instruction,
+                        })
                         logger.debug(
                             f"Waypoint {self.current_waypoint_idx}/{len(self.route.waypoints)} reached"
                         )
@@ -814,6 +908,11 @@ class NavigationEngine:
                     await self._speak(f"Turn left in {dist:.0f} meters.")
                 elif "right" in maneuver:
                     await self._speak(f"Turn right in {dist:.0f} meters.")
+                self._fire_nav_event("approaching_turn", {
+                    "direction": "left" if "left" in maneuver else "right" if "right" in maneuver else maneuver,
+                    "distance_m": round(dist, 0),
+                    "instruction": wp.instruction,
+                })
                 break  # One announcement at a time
 
     async def _check_road_crossing(self, wp: Waypoint):
@@ -824,6 +923,9 @@ class NavigationEngine:
         instruction_lower = wp.instruction.lower()
         if any(kw in instruction_lower for kw in self.ROAD_CROSSING_KEYWORDS):
             await self._speak("Road crossing detected. Check it's safe before crossing.")
+            self._fire_nav_event("road_crossing", {
+                "instruction": wp.instruction,
+            })
             # Don't auto-pause — just warn. User keeps walking at their own discretion.
 
     # -------------------------------------------------
@@ -842,6 +944,21 @@ class NavigationEngine:
                 self.on_mode_change(new_mode)
             except Exception as e:
                 logger.warning(f"Mode change callback error: {e}")
+        # Fire nav event for Gemini
+        if new_mode == NavMode.INDOOR:
+            self._fire_nav_event("indoor_mode_activated", {"from": old_mode.value})
+        elif new_mode == NavMode.OUTDOOR:
+            self._fire_nav_event("outdoor_mode_activated", {"from": old_mode.value})
+        elif new_mode == NavMode.TRANSIT:
+            self._fire_nav_event("transit_mode", {"from": old_mode.value})
+
+    def _fire_nav_event(self, event: str, details: Optional[Dict[str, Any]] = None):
+        """Fire a navigation event to Gemini via callback."""
+        if self.on_nav_event:
+            try:
+                self.on_nav_event(event, details or {})
+            except Exception as e:
+                logger.debug(f"Nav event callback error: {e}")
 
     # -------------------------------------------------
     # STATUS / INFO
@@ -914,7 +1031,7 @@ class NavigationEngine:
             waypoints.append(Waypoint(
                 lat=lat, lng=lng,
                 instruction="Retrace" if not is_final else "Starting point",
-                distance_text="", maneuver="",
+                distance_m=0.0, maneuver="",
                 is_turn=False,
             ))
 
@@ -927,8 +1044,8 @@ class NavigationEngine:
             origin="current",
             destination="starting point",
             waypoints=waypoints,
-            distance=f"{len(waypoints)} waypoints",
-            duration="",
+            total_distance_m=0.0,
+            total_duration_s=0.0,
             polyline="",
         )
         self.current_waypoint_idx = 0
@@ -941,7 +1058,7 @@ class NavigationEngine:
         )
 
         # Start the nav loop
-        self._nav_task = asyncio.create_task(self._nav_loop())
+        self._nav_task = asyncio.create_task(self._navigation_loop())
         return True
 
     def get_context_string(self) -> str:

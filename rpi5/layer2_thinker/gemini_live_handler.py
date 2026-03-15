@@ -54,7 +54,7 @@ class GeminiLiveHandler:
     def __init__(
         self,
         api_key: str,
-        model: str = "gemini-2.0-flash-exp",
+        model: str = "gemini-2.5-flash-native-audio-preview-12-2025",
         system_instruction: Optional[str] = None,
         response_modalities: list = None,
         temperature: float = 0.7,
@@ -68,19 +68,23 @@ class GeminiLiveHandler:
 
         Args:
             api_key: Google API key (GEMINI_API_KEY env var)
-            model: Live API model name (gemini-2.0-flash-exp)
+            model: Live API model name (gemini-2.5-flash-native-audio-preview-12-2025)
             system_instruction: System prompt for AI behavior
-            response_modalities: ['AUDIO', 'TEXT'] for audio output
+            response_modalities: ['AUDIO'] for native audio model
             temperature: AI creativity (0.0-1.0)
             max_retries: Max reconnection attempts (5)
             initial_delay: Initial retry delay seconds (1.0)
             max_delay: Max retry delay seconds (60.0)
             memory_manager: HybridMemoryManager for cloud storage (optional)
         """
-        self.client = genai.Client(api_key=api_key)
+        # v1alpha required for proactive_audio and enable_affective_dialog
+        self.client = genai.Client(
+            api_key=api_key,
+            http_options={"api_version": "v1alpha"},
+        )
         self.model = model
         self.system_instruction = system_instruction or self._default_system_instruction()
-        self.response_modalities = response_modalities or ['AUDIO', 'TEXT']
+        self.response_modalities = response_modalities or ['AUDIO']
         self.temperature = temperature
 
         # Reconnection parameters (exponential backoff)
@@ -135,13 +139,55 @@ SPEAKING RULES:
 - Speak naturally like a trusted friend walking beside them
 - Prioritize: safety > navigation > interesting/useful info
 
-You also receive sensor context lines starting with [CONTEXT]. Use them for:
-- Knowing current location and navigation state
-- Understanding what mode the system is in (outdoor walk, bus stop, indoor)
-- Avoiding repeating what the safety system already warned about
-- Giving relevant, situational guidance
+SENSOR CONTEXT:
+You receive sensor context lines starting with [CONTEXT]. Use them to:
+- Know the current location (GPS coordinates) and navigation state
+- Understand what mode the system is in and behave accordingly
+- Avoid repeating what the safety system already warned about
+- Give relevant, situational guidance
 
-Remember: silence is fine. Only speak when it adds value."""
+NAVIGATION MODES — adapt your behavior based on the current mode:
+
+1. OUTDOOR NAVIGATION (you'll see [NAV] with waypoint/bearing data):
+   - You complement the 3D audio beam guiding the user
+   - Announce landmarks as they approach ("MRT station on your right")
+   - Describe intersections and road crossings in detail
+   - Read visible signs, shop names, building names
+   - On long straight stretches, provide reassurance ("Still on Tampines Avenue, about 200 meters to go")
+   - When approaching destination: describe what you see ("I can see the building entrance ahead")
+   - Never duplicate turn-by-turn directions (the beam + TTS handle that)
+
+2. INDOOR GUIDE MODE (you'll see [NAV_EVENT] indoor_mode_activated):
+   - YOU are the primary navigator — the audio beam is OFF indoors
+   - Proactively narrate what's ahead: corridors, doors, escalators, lifts, stairs
+   - Guide through obstacles: "Table on your right, go around to the left"
+   - Read floor indicators, directory signs, exit signs
+   - In malls: announce shops, escalator directions (up/down), level numbers
+   - In food courts: scan and name stalls, identify queues, find empty tables
+   - Be more verbose than outdoor mode — the user depends entirely on your voice indoors
+
+3. BUS STOP MODE (you'll see [BUS] context):
+   - Help identify approaching buses by reading bus numbers
+   - Describe the bus stop environment (shelter, queue, seating)
+   - When a bus approaches: "A bus is pulling up" + read bus number if visible
+
+4. IDLE / EXPLORING (no [NAV] context):
+   - Standard companion mode — describe scene changes, read text, warn about hazards
+   - Be concise, only speak when something is worth mentioning
+
+NAVIGATION EVENTS:
+You receive [NAV_EVENT] messages for important navigation changes. When you see these:
+- "navigating_to: X" → The user just started navigating. Be ready to provide visual context.
+- "waypoint_reached" → Acknowledge only if something interesting is visible
+- "approaching_turn" → Describe what you see at the upcoming turn (intersection, crossing, etc.)
+- "approaching_destination" → Describe the destination as you see it
+- "arrived" → Confirm what you see matches the destination
+- "indoor_mode_activated" → Switch to Indoor Guide Mode (see above)
+- "outdoor_mode_activated" → Switch back to outdoor complement mode
+- "navigation_stopped" → Return to idle companion mode
+- "road_crossing" → Describe the crossing (traffic lights, zebra crossing, traffic)
+
+Remember: silence is fine. Only speak when it adds value. Safety always comes first."""
     
     async def connect(self) -> bool:
         """
@@ -160,13 +206,23 @@ Remember: silence is fine. Only speak when it adds value."""
                 logger.info(f"🔌 Connecting to Gemini Live API (attempt {attempt + 1}/{self.max_retries})...")
                 
                 # Configure Live API connection
+                # Generation params (temperature etc.) are set directly on LiveConnectConfig.
                 config = types.LiveConnectConfig(
                     response_modalities=self.response_modalities,
                     system_instruction=self.system_instruction,
-                    generation_config=types.GenerationConfig(
-                        temperature=self.temperature,
-                        max_output_tokens=1024
-                    )
+                    temperature=self.temperature,
+                    # Sliding window compression prevents session timeout (~15 min)
+                    context_window_compression=types.ContextWindowCompressionConfig(
+                        sliding_window=types.SlidingWindow(),
+                    ),
+                    # Transcribe model audio output for logging
+                    output_audio_transcription=types.AudioTranscriptionConfig(),
+                    # Allow Gemini to speak proactively (scene changes, etc.)
+                    proactivity=types.ProactivityConfig(
+                        proactive_audio=True,
+                    ),
+                    # Natural emotional voice
+                    enable_affective_dialog=True,
                 )
                 
                 # Add session resumption if we have a handle
@@ -230,7 +286,10 @@ Remember: silence is fine. Only speak when it adds value."""
     async def _receive_loop(self):
         """
         Internal receive loop - runs continuously while connected.
-        Processes incoming messages and dispatches them appropriately.
+        Processes incoming messages from server_content.model_turn.parts.
+        
+        Audio parts have inline_data.data (24kHz PCM bytes).
+        Text parts have text (informational transcript).
         """
         try:
             async for response in self.session.receive():
@@ -239,69 +298,78 @@ Remember: silence is fine. Only speak when it adds value."""
                     logger.warning("⚠️ Server requested disconnect (go_away)")
                     if hasattr(response.go_away, 'new_handle'):
                         self.session_handle = response.go_away.new_handle
-                        logger.info(f"📝 Saved session handle for resumption")
+                        logger.info("📝 Saved session handle for resumption")
                     break
-                
-                # Handle server interrupted message (user spoke)
-                if hasattr(response, 'interrupted') and response.interrupted:
-                    logger.debug("🛑 Playback interrupted by user")
-                    self.interrupted = True
-                    continue
-                
-                # Handle text response
-                if hasattr(response, 'text') and response.text:
-                    logger.debug(f"💬 Text response: {response.text[:100]}...")
 
-                    # Store query/response to memory manager
-                    if self.memory_manager and self._last_query:
-                        latency_ms = (time.time() - self._query_start_time) * 1000 if self._query_start_time else 0
-                        try:
-                            asyncio.create_task(self.memory_manager.store_query(
-                                user_query=self._last_query,
-                                transcribed_text=self._last_query,
-                                routed_layer='layer2',
-                                routing_confidence=1.0,
-                                ai_response=response.text,
-                                response_latency_ms=latency_ms,
-                                tier_used='gemini_live'
-                            ))
-                            logger.debug(f"💾 Stored query/response to memory manager")
-                        except Exception as e:
-                            logger.warning(f"⚠️ Failed to store to memory manager: {e}")
+                # Convenience accessors (SDK >= 1.x)
+                # response.data → raw audio bytes, response.text → text string
 
-                    # Text responses are informational, not used for TTS
-                    continue
-
-                # Handle audio response (PRIMARY OUTPUT)
+                # Handle audio via convenience accessor (PRIMARY OUTPUT)
                 if hasattr(response, 'data') and response.data:
                     audio_bytes = response.data
                     logger.debug(f"📥 Received {len(audio_bytes)} bytes of audio")
-                    # Add to audio queue for playback
                     await self.audio_queue.put(audio_bytes)
+                    self._store_response("[Audio response]", 'gemini_live_audio')
+                    continue
 
-                    # Store query to memory manager (audio response)
-                    if self.memory_manager and self._last_query:
-                        latency_ms = (time.time() - self._query_start_time) * 1000 if self._query_start_time else 0
-                        try:
-                            asyncio.create_task(self.memory_manager.store_query(
-                                user_query=self._last_query,
-                                transcribed_text=self._last_query,
-                                routed_layer='layer2',
-                                routing_confidence=1.0,
-                                ai_response="[Audio response]",
-                                response_latency_ms=latency_ms,
-                                tier_used='gemini_live_audio'
-                            ))
-                            logger.debug(f"💾 Stored query/audio response to memory manager")
-                        except Exception as e:
-                            logger.warning(f"⚠️ Failed to store to memory manager: {e}")
-                    
+                # Handle text via convenience accessor
+                if hasattr(response, 'text') and response.text:
+                    logger.debug(f"💬 Text response: {response.text[:100]}...")
+                    self._store_response(response.text, 'gemini_live')
+                    continue
+
+                # Fallback: parse server_content.model_turn.parts (older SDK / edge cases)
+                sc = getattr(response, 'server_content', None)
+                if sc:
+                    # Interrupted by user speech
+                    if getattr(sc, 'interrupted', False):
+                        logger.debug("🛑 Playback interrupted by user")
+                        self.interrupted = True
+                        continue
+
+                    # Output transcription (from output_audio_transcription config)
+                    ot = getattr(sc, 'output_transcription', None)
+                    if ot and getattr(ot, 'text', None):
+                        logger.info(f"🗣️ Gemini said: {ot.text}")
+                        self._store_response(ot.text, 'gemini_live')
+                        continue
+
+                    model_turn = getattr(sc, 'model_turn', None)
+                    if model_turn and hasattr(model_turn, 'parts'):
+                        for part in model_turn.parts:
+                            if hasattr(part, 'inline_data') and part.inline_data:
+                                audio_bytes = part.inline_data.data
+                                logger.debug(f"📥 Received {len(audio_bytes)} bytes of audio (parts)")
+                                await self.audio_queue.put(audio_bytes)
+                                self._store_response("[Audio response]", 'gemini_live_audio')
+                            elif hasattr(part, 'text') and part.text:
+                                logger.debug(f"💬 Text part: {part.text[:100]}...")
+                                self._store_response(part.text, 'gemini_live')
+
         except asyncio.CancelledError:
             logger.info("🛑 Receive loop cancelled")
             raise
         except Exception as e:
             logger.error(f"❌ Error in receive loop: {e}")
             self.is_connected = False
+
+    def _store_response(self, response_text: str, tier: str):
+        """Store query/response to memory manager (fire-and-forget)."""
+        if not self.memory_manager or not self._last_query:
+            return
+        latency_ms = (time.time() - self._query_start_time) * 1000 if self._query_start_time else 0
+        try:
+            asyncio.create_task(self.memory_manager.store_query(
+                user_query=self._last_query,
+                transcribed_text=self._last_query,
+                routed_layer='layer2',
+                routing_confidence=1.0,
+                ai_response=response_text,
+                response_latency_ms=latency_ms,
+                tier_used=tier
+            ))
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to store to memory manager: {e}")
     
     async def send_audio_chunk(self, audio_bytes: bytes, sample_rate: int = 16000) -> bool:
         """
@@ -365,7 +433,10 @@ Remember: silence is fine. Only speak when it adds value."""
     
     async def send_text(self, text: str) -> bool:
         """
-        Send text input to Gemini Live API (for testing/debugging).
+        Send text input to Gemini Live API (for context injection/testing).
+
+        Uses send_client_content() per official Live API docs — text goes via
+        client content turns, NOT send_realtime_input (which is audio/video only).
 
         Args:
             text: Text prompt
@@ -378,7 +449,9 @@ Remember: silence is fine. Only speak when it adds value."""
             return False
 
         try:
-            await self.session.send_realtime_input(text=text)
+            await self.session.send_client_content(
+                turns={"parts": [{"text": text}]}
+            )
             logger.debug(f"📤 Sent text: {text[:50]}...")
 
             # Track query for memory logging
@@ -543,7 +616,7 @@ class GeminiLiveManager:
             sample_rate: Audio sample rate (16000 Hz)
         """
         if not self.is_running or not self.loop:
-            logger.error("❌ Manager not running")
+            logger.debug("Manager not running, skipping send_audio")
             return
         
         # Schedule async task in event loop
@@ -560,7 +633,7 @@ class GeminiLiveManager:
             frame: PIL Image
         """
         if not self.is_running or not self.loop:
-            logger.error("❌ Manager not running")
+            logger.debug("Manager not running, skipping send_video")
             return
         
         # Schedule async task in event loop
@@ -577,7 +650,7 @@ class GeminiLiveManager:
             text: Text prompt
         """
         if not self.is_running or not self.loop:
-            logger.error("❌ Manager not running")
+            logger.debug("Manager not running, skipping send_text")
             return
         
         # Schedule async task in event loop

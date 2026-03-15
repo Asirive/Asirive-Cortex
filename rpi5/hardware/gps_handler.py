@@ -92,6 +92,7 @@ class GPSHandler:
 
         # Latest parsed fix (None until first valid sentence)
         self._fix: Optional[GPSFix] = None
+        self._receiving = False  # True once any NMEA sentence is seen
 
         if not self._enabled:
             logger.info("ℹ️ GPS Handler in MOCK mode")
@@ -167,6 +168,11 @@ class GPSHandler:
         fix = self.get_fix()
         return fix is not None and fix.fix_quality > 0
 
+    @property
+    def is_receiving(self) -> bool:
+        """True when NMEA sentences are being received (even without fix)."""
+        return self._receiving
+
     # ------------------------------------------------------------------
     # Background reader loop
     # ------------------------------------------------------------------
@@ -181,6 +187,9 @@ class GPSHandler:
                     continue
                 line = raw.decode("ascii", errors="replace").strip()
                 if line.startswith("$"):
+                    if not self._receiving:
+                        self._receiving = True
+                        logger.info("📡 GPS module is transmitting NMEA data")
                     self._parse_nmea(line)
             except serial.SerialException as exc:
                 logger.error(f"❌ GPS serial error: {exc}")

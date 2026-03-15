@@ -47,6 +47,7 @@ paddleocr>=2.7.0            # PaddleOCR text detection (CPU, recognition on Hail
 # ===== Audio Processing =====
 pygame>=2.6.1               # Audio I/O
 sounddevice>=0.5.1          # Recording
+soundfile>=0.13.0           # Audio file reading (wav/flac playback)
 scipy>=1.15.0               # Signal processing (Numpy 2.x ready)
 pydub>=0.25.1               # Audio manipulation
 silero-vad>=5.1.2           # Voice Activity Detection

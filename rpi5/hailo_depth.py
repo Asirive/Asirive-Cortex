@@ -132,6 +132,12 @@ class HailoDepthEstimator:
         self.approach_rate_threshold = approach_rate_threshold
         self.alert_cooldown = alert_cooldown
 
+        # Environment-aware defaults (outdoor)
+        self._outdoor_wall_threshold = wall_threshold
+        self._outdoor_alert_cooldown = alert_cooldown
+        self._wall_close_ratio = 0.50  # indoor raises this to reduce false walls
+        self._is_indoor = False
+
         # Hailo resources (modern create_infer_model API)
         self._vdevice = None
         self._owns_vdevice = False  # True if we created the VDevice ourselves
@@ -412,7 +418,7 @@ class HailoDepthEstimator:
             total_pixels = strip.size
             close_ratio = close_pixels / total_pixels
 
-            if close_ratio > 0.50:
+            if close_ratio > self._wall_close_ratio:
                 median_dist = float(np.median(strip[strip < self.wall_threshold]))
                 
                 # Severity based on distance
@@ -435,6 +441,47 @@ class HailoDepthEstimator:
                         self._mark_alerted(hazard_key, now)
 
         return hazards
+
+    # ── Environment classification ───────────────────────────────────
+
+    def classify_environment(self, depth_map: np.ndarray) -> str:
+        """
+        Classify indoor vs outdoor using depth map statistics.
+        
+        Indoor: max depth < 6m AND < 15% of pixels see beyond 6m.
+        
+        Args:
+            depth_map: Raw 224x224 inverse-depth map from estimate().
+            
+        Returns 'indoor' or 'outdoor'.
+        """
+        dist_map = self.scale_factor / (depth_map + 1e-6)
+        dist_map = np.clip(dist_map, self.min_distance, self.max_distance)
+
+        max_depth = float(np.max(dist_map))
+        far_pixels = (dist_map > 6.0).sum()
+        far_ratio = far_pixels / max(dist_map.size, 1)
+
+        if max_depth < 6.0 and far_ratio < 0.15:
+            return "indoor"
+        return "outdoor"
+
+    def set_environment(self, indoor: bool):
+        """Adjust wall detection thresholds for indoor vs outdoor."""
+        if indoor == self._is_indoor:
+            return  # no change
+        self._is_indoor = indoor
+        if indoor:
+            self.wall_threshold = 0.8
+            self.alert_cooldown = 2.0
+            self._wall_close_ratio = 0.70
+        else:
+            self.wall_threshold = self._outdoor_wall_threshold
+            self.alert_cooldown = self._outdoor_alert_cooldown
+            self._wall_close_ratio = 0.50
+        label = "INDOOR" if indoor else "OUTDOOR"
+        logger.info(f"Environment → {label}: wall_threshold={self.wall_threshold}m, "
+                    f"close_ratio>{self._wall_close_ratio}, cooldown={self.alert_cooldown}s")
 
     def _detect_stairs_and_curbs(
         self, depth_map: np.ndarray, dist_map: np.ndarray, dh: int, dw: int, now: float

@@ -347,6 +347,40 @@ class RPiWebSocketClient:
 
         self._send_to_loop(message)
 
+    def send_gps_imu(self, latitude: float = 0.0, longitude: float = 0.0,
+                     altitude: float = None, accuracy: float = None,
+                     speed_kmh: float = 0.0, heading: float = 0.0,
+                     fix_quality: int = 0, satellites: int = 0,
+                     accelerometer: list = None, gyroscope: list = None,
+                     magnetometer: list = None, euler: list = None,
+                     calibration: list = None, environment: str = "unknown"):
+        """Send GPS/IMU sensor data to laptop (thread-safe)"""
+        message = {
+            "type": "GPS_IMU",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "data": {
+                "gps": {
+                    "latitude": latitude,
+                    "longitude": longitude,
+                    "altitude": altitude,
+                    "accuracy": accuracy,
+                    "speed_kmh": speed_kmh,
+                    "heading": heading,
+                    "fix_quality": fix_quality,
+                    "satellites": satellites,
+                },
+                "imu": {
+                    "accelerometer": accelerometer,
+                    "gyroscope": gyroscope,
+                    "magnetometer": magnetometer,
+                    "euler": euler,
+                    "calibration": calibration,
+                },
+                "environment": environment,
+            }
+        }
+        self._send_to_loop(message)
+
     def _send_to_loop(self, message: Dict[str, Any]):
         """Send message to event loop (thread-safe)"""
         if self.loop and self.loop.is_running():

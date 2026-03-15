@@ -119,6 +119,7 @@ class IMUHandler:
         # Event callbacks (optional)
         self.on_fall_detected = None       # callable() — called on free-fall
         self.on_impact_detected = None     # callable(accel_mag: float)
+        self._start_time = 0.0             # suppress false falls during init
 
         self._sensor = None  # adafruit_bno055.BNO055_I2C instance
 
@@ -155,6 +156,7 @@ class IMUHandler:
             return False
 
         self._running = True
+        self._start_time = time.time()
         self._thread = threading.Thread(
             target=self._poll_loop, daemon=True, name="imu-poller"
         )
@@ -305,6 +307,10 @@ class IMUHandler:
 
     def _check_events(self, ax: float, ay: float, az: float) -> None:
         """Detect fall / impact events and fire callbacks."""
+        # Skip first 5s after start — sensor reads zeros during calibration
+        if time.time() - self._start_time < 5.0:
+            return
+
         total = math.sqrt(ax * ax + ay * ay + az * az)
 
         if total < self.FALL_ACCEL_THRESHOLD and self.on_fall_detected:

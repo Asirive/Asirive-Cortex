@@ -279,44 +279,60 @@ class SensorStatusCard(GlassCard):
         grid.addWidget(QLabel("Alt:"), 2, 1)
         grid.addWidget(self.lbl_alt, 2, 2)
 
+        self.lbl_gps_fix = QLabel("NO FIX")
+        self.lbl_gps_fix.setStyleSheet(f"color: {Theme.NEON_RED}; font-family: {Theme.FONT_MONO}; font-weight: bold;")
+        grid.addWidget(QLabel("Fix:"), 3, 1)
+        grid.addWidget(self.lbl_gps_fix, 3, 2)
+
+        self.lbl_sats = QLabel("0")
+        self.lbl_sats.setStyleSheet(f"color: {Theme.TEXT_GRAY}; font-family: {Theme.FONT_MONO};")
+        grid.addWidget(QLabel("Sats:"), 4, 1)
+        grid.addWidget(self.lbl_sats, 4, 2)
+
+        # Environment
+        self.lbl_env = QLabel("UNKNOWN")
+        self.lbl_env.setStyleSheet(f"color: {Theme.TEXT_GRAY}; font-family: {Theme.FONT_MONO}; font-weight: bold;")
+        grid.addWidget(QLabel("Env:"), 5, 1)
+        grid.addWidget(self.lbl_env, 5, 2)
+
         # IMU — Orientation
-        grid.addWidget(QLabel("IMU"), 3, 0)
+        grid.addWidget(QLabel("IMU"), 6, 0)
         self.lbl_heading = QLabel("--")
         self.lbl_heading.setStyleSheet(f"color: {Theme.NEON_CYAN}; font-family: {Theme.FONT_MONO};")
-        grid.addWidget(QLabel("Heading:"), 3, 1)
-        grid.addWidget(self.lbl_heading, 3, 2)
+        grid.addWidget(QLabel("Heading:"), 6, 1)
+        grid.addWidget(self.lbl_heading, 6, 2)
 
         self.lbl_pitch = QLabel("--")
         self.lbl_pitch.setStyleSheet(f"color: {Theme.NEON_CYAN}; font-family: {Theme.FONT_MONO};")
-        grid.addWidget(QLabel("Pitch:"), 4, 1)
-        grid.addWidget(self.lbl_pitch, 4, 2)
+        grid.addWidget(QLabel("Pitch:"), 7, 1)
+        grid.addWidget(self.lbl_pitch, 7, 2)
 
         self.lbl_roll = QLabel("--")
         self.lbl_roll.setStyleSheet(f"color: {Theme.NEON_CYAN}; font-family: {Theme.FONT_MONO};")
-        grid.addWidget(QLabel("Roll:"), 5, 1)
-        grid.addWidget(self.lbl_roll, 5, 2)
+        grid.addWidget(QLabel("Roll:"), 8, 1)
+        grid.addWidget(self.lbl_roll, 8, 2)
 
         # IMU — Raw sensors
         self.lbl_accel = QLabel("--")
         self.lbl_accel.setStyleSheet(f"color: {Theme.NEON_CYAN}; font-family: {Theme.FONT_MONO};")
-        grid.addWidget(QLabel("Accel:"), 6, 1)
-        grid.addWidget(self.lbl_accel, 6, 2)
+        grid.addWidget(QLabel("Accel:"), 9, 1)
+        grid.addWidget(self.lbl_accel, 9, 2)
 
         self.lbl_gyro = QLabel("--")
         self.lbl_gyro.setStyleSheet(f"color: {Theme.NEON_CYAN}; font-family: {Theme.FONT_MONO};")
-        grid.addWidget(QLabel("Gyro:"), 7, 1)
-        grid.addWidget(self.lbl_gyro, 7, 2)
+        grid.addWidget(QLabel("Gyro:"), 10, 1)
+        grid.addWidget(self.lbl_gyro, 10, 2)
 
         self.lbl_mag = QLabel("--")
         self.lbl_mag.setStyleSheet(f"color: {Theme.NEON_CYAN}; font-family: {Theme.FONT_MONO};")
-        grid.addWidget(QLabel("Mag:"), 8, 1)
-        grid.addWidget(self.lbl_mag, 8, 2)
+        grid.addWidget(QLabel("Mag:"), 11, 1)
+        grid.addWidget(self.lbl_mag, 11, 2)
 
         # IMU — Calibration
         self.lbl_cal = QLabel("--")
         self.lbl_cal.setStyleSheet(f"color: {Theme.TEXT_GRAY}; font-family: {Theme.FONT_MONO};")
-        grid.addWidget(QLabel("Cal:"), 9, 1)
-        grid.addWidget(self.lbl_cal, 9, 2)
+        grid.addWidget(QLabel("Cal:"), 12, 1)
+        grid.addWidget(self.lbl_cal, 12, 2)
 
         layout.addLayout(grid)
 
@@ -331,6 +347,33 @@ class SensorStatusCard(GlassCard):
         self.lbl_lat.setText(f"{lat:.6f}" if lat is not None else "--")
         self.lbl_lon.setText(f"{lon:.6f}" if lon is not None else "--")
         self.lbl_alt.setText(f"{alt:.1f} m" if alt is not None else "--")
+
+        # GPS fix/satellites
+        fix_q = gps.get("fix_quality", 0)
+        sats = gps.get("satellites", 0)
+        if fix_q > 0:
+            fix_label = "3D FIX" if fix_q >= 2 else "GPS FIX"
+            self.lbl_gps_fix.setText(fix_label)
+            self.lbl_gps_fix.setStyleSheet(f"color: {Theme.NEON_GREEN}; font-family: {Theme.FONT_MONO}; font-weight: bold;")
+        elif fix_q < 0:
+            self.lbl_gps_fix.setText("NO MODULE")
+            self.lbl_gps_fix.setStyleSheet(f"color: {Theme.TEXT_GRAY}; font-family: {Theme.FONT_MONO}; font-weight: bold;")
+        else:
+            self.lbl_gps_fix.setText("NO FIX")
+            self.lbl_gps_fix.setStyleSheet(f"color: {Theme.NEON_RED}; font-family: {Theme.FONT_MONO}; font-weight: bold;")
+        self.lbl_sats.setText(str(sats))
+
+        # Environment
+        env = data.get("environment", "unknown")
+        if env == "indoor":
+            self.lbl_env.setText("INDOOR")
+            self.lbl_env.setStyleSheet(f"color: {Theme.NEON_YELLOW}; font-family: {Theme.FONT_MONO}; font-weight: bold;")
+        elif env == "outdoor":
+            self.lbl_env.setText("OUTDOOR")
+            self.lbl_env.setStyleSheet(f"color: {Theme.NEON_GREEN}; font-family: {Theme.FONT_MONO}; font-weight: bold;")
+        else:
+            self.lbl_env.setText("UNKNOWN")
+            self.lbl_env.setStyleSheet(f"color: {Theme.TEXT_GRAY}; font-family: {Theme.FONT_MONO}; font-weight: bold;")
 
         # Euler angles
         euler = imu.get("euler")
