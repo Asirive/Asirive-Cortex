@@ -279,22 +279,44 @@ class SensorStatusCard(GlassCard):
         grid.addWidget(QLabel("Alt:"), 2, 1)
         grid.addWidget(self.lbl_alt, 2, 2)
 
-        # IMU
+        # IMU — Orientation
         grid.addWidget(QLabel("IMU"), 3, 0)
+        self.lbl_heading = QLabel("--")
+        self.lbl_heading.setStyleSheet(f"color: {Theme.NEON_CYAN}; font-family: {Theme.FONT_MONO};")
+        grid.addWidget(QLabel("Heading:"), 3, 1)
+        grid.addWidget(self.lbl_heading, 3, 2)
+
+        self.lbl_pitch = QLabel("--")
+        self.lbl_pitch.setStyleSheet(f"color: {Theme.NEON_CYAN}; font-family: {Theme.FONT_MONO};")
+        grid.addWidget(QLabel("Pitch:"), 4, 1)
+        grid.addWidget(self.lbl_pitch, 4, 2)
+
+        self.lbl_roll = QLabel("--")
+        self.lbl_roll.setStyleSheet(f"color: {Theme.NEON_CYAN}; font-family: {Theme.FONT_MONO};")
+        grid.addWidget(QLabel("Roll:"), 5, 1)
+        grid.addWidget(self.lbl_roll, 5, 2)
+
+        # IMU — Raw sensors
         self.lbl_accel = QLabel("--")
         self.lbl_accel.setStyleSheet(f"color: {Theme.NEON_CYAN}; font-family: {Theme.FONT_MONO};")
-        grid.addWidget(QLabel("Accel:"), 3, 1)
-        grid.addWidget(self.lbl_accel, 3, 2)
+        grid.addWidget(QLabel("Accel:"), 6, 1)
+        grid.addWidget(self.lbl_accel, 6, 2)
 
         self.lbl_gyro = QLabel("--")
         self.lbl_gyro.setStyleSheet(f"color: {Theme.NEON_CYAN}; font-family: {Theme.FONT_MONO};")
-        grid.addWidget(QLabel("Gyro:"), 4, 1)
-        grid.addWidget(self.lbl_gyro, 4, 2)
+        grid.addWidget(QLabel("Gyro:"), 7, 1)
+        grid.addWidget(self.lbl_gyro, 7, 2)
 
         self.lbl_mag = QLabel("--")
         self.lbl_mag.setStyleSheet(f"color: {Theme.NEON_CYAN}; font-family: {Theme.FONT_MONO};")
-        grid.addWidget(QLabel("Mag:"), 5, 1)
-        grid.addWidget(self.lbl_mag, 5, 2)
+        grid.addWidget(QLabel("Mag:"), 8, 1)
+        grid.addWidget(self.lbl_mag, 8, 2)
+
+        # IMU — Calibration
+        self.lbl_cal = QLabel("--")
+        self.lbl_cal.setStyleSheet(f"color: {Theme.TEXT_GRAY}; font-family: {Theme.FONT_MONO};")
+        grid.addWidget(QLabel("Cal:"), 9, 1)
+        grid.addWidget(self.lbl_cal, 9, 2)
 
         layout.addLayout(grid)
 
@@ -310,6 +332,18 @@ class SensorStatusCard(GlassCard):
         self.lbl_lon.setText(f"{lon:.6f}" if lon is not None else "--")
         self.lbl_alt.setText(f"{alt:.1f} m" if alt is not None else "--")
 
+        # Euler angles
+        euler = imu.get("euler")
+        if euler and len(euler) >= 3:
+            self.lbl_heading.setText(f"{euler[0]:.1f}°")
+            self.lbl_roll.setText(f"{euler[1]:.1f}°")
+            self.lbl_pitch.setText(f"{euler[2]:.1f}°")
+        else:
+            self.lbl_heading.setText("--")
+            self.lbl_roll.setText("--")
+            self.lbl_pitch.setText("--")
+
+        # Raw sensors
         accel = imu.get("accelerometer")
         gyro = imu.get("gyroscope")
         mag = imu.get("magnetometer")
@@ -322,6 +356,123 @@ class SensorStatusCard(GlassCard):
         self.lbl_mag.setText(
             f"{mag[0]:.1f}, {mag[1]:.1f}, {mag[2]:.1f}" if mag else "--"
         )
+
+        # Calibration status
+        cal = imu.get("calibration")
+        if cal and len(cal) >= 4:
+            cal_color = Theme.NEON_GREEN if min(cal) >= 2 else (Theme.NEON_YELLOW if min(cal) >= 1 else Theme.NEON_RED)
+            self.lbl_cal.setStyleSheet(f"color: {cal_color}; font-family: {Theme.FONT_MONO};")
+            self.lbl_cal.setText(f"S:{cal[0]} G:{cal[1]} A:{cal[2]} M:{cal[3]}")
+        else:
+            self.lbl_cal.setText("--")
+
+
+class SafetyAlertsCard(GlassCard):
+    """Real-time safety alert panel for the dashboard."""
+
+    TIER_COLORS = {
+        1: Theme.NEON_RED,      # Critical (silent env hazards)
+        2: "#ff8800",           # Warning (static obstacles)
+        3: Theme.NEON_YELLOW,   # Notice (approaching vehicles)
+    }
+    TIER_LABELS = {
+        1: "CRITICAL",
+        2: "WARNING",
+        3: "NOTICE",
+    }
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("SAFETY ALERTS", objectName="Title"))
+
+        grid = QGridLayout()
+        grid.setSpacing(6)
+
+        grid.addWidget(QLabel("Status:"), 0, 0)
+        self.lbl_status = QLabel("SAFE")
+        self.lbl_status.setStyleSheet(
+            f"color: {Theme.NEON_GREEN}; font-family: {Theme.FONT_MONO}; font-weight: bold; font-size: 14px;"
+        )
+        grid.addWidget(self.lbl_status, 0, 1)
+
+        grid.addWidget(QLabel("Tier:"), 1, 0)
+        self.lbl_tier = QLabel("--")
+        self.lbl_tier.setStyleSheet(f"color: {Theme.TEXT_GRAY}; font-family: {Theme.FONT_MONO};")
+        grid.addWidget(self.lbl_tier, 1, 1)
+
+        grid.addWidget(QLabel("Type:"), 2, 0)
+        self.lbl_type = QLabel("--")
+        self.lbl_type.setStyleSheet(f"color: {Theme.TEXT_GRAY}; font-family: {Theme.FONT_MONO};")
+        grid.addWidget(self.lbl_type, 2, 1)
+
+        grid.addWidget(QLabel("Direction:"), 3, 0)
+        self.lbl_direction = QLabel("--")
+        self.lbl_direction.setStyleSheet(f"color: {Theme.NEON_CYAN}; font-family: {Theme.FONT_MONO};")
+        grid.addWidget(self.lbl_direction, 3, 1)
+
+        grid.addWidget(QLabel("Distance:"), 4, 0)
+        self.lbl_distance = QLabel("--")
+        self.lbl_distance.setStyleSheet(f"color: {Theme.NEON_CYAN}; font-family: {Theme.FONT_MONO};")
+        grid.addWidget(self.lbl_distance, 4, 1)
+
+        grid.addWidget(QLabel("Score:"), 5, 0)
+        self.lbl_score = QLabel("--")
+        self.lbl_score.setStyleSheet(f"color: {Theme.TEXT_GRAY}; font-family: {Theme.FONT_MONO};")
+        grid.addWidget(self.lbl_score, 5, 1)
+
+        grid.addWidget(QLabel("Last:"), 6, 0)
+        self.lbl_time = QLabel("--")
+        self.lbl_time.setStyleSheet(f"color: {Theme.TEXT_GRAY}; font-family: {Theme.FONT_MONO};")
+        grid.addWidget(self.lbl_time, 6, 1)
+
+        layout.addLayout(grid)
+
+        # Auto-clear timer (revert to SAFE after 5s of no alerts)
+        self._clear_timer = QTimer(self)
+        self._clear_timer.setSingleShot(True)
+        self._clear_timer.timeout.connect(self._clear_alert)
+
+    def update_alert(self, data: dict):
+        """Update card with incoming safety alert data."""
+        tier = data.get("tier", 0)
+        alert_type = data.get("alert_type", "unknown")
+        direction = data.get("direction", "--")
+        distance = data.get("distance_m", 0)
+        score = data.get("score", 0)
+
+        color = self.TIER_COLORS.get(tier, Theme.TEXT_GRAY)
+        label = self.TIER_LABELS.get(tier, f"T{tier}")
+
+        self.lbl_status.setText(label)
+        self.lbl_status.setStyleSheet(
+            f"color: {color}; font-family: {Theme.FONT_MONO}; font-weight: bold; font-size: 14px;"
+        )
+        self.lbl_tier.setText(f"Tier {tier}")
+        self.lbl_tier.setStyleSheet(f"color: {color}; font-family: {Theme.FONT_MONO};")
+        self.lbl_type.setText(alert_type)
+        self.lbl_type.setStyleSheet(f"color: {color}; font-family: {Theme.FONT_MONO};")
+        self.lbl_direction.setText(direction)
+        self.lbl_distance.setText(f"{distance:.1f} m")
+        self.lbl_score.setText(f"{score:.2f}")
+        self.lbl_time.setText(datetime.now().strftime("%H:%M:%S"))
+
+        # Reset clear timer
+        self._clear_timer.start(5000)
+
+    def _clear_alert(self):
+        """Revert to SAFE state when no alerts for 5 seconds."""
+        self.lbl_status.setText("SAFE")
+        self.lbl_status.setStyleSheet(
+            f"color: {Theme.NEON_GREEN}; font-family: {Theme.FONT_MONO}; font-weight: bold; font-size: 14px;"
+        )
+        self.lbl_tier.setText("--")
+        self.lbl_tier.setStyleSheet(f"color: {Theme.TEXT_GRAY}; font-family: {Theme.FONT_MONO};")
+        self.lbl_type.setText("--")
+        self.lbl_type.setStyleSheet(f"color: {Theme.TEXT_GRAY}; font-family: {Theme.FONT_MONO};")
+        self.lbl_direction.setText("--")
+        self.lbl_distance.setText("--")
+        self.lbl_score.setText("--")
 
 
 class ProductionToggle(QWidget):
@@ -583,6 +734,10 @@ class DashboardOverviewWidget(QWidget):
         # 2. Hardware Sensors
         self.sensor_card = SensorStatusCard()
         right_col.addWidget(self.sensor_card)
+        
+        # 2b. Safety Alerts
+        self.safety_card = SafetyAlertsCard()
+        right_col.addWidget(self.safety_card)
         
         # 3. Layer Control
         control_panel = GlassCard()
@@ -890,6 +1045,7 @@ class DashboardSignals(QObject):
     send_command = pyqtSignal(dict) # UI -> Server
     mode_changed = pyqtSignal(str)  # Server -> UI (PRODUCTION / DEV)
     gps_imu_update = pyqtSignal(dict)  # GPS/IMU sensor data from RPi5
+    safety_alert = pyqtSignal(dict)  # Safety alert from SafetyMonitor
 
 class CortexDashboard(QMainWindow):
     def __init__(self, config: DashboardConfig = None):
@@ -947,6 +1103,7 @@ class CortexDashboard(QMainWindow):
         self.signals.client_disconnected.connect(self.on_client_disconnected)
         self.signals.mode_changed.connect(self.on_mode_changed)
         self.signals.gps_imu_update.connect(self.on_gps_imu_update)
+        self.signals.safety_alert.connect(self.on_safety_alert)
         
         # M22: Frame rate throttling (30fps max)
         self._last_frame_time = 0.0
@@ -969,6 +1126,7 @@ class CortexDashboard(QMainWindow):
             self.signals.client_disconnected.disconnect(self.on_client_disconnected)
             self.signals.mode_changed.disconnect(self.on_mode_changed)
             self.signals.gps_imu_update.disconnect(self.on_gps_imu_update)
+            self.signals.safety_alert.disconnect(self.on_safety_alert)
         except (TypeError, RuntimeError):
             pass  # Already disconnected
         super().closeEvent(event)
@@ -1126,6 +1284,12 @@ class CortexDashboard(QMainWindow):
         if hasattr(self, 'view_overview') and self.view_overview:
             if hasattr(self.view_overview, 'sensor_card'):
                 self.view_overview.sensor_card.update_data(data)
+
+    def on_safety_alert(self, data: dict):
+        """Handle safety alert from RPi5 SafetyMonitor."""
+        if hasattr(self, 'view_overview') and self.view_overview:
+            if hasattr(self.view_overview, 'safety_card'):
+                self.view_overview.safety_card.update_alert(data)
         
 if __name__ == "__main__":
     app = QApplication(sys.argv)

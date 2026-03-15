@@ -120,11 +120,14 @@ class Navigator:
         # Convert to AudioDetection format
         audio_detections = []
         for det in detections:
+            # L0 Guardian uses 'class' key, L1 Learner uses 'class_name'
+            class_name = det.get('class_name') or det.get('class', 'unknown')
             audio_detections.append(AudioDetection(
-                class_name=det.get('class_name', 'unknown'),
+                class_name=class_name,
                 confidence=det.get('confidence', 0.0),
                 bbox=tuple(det.get('bbox', (0, 0, 100, 100))),
-                object_id=det.get('object_id')
+                object_id=det.get('object_id'),
+                distance_m=det.get('distance_m')
             ))
         
         self.spatial_audio.update_detections(audio_detections)

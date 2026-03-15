@@ -101,8 +101,8 @@ class PositionCalculator:
         self,
         frame_width: int = 1920,
         frame_height: int = 1080,
-        focal_length_pixels: float = 1500.0,
-        min_distance: float = 0.5,
+        focal_length_pixels: float = 780.0,
+        min_distance: float = 0.05,
         max_distance: float = 10.0,
         object_sizes: Optional[Dict[str, float]] = None,
         smoothing_alpha: float = 0.3,
@@ -114,7 +114,7 @@ class PositionCalculator:
         Args:
             frame_width: Camera frame width in pixels
             frame_height: Camera frame height in pixels
-            focal_length_pixels: Camera focal length in pixels (estimate for IMX415: ~1500)
+            focal_length_pixels: Camera focal length in pixels (IMX708 Wide 102° HFoV: ~780)
             min_distance: Minimum distance in meters (closest)
             max_distance: Maximum distance in meters (farthest)
             object_sizes: Dict of object class → real-world width in meters
@@ -134,15 +134,16 @@ class PositionCalculator:
         self._position_history: Dict[str, Position3D] = {}
         
         # Area thresholds for distance estimation (when no known size)
-        self.area_close = 0.4   # Normalized area when object is close
-        self.area_far = 0.01   # Normalized area when object is far
+        self.area_close = 0.6   # Normalized area when object is close
+        self.area_far = 0.005  # Normalized area when object is far
     
     def bbox_to_3d(
         self,
         bbox: Tuple[float, float, float, float],
         object_class: Optional[str] = None,
         object_id: Optional[str] = None,
-        apply_smoothing: bool = True
+        apply_smoothing: bool = True,
+        hailo_distance_m: Optional[float] = None
     ) -> Position3D:
         """
         Convert a bounding box to 3D audio position.
@@ -205,14 +206,26 @@ class PositionCalculator:
         y = y_normalized * 1.0  # ±1.0m vertical spread (increased from 0.75)
         
         # === DEPTH POSITION (Z-axis) in METERS ===
-        # Try to use known object size for accurate distance
+        # Priority: Hailo NPU depth > known object size > bbox area fallback
         distance_meters = None
-        if object_class and object_class.lower() in self.object_sizes:
+        if hailo_distance_m is not None and hailo_distance_m > 0:
+            # Best: Hailo NPU monocular depth (fast_depth, ~3ms)
+            distance_meters = max(self.min_distance, min(self.max_distance, hailo_distance_m))
+            z = -distance_meters
+        elif object_class and object_class.lower() in self.object_sizes:
             bbox_width_pixels = width * self.frame_width
             distance_meters = self._estimate_distance_from_size(
                 bbox_width_pixels, 
                 object_class.lower()
             )
+            
+            # Sanity check: if bbox area is large, the object is clearly close.
+            # The class-based formula can overestimate (e.g. hand detected as
+            # "person" with 0.5m width). Use min of class-based and area-based.
+            if area > 0.08:
+                area_distance = abs(self._area_to_depth(area))
+                distance_meters = min(distance_meters, area_distance)
+            
             # Convert distance to Z coordinate (negative because user faces -Z)
             z = -max(self.min_distance, min(self.max_distance, distance_meters))
         else:

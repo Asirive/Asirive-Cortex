@@ -478,6 +478,8 @@ class RPi5Client(AsyncWebSocketClient):
         accelerometer: list = None,
         gyroscope: list = None,
         magnetometer: list = None,
+        euler: list = None,
+        calibration: list = None,
     ):
         """
         Send GPS + IMU sensor data to laptop dashboard.
@@ -490,6 +492,8 @@ class RPi5Client(AsyncWebSocketClient):
             accelerometer: [x, y, z] m/s² (optional)
             gyroscope: [x, y, z] deg/s (optional)
             magnetometer: [x, y, z] µT (optional)
+            euler: [heading, roll, pitch] degrees (optional)
+            calibration: [sys, gyro, accel, mag] 0-3 (optional)
         """
         gps = GPSData(
             latitude=latitude,
@@ -503,6 +507,8 @@ class RPi5Client(AsyncWebSocketClient):
                 accelerometer=accelerometer or [0, 0, 0],
                 gyroscope=gyroscope or [0, 0, 0],
                 magnetometer=magnetometer,
+                euler=euler,
+                calibration=calibration,
             )
 
         msg = create_gps_imu(self.device_id, gps, imu)
@@ -527,6 +533,33 @@ class RPi5Client(AsyncWebSocketClient):
             asyncio.run_coroutine_threadsafe(self.send(msg), self._async_loop)
         else:
             logger.warning("Async loop not active, cannot send status")
+
+    def send_safety_alert(
+        self,
+        tier: int,
+        alert_type: str,
+        direction: str,
+        distance_m: float,
+        score: float,
+    ):
+        """Send safety alert to laptop dashboard."""
+        msg = BaseMessage(
+            type=MessageType.SAFETY_ALERT,
+            data={
+                "tier": tier,
+                "alert_type": alert_type,
+                "direction": direction,
+                "distance_m": round(distance_m, 2),
+                "score": round(score, 2),
+                "device_id": self.device_id,
+            }
+        )
+
+        if self._async_loop:
+            import asyncio
+            asyncio.run_coroutine_threadsafe(self.send(msg), self._async_loop)
+        else:
+            logger.warning("Async loop not active, cannot send safety alert")
 
 
 # Backwards compatibility alias

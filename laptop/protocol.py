@@ -31,6 +31,7 @@ class MessageType(Enum):
     DETECTIONS = "DETECTIONS"        # Object detections from Layer 0/1
     VIDEO_FRAME = "VIDEO_FRAME"      # Camera frame (base64 encoded)
     GPS_IMU = "GPS_IMU"            # GPS and IMU data
+    SAFETY_ALERT = "SAFETY_ALERT"  # Safety system alerts (tiers 1-3)
     AUDIO_EVENT = "AUDIO_EVENT"     # Audio transcription events
     MEMORY_EVENT = "MEMORY_EVENT"   # Memory manager events
     STATUS = "STATUS"               # Connection/status updates

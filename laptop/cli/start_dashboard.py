@@ -499,6 +499,7 @@ class DashboardApplication:
         fastapi_signals.client_connected.connect(self.signals.client_connected.emit)
         fastapi_signals.client_disconnected.connect(self.signals.client_disconnected.emit)
         fastapi_signals.gps_imu_update.connect(self.signals.gps_imu_update.emit)
+        fastapi_signals.safety_alert.connect(self.signals.safety_alert.emit)
         
         # Bridge status updates — detect MODE_CHANGE and emit mode_changed
         def _handle_fastapi_status(status: str, msg: str):

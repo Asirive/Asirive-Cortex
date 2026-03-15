@@ -26,6 +26,8 @@ logger = logging.getLogger("ObjectSounds")
 
 # Try to import PyOpenAL
 OPENAL_AVAILABLE = False
+Source = type(None)  # fallback type for annotations when openal is not installed
+Buffer = type(None)  # fallback type for annotations when openal is not installed
 try:
     from openal import Source, Buffer
     OPENAL_AVAILABLE = True
