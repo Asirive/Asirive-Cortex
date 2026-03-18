@@ -1186,9 +1186,11 @@ class CortexSystem:
         # (e.g., Layer 3 navigation commands).
         if self.layer2 is not None:
             self.voice_coordinator.on_raw_audio = self._forward_audio_to_gemini
-            # Do NOT wire activity signals — Gemini uses text input only
-            # self.voice_coordinator.on_speech_start_callback = ...
-            # self.voice_coordinator.on_speech_end_callback = ...
+            # Do NOT wire activity signals. Auto VAD is disabled, so without
+            # activity_start/end Gemini buffers audio but never processes it.
+            # Gemini responds ONLY to explicit send_text() calls from the
+            # Gemini-first gate. This prevents Gemini from independently
+            # responding to speech routed elsewhere (e.g., Layer 3 nav).
             logger.info("✅ Gemini Live wired into voice pipeline (text-command mode)")
 
         # Initialize Bluetooth Manager (will be connected in start() if configured)
@@ -1655,12 +1657,13 @@ class CortexSystem:
         try:
             from rpi5.layer3_guide.navigation_engine import NavMode
             if new_mode == NavMode.INDOOR:
-                # Indoor: stop beacon, increase scene narration frequency
-                logger.info("🏢 Indoor mode — beacon OFF, Gemini Guide Mode active")
-                if self.spatial_audio and hasattr(self.spatial_audio, 'stop_beacon'):
-                    self.spatial_audio.stop_beacon()
+                # Indoor: keep beacon alive with last-known GPS position (degraded mode)
+                # Don't kill the beacon — it still points toward the destination
+                logger.info("🏢 Indoor mode — beacon DEGRADED (last-known GPS), Gemini Guide Mode active")
                 if self.scene_detector:
                     self.scene_detector.cooldown_seconds = 3.0  # Narrate more often indoors
+                    self.scene_detector.cooldown_navigating = 5.0  # Indoor nav needs frequent updates
+                    self.scene_detector.silence_timeout_navigating = 20.0  # Speak up sooner indoors
                 # Switch BNO055 to gyro-only (avoid magnetic interference)
                 if self.imu and hasattr(self.imu, 'set_gyro_only'):
                     self.imu.set_gyro_only()
@@ -1674,6 +1677,8 @@ class CortexSystem:
                 logger.info("🌳 Outdoor mode — beacon resumed")
                 if self.scene_detector:
                     self.scene_detector.cooldown_seconds = 5.0  # Normal cooldown
+                    self.scene_detector.cooldown_navigating = 15.0  # Outdoor nav standard
+                    self.scene_detector.silence_timeout_navigating = 120.0  # Outdoor: less interruption
                 # Switch BNO055 back to NDOF (full 9-axis fusion)
                 if self.imu and hasattr(self.imu, 'set_ndof_mode'):
                     self.imu.set_ndof_mode()
@@ -1704,7 +1709,16 @@ class CortexSystem:
                 "indoor_mode_activated", "approaching_turn",
             }
             if event in critical_events:
-                msg += "\nBriefly describe what you see to help the user."
+                if event == "indoor_mode_activated":
+                    msg += (
+                        "\nGPS lost — user is likely indoors. Switch to Indoor Guide Mode: "
+                        "proactively describe what you see (doors, corridors, stairs, signs, obstacles). "
+                        "Give clear spatial cues (left/right/ahead). The navigation beacon is still "
+                        "pointing toward the destination using last-known GPS. Help the user find "
+                        "the exit or navigate through the building."
+                    )
+                else:
+                    msg += "\nBriefly describe what you see to help the user."
                 self.layer2.send_text(msg)
                 # Ensure audio player is ready
                 if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
@@ -1949,6 +1963,13 @@ class CortexSystem:
                     except Exception as e:
                         logger.debug(f"Beacon tracking error: {e}")
 
+                # 2d2. Feed YOLO + depth into navigation engine
+                if self.nav_engine:
+                    try:
+                        self.nav_engine.update_vision_context(all_detections, depth_map)
+                    except Exception as e:
+                        logger.debug(f"Nav vision context error: {e}")
+
                 # 2e. Bus handler: check YOLO for "bus" class
                 if self.bus_handler and all_detections:
                     try:
@@ -1996,24 +2017,32 @@ class CortexSystem:
                                 trigger_desc = trigger  # Nav events are fine to pass through
 
                             context_str = "\n".join(context_parts)
-                            # Send video frame + explicit narration prompt to Gemini
+                            # Send video frame + narration prompt to Gemini
                             if self.layer2 and self.layer2.is_running:
                                 logger.info(f"🎙️ [SCENE] Sending to Gemini — handler.connected={self.layer2.handler.is_connected}")
-                                # Ensure audio player is ready for Gemini's response
-                                if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
-                                    self.gemini_audio_player.start()
                                 # Send current frame so Gemini can SEE what triggered the change
                                 if frame is not None:
                                     from PIL import Image
                                     pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
                                     self.layer2.send_video(pil_frame)
-                                # Send as explicit narration request, not just silent context
-                                self.layer2.send_text(
+
+                                narration_msg = (
                                     f"[SCENE_CHANGE] Reason: {trigger_desc}. "
                                     f"Describe ONLY what you actually see in the camera frame right now. "
                                     f"Do NOT guess or assume objects — only describe what is clearly visible. "
                                     f"Keep it brief and relevant for a blind user.\n{context_str}"
                                 )
+
+                                if is_nav_active:
+                                    # During navigation, inject as silent context.
+                                    # Gemini absorbs info but doesn't generate audio
+                                    # that would compete with Cartesia nav TTS.
+                                    self.layer2.send_context(narration_msg)
+                                else:
+                                    # Idle mode — trigger spoken narration
+                                    if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
+                                        self.gemini_audio_player.start()
+                                    self.layer2.send_text(narration_msg)
                                 if self.scene_detector:
                                     self.scene_detector.record_speech()
                     except Exception as e:

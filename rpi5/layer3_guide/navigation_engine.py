@@ -203,7 +203,7 @@ class NavigationEngine:
     """
 
     # Waypoint arrival threshold (meters)
-    ARRIVAL_THRESHOLD = 15.0
+    ARRIVAL_THRESHOLD = 10.0
     # Final destination arrival threshold
     DESTINATION_THRESHOLD = 20.0
     # Distance to announce upcoming turn
@@ -270,6 +270,14 @@ class NavigationEngine:
         self._approaching_dest_announced = False  # Track "approaching destination" event
         self._nav_start_time = 0.0  # When navigation started (for GPS grace period)
         self._gps_grace_seconds = 30.0  # Don't switch to indoor mode for this long after start
+
+        # GPS accuracy tracking (set by _get_current_position)
+        self._gps_accuracy: float = 999.0
+        self._last_known_heading: float = 0.0
+
+        # Vision context from YOLO + depth (updated each frame by main loop)
+        self._latest_detections: List[Dict[str, Any]] = []
+        self._latest_depth_map: Optional[Any] = None  # numpy array
 
         # Route cache database
         self._cache_db_path = cache_db_path
@@ -773,6 +781,20 @@ class NavigationEngine:
                             distance_meters=dist_to_wp
                         )
                         self.spatial_audio._update_beacon_position(pos3d)
+                    # Degraded beacon: reduce volume when GPS is stale/inaccurate
+                    beacon_src = getattr(self.spatial_audio, '_beacon_source', None)
+                    if beacon_src and hasattr(self.spatial_audio, 'comfort'):
+                        if self._gps_accuracy > 500:
+                            # Stale/last-known GPS — quiet beacon signals uncertainty
+                            beacon_src.set_gain(
+                                self.spatial_audio.comfort.master_volume * 0.2
+                            )
+                        else:
+                            # Normal GPS — full beacon volume
+                            beacon_src.set_gain(
+                                self.spatial_audio.comfort.master_volume *
+                                self.spatial_audio.comfort.beacon_volume
+                            )
 
                 # 7. Check for upcoming turn announcement
                 await self._check_turn_announcement(current_pos, dist_to_wp)
@@ -796,8 +818,11 @@ class NavigationEngine:
                             "distance_m": round(dist_to_dest, 0),
                         })
 
-                # 11. Check waypoint arrival
-                threshold = self.DESTINATION_THRESHOLD if is_final else self.ARRIVAL_THRESHOLD
+                # 11. Check waypoint arrival (scale threshold with GPS accuracy)
+                base_threshold = self.DESTINATION_THRESHOLD if is_final else self.ARRIVAL_THRESHOLD
+                # With poor GPS (e.g. phone GPS ±100m), widen the arrival zone
+                accuracy_boost = max(0.0, self._gps_accuracy * 0.3) if self._gps_accuracy > 30 else 0.0
+                threshold = base_threshold + accuracy_boost
 
                 if dist_to_wp < threshold:
                     if is_final:
@@ -974,17 +999,85 @@ class NavigationEngine:
                 break  # One announcement at a time
 
     async def _check_road_crossing(self, wp: Waypoint):
-        """Check if current waypoint indicates a road crossing."""
+        """Check if current waypoint indicates a road crossing.
+        
+        Enhanced with YOLO: detects vehicles/traffic lights near crossing.
+        """
         if self._road_crossing_active:
             return
 
         instruction_lower = wp.instruction.lower()
         if any(kw in instruction_lower for kw in self.ROAD_CROSSING_KEYWORDS):
-            await self._speak("Road crossing detected. Check it's safe before crossing.")
+            # Enrich with YOLO vehicle/traffic light detections
+            road_objects = []
+            vehicle_classes = {"car", "truck", "bus", "motorcycle", "bicycle", "traffic light"}
+            for det in self._latest_detections:
+                cls = det.get('class', '')
+                if cls in vehicle_classes:
+                    dist = det.get('distance_m', 999)
+                    road_objects.append(f"{cls}({dist:.0f}m)")
+            
+            if road_objects:
+                warning = f"Road crossing detected. I see: {', '.join(road_objects[:5])}. Check it's safe."
+            else:
+                warning = "Road crossing detected. Check it's safe before crossing."
+            await self._speak(warning)
             self._fire_nav_event("road_crossing", {
                 "instruction": wp.instruction,
+                "vehicles_detected": road_objects[:5],
             })
             # Don't auto-pause — just warn. User keeps walking at their own discretion.
+
+    # -------------------------------------------------
+    # VISION CONTEXT
+    # -------------------------------------------------
+
+    def update_vision_context(self, detections: List[Dict[str, Any]], depth_map=None):
+        """Update latest YOLO detections and depth map for nav-aware reasoning.
+        
+        Called each frame from the main loop. Data is consumed by
+        get_context_string() and future road-crossing / obstacle logic.
+        """
+        self._latest_detections = detections or []
+        self._latest_depth_map = depth_map
+
+    def get_vision_summary(self) -> str:
+        """Return a compact text summary of current detections + depth for Gemini context."""
+        parts = []
+        
+        # Object detections (closest per class, max 8)
+        if self._latest_detections:
+            by_class: Dict[str, float] = {}
+            for det in self._latest_detections:
+                cls = det.get('class', 'unknown')
+                dist = det.get('distance_m', 999)
+                if cls not in by_class or dist < by_class[cls]:
+                    by_class[cls] = dist
+            obj_parts = [f"{cls}({d:.1f}m)" for cls, d in sorted(by_class.items(), key=lambda x: x[1])[:8]]
+            parts.append("Nearby: " + ", ".join(obj_parts))
+        
+        # Depth directional cues (left/center/right clearance)
+        if self._latest_depth_map is not None:
+            try:
+                dm = self._latest_depth_map
+                h, w = dm.shape[:2]
+                third = w // 3
+                # Inverse depth: higher = closer, so lower mean = more clearance
+                left_mean = float(dm[:, :third].mean())
+                center_mean = float(dm[:, third:2*third].mean())
+                right_mean = float(dm[:, 2*third:].mean())
+                # Report which direction has more clearance (lower depth value)
+                min_val = min(left_mean, center_mean, right_mean)
+                if min_val == center_mean:
+                    parts.append("Path clear ahead")
+                elif min_val == left_mean:
+                    parts.append("More space to left")
+                else:
+                    parts.append("More space to right")
+            except Exception:
+                pass
+        
+        return " | ".join(parts) if parts else ""
 
     # -------------------------------------------------
     # MODE MANAGEMENT
@@ -1011,10 +1104,15 @@ class NavigationEngine:
             self._fire_nav_event("transit_mode", {"from": old_mode.value})
 
     def _fire_nav_event(self, event: str, details: Optional[Dict[str, Any]] = None):
-        """Fire a navigation event to Gemini via callback."""
+        """Fire a navigation event to Gemini via callback, enriched with vision context."""
         if self.on_nav_event:
             try:
-                self.on_nav_event(event, details or {})
+                enriched = dict(details or {})
+                # Attach vision summary for Gemini awareness
+                vision = self.get_vision_summary()
+                if vision:
+                    enriched["vision"] = vision
+                self.on_nav_event(event, enriched)
             except Exception as e:
                 logger.debug(f"Nav event callback error: {e}")
 
@@ -1140,6 +1238,10 @@ class NavigationEngine:
             parts.append(f"Next: {status['next_instruction']}")
         if status.get("distance_to_destination_m"):
             parts.append(f"Dest: {status['distance_to_destination_m']:.0f}m")
+        # Append vision summary if available
+        vision = self.get_vision_summary()
+        if vision:
+            parts.append(vision)
         return " | ".join(parts)
 
     # -------------------------------------------------
