@@ -98,6 +98,8 @@ class GeminiLiveHandler:
         self.session_handle: Optional[str] = None  # For resumption
         self.interrupted = False
         self._send_error_logged = False  # Debounce send error logging
+        self._connect_time: Optional[float] = None  # Track connection duration
+        self._msg_count = 0  # Count messages per session
 
         # Audio output queue (thread-safe, bounded to prevent memory leak)
         self.audio_queue = asyncio.Queue(maxsize=100)
@@ -109,6 +111,12 @@ class GeminiLiveHandler:
         self.memory_manager = memory_manager
         self._last_query = None  # Track last query for response logging
         self._query_start_time = None  # Track query latency
+
+        # Conversation history for context injection on reconnect
+        # Stores last N exchanges as (role, text) tuples
+        self._conversation_history: list = []  # [("user", text), ("model", text), ...]
+        self._max_history_turns = 10  # Keep last 10 exchanges
+        self._current_model_response_parts: list = []  # Buffer ongoing model response
 
         logger.info(f"✅ GeminiLiveHandler initialized (model={model})")
     
@@ -141,16 +149,23 @@ SPEAKING RULES:
 - Prioritize: safety > navigation > interesting/useful info
 
 SENSOR CONTEXT:
-You receive sensor context lines starting with [CONTEXT]. Use them to:
+You receive periodic [CONTEXT] messages with sensor data. These are background updates —
+do NOT respond to them. Silently absorb the information and use it when you speak next.
+Use them to:
 - Know the current location (GPS coordinates) and navigation state
 - Understand what mode the system is in and behave accordingly
 - Avoid repeating what the safety system already warned about
 - Give relevant, situational guidance
 
+SCENE CHANGE NOTIFICATIONS:
+You receive [SCENE_CHANGE] messages when the environment changes meaningfully.
+You MUST respond to these with a brief (1-2 sentence) description of what's new or important.
+
 NAVIGATION MODES — adapt your behavior based on the current mode:
 
 1. OUTDOOR NAVIGATION (you'll see [NAV] with waypoint/bearing data):
    - You complement the 3D audio beam guiding the user
+   - Be MORE proactive than usual — narrate changes as they happen
    - Announce landmarks as they approach ("MRT station on your right")
    - Describe intersections and road crossings in detail
    - Read visible signs, shop names, building names
@@ -212,26 +227,39 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                     response_modalities=self.response_modalities,
                     system_instruction=self.system_instruction,
                     temperature=self.temperature,
+                    # Disable thinking — 2.5 models think by default, but
+                    # thinking generates text/thought parts that are incompatible
+                    # with native audio streaming and crash the session.
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
                     # Sliding window compression prevents session timeout (~15 min)
                     context_window_compression=types.ContextWindowCompressionConfig(
                         sliding_window=types.SlidingWindow(),
                     ),
                     # Transcribe model audio output for logging
                     output_audio_transcription=types.AudioTranscriptionConfig(),
-                    # Allow Gemini to speak proactively (scene changes, etc.)
-                    proactivity=types.ProactivityConfig(
-                        proactive_audio=True,
+                    # Disable automatic activity detection — the client controls
+                    # when the user is speaking via explicit activity signals.
+                    # This prevents Gemini from responding to ambient noise.
+                    realtime_input_config=types.RealtimeInputConfig(
+                        automatic_activity_detection=types.AutomaticActivityDetection(
+                            disabled=True,
+                        ),
                     ),
                     # Natural emotional voice
                     enable_affective_dialog=True,
                 )
                 
-                # Add session resumption if we have a handle
+                # Always enable session resumption so we receive handles
+                # from the server. On reconnect, supply the saved handle to
+                # preserve multi-turn conversation context.
                 if self.session_handle:
                     logger.info(f"🔄 Resuming session with handle: {self.session_handle[:20]}...")
                     config.session_resumption = types.SessionResumptionConfig(
                         handle=self.session_handle
                     )
+                else:
+                    # First connect — request handles for future resumption
+                    config.session_resumption = types.SessionResumptionConfig()
                 
                 # Establish WebSocket connection using async with context manager
                 # NOTE: The session MUST remain inside this async with block
@@ -242,24 +270,38 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                     self.session = session
                     self.is_connected = True
                     self._send_error_logged = False  # Reset on new connection
+                    self._connect_time = time.time()
+                    self._msg_count = 0
                     logger.info(f"✅ Connected to Gemini Live API on attempt {attempt + 1}")
                     
                     if self.status_callback:
                         self.status_callback("Connected to Gemini Live API")
                     
+                    # Inject conversation history on reconnect (if no
+                    # session resumption handle or as safeguard)
+                    await self._inject_conversation_history()
+                    
                     # Start receive loop (this blocks until disconnection)
                     await self._receive_loop()
                 
-                # Connection closed gracefully
+                # Connection closed — log duration and reason
+                duration = time.time() - self._connect_time if self._connect_time else 0
                 self.is_connected = False
                 self.session = None
-                logger.info("🔌 Connection closed gracefully")
+                logger.info(
+                    f"🔌 Connection closed gracefully "
+                    f"(duration={duration:.1f}s, messages={self._msg_count})"
+                )
                 return True
                 
             except ConnectionRefusedError as e:
                 logger.warning(f"⚠️ Connection refused on attempt {attempt + 1}: {e}")
             except ConnectionClosed as e:
-                logger.warning(f"⚠️ WebSocket closed unexpectedly on attempt {attempt + 1}: {e}")
+                duration = time.time() - self._connect_time if self._connect_time else 0
+                logger.warning(
+                    f"⚠️ WebSocket closed unexpectedly on attempt {attempt + 1}: "
+                    f"code={e.code}, reason='{e.reason}', duration={duration:.1f}s"
+                )
             except APIError as e:
                 logger.error(f"❌ API Error on attempt {attempt + 1}: {e.code} - {e.message}")
                 if e.code == 404:
@@ -295,13 +337,40 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
         """
         try:
             async for response in self.session.receive():
+                self._msg_count += 1
+
+                # === DEBUG: Log raw response structure ===
+                populated = []
+                for attr in ['data', 'text', 'server_content', 'go_away',
+                             'session_resumption_update', 'tool_call',
+                             'tool_call_cancellation', 'usage_metadata']:
+                    val = getattr(response, attr, None)
+                    if val is not None:
+                        populated.append(attr)
+                logger.debug(
+                    f"📨 [MSG #{self._msg_count}] Response fields: {populated}"
+                )
+
                 # Handle server go_away message (graceful shutdown)
                 if hasattr(response, 'go_away') and response.go_away:
-                    logger.warning("⚠️ Server requested disconnect (go_away)")
-                    if hasattr(response.go_away, 'new_handle'):
-                        self.session_handle = response.go_away.new_handle
+                    ga = response.go_away
+                    time_left = getattr(ga, 'time_left', None)
+                    logger.warning(
+                        f"⚠️ Server go_away: time_left={time_left}, "
+                        f"has_handle={bool(getattr(ga, 'new_handle', None))}"
+                    )
+                    if getattr(ga, 'new_handle', None):
+                        self.session_handle = ga.new_handle
                         logger.info("📝 Saved session handle for resumption")
                     break
+
+                # Capture session resumption handles sent DURING the session
+                # (these arrive periodically, not just at disconnect)
+                sru = getattr(response, 'session_resumption_update', None)
+                if sru:
+                    if getattr(sru, 'resumable', False) and getattr(sru, 'new_handle', None):
+                        self.session_handle = sru.new_handle
+                        logger.debug("📝 Session resumption handle updated")
 
                 # Convenience accessors (SDK >= 1.x)
                 # response.data → raw audio bytes, response.text → text string
@@ -309,8 +378,6 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                 # Handle audio via convenience accessor (PRIMARY OUTPUT)
                 if hasattr(response, 'data') and response.data:
                     audio_bytes = response.data
-                    qsize = self.audio_queue.qsize()
-                    logger.info(f"📥 Gemini audio chunk: {len(audio_bytes)} bytes (queue: {qsize})")
                     await self.audio_queue.put(audio_bytes)
                     self._store_response("[Audio response]", 'gemini_live_audio')
                     continue
@@ -324,10 +391,19 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                 # Fallback: parse server_content.model_turn.parts (older SDK / edge cases)
                 sc = getattr(response, 'server_content', None)
                 if sc:
-                    # Interrupted by user speech
+                    # Interrupted by user speech — flush queued audio immediately
                     if getattr(sc, 'interrupted', False):
-                        logger.debug("🛑 Playback interrupted by user")
+                        logger.info("🛑 Barge-in detected, flushing audio queue")
                         self.interrupted = True
+                        flushed = 0
+                        while not self.audio_queue.empty():
+                            try:
+                                self.audio_queue.get_nowait()
+                                flushed += 1
+                            except asyncio.QueueEmpty:
+                                break
+                        if flushed:
+                            logger.debug(f"🗑️ Flushed {flushed} obsolete audio chunks")
                         continue
 
                     # Output transcription (from output_audio_transcription config)
@@ -335,6 +411,8 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                     if ot and getattr(ot, 'text', None):
                         logger.info(f"🗣️ Gemini said: {ot.text}")
                         self._store_response(ot.text, 'gemini_live')
+                        # Accumulate model response text for conversation history
+                        self._current_model_response_parts.append(ot.text)
                         continue
 
                     model_turn = getattr(sc, 'model_turn', None)
@@ -349,11 +427,50 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                                 logger.debug(f"💬 Text part: {part.text[:100]}...")
                                 self._store_response(part.text, 'gemini_live')
 
+                    # Handle turn_complete (model finished responding)
+                    tc = getattr(sc, 'turn_complete', None)
+                    if tc is not None:
+                        reason = getattr(sc, 'turn_complete_reason', None)
+                        logger.info(
+                            f"📨 [MSG #{self._msg_count}] Turn complete "
+                            f"(reason={reason})"
+                        )
+                        # Save accumulated model response to conversation history
+                        if self._current_model_response_parts:
+                            full_response = "".join(self._current_model_response_parts)
+                            self._add_to_history("model", full_response)
+                            self._current_model_response_parts.clear()
+                        continue
+
+                    if not getattr(sc, 'interrupted', False) and not ot and not model_turn:
+                        logger.debug(
+                            f"📨 [MSG #{self._msg_count}] Unhandled server_content: "
+                            f"attrs={[a for a in dir(sc) if not a.startswith('_')]}"
+                        )
+
+            # async for loop ended normally — server closed the stream
+            duration = time.time() - self._connect_time if self._connect_time else 0
+            logger.warning(
+                f"⚠️ Receive loop ended (stream closed by server) "
+                f"after {duration:.1f}s, {self._msg_count} messages"
+            )
+
         except asyncio.CancelledError:
             logger.info("🛑 Receive loop cancelled")
             raise
+        except ConnectionClosed as e:
+            duration = time.time() - self._connect_time if self._connect_time else 0
+            logger.error(
+                f"❌ WebSocket closed in receive loop: code={e.code}, "
+                f"reason='{e.reason}', duration={duration:.1f}s, msgs={self._msg_count}"
+            )
+            self.is_connected = False
         except Exception as e:
-            logger.error(f"❌ Error in receive loop: {e}")
+            duration = time.time() - self._connect_time if self._connect_time else 0
+            logger.error(
+                f"❌ Error in receive loop: {type(e).__name__}: {e} "
+                f"(duration={duration:.1f}s, msgs={self._msg_count})"
+            )
             self.is_connected = False
 
     def _store_response(self, response_text: str, tier: str):
@@ -373,7 +490,74 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
             ))
         except Exception as e:
             logger.warning(f"⚠️ Failed to store to memory manager: {e}")
+
+    def _add_to_history(self, role: str, text: str):
+        """Add a turn to conversation history buffer."""
+        # Skip empty or very short entries
+        if not text or len(text.strip()) < 2:
+            return
+        self._conversation_history.append((role, text.strip()))
+        # Trim to max size (keep most recent)
+        if len(self._conversation_history) > self._max_history_turns * 2:
+            self._conversation_history = self._conversation_history[-(self._max_history_turns * 2):]
+
+    async def _inject_conversation_history(self):
+        """Inject conversation history on reconnect for context continuity.
+
+        If we have a session_handle the server restores context natively.
+        We still inject as a safety net — the model handles duplicates well.
+        """
+        if not self._conversation_history or not self.is_connected or not self.session:
+            return
+        try:
+            # Build a compact summary of recent conversation
+            summary_parts = ["[CONTEXT] Previous conversation (for continuity):"]
+            for role, text in self._conversation_history[-10:]:  # Last 10 turns
+                prefix = "User" if role == "user" else "You"
+                # Truncate very long entries
+                truncated = text[:200] + "..." if len(text) > 200 else text
+                summary_parts.append(f"{prefix}: {truncated}")
+            summary = "\n".join(summary_parts)
+
+            await self.session.send_client_content(
+                turns={"parts": [{"text": summary}]},
+                turn_complete=False,  # Don't trigger a response
+            )
+            logger.info(
+                f"📝 Injected conversation history "
+                f"({len(self._conversation_history)} turns) on reconnect"
+            )
+        except Exception as e:
+            logger.debug(f"History injection failed: {e}")
     
+    async def send_activity_start(self) -> bool:
+        """Signal that user started speaking (explicit VAD)."""
+        if not self.is_connected or not self.session:
+            return False
+        try:
+            await self.session.send_realtime_input(
+                activity_start=types.ActivityStart()
+            )
+            logger.info("🎙️ Activity START signaled to Gemini")
+            return True
+        except Exception as e:
+            logger.debug(f"Activity start signal error: {e}")
+            return False
+
+    async def send_activity_end(self) -> bool:
+        """Signal that user stopped speaking (explicit VAD)."""
+        if not self.is_connected or not self.session:
+            return False
+        try:
+            await self.session.send_realtime_input(
+                activity_end=types.ActivityEnd()
+            )
+            logger.info("🎙️ Activity END signaled to Gemini")
+            return True
+        except Exception as e:
+            logger.debug(f"Activity end signal error: {e}")
+            return False
+
     async def send_audio_chunk(self, audio_bytes: bytes, sample_rate: int = 16000) -> bool:
         """
         Send PCM audio chunk to Gemini Live API.
@@ -426,9 +610,20 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
             return False
         
         try:
-            # Send PIL Image directly (SDK handles JPEG encoding)
-            await self.session.send_realtime_input(video=frame)
-            logger.debug(f"📤 Sent video frame ({frame.width}x{frame.height})")
+            # Resize to cap bandwidth (max 1024px on longest side)
+            max_dim = 1024
+            if max(frame.width, frame.height) > max_dim:
+                frame.thumbnail((max_dim, max_dim), Image.LANCZOS)
+
+            # JPEG-encode — higher quality to prevent hallucination from compression
+            buf = BytesIO()
+            frame.save(buf, format='JPEG', quality=85)
+            jpeg_bytes = buf.getvalue()
+
+            await self.session.send_realtime_input(
+                video=types.Blob(data=jpeg_bytes, mime_type='image/jpeg')
+            )
+            logger.debug(f"📤 Sent video frame ({frame.width}x{frame.height}, {len(jpeg_bytes)} bytes)")
             return True
             
         except Exception as e:
@@ -444,6 +639,7 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
 
         Uses send_client_content() per official Live API docs — text goes via
         client content turns, NOT send_realtime_input (which is audio/video only).
+        This sends with turn_complete=True, triggering a model response.
 
         Args:
             text: Text prompt
@@ -457,19 +653,54 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
 
         try:
             await self.session.send_client_content(
-                turns={"parts": [{"text": text}]}
+                turns={"parts": [{"text": text}]},
+                turn_complete=True,
             )
             logger.debug(f"📤 Sent text: {text[:50]}...")
 
-            # Track query for memory logging
+            # Track query for memory logging and conversation history
             self._last_query = text
             self._query_start_time = time.time()
+            self._add_to_history("user", text)
+            # Clear any leftover model response buffer
+            self._current_model_response_parts.clear()
 
             return True
 
         except Exception as e:
             if not self._send_error_logged:
                 logger.warning(f"⚠️ Gemini send failed (text), suppressing further: {e}")
+                self._send_error_logged = True
+            self.is_connected = False
+            return False
+
+    async def send_context(self, text: str) -> bool:
+        """
+        Send silent context to Gemini Live API (no response triggered).
+
+        Uses send_client_content() with turn_complete=False so Gemini absorbs
+        the information without generating a response. Use for periodic sensor
+        context injection ([CONTEXT] messages).
+
+        Args:
+            text: Context text to inject silently
+
+        Returns:
+            bool: True if sent successfully, False otherwise
+        """
+        if not self.is_connected or not self.session:
+            return False
+
+        try:
+            await self.session.send_client_content(
+                turns={"parts": [{"text": text}]},
+                turn_complete=False,
+            )
+            return True
+
+        except Exception as e:
+            if not self._send_error_logged:
+                logger.warning(f"⚠️ Gemini send failed (context), suppressing further: {e}")
                 self._send_error_logged = True
             self.is_connected = False
             return False
@@ -562,8 +793,8 @@ class GeminiLiveManager:
         self.loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self.loop)
         
-        reconnect_delay = 3.0  # Start at 3 seconds
-        max_delay = 30.0
+        reconnect_delay = 1.0  # Fast reconnect between sessions
+        max_delay = 15.0
         
         try:
             while self.is_running:
@@ -575,11 +806,15 @@ class GeminiLiveManager:
                     # Connect to Live API (blocks until disconnection)
                     self.loop.run_until_complete(self.handler.connect())
                     
-                    # Connection closed — cancel audio task
-                    logger.warning("🔌 Gemini connection closed, will reconnect...")
+                    # Connection ended normally (turn_complete → session close)
+                    # This is expected behavior for native audio model
+                    logger.info("🔌 Gemini session ended, reconnecting...")
+                    reconnect_delay = 1.0  # Reset delay on clean disconnect
                     
                 except Exception as e:
                     logger.error(f"❌ Gemini event loop error: {e}")
+                    # Only increase delay on errors, not clean disconnects
+                    reconnect_delay = min(reconnect_delay * 1.5, max_delay)
                 finally:
                     if audio_task:
                         audio_task.cancel()
@@ -595,7 +830,6 @@ class GeminiLiveManager:
                 logger.info(f"🔄 Gemini reconnecting in {reconnect_delay:.0f}s...")
                 import time
                 time.sleep(reconnect_delay)
-                reconnect_delay = min(reconnect_delay * 1.5, max_delay)
                 
                 # Reset handler connection state for fresh connect
                 self.handler.is_connected = False
@@ -617,13 +851,9 @@ class GeminiLiveManager:
                     )
                     
                     if self.audio_callback:
-                        # Call audio callback in background thread
-                        logger.info(f"🔊 Forwarding Gemini audio to player: {len(audio_bytes)} bytes")
-                        threading.Thread(
-                            target=self.audio_callback,
-                            args=(audio_bytes,),
-                            daemon=True
-                        ).start()
+                        # Call directly — add_audio_chunk is non-blocking
+                        # (spawning a thread per audio chunk overwhelms RPi5)
+                        self.audio_callback(audio_bytes)
                         
                 except asyncio.TimeoutError:
                     # No audio available, continue waiting
@@ -635,6 +865,22 @@ class GeminiLiveManager:
         except Exception as e:
             logger.error(f"❌ Audio processing error: {e}")
     
+    def send_activity_start(self):
+        """Signal speech start (thread-safe)."""
+        if not self.is_running or not self.loop:
+            return
+        asyncio.run_coroutine_threadsafe(
+            self.handler.send_activity_start(), self.loop
+        )
+
+    def send_activity_end(self):
+        """Signal speech end (thread-safe)."""
+        if not self.is_running or not self.loop:
+            return
+        asyncio.run_coroutine_threadsafe(
+            self.handler.send_activity_end(), self.loop
+        )
+
     def send_audio(self, audio_bytes: bytes, sample_rate: int = 16000):
         """
         Send audio chunk (thread-safe).
@@ -672,7 +918,7 @@ class GeminiLiveManager:
     
     def send_text(self, text: str):
         """
-        Send text prompt (thread-safe).
+        Send text prompt (thread-safe). Triggers a model response.
         
         Args:
             text: Text prompt
@@ -684,6 +930,22 @@ class GeminiLiveManager:
         # Schedule async task in event loop
         asyncio.run_coroutine_threadsafe(
             self.handler.send_text(text),
+            self.loop
+        )
+
+    def send_context(self, text: str):
+        """
+        Send silent context (thread-safe). Does NOT trigger a model response.
+        Use for periodic [CONTEXT] injections.
+        
+        Args:
+            text: Context text
+        """
+        if not self.is_running or not self.loop:
+            return
+        
+        asyncio.run_coroutine_threadsafe(
+            self.handler.send_context(text),
             self.loop
         )
     

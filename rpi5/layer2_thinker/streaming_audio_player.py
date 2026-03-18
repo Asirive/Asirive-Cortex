@@ -58,8 +58,8 @@ class StreamingAudioPlayer:
         self.device = device
         self.blocksize = blocksize
         
-        # Audio queue (thread-safe)
-        self.audio_queue = queue.Queue(maxsize=100)
+        # Audio queue (thread-safe) — large buffer for Gemini burst-mode audio
+        self.audio_queue = queue.Queue(maxsize=500)
         
         # Playback state
         self.is_playing = False
@@ -68,6 +68,8 @@ class StreamingAudioPlayer:
         self.playback_thread: Optional[threading.Thread] = None
         self._silence_count = 0  # Track consecutive silence callbacks
         self._chunks_played = 0  # Track total chunks played
+        self._leftover: Optional[np.ndarray] = None  # Leftover samples from previous callback
+        self._queue_full_count = 0  # Debounce queue-full warnings
         
         # Callback for playback events
         self.on_start_callback: Optional[Callable] = None
@@ -86,6 +88,8 @@ class StreamingAudioPlayer:
         self.is_interrupted = False
         self._silence_count = 0
         self._chunks_played = 0
+        self._leftover = None
+        self._queue_full_count = 0
         
         # Clear audio queue
         while not self.audio_queue.empty():
@@ -116,7 +120,8 @@ class StreamingAudioPlayer:
         self.is_playing = False
         self.is_interrupted = interrupted
         
-        # Clear audio queue
+        # Clear audio queue and leftover buffer
+        self._leftover = None
         while not self.audio_queue.empty():
             try:
                 self.audio_queue.get_nowait()
@@ -159,10 +164,13 @@ class StreamingAudioPlayer:
             self.audio_queue.put_nowait(audio_array)
             if self._chunks_played == 0 and self.audio_queue.qsize() == 1:
                 logger.info(f"📥 First Gemini audio chunk queued: {len(audio_array)} samples")
-            else:
-                logger.debug(f"📥 Added {len(audio_array)} samples to queue (qsize={self.audio_queue.qsize()})")
+            if self._queue_full_count > 0:
+                logger.info(f"📥 Audio queue recovered after dropping {self._queue_full_count} chunks")
+                self._queue_full_count = 0
         except queue.Full:
-            logger.warning("⚠️ Audio queue full - dropping chunk")
+            self._queue_full_count += 1
+            if self._queue_full_count == 1:
+                logger.warning(f"⚠️ Audio queue full (qsize={self.audio_queue.maxsize}) - dropping chunks")
         except Exception as e:
             logger.error(f"❌ Error adding audio chunk: {e}")
     
@@ -207,6 +215,7 @@ class StreamingAudioPlayer:
         Audio callback for sounddevice stream.
         
         Runs in audio thread — must be fast, no blocking, no logging.
+        Uses self._leftover buffer to avoid put_nowait(remaining) failures.
         """
         if status:
             logger.warning(f"⚠️ Audio stream status: {status}")
@@ -216,37 +225,49 @@ class StreamingAudioPlayer:
             outdata.fill(0)
             return
         
-        # Get audio from queue
+        # Build audio data: start from leftover, then pull from queue
         try:
-            audio_data = np.array([], dtype=np.int16)
+            parts = []
+            total = 0
             
-            while len(audio_data) < frames and not self.audio_queue.empty():
-                chunk = self.audio_queue.get_nowait()
-                audio_data = np.concatenate([audio_data, chunk])
+            # Use leftover from previous callback first
+            if self._leftover is not None and len(self._leftover) > 0:
+                parts.append(self._leftover)
+                total += len(self._leftover)
+                self._leftover = None
+            
+            # Pull chunks from queue until we have enough
+            while total < frames:
+                try:
+                    chunk = self.audio_queue.get_nowait()
+                    parts.append(chunk)
+                    total += len(chunk)
+                except queue.Empty:
+                    break
+            
+            if total == 0:
+                outdata.fill(0)
+                self._silence_count += 1
+                return
+            
+            # Concatenate once (not in a loop)
+            audio_data = np.concatenate(parts) if len(parts) > 1 else parts[0]
             
             if len(audio_data) >= frames:
                 outdata[:] = audio_data[:frames].reshape(-1, self.channels)
                 self._silence_count = 0
                 self._chunks_played += 1
                 
-                # Put back remaining data
+                # Store leftover in buffer (never put_nowait back to queue)
                 if len(audio_data) > frames:
-                    remaining = audio_data[frames:]
-                    self.audio_queue.put_nowait(remaining)
+                    self._leftover = audio_data[frames:]
             else:
                 # Not enough data — pad with silence
-                if len(audio_data) > 0:
-                    outdata[:len(audio_data)] = audio_data.reshape(-1, self.channels)
-                    outdata[len(audio_data):].fill(0)
-                    self._silence_count = 0
-                    self._chunks_played += 1
-                else:
-                    outdata.fill(0)
-                    self._silence_count += 1
+                outdata[:len(audio_data)] = audio_data.reshape(-1, self.channels)
+                outdata[len(audio_data):].fill(0)
+                self._silence_count = 0
+                self._chunks_played += 1
         
-        except queue.Empty:
-            outdata.fill(0)
-            self._silence_count += 1
         except Exception as e:
             logger.error(f"❌ Audio callback error: {e}")
             outdata.fill(0)

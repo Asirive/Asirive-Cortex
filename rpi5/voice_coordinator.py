@@ -41,6 +41,11 @@ class VoiceCoordinator:
         # Optional raw audio callback: fn(audio_bytes: bytes, sample_rate: int) -> None
         # Set this after init to forward PCM audio to GeminiLiveHandler (audio-to-audio path)
         self.on_raw_audio: Optional[Callable] = None
+        # Optional activity signal callbacks for explicit VAD
+        self.on_speech_start_callback: Optional[Callable] = None
+        self.on_speech_end_callback: Optional[Callable] = None
+        # Tracks whether continuous audio hook is wired
+        self._continuous_audio_wired = False
     
     @property
     def is_listening(self) -> bool:
@@ -63,6 +68,7 @@ class VoiceCoordinator:
                 min_speech_duration_ms=vad_min_speech,
                 min_silence_duration_ms=vad_min_silence,
                 padding_duration_ms=vad_padding,
+                on_speech_start=self._on_speech_start,
                 on_speech_end=self._on_speech_end
             )
             logger.info(
@@ -112,6 +118,13 @@ class VoiceCoordinator:
             return
 
         logger.info("🎤 Starting Voice Coordinator (VAD Active)...")
+
+        # Wire continuous audio forwarding to Gemini Live (every 32ms chunk)
+        if self.on_raw_audio and not self._continuous_audio_wired:
+            self.vad.on_audio_chunk = self._on_audio_chunk
+            self._continuous_audio_wired = True
+            logger.info("🔊 Continuous audio streaming to Gemini Live enabled")
+
         if self.vad.start_listening():
             self.is_active = True
 
@@ -122,22 +135,37 @@ class VoiceCoordinator:
             self.is_active = False
             logger.info("🛑 Voice Coordinator Stopped")
 
+    def _on_audio_chunk(self, chunk: np.ndarray):
+        """Forward every VAD audio chunk to Gemini Live for continuous streaming."""
+        if self.on_raw_audio is not None:
+            try:
+                pcm_bytes = (chunk * 32767).astype(np.int16).tobytes()
+                self.on_raw_audio(pcm_bytes, 16000)
+            except Exception:
+                pass  # Don't log per-chunk errors
+
+    def _on_speech_start(self):
+        """Callback from VAD when speech starts. Signal Gemini to listen."""
+        if self.on_speech_start_callback:
+            try:
+                self.on_speech_start_callback()
+            except Exception:
+                pass
+
     def _on_speech_end(self, audio: np.ndarray):
         """Callback from VAD when speech segment ends.
         
         Pipeline: Cartesia Ink (cloud, ~66ms) → Whisper (offline fallback, ~8s)
-        Gemini Live audio path runs in parallel (unchanged).
+        Gemini Live audio path runs in parallel via continuous chunk streaming.
         """
         logger.info(f"🎤 Speech segment detected ({len(audio)} samples), transcribing...")
 
-        # Forward raw PCM to GeminiLiveHandler (audio-to-audio path) if wired
-        if self.on_raw_audio is not None:
+        # Signal Gemini that user stopped speaking
+        if self.on_speech_end_callback:
             try:
-                # Convert float32 [-1,1] to int16 PCM bytes at 16kHz
-                pcm_bytes = (audio * 32767).astype(np.int16).tobytes()
-                self.on_raw_audio(pcm_bytes, 16000)
-            except Exception as e:
-                logger.debug(f"Raw audio forwarding error: {e}")
+                self.on_speech_end_callback()
+            except Exception:
+                pass
 
         try:
             text = None

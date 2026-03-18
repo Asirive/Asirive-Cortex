@@ -1080,8 +1080,10 @@ class CortexSystem:
 
             def _on_gemini_audio(audio_bytes: bytes):
                 """Callback: play Gemini audio responses via StreamingAudioPlayer."""
-                logger.info(f"🔊 [AUDIO PIPELINE] Gemini→Player: {len(audio_bytes)} bytes, player_playing={self.gemini_audio_player.is_playing if self.gemini_audio_player else 'N/A'}")
                 if self.gemini_audio_player:
+                    if not self.gemini_audio_player.is_playing:
+                        logger.info("🔊 Auto-starting audio player for Gemini response")
+                        self.gemini_audio_player.start()
                     self.gemini_audio_player.add_audio_chunk(audio_bytes)
 
             self.layer2 = GeminiLiveManager(
@@ -1175,12 +1177,19 @@ class CortexSystem:
         )
         self.voice_coordinator.initialize()
 
-        # Wire GeminiLiveManager into voice pipeline (audio-to-audio path).
-        # When VAD captures a speech segment the raw PCM is forwarded to
-        # layer2 so Gemini Live can process it in parallel with Whisper STT.
+        # Wire GeminiLiveManager into voice pipeline.
+        # Raw audio is streamed continuously for ambient context, but
+        # Activity START/END signals are NOT sent automatically.
+        # Gemini responds only to explicit send_text() calls from the
+        # Gemini-first gate — this prevents Gemini from independently
+        # processing audio and responding to queries routed elsewhere
+        # (e.g., Layer 3 navigation commands).
         if self.layer2 is not None:
             self.voice_coordinator.on_raw_audio = self._forward_audio_to_gemini
-            logger.info("✅ Gemini Live wired into voice pipeline (audio-to-audio)")
+            # Do NOT wire activity signals — Gemini uses text input only
+            # self.voice_coordinator.on_speech_start_callback = ...
+            # self.voice_coordinator.on_speech_end_callback = ...
+            logger.info("✅ Gemini Live wired into voice pipeline (text-command mode)")
 
         # Initialize Bluetooth Manager (will be connected in start() if configured)
         self.bt_manager = None
@@ -1474,20 +1483,13 @@ class CortexSystem:
     def _forward_audio_to_gemini(self, pcm_bytes: bytes, sample_rate: int) -> None:
         """
         Forward raw PCM audio to GeminiLiveManager (audio-to-audio path).
-        Called by VoiceCoordinator.on_raw_audio for every captured speech segment.
-        Also sends the latest camera frame so Gemini has visual context.
+        Called by VoiceCoordinator for every 32ms VAD chunk (continuous stream).
+        Video is sent separately at 1 FPS from the detection loop.
         """
         if not self.layer2 or not self.layer2.is_running:
             return
         try:
-            # GeminiLiveManager.send_audio() is thread-safe (no async needed)
             self.layer2.send_audio(pcm_bytes, sample_rate)
-            # Send current video frame for multimodal context
-            frame = self.camera.get_frame() if self.camera else None
-            if frame is not None:
-                from PIL import Image
-                pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                self.layer2.send_video(pil_frame)
         except Exception as e:
             logger.debug(f"GeminiLive audio forward error: {e}")
 
@@ -1682,6 +1684,9 @@ class CortexSystem:
         """
         Forward navigation events to Gemini Live as [NAV_EVENT] context messages.
         Called by NavigationEngine.on_nav_event at key navigation moments.
+
+        Critical events (road_crossing, approaching_destination, indoor_mode)
+        trigger a Gemini response. Routine events are absorbed silently.
         """
         if not self.layer2 or not self.layer2.is_running:
             return
@@ -1692,7 +1697,22 @@ class CortexSystem:
             msg = f"[NAV_EVENT] {event}"
             if detail_str:
                 msg += f" | {detail_str}"
-            self.layer2.send_text(msg)
+
+            # Critical events → trigger Gemini response (describe what you see)
+            critical_events = {
+                "road_crossing", "approaching_destination", "arrived",
+                "indoor_mode_activated", "approaching_turn",
+            }
+            if event in critical_events:
+                msg += "\nBriefly describe what you see to help the user."
+                self.layer2.send_text(msg)
+                # Ensure audio player is ready
+                if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
+                    self.gemini_audio_player.start()
+            else:
+                # Routine events → silent context absorption
+                self.layer2.send_context(msg)
+
             logger.info(f"🧭➡️🤖 Gemini nav event: {event} ({detail_str})")
         except Exception as e:
             logger.debug(f"Nav event Gemini forward error: {e}")
@@ -1885,12 +1905,8 @@ class CortexSystem:
                             all_detections, hazards, depth_map, frame.shape
                         )
                         if alert:
-                            # Interrupt Gemini audio on Tier 1 alerts so safety sound is heard
-                            if alert.tier == 1 and self.gemini_audio_player:
-                                try:
-                                    self.gemini_audio_player.stop(interrupted=True)
-                                except Exception:
-                                    pass
+                            # DON'T interrupt Gemini audio — safety uses haptic + spatial audio
+                            # Gemini Live audio is prioritized over safety TTS
 
                             # 3D-positioned warning sound
                             if self.navigator and alert.position_3d and hasattr(self.navigator, 'spatial_audio'):
@@ -1957,17 +1973,27 @@ class CortexSystem:
                         if self.scene_detector.should_narrate(all_detections, avg_depth, nav_event, is_nav_active):
                             trigger = self.scene_detector.get_last_trigger()
                             logger.info(f"🎙️ Scene change detected ({trigger}), requesting Gemini narration")
-                            # Build context for Gemini
+                            # Build context for Gemini (NO YOLO class names — Gemini
+                            # should describe what IT sees in the video, not echo
+                            # YOLO labels which may be misdetections)
                             context_parts = []
                             if self.nav_engine:
                                 context_parts.append(self.nav_engine.get_context_string())
                             if self.bus_handler:
                                 context_parts.append(self.bus_handler.get_context_string())
-                            det_summary = ", ".join(set(d.get('class', '?') for d in all_detections[:10]))
-                            if det_summary:
-                                context_parts.append(f"[VISIBLE] {det_summary}")
                             if avg_depth is not None:
                                 context_parts.append(f"[DEPTH] avg={avg_depth:.1f}m")
+
+                            context_str = "\n".join(context_parts)
+                            # Send video frame + explicit narration prompt to Gemini
+                            # Use a generic trigger descriptor — don't leak YOLO class names
+                            trigger_desc = "scene_change"
+                            if trigger.startswith("silence:"):
+                                trigger_desc = "periodic_update"
+                            elif trigger.startswith("depth_change:"):
+                                trigger_desc = "environment_change"
+                            elif trigger.startswith("nav_event:"):
+                                trigger_desc = trigger  # Nav events are fine to pass through
 
                             context_str = "\n".join(context_parts)
                             # Send video frame + explicit narration prompt to Gemini
@@ -1983,8 +2009,10 @@ class CortexSystem:
                                     self.layer2.send_video(pil_frame)
                                 # Send as explicit narration request, not just silent context
                                 self.layer2.send_text(
-                                    f"[SCENE_CHANGE] Trigger: {trigger}. "
-                                    f"Briefly describe what you see that's new or important for a blind user.\n{context_str}"
+                                    f"[SCENE_CHANGE] Reason: {trigger_desc}. "
+                                    f"Describe ONLY what you actually see in the camera frame right now. "
+                                    f"Do NOT guess or assume objects — only describe what is clearly visible. "
+                                    f"Keep it brief and relevant for a blind user.\n{context_str}"
                                 )
                                 if self.scene_detector:
                                     self.scene_detector.record_speech()
@@ -2055,7 +2083,7 @@ class CortexSystem:
                                 ctx_parts.append(f"[DEPTH] avg={float(depth_map.mean()):.1f}m")
 
                             context_str = "\n".join(ctx_parts)
-                            self.layer2.send_text(f"[CONTEXT]\n{context_str}")
+                            self.layer2.send_context(f"[CONTEXT]\n{context_str}")
                         except Exception as e:
                             logger.debug(f"Periodic Gemini context injection error: {e}")
 
@@ -2424,24 +2452,59 @@ class CortexSystem:
             logger.debug(f"Ignoring filler utterance: '{query}'")
             return
 
-        # ── Gemini Live dedup: if Gemini Live is active and handling audio,
-        #    skip old-pipeline TTS for layer2 queries to avoid double-speak.
-        #    Send text + video to Gemini so it knows what the user asked.
-        #    System commands (navigate, bus, privacy) still use old pipeline.
-        if (target_layer == "layer2"
-            and self.layer2
+        # ══════════════════════════════════════════════════════════════════
+        # GEMINI-FIRST PIPELINE: When Gemini Live is connected, it handles
+        # ALL perception queries (Layer 1 detection + Layer 2 analysis)
+        # and general Layer 3 questions. Gemini already has continuous
+        # video context, so its answers are richer and faster than local
+        # YOLO aggregation + Cartesia TTS.
+        #
+        # Layer 3 navigation COMMANDS (navigate to X, stop nav, bus, etc.)
+        # stay local — they interact with GPS, nav engine, and bus APIs.
+        # System commands (privacy, camera on/off) also stay local.
+        # Layer 0 safety + Layer 1 YOLO detection still run for dashboard.
+        # ══════════════════════════════════════════════════════════════════
+        gemini_online = (
+            self.layer2
             and hasattr(self.layer2, 'is_running')
-            and self.layer2.is_running):
-            logger.info("🔇 Gemini Live active — forwarding as text+video: "
-                        f"'{query[:60]}'")
-            logger.info(f"🔊 [AUDIO PIPELINE] handler.is_connected={self.layer2.handler.is_connected}, "
-                        f"player.is_playing={self.gemini_audio_player.is_playing if self.gemini_audio_player else 'N/A'}")
+            and self.layer2.is_running
+            and hasattr(self.layer2, 'handler')
+            and self.layer2.handler.is_connected
+        )
+
+        # Layer 3 commands that MUST stay local (they need GPS/nav engine)
+        _nav_command_kws = [
+            "navigate to", "take me to", "directions to", "go to",
+            "how do i get to", "stop nav", "cancel nav", "cancel route",
+            "i'm lost", "im lost", "i am lost", "retrace", "take me back",
+            "go back", "bus", "next bus", "resume nav", "resume route",
+            "continue nav", "continue route", "keep going", "find the",
+        ]
+        query_lower_check = query.lower().strip()
+        is_nav_command = (
+            target_layer == "layer3"
+            and any(kw in query_lower_check for kw in _nav_command_kws)
+        )
+
+        # Gate: Gemini handles L1, L2, and general L3 questions
+        gemini_handles = target_layer in ("layer1", "layer2") or (
+            target_layer == "layer3" and not is_nav_command
+        )
+
+        if gemini_online and gemini_handles:
+            logger.info(f"🤖 Gemini Live handling {target_layer} query: '{query[:60]}'")
             # Ensure audio player is ready to receive Gemini's response
             if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
                 self.gemini_audio_player.start()
                 logger.info("🔊 Auto-started Gemini audio player for response")
-            # Send the transcribed text so Gemini has a clear text version
-            self.layer2.send_text(f"[User voice command]: {query}")
+            # Build context-enriched prompt
+            prompt_parts = [f"[User voice command]: {query}"]
+            # Include nav context if navigating
+            if self.nav_engine and hasattr(self.nav_engine, 'get_context_string'):
+                nav_ctx = self.nav_engine.get_context_string()
+                if nav_ctx:
+                    prompt_parts.append(nav_ctx)
+            self.layer2.send_text("\n".join(prompt_parts))
             # Send current video frame for visual context
             if self.camera:
                 frame = self.camera.get_frame()

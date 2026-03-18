@@ -64,6 +64,9 @@ class PhoneGPSReceiver:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._connected_phones: int = 0
         self._update_count: int = 0
+        self._last_known_fix: Optional[GPSFix] = None
+        self._last_known_time: float = 0.0
+        self._is_last_known: bool = False
 
         # Path to the HTML file served to phones
         self._html_path = Path(__file__).parent.parent / "static" / "phone_gps.html"
@@ -119,6 +122,16 @@ class PhoneGPSReceiver:
     def has_fix(self) -> bool:
         """True if we have a recent phone GPS fix."""
         return self.get_fix() is not None
+
+    def get_last_known_fix(self) -> Optional[GPSFix]:
+        """Get the last known GPS fix, even if stale. Never expires."""
+        with self._lock:
+            return self._last_known_fix
+
+    @property
+    def is_last_known(self) -> bool:
+        """True if the current position is a last-known (indoor) fallback."""
+        return self._is_last_known
 
     @property
     def is_connected(self) -> bool:
@@ -241,7 +254,7 @@ class PhoneGPSReceiver:
         app.router.add_post("/gps/update", self._handle_gps_post)
         app.router.add_get("/gps/status", self._handle_status)
 
-        runner = web.AppRunner(app)
+        runner = web.AppRunner(app, access_log=None)  # Suppress per-request HTTP logs
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", self._port, ssl_context=ssl_ctx)
         await site.start()
@@ -265,7 +278,7 @@ class PhoneGPSReceiver:
         """Serve the GPS HTML page."""
         try:
             html = self._html_path.read_text(encoding="utf-8")
-            logger.info(f"📱 GPS page served to {request.remote} ({len(html)} bytes)")
+            logger.debug(f"📱 GPS page served to {request.remote} ({len(html)} bytes)")
             return web.Response(text=html, content_type="text/html")
         except FileNotFoundError:
             logger.error("📱 phone_gps.html NOT FOUND!")
@@ -275,9 +288,7 @@ class PhoneGPSReceiver:
         """Handle GPS data POST from phone browser."""
         try:
             data = await request.json()
-            lat, lng = data.get('lat'), data.get('lng')
-            acc = data.get('accuracy', '?')
-            logger.info(f"📱 GPS POST #{self._update_count + 1}: lat={lat}, lng={lng}, acc={acc}m from {request.remote}")
+            self._is_last_known = bool(data.get("is_last_known", False))
             self._update_fix(data)
             self._connected_phones = 1
             return web.json_response({"ok": True, "count": self._update_count})
@@ -288,13 +299,17 @@ class PhoneGPSReceiver:
     async def _handle_status(self, request: web.Request) -> web.Response:
         """Health check / status endpoint."""
         fix = self.get_fix()
-        logger.info(f"📱 Status check from {request.remote}: connected={self.is_connected}, has_fix={fix is not None}, updates={self._update_count}")
+        lk = self.get_last_known_fix()
+        logger.debug(f"\U0001f4f1 Status check from {request.remote}: connected={self.is_connected}, has_fix={fix is not None}, updates={self._update_count}")
         return web.json_response({
             "connected": self.is_connected,
             "has_fix": fix is not None,
+            "is_last_known": self._is_last_known,
             "update_count": self._update_count,
             "lat": fix.latitude if fix else None,
             "lng": fix.longitude if fix else None,
+            "last_known_lat": lk.latitude if lk else None,
+            "last_known_lng": lk.longitude if lk else None,
         })
 
     def _update_fix(self, data: dict) -> None:
@@ -329,6 +344,9 @@ class PhoneGPSReceiver:
             )
             self._last_update = time.monotonic()
             self._update_count += 1
+            # Always save as last known (survives stale threshold)
+            self._last_known_fix = self._fix
+            self._last_known_time = self._last_update
 
         logger.debug(
             f"📱 Phone GPS #{self._update_count}: lat={lat:.6f}, lng={lng:.6f}, "

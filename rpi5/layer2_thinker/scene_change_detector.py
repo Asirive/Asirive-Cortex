@@ -37,9 +37,10 @@ class SceneChangeDetector:
         self,
         class_memory_seconds: float = 5.0,
         depth_change_threshold: float = 0.3,
-        silence_timeout_navigating: float = 30.0,
+        silence_timeout_navigating: float = 120.0,
         silence_timeout_idle: float = 60.0,
         cooldown_seconds: float = 5.0,
+        cooldown_navigating: float = 15.0,
         min_new_classes: int = 1,
     ):
         """
@@ -48,7 +49,8 @@ class SceneChangeDetector:
             depth_change_threshold: Fraction change in avg depth to trigger (0.3 = 30%)
             silence_timeout_navigating: Seconds of silence before speaking while navigating
             silence_timeout_idle: Seconds of silence before speaking while idle
-            cooldown_seconds: Minimum seconds between narration triggers
+            cooldown_seconds: Minimum seconds between narration triggers (idle)
+            cooldown_navigating: Minimum seconds between narration triggers (navigating)
             min_new_classes: Minimum new classes to trigger narration
         """
         self.class_memory_seconds = class_memory_seconds
@@ -56,6 +58,7 @@ class SceneChangeDetector:
         self.silence_timeout_navigating = silence_timeout_navigating
         self.silence_timeout_idle = silence_timeout_idle
         self.cooldown_seconds = cooldown_seconds
+        self.cooldown_navigating = cooldown_navigating
         self.min_new_classes = min_new_classes
 
         # State
@@ -86,8 +89,9 @@ class SceneChangeDetector:
         """
         now = time.time()
 
-        # Enforce cooldown
-        if now - self._last_narration_time < self.cooldown_seconds:
+        # Enforce cooldown (shorter during navigation)
+        cooldown = self.cooldown_navigating if is_navigating else self.cooldown_seconds
+        if now - self._last_narration_time < cooldown:
             return False
 
         # Check each trigger condition

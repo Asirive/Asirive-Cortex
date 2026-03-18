@@ -847,35 +847,63 @@ class NavigationEngine:
     # -------------------------------------------------
 
     def _get_current_position(self) -> Optional[Tuple[float, float]]:
-        """Get current GPS position (lat, lng) or None."""
+        """Get current GPS position (lat, lng) or None.
+        
+        Accepts all quality levels including q=0 (phone GPS ±100m).
+        Consumers should check self._gps_accuracy for precision-sensitive logic.
+        """
         if not self.gps:
             return None
         fix = self.gps.get_fix()
         if fix is None:
+            # Try last-known position (indoor/stale fallback)
+            if hasattr(self.gps, 'get_last_known_fix'):
+                lk = self.gps.get_last_known_fix()
+                if lk:
+                    self._gps_accuracy = 9999  # Mark as very rough
+                    return (lk.latitude, lk.longitude)
             return None
-        # Check fix quality
-        if fix.fix_quality < 1:
-            return None
+        # Store accuracy for threshold scaling
+        self._gps_accuracy = getattr(fix, 'accuracy', 999)
         return (fix.latitude, fix.longitude)
 
     def _get_user_heading(self) -> float:
         """
         Get user's facing direction in degrees (0-360).
-        Falls back to GPS heading if IMU unavailable.
+        Priority: IMU (calibrated) > GPS course > breadcrumb heading > last known.
         """
-        # Primary: BNO055 IMU heading
+        # Primary: BNO055 IMU heading (only if magnetometer calibrated)
         if self.imu:
             heading = self.imu.get_heading()
             if heading is not None:
-                return heading
+                # Check magnetometer calibration if available
+                cal = getattr(self.imu, 'get_calibration', lambda: None)()
+                mag_cal = cal.get('mag', 0) if isinstance(cal, dict) else -1
+                if mag_cal >= 1:  # At least partially calibrated
+                    self._last_known_heading = heading
+                    return heading
+                elif mag_cal == 0:
+                    logger.debug("IMU magnetometer uncalibrated (M0), using fallback")
 
-        # Fallback: GPS heading (only reliable when moving)
+        # Fallback 1: GPS course-over-ground (only reliable when moving)
         if self.gps:
             fix = self.gps.get_fix()
             if fix and fix.speed_kmh > 1.0:
+                self._last_known_heading = fix.heading
                 return fix.heading
 
-        return 0.0  # Default north if nothing available
+        # Fallback 2: Breadcrumb-based heading (direction of recent travel)
+        if len(self._breadcrumbs) >= 2:
+            p1 = self._breadcrumbs[-2]
+            p2 = self._breadcrumbs[-1]
+            dist = haversine_distance(p1[0], p1[1], p2[0], p2[1])
+            if dist > 2.0:  # Only if moved > 2m
+                bc_heading = bearing_between(p1[0], p1[1], p2[0], p2[1])
+                self._last_known_heading = bc_heading
+                return bc_heading
+
+        # Fallback 3: Last known heading (better than snapping to north)
+        return getattr(self, '_last_known_heading', 0.0)
 
     # -------------------------------------------------
     # VOICE ANNOUNCEMENTS
