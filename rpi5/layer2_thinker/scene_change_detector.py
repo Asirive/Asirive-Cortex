@@ -138,7 +138,7 @@ class SceneChangeDetector:
             self._recent_classes.append((now, cls))
 
         # Filter out very common classes that change frequently
-        boring_classes = {"person"}  # People come and go — not worth narrating each time
+        boring_classes = {"person", "bird"}  # Transient / frequently misdetected indoors
         interesting_new = new_classes - boring_classes
         if len(interesting_new) >= self.min_new_classes:
             return f"new_classes:{','.join(interesting_new)}"

@@ -227,9 +227,9 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                     response_modalities=self.response_modalities,
                     system_instruction=self.system_instruction,
                     temperature=self.temperature,
-                    # Disable thinking — 2.5 models think by default, but
-                    # thinking generates text/thought parts that are incompatible
-                    # with native audio streaming and crash the session.
+                    # Thinking IS supported with native audio (docs confirm),
+                    # but budget=0 gives lowest latency for real-time companion.
+                    # Increase to 1024+ for complex reasoning tasks.
                     thinking_config=types.ThinkingConfig(thinking_budget=0),
                     # Sliding window compression prevents session timeout (~15 min)
                     context_window_compression=types.ContextWindowCompressionConfig(
@@ -237,8 +237,10 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                     ),
                     # Transcribe model audio output for logging
                     output_audio_transcription=types.AudioTranscriptionConfig(),
+                    # Transcribe model audio INPUT for logging what Gemini hears
+                    input_audio_transcription=types.AudioTranscriptionConfig(),
                     # Disable automatic activity detection — the client controls
-                    # when the user is speaking via explicit activity signals.
+                    # when the user is speaking via explicit activityStart/End.
                     # This prevents Gemini from responding to ambient noise.
                     realtime_input_config=types.RealtimeInputConfig(
                         automatic_activity_detection=types.AutomaticActivityDetection(
@@ -370,7 +372,7 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                 if sru:
                     if getattr(sru, 'resumable', False) and getattr(sru, 'new_handle', None):
                         self.session_handle = sru.new_handle
-                        logger.debug("📝 Session resumption handle updated")
+                        logger.info("📝 Session resumption handle updated")
 
                 # Convenience accessors (SDK >= 1.x)
                 # response.data → raw audio bytes, response.text → text string
@@ -406,6 +408,12 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                             logger.debug(f"🗑️ Flushed {flushed} obsolete audio chunks")
                         continue
 
+                    # Input transcription (from input_audio_transcription config)
+                    it = getattr(sc, 'input_transcription', None)
+                    if it and getattr(it, 'text', None):
+                        logger.info(f"👂 User said (Gemini heard): {it.text}")
+                        continue
+
                     # Output transcription (from output_audio_transcription config)
                     ot = getattr(sc, 'output_transcription', None)
                     if ot and getattr(ot, 'text', None):
@@ -413,6 +421,12 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                         self._store_response(ot.text, 'gemini_live')
                         # Accumulate model response text for conversation history
                         self._current_model_response_parts.append(ot.text)
+                        continue
+
+                    # Generation complete (model finished all output)
+                    gc = getattr(sc, 'generation_complete', None)
+                    if gc is True:
+                        logger.debug(f"📨 [MSG #{self._msg_count}] Generation complete")
                         continue
 
                     model_turn = getattr(sc, 'model_turn', None)
@@ -520,7 +534,7 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
             summary = "\n".join(summary_parts)
 
             await self.session.send_client_content(
-                turns={"parts": [{"text": summary}]},
+                turns={"role": "user", "parts": [{"text": summary}]},
                 turn_complete=False,  # Don't trigger a response
             )
             logger.info(
@@ -635,11 +649,11 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
     
     async def send_text(self, text: str) -> bool:
         """
-        Send text input to Gemini Live API (for context injection/testing).
+        Send text input to Gemini Live API.
 
-        Uses send_client_content() per official Live API docs — text goes via
-        client content turns, NOT send_realtime_input (which is audio/video only).
-        This sends with turn_complete=True, triggering a model response.
+        Uses send_realtime_input(text=...) per Live API guidance — all new user
+        input (audio, video, text) goes via realtime_input for lower latency.
+        send_client_content is reserved for conversation history / context only.
 
         Args:
             text: Text prompt
@@ -652,11 +666,8 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
             return False
 
         try:
-            await self.session.send_client_content(
-                turns={"parts": [{"text": text}]},
-                turn_complete=True,
-            )
-            logger.debug(f"📤 Sent text: {text[:50]}...")
+            await self.session.send_realtime_input(text=text)
+            logger.debug(f"📤 Sent text (realtime): {text[:50]}...")
 
             # Track query for memory logging and conversation history
             self._last_query = text
@@ -679,8 +690,8 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
         Send silent context to Gemini Live API (no response triggered).
 
         Uses send_client_content() with turn_complete=False so Gemini absorbs
-        the information without generating a response. Use for periodic sensor
-        context injection ([CONTEXT] messages).
+        the information without generating a response. This is the correct
+        API for incremental context / history injection (not new user input).
 
         Args:
             text: Context text to inject silently
@@ -693,7 +704,7 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
 
         try:
             await self.session.send_client_content(
-                turns={"parts": [{"text": text}]},
+                turns={"role": "user", "parts": [{"text": text}]},
                 turn_complete=False,
             )
             return True
