@@ -1,4 +1,4 @@
-"""
+﻿"""
 WebSocket Client for RPi5 → Laptop Dashboard Communication
 
 Sends real-time data from RPi5 to laptop dashboard:
@@ -53,7 +53,7 @@ class RPiWebSocketClient:
         if host is None:
             from rpi5.config.config import get_config
             config = get_config()
-            host = config.get('laptop_server', {}).get('host', '10.201.86.101')
+            host = config.get('laptop_server', {}).get('host', '10.130.26.101')
         
         """
         Initialize WebSocket client

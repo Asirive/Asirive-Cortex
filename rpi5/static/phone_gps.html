@@ -62,6 +62,18 @@
             font-size:0.68em; color:#666; font-family:monospace;
             background:#080808; border-radius:6px; padding:8px;
         }
+        .stale { background:#37474f; color:#b0bec5; }
+        #lk-bar {
+            display:none; width:100%; max-width:360px;
+            margin-bottom:10px; padding:10px 16px;
+            background:#263238; border-radius:8px; border-left:3px solid #78909c;
+            font-size:0.82em; color:#90a4ae;
+        }
+        #lk-bar .dot {
+            display:inline-block; width:8px; height:8px;
+            border-radius:50%; background:#78909c; margin-right:6px;
+            vertical-align:middle;
+        }
     </style>
 </head>
 <body>
@@ -75,6 +87,8 @@
     </div>
 
     <div id="status" class="warn">Running checks...</div>
+
+    <div id="lk-bar"><span class="dot"></span>Last known: <span id="lk-coords">&mdash;</span> &middot; <span id="lk-age">&mdash;</span> ago</div>
 
     <div id="info">
         <p>Lat: <span id="lat">&mdash;</span></p>
@@ -107,6 +121,7 @@
         var $acc = $('acc'), $spd = $('spd'), $cnt = $('cnt');
         var $fail = $('fail'), $btn = $('btn'), $log = $('log');
         var $help = $('help'), $mode = $('mode');
+        var $lkBar = $('lk-bar'), $lkCoords = $('lk-coords'), $lkAge = $('lk-age');
 
         var POST_URL = location.origin + '/gps/update';
         var STATUS_URL = location.origin + '/gps/status';
@@ -116,6 +131,9 @@
         var wakeLock = null, lastFix = 0;
         var ipFallbackDone = false, ipFallbackTimer = null;
         var geoSource = '';
+        var staleTimer = null, staleInterval = null, staleMode = false;
+        var STALE_TIMEOUT = 30000;
+        var LK_SEND_INTERVAL = 5000;
 
         /* ---- Logging ---- */
         function log(msg) {
@@ -194,6 +212,77 @@
         }
         function unlockScreen() { if (wakeLock) { wakeLock.release(); wakeLock = null; } }
 
+        /* ---- Last Known Position (indoor fallback) ---- */
+        function saveLastKnown(lat, lng, acc, src) {
+            try {
+                localStorage.setItem('cortex_last_gps', JSON.stringify(
+                    {lat:lat, lng:lng, acc:acc, src:src, time:Date.now()}
+                ));
+            } catch(e) {}
+        }
+
+        function loadLastKnown() {
+            try {
+                var raw = localStorage.getItem('cortex_last_gps');
+                if (raw) return JSON.parse(raw);
+            } catch(e) {}
+            return null;
+        }
+
+        function resetStaleTimer() {
+            if (staleTimer) clearTimeout(staleTimer);
+            staleTimer = setTimeout(function() {
+                if (running && !staleMode) enterLastKnownMode();
+            }, STALE_TIMEOUT);
+        }
+
+        function enterLastKnownMode() {
+            var lk = loadLastKnown();
+            if (!lk) return;
+            staleMode = true;
+            log('\uD83D\uDFE4 No fresh GPS \u2014 switching to LAST KNOWN position');
+            $lkBar.style.display = 'block';
+            $lkCoords.textContent = lk.lat.toFixed(6) + ', ' + lk.lng.toFixed(6);
+            setSt('Last Known Position (indoor)', 'stale');
+            $mode.textContent = '\uD83D\uDFE4 Last known';
+            $lat.textContent = lk.lat.toFixed(6);
+            $lng.textContent = lk.lng.toFixed(6);
+            $acc.textContent = lk.acc ? lk.acc.toFixed(0) + 'm (was)' : '\u2014';
+            $spd.textContent = '\u2014';
+            updateLkAge(lk);
+            sendLastKnown(lk);
+            staleInterval = setInterval(function() {
+                if (!running || !staleMode) { clearInterval(staleInterval); return; }
+                var fresh = loadLastKnown();
+                if (fresh) { updateLkAge(fresh); sendLastKnown(fresh); }
+            }, LK_SEND_INTERVAL);
+        }
+
+        function exitLastKnownMode() {
+            staleMode = false;
+            if (staleInterval) { clearInterval(staleInterval); staleInterval = null; }
+            $lkBar.style.display = 'none';
+            log('\uD83D\uDFE2 Fresh GPS fix \u2014 exiting last known mode');
+        }
+
+        function updateLkAge(lk) {
+            var ageSec = Math.round((Date.now() - lk.time) / 1000);
+            if (ageSec < 60) $lkAge.textContent = ageSec + 's';
+            else if (ageSec < 3600) $lkAge.textContent = Math.round(ageSec/60) + 'min';
+            else $lkAge.textContent = Math.round(ageSec/3600) + 'h';
+        }
+
+        function sendLastKnown(lk) {
+            fetch(POST_URL, {
+                method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({lat:lk.lat, lng:lk.lng, alt:null, speed:null,
+                    heading:null, accuracy:lk.acc||9999, is_last_known:true})
+            }).then(function(r) {
+                if (r.ok) { count++; $cnt.textContent = count; }
+            }).catch(function(){});
+        }
+
         /* ==============================================================
            GPS STRATEGY (based on StackOverflow + MDN research):
            
@@ -221,6 +310,15 @@
             log('\uD83D\uDEF0\uFE0F === GPS START ===');
             lockScreen();
 
+            /* Show last known position if available */
+            var lk = loadLastKnown();
+            if (lk) {
+                $lkBar.style.display = 'block';
+                $lkCoords.textContent = lk.lat.toFixed(6) + ', ' + lk.lng.toFixed(6);
+                updateLkAge(lk);
+                log('\uD83D\uDFE4 Last known position: ' + lk.lat.toFixed(6) + ', ' + lk.lng.toFixed(6));
+            }
+
             /* ---- Strategy: ONLY use watchPosition, NO getCurrentPosition ----
                watchPosition will call onPos as soon as ANY position is available
                (network, WiFi, cell tower, OR satellite GPS).
@@ -246,6 +344,9 @@
             running = false;
             if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
             if (ipFallbackTimer) { clearTimeout(ipFallbackTimer); ipFallbackTimer = null; }
+            if (staleTimer) { clearTimeout(staleTimer); staleTimer = null; }
+            if (staleInterval) { clearInterval(staleInterval); staleInterval = null; }
+            if (staleMode) { staleMode = false; $lkBar.style.display = 'none'; }
             unlockScreen();
             gotFirst = false;
             ipFallbackDone = false;
@@ -375,6 +476,9 @@
             setSt('IP Location \u2705 ~' + (accuracy/1000).toFixed(0) + 'km', 'warn');
             document.title = 'GPS \u2705 IP (' + count + ')';
             sendGPS(data);
+            saveLastKnown(data.lat, data.lng, accuracy, 'IP');
+            resetStaleTimer();
+            if (staleMode) exitLastKnownMode();
         }
 
         /* ---- Browser geolocation success handler ---- */
@@ -406,6 +510,9 @@
             setSt('Active \u2705 ' + src + ' \u00B1' + accM.toFixed(0) + 'm', 'ok');
             document.title = 'GPS \u2705 (' + count + ')';
             sendGPS(data);
+            saveLastKnown(c.latitude, c.longitude, accM, src);
+            resetStaleTimer();
+            if (staleMode) exitLastKnownMode();
         }
 
         /* ---- Send GPS data to Cortex ---- */

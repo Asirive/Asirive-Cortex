@@ -130,6 +130,7 @@ class VADHandler:
         # Callbacks
         self.on_speech_start = on_speech_start
         self.on_speech_end = on_speech_end
+        self.on_audio_chunk: Optional[Callable] = None  # Every chunk (for Gemini continuous stream)
         self._stt_lock = threading.Lock()  # Prevent overlapping STT calls
         
         # VAD model and iterator
@@ -266,6 +267,13 @@ class VADHandler:
                 
                 start_time = time.time()
                 
+                # Forward every chunk for continuous audio streaming (Gemini Live)
+                if self.on_audio_chunk:
+                    try:
+                        self.on_audio_chunk(audio_chunk)
+                    except Exception:
+                        pass  # Don't block VAD for forwarding errors
+
                 # Run VAD inference
                 speech_dict = self.vad_iterator(audio_chunk, return_seconds=True)
                 

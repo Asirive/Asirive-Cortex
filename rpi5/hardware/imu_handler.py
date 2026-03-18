@@ -311,6 +311,11 @@ class IMUHandler:
         if time.time() - self._start_time < 5.0:
             return
 
+        # Skip when accel is exactly zero on all axes — indicates I2C read
+        # failure (Errno 121) where values defaulted to 0.0
+        if ax == 0.0 and ay == 0.0 and az == 0.0:
+            return
+
         total = math.sqrt(ax * ax + ay * ay + az * az)
 
         if total < self.FALL_ACCEL_THRESHOLD and self.on_fall_detected:

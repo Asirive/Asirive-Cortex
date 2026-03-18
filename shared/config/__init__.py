@@ -1,4 +1,4 @@
-"""
+﻿"""
 Configuration Loading Utilities for Project Cortex
 
 Supports both YAML (RPi5) and JSON (Laptop) config files.
@@ -224,7 +224,7 @@ def get_default_rpi5_config() -> Dict[str, Any]:
             'name': 'Project Cortex Wearable',
         },
         'server': {
-            'host': '10.201.86.101',  # Laptop IP
+            'host': '10.130.26.101',  # Laptop IP
             'port': 8765,
         },
         'camera': {
