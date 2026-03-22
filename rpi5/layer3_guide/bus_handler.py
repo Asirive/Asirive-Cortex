@@ -142,6 +142,9 @@ class BusHandler:
         self._last_refresh_time = 0.0
         self._bus_detected_in_frame = False
 
+        # Target service filtering (set by navigation engine for transit routes)
+        self._target_service: Optional[str] = None
+
         # Initialize bus stops database
         self._init_db()
 
@@ -355,13 +358,15 @@ class BusHandler:
     # MONITORING
     # -------------------------------------------------
 
-    async def start_monitoring(self, lat: float, lng: float) -> bool:
+    async def start_monitoring(self, lat: float, lng: float, target_service: Optional[str] = None) -> bool:
         """
         Start monitoring bus arrivals at the nearest bus stop.
         
         Args:
             lat: Current latitude
             lng: Current longitude
+            target_service: If set, prioritize this bus service in announcements
+                           (e.g. "23" for Bus 23 from a transit route leg)
             
         Returns:
             True if a nearby bus stop was found and monitoring started
@@ -373,10 +378,16 @@ class BusHandler:
         self.current_stop = stop
         self.state = BusStopMode.MONITORING
         self._running = True
+        self._target_service = target_service
 
-        await self._speak(
-            f"You're near bus stop {stop.description} on {stop.road_name}."
-        )
+        if target_service:
+            await self._speak(
+                f"Waiting for bus {target_service} at {stop.description} on {stop.road_name}."
+            )
+        else:
+            await self._speak(
+                f"You're near bus stop {stop.description} on {stop.road_name}."
+            )
 
         # Initial arrival query
         await self._refresh_and_announce()
@@ -400,6 +411,7 @@ class BusHandler:
         self.state = BusStopMode.INACTIVE
         self.current_stop = None
         self.latest_arrivals = []
+        self._target_service = None
         logger.info("Bus monitoring stopped")
 
     async def _monitor_loop(self):
@@ -439,15 +451,38 @@ class BusHandler:
         await self._announce_arrivals()
 
     async def _announce_arrivals(self):
-        """Voice-announce current bus arrivals."""
+        """Voice-announce current bus arrivals. Prioritizes target_service if set."""
         if not self.latest_arrivals:
             await self._speak("No buses approaching at the moment.")
             self._last_announce_time = time.time()
             return
 
-        # Announce top 3 arrivals
+        arrivals = self.latest_arrivals
+
+        # If we have a target service, announce it first and prominently
+        if self._target_service:
+            target = [a for a in arrivals if a.service_no == self._target_service]
+            others = [a for a in arrivals if a.service_no != self._target_service]
+
+            if target:
+                arr = target[0]
+                if arr.eta_minutes == 0:
+                    await self._speak(f"Bus {arr.service_no} is arriving now! Get ready to board.")
+                elif arr.eta_minutes == 1:
+                    await self._speak(f"Bus {arr.service_no} arriving in 1 minute.")
+                elif arr.eta_minutes > 0:
+                    await self._speak(f"Bus {arr.service_no} arriving in {arr.eta_minutes} minutes.")
+                else:
+                    await self._speak(f"Bus {arr.service_no}: no estimate yet.")
+            else:
+                await self._speak(f"Bus {self._target_service} has no upcoming arrival yet.")
+
+            self._last_announce_time = time.time()
+            return
+
+        # No target — announce top 3 arrivals
         lines = []
-        for arr in self.latest_arrivals[:3]:
+        for arr in arrivals[:3]:
             if arr.eta_minutes < 0:
                 lines.append(f"Bus {arr.service_no}: no estimate")
             elif arr.eta_minutes == 0:

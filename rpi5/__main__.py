@@ -4,6 +4,7 @@ ProjectCortex RPi5 CLI - Main Entry Point
 Usage:
     python -m rpi5                      # Show help
     python -m rpi5 all                  # Start all 4 layers
+    python -m rpi5 all --standalone      # Start without laptop dashboard
     python -m rpi5 layer0               # Start Guardian only (YOLO)
     python -m rpi5 layer1               # Start Learner only (YOLOE)
     python -m rpi5 layer2               # Start Thinker only (Gemini)
@@ -16,7 +17,7 @@ Usage:
     python -m rpi5 test                 # Run self-test diagnostics
 
 Options:
-    --laptop HOST   Laptop IP for dashboard connection (default: 10.130.26.101)
+    --laptop HOST   Laptop IP for dashboard connection (default: 10.173.242.101)
     --port PORT     Dashboard port (default: 8765)
     --offline       Disable cloud APIs (Gemini, Supabase)
     --no-haptic     Disable vibration motor
@@ -40,6 +41,7 @@ def create_parser() -> argparse.ArgumentParser:
 Examples:
   python -m rpi5                      Show this help message
   python -m rpi5 all                  Start all 4 layers
+  python -m rpi5 all --standalone      Start without laptop dashboard
   python -m rpi5 layer0               Test Layer 0 (Guardian)
   python -m rpi5 layer1               Test Layer 1 (Learner)
   python -m rpi5 camera               Test camera only
@@ -66,8 +68,8 @@ Examples:
     )
     all_parser.add_argument(
         "--laptop",
-        default="10.130.26.101",
-        help="Laptop IP for dashboard connection (default: 10.130.26.101)"
+        default="10.173.242.101",
+        help="Laptop IP for dashboard connection (default: 10.173.242.101)"
     )
     all_parser.add_argument(
         "--offline",
@@ -78,6 +80,11 @@ Examples:
         "--no-haptic",
         action="store_true",
         help="Disable vibration motor"
+    )
+    all_parser.add_argument(
+        "--standalone",
+        action="store_true",
+        help="Run without laptop dashboard (no WebSocket/ZMQ connection)"
     )
 
     # layer commands
@@ -95,7 +102,7 @@ Examples:
         )
         layer_parser.add_argument(
             "--laptop",
-            default="10.130.26.101",
+            default="10.173.242.101",
             help="Laptop IP for dashboard connection"
         )
 
@@ -131,8 +138,8 @@ Examples:
     )
     connect_parser.add_argument(
         "--laptop",
-        default="10.130.26.101",
-        help="Laptop IP (default: 10.130.26.101)"
+        default="10.173.242.101",
+        help="Laptop IP (default: 10.173.242.101)"
     )
     connect_parser.add_argument(
         "--port",
@@ -161,12 +168,15 @@ def run_command(args: argparse.Namespace) -> int:
         print(f"Starting ProjectCortex v2.0 (all layers)...")
 
         config = get_config()
-        config['laptop_server']['host'] = getattr(args, "laptop", "10.130.26.101")
+        config['laptop_server']['host'] = getattr(args, "laptop", "10.173.242.101")
 
+        standalone = getattr(args, "standalone", False)
         if getattr(args, "offline", False):
             print("Running in offline mode (cloud APIs disabled)")
+        if standalone:
+            print("Running in standalone mode (no laptop dashboard)")
 
-        system = CortexSystem()
+        system = CortexSystem(standalone=standalone)
         system.start()
 
     elif command and command.startswith("layer"):
@@ -175,7 +185,7 @@ def run_command(args: argparse.Namespace) -> int:
         layer_num = command.replace("layer", "")
         run_layer(
             layer_num,
-            laptop_host=getattr(args, "laptop", "10.130.26.101")
+            laptop_host=getattr(args, "laptop", "10.173.242.101")
         )
 
     elif command == "camera":
@@ -195,7 +205,7 @@ def run_command(args: argparse.Namespace) -> int:
     elif command == "connect":
         from rpi5.cli.commands import connect_to_laptop
 
-        host = getattr(args, "laptop", "10.130.26.101")
+        host = getattr(args, "laptop", "10.173.242.101")
         port = getattr(args, "port", 8765)
         return connect_to_laptop(host=host, port=port)
 

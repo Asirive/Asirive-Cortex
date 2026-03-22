@@ -174,6 +174,25 @@ class IntentRouter:
 
         return False
 
+    def _is_negated_nav(self, text: str) -> bool:
+        """Check if navigation intent is negated (e.g. 'I don't want to go')."""
+        negation_patterns = [
+            "don't want to go", "dont want to go",
+            "don't go to", "dont go to",
+            "don't navigate", "dont navigate",
+            "don't take me", "dont take me",
+            "don't want to navigate", "dont want to navigate",
+            "no i don't", "no i dont",
+            "not go to", "not navigate to",
+            "don't want directions", "dont want directions",
+            "don't need directions", "dont need directions",
+            "cancel", "never mind", "nevermind",
+        ]
+        for pattern in negation_patterns:
+            if pattern in text:
+                return True
+        return False
+
     def _has_phrase(self, text: str, phrases: list) -> bool:
         """Check if any phrase is a substring of text."""
         for phrase in phrases:
@@ -217,6 +236,10 @@ class IntentRouter:
         if self._has_phrase(text_lower, self._l3_phrases) or \
            self._has_word(words, self._l3_words) or \
            self._has_stem(words, self._l3_stems):
+            # Check negation — "I don't want to go", "don't navigate" etc.
+            if self._is_negated_nav(text_lower):
+                logger.info(f"🎯 [ROUTER] → Layer 2 (negated nav): '{text[:60]}'")
+                return "layer2"
             # But check if L2 phrase also matches — L2 phrases take priority
             # e.g. "describe the scene at the bus stop" → L2 not L3
             if not self._has_phrase(text_lower, self._l2_phrases):

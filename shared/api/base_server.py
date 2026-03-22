@@ -259,7 +259,10 @@ class AsyncWebSocketServer(ABC):
 
         # Notify callback
         if self.on_connect:
-            self.on_connect(client_id)
+            if asyncio.iscoroutinefunction(self.on_connect):
+                await self.on_connect(client_id)
+            else:
+                self.on_connect(client_id)
 
         return True
 
@@ -286,7 +289,10 @@ class AsyncWebSocketServer(ABC):
 
         # Notify callback
         if self.on_disconnect:
-            self.on_disconnect(client_id, reason)
+            if asyncio.iscoroutinefunction(self.on_disconnect):
+                await self.on_disconnect(client_id, reason)
+            else:
+                self.on_disconnect(client_id, reason)
 
     async def _handle_client_message(self, client_id: str, message: BaseMessage):
         """Process a message from a client."""

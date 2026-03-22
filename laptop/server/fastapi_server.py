@@ -444,6 +444,7 @@ class LaptopWebSocketServer(AsyncWebSocketServer):
         """Unregister a FastAPI WebSocket connection"""
         self._websockets.pop(device_id, None)
         self._clients.pop(device_id, None)
+        self._client_info.pop(device_id, None)
 
 
 # ============================================================================
@@ -548,6 +549,8 @@ async def websocket_endpoint(websocket: WebSocket, device_id: str):
 
             except json.JSONDecodeError:
                 logger.error(f"Invalid JSON from {device_id}")
+            except ValueError as e:
+                logger.warning(f"Unknown/invalid message from {device_id}: {e}")
             except Exception as e:
                 logger.error(f"Error handling message from {device_id}: {e}")
                 break
@@ -556,6 +559,7 @@ async def websocket_endpoint(websocket: WebSocket, device_id: str):
         logger.info(f"WebSocket disconnected: {device_id}")
     finally:
         await _connection_manager.disconnect(device_id, "websocket_closed")
+        await _server._handle_disconnect(device_id, "websocket_closed")
         _server.unregister_websocket(device_id)
         logger.info(f"WebSocket cleanup complete for {device_id}")
 

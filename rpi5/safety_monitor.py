@@ -175,9 +175,9 @@ class SafetyMonitor:
                 # Only care about critical / warning severity
                 if h.severity.value == "info":
                     continue
-                # Walls are expected indoors — suppress if far enough away
-                # Close walls (<1.0m) still alert to prevent collisions
-                if self._is_indoor and h.type.value == "wall" and h.distance >= 1.0:
+                # Walls are expected indoors — suppress unless dangerously close
+                # Room walls at 0.5-0.8m are normal; only alert < 0.5m (collision imminent)
+                if self._is_indoor and h.type.value == "wall" and h.distance >= 0.5:
                     continue
                 key = f"t1_{h.type.value}_{h.direction}"
                 if self._on_cooldown(key, now):
@@ -217,10 +217,10 @@ class SafetyMonitor:
 
             # ─ Tier 2: Silent static obstacle, close ─
             if cls in TIER2_SILENT_STATIC and dist and dist < self.tier2_max_distance:
-                key = f"t2_{obj_id}"
+                direction = self._bbox_to_direction(bbox)
+                key = f"t2_{cls}_{direction}"
                 if self._on_cooldown(key, now):
                     continue
-                direction = self._bbox_to_direction(bbox)
                 candidates.append(ThreatAlert(
                     tier=2,
                     score=self._tier2_score(dist, cls),
@@ -234,10 +234,10 @@ class SafetyMonitor:
             # ─ Tier 3: Vehicle closing fast ─
             elif cls in TIER3_VEHICLES and dist and dist < self.tier3_max_distance:
                 if vel > self.tier3_approach_velocity:
-                    key = f"t3_{obj_id}"
+                    direction = self._bbox_to_direction(bbox)
+                    key = f"t3_{cls}_{direction}"
                     if self._on_cooldown(key, now):
                         continue
-                    direction = self._bbox_to_direction(bbox)
                     candidates.append(ThreatAlert(
                         tier=3,
                         score=self._tier3_score(dist, vel),

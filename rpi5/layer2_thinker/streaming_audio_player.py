@@ -68,8 +68,10 @@ class StreamingAudioPlayer:
         self.playback_thread: Optional[threading.Thread] = None
         self._silence_count = 0  # Track consecutive silence callbacks
         self._chunks_played = 0  # Track total chunks played
+        self._last_logged_chunks = -1  # Prevent log spam at same chunk count
         self._leftover: Optional[np.ndarray] = None  # Leftover samples from previous callback
         self._queue_full_count = 0  # Debounce queue-full warnings
+        self._silence_timeout = 3.0  # Auto-stop after N seconds of empty queue
         
         # Callback for playback events
         self.on_start_callback: Optional[Callable] = None
@@ -190,12 +192,29 @@ class StreamingAudioPlayer:
             self.stream.start()
             logger.info(f"🔊 Audio stream opened (rate={self.sample_rate}, blocksize={self.blocksize}, device={self.device})")
             
-            # Keep thread alive while playing
+            # Keep thread alive while playing, auto-stop on prolonged silence
+            import time as _time
+            silence_start = None
             while self.is_playing:
                 threading.Event().wait(0.5)
-                # Periodic status log
-                if self._chunks_played > 0 and self._chunks_played % 50 == 0:
-                    logger.info(f"🔊 Audio player: {self._chunks_played} chunks played, qsize={self.audio_queue.qsize()}")
+                qsize = self.audio_queue.qsize()
+                
+                # Periodic status log (only when chunk count changes)
+                if self._chunks_played > 0 and self._chunks_played % 50 == 0 and self._chunks_played != self._last_logged_chunks:
+                    self._last_logged_chunks = self._chunks_played
+                    logger.info(f"🔊 Audio player: {self._chunks_played} chunks played, qsize={qsize}")
+                
+                # Auto-stop after silence timeout (queue drained, no new audio)
+                if qsize == 0 and self._chunks_played > 0:
+                    if silence_start is None:
+                        silence_start = _time.time()
+                    else:
+                        if _time.time() - silence_start >= self._silence_timeout:
+                            logger.info(f"🔇 Audio player auto-stopping after {self._silence_timeout}s of silence")
+                            self.is_playing = False
+                            break
+                else:
+                    silence_start = None
             
         except Exception as e:
             logger.error(f"❌ Audio playback error: {e}")

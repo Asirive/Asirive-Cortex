@@ -277,6 +277,7 @@ sensors:
     enabled: true
     i2c_address: 0x29       # 0x29 (ADDR pin high on your board) or 0x28 (ADDR pin low)
     poll_hz: 25             # Polling frequency (BNO055 supports up to 100Hz)
+    mounting: right_temple_down  # Chip face-down on right glasses temple, connectors right
 
   # Physical Button — momentary push-button to GND
   # Wire: one leg to GPIO16 (Pin 36), other leg to GND (Pin 34)

@@ -1,0 +1,20 @@
+# OpenAL-Soft configuration for ProjectCortex HRTF spatial audio
+# Copy to RPi5: ~/.alsoftrc
+# This ensures HRTF binaural rendering is always active for headphones.
+
+[general]
+# Force HRTF on (bypasses auto-detection)
+hrtf = true
+
+# Use the built-in HRTF dataset
+default-hrtf = Built-In HRTF
+
+# Output via stereo (headphone output)
+channels = stereo
+
+# Sample rate matching RPi5 audio output
+frequency = 44100
+
+[decoder]
+# Binaural rendering for stereo output
+hq-mode = true

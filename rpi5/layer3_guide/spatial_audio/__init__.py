@@ -63,6 +63,7 @@ from .proximity_alert import ProximityAlertSystem
 from .object_sounds import ObjectSoundMapper
 from .object_tracker import ObjectTracker
 from .sound_generator import ProceduralSoundGenerator, get_sound_generator
+from .binaural_engine import BinauralEngine, render_binaural, compute_azimuth_elevation
 
 __all__ = [
     'SpatialAudioManager',
@@ -77,6 +78,9 @@ __all__ = [
     'ObjectTracker',
     'ProceduralSoundGenerator',
     'get_sound_generator',
+    'BinauralEngine',
+    'render_binaural',
+    'compute_azimuth_elevation',
 ]
 
 # Body-Relative Navigation Notice

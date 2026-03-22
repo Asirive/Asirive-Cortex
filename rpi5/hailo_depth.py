@@ -377,7 +377,7 @@ class HailoDepthEstimator:
         hazards.sort(key=lambda h: h.severity_rank, reverse=True)
 
         if hazards:
-            logger.info(f"Hazards detected: {[(h.type.value, h.severity.value, f'{h.distance:.1f}m') for h in hazards]}")
+            logger.debug(f"Hazards detected: {[(h.type.value, h.severity.value, f'{h.distance:.1f}m') for h in hazards]}")
 
         return hazards
 

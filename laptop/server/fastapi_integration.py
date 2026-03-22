@@ -92,15 +92,15 @@ class FastAPIIntegration:
 
         logger.info("FastAPI integration initialized")
 
-    def _on_video_frame(self, device_id: str, frame_data: bytes, width: int, height: int, detections: List[Dict]):
+    def _on_video_frame(self, frame_data: bytes, width: int, height: int, detections: List[Dict]):
         """Handle incoming video frame - emit signal for GUI"""
         self.signals.video_frame.emit(frame_data, width, height, detections)
 
-    def _on_metrics(self, device_id: str, metrics_data: Dict[str, Any]):
+    def _on_metrics(self, metrics_data: Dict[str, Any]):
         """Handle incoming metrics - emit signal for GUI"""
         self.signals.metrics_update.emit(metrics_data)
 
-    def _on_detection(self, device_id: str, detection_data: Dict[str, Any]):
+    def _on_detection(self, detection_data: Dict[str, Any]):
         """Handle incoming detection - emit signal for GUI"""
         self.signals.detection_log.emit(detection_data)
 
