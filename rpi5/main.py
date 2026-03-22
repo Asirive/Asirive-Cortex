@@ -327,13 +327,13 @@ except ImportError as e:
 # =====================================================
 # ASYNC HELPER FUNCTION
 # =====================================================
-def run_async_safe(coro):
+def run_async_safe(coro, blocking=True):
     """
     Safely run an async coroutine from sync code.
     
-    Handles the case where an event loop may or may not be running.
-    If a loop is running, schedules the coroutine on it.
-    Otherwise, creates a new loop with asyncio.run().
+    Args:
+        coro: The coroutine to run.
+        blocking: If True, blocks until complete (max 30s). If False, fire-and-forget.
     """
     try:
         # Check if there's already a running event loop
@@ -343,8 +343,9 @@ def run_async_safe(coro):
         return asyncio.run(coro)
     else:
         # Loop is running, schedule coroutine
-        # This returns a concurrent.futures.Future
         future = asyncio.run_coroutine_threadsafe(coro, loop)
+        if not blocking:
+            return future  # fire-and-forget — don't block the caller
         try:
             # Wait for result with timeout
             return future.result(timeout=30)
@@ -939,8 +940,9 @@ class CortexSystem:
     7. Manage graceful shutdown
     """
 
-    def __init__(self, config_path: str = None):
+    def __init__(self, config_path: str = None, standalone: bool = False):
         logger.info("Initializing ProjectCortex v2.0...")
+        self.standalone = standalone
 
         # Load configuration
         if config_path:
@@ -957,6 +959,24 @@ class CortexSystem:
         self._last_env_check = 0.0  # Environment classification timestamp
         self._last_gemini_frame_time = 0.0  # Last time we sent a frame to Gemini
         self._last_gemini_context_time = 0.0  # Last time we sent context to Gemini
+        self._was_indoor = False  # Track indoor→outdoor transitions for Gemini
+
+        # Safety override for beam control (Safety L0 > Gemini L2 > GPS L3)
+        self._beam_safety_override = False   # True when safety forces beam to danger
+        self._beam_override_until = 0.0      # Timestamp when override expires
+        self._beam_override_direction = None  # Position3D of the danger
+
+        # HRTF direction mapping for Gemini set_beam_direction
+        self._direction_to_hrtf = {
+            "left":         (-2.0, 0.0, -1.0),
+            "right":        ( 2.0, 0.0, -1.0),
+            "ahead":        ( 0.0, 0.0, -2.0),
+            "behind":       ( 0.0, 0.0,  2.0),
+            "slight_left":  (-1.0, 0.0, -1.5),
+            "slight_right": ( 1.0, 0.0, -1.5),
+            "up":           ( 0.0, 1.0, -1.5),
+            "down":         ( 0.0,-1.0, -1.5),
+        }
 
         # Initialize Layer 4: Memory Manager (Hybrid)
         logger.info("[DEBUG] ===== LAYER 4 INITIALIZATION START =====")
@@ -1100,6 +1120,11 @@ class CortexSystem:
         else:
             self.layer2 = None
             logger.warning("⚠️  Layer 2 not available")
+
+        # Wire Gemini function calling callback
+        if self.layer2 and hasattr(self.layer2, 'set_tool_callback'):
+            self.layer2.set_tool_callback(self._handle_gemini_tool_call)
+
         logger.info("[DEBUG] ===== LAYER 2 INITIALIZATION COMPLETE =====")
 
         # Initialize Layer 3: Router (Intent Routing)
@@ -1129,7 +1154,9 @@ class CortexSystem:
         self.ws_client = None
         server_cfg = self.config.get('laptop_server', {})
         supabase_cfg = self.config.get('supabase', {})
-        if CortexFastAPIClient:
+        if self.standalone:
+            logger.info("⏭️  Standalone mode — skipping laptop dashboard client")
+        elif CortexFastAPIClient:
             logger.info("🌐 Initializing FastAPI Client...")
             self.ws_client = CortexFastAPIClient(
                 host=server_cfg.get('host', 'localhost'),
@@ -1149,14 +1176,17 @@ class CortexSystem:
             logger.info("✅ Legacy WebSocket client initialized")
         # Initialize ZMQ Video Streamer
         self.video_streamer = None
-        try:
-            from rpi5.video_streamer import VideoStreamer
-            host = server_cfg.get('host', 'localhost')
-            logger.info(f"🎥 Initializing ZMQ Streamer to {host}:5555...")
-            self.video_streamer = VideoStreamer(host, 5555)
-            logger.info(f"✅ ZMQ Streamer initialized: {self.video_streamer is not None}")
-        except Exception as e:
-            logger.error(f"❌ Failed to init ZMQ Streamer: {e}")
+        if not self.standalone:
+            try:
+                from rpi5.video_streamer import VideoStreamer
+                host = server_cfg.get('host', 'localhost')
+                logger.info(f"🎥 Initializing ZMQ Streamer to {host}:5555...")
+                self.video_streamer = VideoStreamer(host, 5555)
+                logger.info(f"✅ ZMQ Streamer initialized: {self.video_streamer is not None}")
+            except Exception as e:
+                logger.error(f"❌ Failed to init ZMQ Streamer: {e}")
+        else:
+            logger.info("⏭️  Standalone mode — skipping ZMQ video streamer")
 
         # Video streaming state - only active if streamer was successfully initialized
         self.video_streaming_active = (self.video_streamer is not None)  # CRITICAL FIX: Check if streamer exists
@@ -1262,6 +1292,7 @@ class CortexSystem:
                 self.imu = IMUHandler(
                     i2c_address=int(imu_cfg.get('i2c_address', 0x28)),
                     poll_hz=float(imu_cfg.get('poll_hz', 25.0)),
+                    mounting=imu_cfg.get('mounting', 'default'),
                 )
                 # Fall-detection wired to haptic + TTS alert
                 self.imu.on_fall_detected = self._on_fall_detected
@@ -1329,6 +1360,11 @@ class CortexSystem:
             except Exception as e:
                 logger.error(f"❌ Failed to init BusHandler: {e}")
                 self.bus_handler = None
+
+        # Wire bus_handler into nav_engine for transit route leg management
+        if self.nav_engine and self.bus_handler:
+            self.nav_engine.bus_handler = self.bus_handler
+            logger.info("🔗 BusHandler wired to NavigationEngine")
 
         self.scene_detector = None
         if SceneChangeDetector:
@@ -1669,8 +1705,14 @@ class CortexSystem:
                     self.imu.set_gyro_only()
             elif new_mode == NavMode.TRANSIT:
                 logger.info("🚌 Transit mode — beacon OFF, reduced processing")
-                if self.spatial_audio and hasattr(self.spatial_audio, 'stop_beacon'):
-                    self.spatial_audio.stop_beacon()
+                # Stop the beacon on the NavEngine's SpatialAudio (not the standalone one)
+                nav_sa = None
+                if self.nav_engine and hasattr(self.nav_engine, 'spatial_audio'):
+                    nav_sa = self.nav_engine.spatial_audio
+                elif self.navigator and hasattr(self.navigator, 'spatial_audio'):
+                    nav_sa = self.navigator.spatial_audio
+                if nav_sa and hasattr(nav_sa, 'stop_beacon'):
+                    nav_sa.stop_beacon()
                 if self.scene_detector:
                     self.scene_detector.cooldown_seconds = 15.0  # Less narration on vehicle
             elif new_mode == NavMode.OUTDOOR:
@@ -1707,16 +1749,39 @@ class CortexSystem:
             critical_events = {
                 "road_crossing", "approaching_destination", "arrived",
                 "indoor_mode_activated", "approaching_turn",
+                "leg_started",
             }
-            if event in critical_events:
+            # navigating_to is context-only — Cartesia speaks the route summary
+            # first, then we explicitly prompt Gemini after TTS finishes
+            if event == "navigating_to":
+                dest = details.get("destination", "destination")
+                msg += (
+                    f"\nNavigation to {dest} has started. The system will play "
+                    "a Cartesia TTS route summary to the user first. "
+                    "Wait until prompted before speaking."
+                )
+                self.layer2.send_context(msg)
+            elif event in critical_events:
                 if event == "indoor_mode_activated":
                     msg += (
-                        "\nGPS lost — user is likely indoors. Switch to Indoor Guide Mode: "
-                        "proactively describe what you see (doors, corridors, stairs, signs, obstacles). "
-                        "Give clear spatial cues (left/right/ahead). The navigation beacon is still "
-                        "pointing toward the destination using last-known GPS. Help the user find "
-                        "the exit or navigate through the building."
+                        "\nGPS lost — user is INDOORS. You are now the PRIMARY NAVIGATOR. "
+                        "Use set_beam_direction to point the 3D audio beacon toward exits, doors, corridors. "
+                        "Give SHORT voice commands: 'door left', 'straight ahead', 'stairs right'. "
+                        "Do NOT describe the scene. GUIDE with beam + short commands. "
+                        "Safety system will override your beam if the user is too close to a wall or hazard."
                     )
+                    # Send current camera frame so Gemini can SEE the indoor environment
+                    if self.camera:
+                        try:
+                            _frame = self.camera.get_frame()
+                            if _frame is not None:
+                                from PIL import Image
+                                _pil = Image.fromarray(cv2.cvtColor(_frame, cv2.COLOR_BGR2RGB))
+                                self.layer2.send_video(_pil)
+                        except Exception:
+                            pass  # best-effort — text still goes through
+                elif event == "leg_started":
+                    msg += "\nBriefly tell the user what this next leg involves."
                 else:
                     msg += "\nBriefly describe what you see to help the user."
                 self.layer2.send_text(msg)
@@ -1730,6 +1795,93 @@ class CortexSystem:
             logger.info(f"🧭➡️🤖 Gemini nav event: {event} ({detail_str})")
         except Exception as e:
             logger.debug(f"Nav event Gemini forward error: {e}")
+
+    def _handle_gemini_tool_call(self, name: str, args: dict) -> dict:
+        """Handle function calls from Gemini Live API.
+        
+        Called from GeminiLiveHandler's receive loop when Gemini invokes
+        a declared function. Runs on Gemini's background thread — only
+        access thread-safe data (get_status, _gps_accuracy are safe).
+        """
+        if name == "get_navigation_state":
+            if self.nav_engine:
+                return self.nav_engine.get_status()
+            return {"state": "inactive", "message": "Navigation engine not available"}
+
+        elif name == "report_obstacle":
+            direction = args.get("direction", "unknown")
+            distance = args.get("distance_m")
+            obj_type = args.get("object_type", "obstacle")
+            logger.info(
+                f"🚧 Gemini reported obstacle: {obj_type} at {direction}"
+                f"{f', ~{distance:.0f}m' if distance else ''}"
+            )
+            # Phase 1: Acknowledge. Phase 2: Adjust beam away from obstacle.
+            return {"acknowledged": True, "action": "noted_for_user_warning"}
+
+        elif name == "get_gps_accuracy":
+            if self.nav_engine:
+                pos = self.nav_engine._get_current_position()
+                return {
+                    "accuracy_m": round(self.nav_engine._gps_accuracy, 1),
+                    "has_fix": pos is not None,
+                    "lat": pos[0] if pos else None,
+                    "lng": pos[1] if pos else None,
+                }
+            elif self.gps:
+                fix = self.gps.get_fix()
+                return {
+                    "accuracy_m": getattr(fix, 'accuracy', -1) if fix else -1,
+                    "has_fix": fix is not None,
+                }
+            return {"accuracy_m": -1, "has_fix": False}
+
+        elif name == "set_beam_direction":
+            direction = args.get("direction", "ahead")
+            reason = args.get("reason", "")
+
+            # SAFETY OVERRIDE CHECK: if L0 forced beam to danger, reject Gemini's request
+            if self._beam_safety_override and time.time() < self._beam_override_until:
+                logger.warning(
+                    f"🛡️ Beam safety override ACTIVE — rejecting Gemini beam '{direction}' "
+                    f"(override expires in {self._beam_override_until - time.time():.1f}s)"
+                )
+                return {
+                    "status": "safety_override_active",
+                    "message": (
+                        "Safety system has taken control of the beam — "
+                        "the user is too close to a hazard. Wait for the override to clear, "
+                        "then give a SHORT voice warning about the danger."
+                    ),
+                }
+
+            # Map direction to HRTF 3D position
+            hrtf = self._direction_to_hrtf.get(direction, (0.0, 0.0, -2.0))
+            sa = None
+            if self.nav_engine and self.nav_engine.spatial_audio:
+                sa = self.nav_engine.spatial_audio
+            elif self.navigator and hasattr(self.navigator, 'spatial_audio'):
+                sa = self.navigator.spatial_audio
+            elif self.spatial_audio:
+                sa = self.spatial_audio
+
+            if sa and hasattr(sa, 'guide_beam'):
+                try:
+                    from rpi5.layer3_guide.spatial_audio.manager import Position3D
+                    pos3d = Position3D(x=hrtf[0], y=hrtf[1], z=hrtf[2], distance_meters=1.0)
+                    ok = sa.guide_beam(pos3d)
+                    if ok:
+                        logger.info(f"🔊 Gemini set beam → {direction} ({reason})")
+                        return {"status": "ok", "beam_direction": direction}
+                    else:
+                        logger.warning(f"🔊 Gemini beam → {direction} FAILED (no audio)")
+                        return {"status": "error", "message": "Beacon could not start"}
+                except Exception as e:
+                    logger.error(f"Beam direction error: {e}")
+                    return {"status": "error", "message": str(e)}
+            return {"status": "error", "message": "Spatial audio not available"}
+
+        return {"error": f"Unknown function: {name}"}
 
     def start(self):
         """Start main system loop"""
@@ -1897,18 +2049,41 @@ class CortexSystem:
                             )
 
                             # Classify indoor/outdoor every ~5 seconds
-                            # GPS = primary signal (fix → outdoor), depth map = fallback
+                            # Vision (depth map) is the PRIMARY signal. GPS fix alone
+                            # does NOT mean outdoor — phones give GPS indoors too.
                             now_env = time.time()
                             if now_env - self._last_env_check > 5.0:
                                 self._last_env_check = now_env
-                                if self.gps and self.gps.has_fix:
-                                    is_indoor = False  # GPS fix = definitely outdoor
-                                else:
-                                    env = self.depth_estimator.classify_environment(depth_map)
-                                    is_indoor = (env == "indoor")
+                                env = self.depth_estimator.classify_environment(depth_map)
+                                is_indoor = (env == "indoor")
                                 self.depth_estimator.set_environment(is_indoor)
                                 if self.safety_monitor:
                                     self.safety_monitor.set_environment(is_indoor)
+
+                                # Notify Gemini on indoor transition during active nav
+                                is_nav_active_now = (
+                                    self.nav_engine
+                                    and hasattr(self.nav_engine, 'state')
+                                    and self.nav_engine.state.value == "navigating"
+                                )
+                                if is_indoor and not self._was_indoor and is_nav_active_now:
+                                    # Just entered indoor — tell Gemini to guide the user out
+                                    if self.layer2 and self.layer2.is_running:
+                                        self.layer2.send_text(
+                                            "[INDOOR_GUIDE] GPS lost — user is INDOORS while navigating. "
+                                            "You are now the PRIMARY NAVIGATOR. Use set_beam_direction to point "
+                                            "the 3D audio beacon toward exits, doors, or safe paths you see. "
+                                            "GUIDE with the beam + SHORT voice commands: 'door on your left' then "
+                                            "call set_beam_direction(direction='left', reason='exit door'). "
+                                            "Do NOT describe the scene — GUIDE the user out. "
+                                            "Voice is for SHORT commands and warnings ONLY. "
+                                            "The beam is the guidance tool — move it frequently as the user walks. "
+                                            "If safety overrides your beam, warn the user about the hazard."
+                                        )
+                                        if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
+                                            self.gemini_audio_player.start()
+                                        logger.info("🏢 Indoor + navigating → Gemini indoor guide mode activated")
+                                self._was_indoor = is_indoor
                     except Exception as e:
                         logger.warning(f"Depth processing error: {e}")
 
@@ -1953,6 +2128,42 @@ class CortexSystem:
                                     distance_m=alert.distance_m,
                                     score=alert.score,
                                 )
+
+                            # SAFETY BEAM OVERRIDE: Tier 1 critical (<1.0m) or any hazard <0.5m
+                            # forces beam to point AT the danger so user hears where to avoid.
+                            # Priority: Safety (L0) > Gemini (L2) > GPS (L3)
+                            if (alert.tier == 1 and alert.distance_m < 1.0) or alert.distance_m < 0.5:
+                                override_pos = alert.position_3d
+                                if override_pos:
+                                    sa = None
+                                    if self.nav_engine and self.nav_engine.spatial_audio:
+                                        sa = self.nav_engine.spatial_audio
+                                    elif self.navigator and hasattr(self.navigator, 'spatial_audio'):
+                                        sa = self.navigator.spatial_audio
+                                    if sa and hasattr(sa, '_update_beacon_position'):
+                                        try:
+                                            from rpi5.layer3_guide.spatial_audio.manager import Position3D
+                                            pos3d = Position3D(
+                                                x=override_pos[0], y=override_pos[1],
+                                                z=override_pos[2], distance_meters=alert.distance_m,
+                                            )
+                                            sa._update_beacon_position(pos3d)
+                                            self._beam_safety_override = True
+                                            self._beam_override_until = time.time() + 3.0
+                                            self._beam_override_direction = pos3d
+                                            logger.warning(
+                                                f"🛡️ SAFETY BEAM OVERRIDE: {alert.alert_type} "
+                                                f"{alert.direction} {alert.distance_m:.1f}m — "
+                                                f"beam forced to danger for 3s"
+                                            )
+                                        except Exception as e:
+                                            logger.debug(f"Safety beam override error: {e}")
+
+                        # Clear expired safety overrides
+                        if self._beam_safety_override and time.time() >= self._beam_override_until:
+                            self._beam_safety_override = False
+                            self._beam_override_direction = None
+                            logger.info("🛡️ Safety beam override expired — Gemini/GPS beam control restored")
                     except Exception as e:
                         logger.error(f"Safety monitor error: {e}")
 
@@ -2033,10 +2244,26 @@ class CortexSystem:
                                     f"Keep it brief and relevant for a blind user.\n{context_str}"
                                 )
 
-                                if is_nav_active:
-                                    # During navigation, inject as silent context.
-                                    # Gemini absorbs info but doesn't generate audio
-                                    # that would compete with Cartesia nav TTS.
+                                # Check if indoors during navigation
+                                is_indoor_now = (
+                                    self.depth_estimator
+                                    and hasattr(self.depth_estimator, '_is_indoor')
+                                    and self.depth_estimator._is_indoor
+                                )
+                                if is_nav_active and is_indoor_now:
+                                    # Indoor + navigating: Gemini speaks to guide user out
+                                    indoor_guide_msg = (
+                                        f"[INDOOR_GUIDE] Guide this blind user through the building using "
+                                        f"set_beam_direction to point the audio beacon. Look at the camera: "
+                                        f"where should the user go? Point beam there + give a SHORT command. "
+                                        f"Do NOT describe — GUIDE. Example: 'corridor ahead' then "
+                                        f"set_beam_direction(direction='ahead', reason='corridor to exit').\n{context_str}"
+                                    )
+                                    if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
+                                        self.gemini_audio_player.start()
+                                    self.layer2.send_text(indoor_guide_msg)
+                                elif is_nav_active:
+                                    # Outdoor + navigating: silent context (beam guides, not voice)
                                     self.layer2.send_context(narration_msg)
                                 else:
                                     # Idle mode — trigger spoken narration
@@ -2171,7 +2398,7 @@ class CortexSystem:
                             try:
                                 run_async_safe(self.bus_handler.check_proximity(
                                     gps_fix.latitude, gps_fix.longitude
-                                ))
+                                ), blocking=False)
                             except Exception as e:
                                 logger.debug(f"Bus proximity check error: {e}")
 
@@ -2194,7 +2421,7 @@ class CortexSystem:
                                     elif self.tts:
                                         await self.tts.speak_async(f"GPS signal found, but I couldn't find a walking route to {dest}.")
                                         logger.warning(f"🧭 [NAV] Deferred route FAILED: {dest}")
-                                run_async_safe(_start_deferred_nav())
+                                run_async_safe(_start_deferred_nav(), blocking=False)
                             except Exception as e:
                                 logger.error(f"🧭 [NAV] Deferred navigation error: {e}")
 
@@ -2238,6 +2465,18 @@ class CortexSystem:
 
                 # 6b. Battery monitoring
                 self._check_battery()
+
+                # 6c. IMU head-tracking → update spatial audio listener orientation
+                if self.imu and self.spatial_audio:
+                    try:
+                        imu_r = self.imu.get_reading()
+                        if imu_r is not None:
+                            self.spatial_audio.set_listener_orientation(
+                                yaw=imu_r.heading,
+                                pitch=imu_r.pitch,
+                            )
+                    except Exception:
+                        pass  # Non-critical, skip silently
 
                 # 7. Track FPS for Logging and Status Display
                 loop_time = time.time() - loop_start
@@ -2444,7 +2683,7 @@ class CortexSystem:
                     temperature=self._get_cpu_temp(),
                     active_layers=active_layers,
                     current_mode=current_mode
-                ))
+                ), blocking=False)
             except Exception as e:
                 logger.warning(f"Heartbeat update failed: {e}")
 
@@ -2885,6 +3124,7 @@ class CortexSystem:
         elif target_layer == "layer3":
             logger.info("🧭 Processing Layer 3 navigation query...")
             query_lower = query.lower()
+            _nav_just_started = False  # Track if we just started navigation
 
             # --- GPS Navigation: "navigate to [destination]" ---
             if self.nav_engine and any(kw in query_lower for kw in ["navigate to", "take me to", "directions to", "go to", "how do i get to"]):
@@ -2911,6 +3151,7 @@ class CortexSystem:
                                 else:
                                     response = f"Getting directions to {destination}. Navigation started. Follow the audio beam."
                                 logger.info(f"🧭 [NAV] Route SUCCESS: {response}")
+                                _nav_just_started = True
                             else:
                                 response = f"Sorry, I couldn't find a walking route to {destination}."
                                 logger.warning(f"🧭 [NAV] Route FAILED for destination='{destination}'")
@@ -2936,6 +3177,7 @@ class CortexSystem:
                                     else:
                                         response = f"Navigation started from {origin_name} to {destination}. Head outside and follow the audio beam."
                                     logger.info(f"🧭 [NAV] Saved-location route SUCCESS: {response}")
+                                    _nav_just_started = True
                                 else:
                                     response = f"Sorry, I couldn't find a walking route from {origin_name} to {destination}."
                                     logger.warning(f"🧭 [NAV] Saved-location route FAILED: {origin_name} → {destination}")
@@ -3041,6 +3283,16 @@ class CortexSystem:
             
             if self.tts and response:
                 await self.tts.speak_async(response)
+
+            # After Cartesia speaks the route summary, prompt Gemini to elaborate
+            if _nav_just_started and self.layer2:
+                self.layer2.send_text(
+                    "[SYSTEM] The route summary was just spoken to the user via TTS. "
+                    "Now briefly describe what you see ahead on their path — "
+                    "1-2 sentences max. Mention obstacles or people if visible."
+                )
+                if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
+                    self.gemini_audio_player.start()
         
         logger.info(f"✅ Voice command processed: '{response[:50]}...'" if len(response) > 50 else f"✅ Voice command processed: '{response}'")
 

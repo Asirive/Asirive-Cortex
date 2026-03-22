@@ -118,6 +118,9 @@ class GeminiLiveHandler:
         self._max_history_turns = 10  # Keep last 10 exchanges
         self._current_model_response_parts: list = []  # Buffer ongoing model response
 
+        # Tool callback for function calling (set by main.py)
+        self._tool_callback: Optional[Callable] = None
+
         logger.info(f"✅ GeminiLiveHandler initialized (model={model})")
     
     @staticmethod
@@ -174,13 +177,15 @@ NAVIGATION MODES — adapt your behavior based on the current mode:
    - Never duplicate turn-by-turn directions (the beam + TTS handle that)
 
 2. INDOOR GUIDE MODE (you'll see [NAV_EVENT] indoor_mode_activated):
-   - YOU are the primary navigator — the audio beam is OFF indoors
-   - Proactively narrate what's ahead: corridors, doors, escalators, lifts, stairs
-   - Guide through obstacles: "Table on your right, go around to the left"
-   - Read floor indicators, directory signs, exit signs
-   - In malls: announce shops, escalator directions (up/down), level numbers
-   - In food courts: scan and name stalls, identify queues, find empty tables
-   - Be more verbose than outdoor mode — the user depends entirely on your voice indoors
+   - YOU are the primary navigator — GPS is unavailable indoors
+   - Use set_beam_direction() to point the 3D audio beacon where the user should go
+   - The user FOLLOWS the audio beacon — it is the main guidance tool
+   - Give SHORT voice commands paired with beam moves: "door on your left" + set_beam_direction(left)
+   - Look at the camera feed: find exits, corridors, doors, stairs and point the beam there
+   - Move the beam FREQUENTLY as the user walks and the scene changes
+   - Voice is for SHORT commands and warnings ONLY — do NOT narrate or describe scenes
+   - If the safety system overrides your beam (wall, cliff, obstacle too close), warn the user verbally
+   - Pattern: 1) See path in camera → 2) set_beam_direction → 3) short voice cue → repeat
 
 3. BUS STOP MODE (you'll see [BUS] context):
    - Help identify approaching buses by reading bus numbers
@@ -249,6 +254,78 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                     ),
                     # Natural emotional voice
                     enable_affective_dialog=True,
+                    # Function calling: let Gemini query nav state & report obstacles
+                    tools=[{"function_declarations": [
+                        {
+                            "name": "get_navigation_state",
+                            "description": (
+                                "Get current navigation state including waypoint index, "
+                                "distance to waypoint, bearing, distance to destination, "
+                                "and next instruction. Call this when the user asks about "
+                                "navigation progress or when you need route context."
+                            ),
+                        },
+                        {
+                            "name": "report_obstacle",
+                            "description": (
+                                "Report an obstacle you see in the camera feed that could "
+                                "block the user's path. The navigation system will note it."
+                            ),
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "direction": {
+                                        "type": "string",
+                                        "enum": ["left", "center", "right", "ahead"],
+                                        "description": "Where the obstacle is relative to the user",
+                                    },
+                                    "distance_m": {
+                                        "type": "number",
+                                        "description": "Estimated distance in meters",
+                                    },
+                                    "object_type": {
+                                        "type": "string",
+                                        "description": "What the obstacle is (e.g. bollard, construction, pothole)",
+                                    },
+                                },
+                                "required": ["direction"],
+                            },
+                        },
+                        {
+                            "name": "get_gps_accuracy",
+                            "description": (
+                                "Get current GPS fix quality and accuracy in meters. "
+                                "Useful for understanding position reliability."
+                            ),
+                        },
+                        {
+                            "name": "set_beam_direction",
+                            "description": (
+                                "Move the 3D audio navigation beacon to guide the user in a specific direction. "
+                                "Use this INDOORS when GPS is unavailable to actively guide the user. "
+                                "Point the beam toward doors, exits, corridors, or safe paths you see in the camera. "
+                                "The user follows the audio beacon — it is the PRIMARY guidance tool. "
+                                "Pair with a short voice command like 'door on your left' or 'go straight'. "
+                                "The safety system may override your beam if the user is too close to a wall, "
+                                "cliff, or obstacle — in that case you'll get a safety_override response."
+                            ),
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "direction": {
+                                        "type": "string",
+                                        "enum": ["left", "right", "ahead", "behind", "slight_left", "slight_right", "up", "down"],
+                                        "description": "Direction to point the audio beacon relative to the user",
+                                    },
+                                    "reason": {
+                                        "type": "string",
+                                        "description": "Brief reason for this direction (e.g. 'exit door visible', 'corridor continues')",
+                                    },
+                                },
+                                "required": ["direction"],
+                            },
+                        },
+                    ]}],
                 )
                 
                 # Always enable session resumption so we receive handles
@@ -373,6 +450,44 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                     if getattr(sru, 'resumable', False) and getattr(sru, 'new_handle', None):
                         self.session_handle = sru.new_handle
                         logger.info("📝 Session resumption handle updated")
+
+                # Handle function calls from Gemini
+                tc = getattr(response, 'tool_call', None)
+                if tc:
+                    function_calls = getattr(tc, 'function_calls', []) or []
+                    logger.info(
+                        f"🔧 Gemini tool_call: {[fc.name for fc in function_calls]}"
+                    )
+                    function_responses = []
+                    for fc in function_calls:
+                        result = {"error": "No tool callback registered"}
+                        if self._tool_callback:
+                            try:
+                                result = self._tool_callback(
+                                    fc.name, getattr(fc, 'args', {}) or {}
+                                )
+                            except Exception as e:
+                                logger.error(f"Tool callback error for {fc.name}: {e}")
+                                result = {"error": str(e)}
+                        function_responses.append(
+                            types.FunctionResponse(
+                                id=fc.id,
+                                name=fc.name,
+                                response={"result": result},
+                            )
+                        )
+                    if function_responses and self.session:
+                        await self.session.send_tool_response(
+                            function_responses=function_responses
+                        )
+                        logger.info(f"🔧 Sent {len(function_responses)} tool response(s)")
+                    continue
+
+                # Handle tool call cancellation
+                tcc = getattr(response, 'tool_call_cancellation', None)
+                if tcc:
+                    logger.info(f"🔧 Tool call cancelled: {tcc}")
+                    continue
 
                 # Convenience accessors (SDK >= 1.x)
                 # response.data → raw audio bytes, response.text → text string
@@ -651,9 +766,12 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
         """
         Send text input to Gemini Live API.
 
-        Uses send_realtime_input(text=...) per Live API guidance — all new user
-        input (audio, video, text) goes via realtime_input for lower latency.
-        send_client_content is reserved for conversation history / context only.
+        Uses send_client_content(turn_complete=True) to explicitly trigger a
+        model response.  With AutomaticActivityDetection disabled, the model
+        only responds when it receives a completed turn via client_content.
+        send_realtime_input(text=...) would require activity_start/end framing
+        which we intentionally omit to prevent Gemini from auto-responding to
+        audio routed to other layers (e.g., Layer 3 navigation).
 
         Args:
             text: Text prompt
@@ -666,8 +784,11 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
             return False
 
         try:
-            await self.session.send_realtime_input(text=text)
-            logger.debug(f"📤 Sent text (realtime): {text[:50]}...")
+            await self.session.send_client_content(
+                turns={"role": "user", "parts": [{"text": text}]},
+                turn_complete=True,
+            )
+            logger.debug(f"📤 Sent text (turn_complete): {text[:50]}...")
 
             # Track query for memory logging and conversation history
             self._last_query = text
@@ -753,6 +874,11 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
         """Set callback function for status updates."""
         self.status_callback = callback
 
+    def set_tool_callback(self, callback: Callable):
+        """Set callback for Gemini function-calling tool invocations."""
+        self._tool_callback = callback
+        logger.info("✅ Tool callback registered on GeminiLiveHandler")
+
 
 class GeminiLiveManager:
     """
@@ -787,6 +913,10 @@ class GeminiLiveManager:
         self.is_running = False
         
         logger.info("✅ GeminiLiveManager initialized")
+
+    def set_tool_callback(self, callback: Callable):
+        """Set callback for Gemini function calling (thread-safe passthrough)."""
+        self.handler.set_tool_callback(callback)
     
     def start(self):
         """Start background thread with asyncio event loop."""

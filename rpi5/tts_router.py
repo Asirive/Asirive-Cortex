@@ -436,34 +436,76 @@ class TTSRouter:
             return False, None
     
     async def _play_audio_file(self, audio_path: str):
-        """Play an audio file using sounddevice."""
+        """Play an audio file via aplay (Linux) or sounddevice (fallback).
+        
+        On Linux (RPi5), uses aplay to avoid PortAudio mutex contention
+        between PyAudio (VAD input) and sounddevice (Gemini output).
+        """
+        import platform
+        if platform.system() == "Linux":
+            import subprocess
+            try:
+                await asyncio.to_thread(
+                    subprocess.run, ["aplay", "-q", audio_path],
+                    check=False, timeout=30
+                )
+            except Exception as e:
+                logger.error(f"aplay error: {e}")
+            return
+        
+        # Non-Linux fallback
         try:
             import sounddevice as sd
             import soundfile as sf
-            
             data, samplerate = sf.read(audio_path)
             sd.play(data, samplerate)
-            sd.wait()  # Wait until audio finishes
-            
+            sd.wait()
         except Exception as e:
             logger.error(f"Audio playback error: {e}")
-            # Fallback to system audio player
-            import subprocess
-            import platform
-            
-            if platform.system() == "Linux":
-                subprocess.run(["aplay", audio_path], check=False)
-            elif platform.system() == "Darwin":
-                subprocess.run(["afplay", audio_path], check=False)
     
     async def _play_audio_samples(self, samples, sample_rate: int):
-        """Play audio samples directly using sounddevice."""
+        """Play audio samples via aplay (Linux) or sounddevice (fallback).
+        
+        On Linux (RPi5), writes a temp WAV and uses aplay to avoid
+        PortAudio mutex contention with concurrent PyAudio/sounddevice streams.
+        """
+        import platform
+        if platform.system() == "Linux":
+            import tempfile
+            import wave
+            import numpy as np
+            import subprocess
+            import os
+            temp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+                    temp_path = f.name
+                    with wave.open(f, 'wb') as wf:
+                        wf.setnchannels(1)
+                        wf.setsampwidth(2)
+                        wf.setframerate(sample_rate)
+                        if isinstance(samples, np.ndarray) and samples.dtype == np.float32:
+                            samples = (samples * 32767).astype(np.int16)
+                        wf.writeframes(samples.tobytes())
+                await asyncio.to_thread(
+                    subprocess.run, ["aplay", "-q", temp_path],
+                    check=False, timeout=30
+                )
+            except Exception as e:
+                logger.error(f"aplay samples error: {e}")
+            finally:
+                if temp_path:
+                    try:
+                        os.unlink(temp_path)
+                    except OSError:
+                        pass
+            return
+        
+        # Non-Linux fallback
         try:
             import sounddevice as sd
-            
             sd.play(samples, sample_rate)
             sd.wait()
-            
         except Exception as e:
             logger.error(f"Audio playback error: {e}")
 

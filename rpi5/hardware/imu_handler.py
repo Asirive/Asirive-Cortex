@@ -72,6 +72,17 @@ class IMUReading(NamedTuple):
     cal_mag: int
 
 
+# ── Axis-remap presets for different physical mountings ──
+# Each preset is (x_remap, y_remap, z_remap, x_sign, y_sign, z_sign)
+# where *_remap is AXIS_REMAP_X/Y/Z and *_sign is AXIS_REMAP_POSITIVE/NEGATIVE.
+MOUNTING_PRESETS = {
+    # Default: chip face-up, Y pointing forward
+    "default": None,  # no remap needed
+    # Right glasses temple: chip face-DOWN, connectors pointing RIGHT
+    "right_temple_down": (1, 0, 2, 0, 0, 1),  # X<-Y+, Y<-X+, Z<-Z-
+}
+
+
 class IMUHandler:
     """
     BNO055 9-axis IMU reader with background polling thread.
@@ -81,7 +92,7 @@ class IMUHandler:
     orientation data.
 
     Usage:
-        imu = IMUHandler(i2c_address=0x28)
+        imu = IMUHandler(i2c_address=0x29, mounting='right_temple_down')
         imu.start()
         reading = imu.get_reading()
         if reading:
@@ -98,6 +109,7 @@ class IMUHandler:
         i2c_address: int = 0x28,
         poll_hz: float = 25.0,
         enabled: bool = True,
+        mounting: str = "default",
     ):
         """
         Initialise IMU handler.
@@ -106,10 +118,12 @@ class IMUHandler:
             i2c_address: I2C address of BNO055 (0x28 default, 0x29 if ADR pin high)
             poll_hz:     Polling frequency in Hz (BNO055 outputs up to 100Hz)
             enabled:     Set False to disable (mock mode for laptop dev)
+            mounting:    Physical mounting preset ('default' or 'right_temple_down')
         """
         self._address = i2c_address
         self._poll_interval = 1.0 / poll_hz
         self._enabled = enabled and BNO055_AVAILABLE
+        self._mounting = mounting
 
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
@@ -144,11 +158,19 @@ class IMUHandler:
         try:
             i2c = busio.I2C(board.SCL, board.SDA)
             self._sensor = adafruit_bno055.BNO055_I2C(i2c, address=self._address)
-            # NDOF is the default mode but set it explicitly for clarity
+
+            # Apply axis remap for physical mounting BEFORE switching to NDOF
+            preset = MOUNTING_PRESETS.get(self._mounting)
+            if preset:
+                self._sensor.mode = adafruit_bno055.CONFIG_MODE
+                time.sleep(0.025)  # BNO055 needs 19ms to switch modes
+                self._sensor.axis_remap = preset
+                logger.info(f"🧭 Axis remap applied for '{self._mounting}' mounting")
+
             self._sensor.mode = adafruit_bno055.NDOF_MODE
             logger.info(
                 f"✅ BNO055 initialised at I2C 0x{self._address:02X} "
-                f"(NDOF mode, {1/self._poll_interval:.0f}Hz)"
+                f"(NDOF mode, {1/self._poll_interval:.0f}Hz, mount={self._mounting})"
             )
         except Exception as exc:
             logger.error(f"❌ BNO055 init failed: {exc}")
@@ -247,11 +269,15 @@ class IMUHandler:
     def _poll_loop(self) -> None:
         """Continuously poll sensor at configured frequency."""
         logger.debug("IMU polling thread started")
+        _imu_err_count = 0
         while self._running:
             try:
                 self._read_sensor()
+                _imu_err_count = 0  # Reset on success
             except Exception as exc:
-                logger.warning(f"IMU read error: {exc}")
+                _imu_err_count += 1
+                if _imu_err_count <= 3 or _imu_err_count % 50 == 0:
+                    logger.warning(f"IMU read error (#{_imu_err_count}): {exc}")
                 time.sleep(0.5)
             time.sleep(self._poll_interval)
         logger.debug("IMU polling thread stopped")

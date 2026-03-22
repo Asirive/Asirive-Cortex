@@ -13,10 +13,11 @@ Per-object pinging has been REMOVED. Audio is now reserved for:
 Uses PyOpenAL with HRTF (Head-Related Transfer Function) for binaural audio
 that works with standard Bluetooth headphones.
 
-⚠️ IMPORTANT: BODY-RELATIVE NAVIGATION ⚠️
+⚠️ IMPORTANT: HEAD-RELATIVE NAVIGATION ⚠️
 =========================================
-This system uses BODY-RELATIVE navigation, not head-tracking.
-Users must TURN THEIR TORSO to center the sound, not just their head.
+This system uses HEAD-RELATIVE navigation with IMU head-tracking.
+The OpenAL listener orientation updates from the BNO055 IMU so that
+sound sources remain spatially fixed as the user turns their head.
 
 🎧 ACCESSIBILITY COMFORT FEATURES (Based on Research):
 ======================================================
@@ -64,6 +65,17 @@ try:
     from openal import Listener, Source, Buffer, WaveFile
     from openal import alDistanceModel, AL_INVERSE_DISTANCE_CLAMPED
     from openal.alc import alcGetString, ALC_DEVICE_SPECIFIER
+    # ALC HRTF extension constants (OpenAL-Soft)
+    import ctypes
+    try:
+        from openal.alc import alcGetIntegerv, alcResetDeviceSOFT, alcIsExtensionPresent
+    except ImportError:
+        alcGetIntegerv = None
+        alcResetDeviceSOFT = None
+        alcIsExtensionPresent = None
+    ALC_HRTF_SOFT = 0x1992
+    ALC_HRTF_STATUS_SOFT = 0x1993
+    ALC_TRUE = 1
     OPENAL_AVAILABLE = True
     logger.info("✅ PyOpenAL loaded successfully")
 except ImportError as e:
@@ -323,6 +335,9 @@ class SpatialAudioManager:
         
         # Listener orientation (yaw, pitch, roll in degrees)
         self._listener_orientation = (0.0, 0.0, 0.0)
+        # Reference heading captured at start — IMU heading is absolute (compass),
+        # so we subtract the reference to get head rotation relative to "forward"
+        self._reference_heading: Optional[float] = None
         
         # ---- Wall hum state (for update_from_depth) ----
         # Tracks whether each channel region is actively humming
@@ -333,6 +348,9 @@ class SpatialAudioManager:
         # Current hum parameters (region → (frequency, left_gain, right_gain))
         self._hum_params: Dict[str, Tuple[float, float, float]] = {}
         self._hum_lock = threading.Lock()
+
+        # ---- Binaural Engine (manual HRTF, bypasses OpenAL) ----
+        self._binaural_engine = None  # Lazy init via enable_binaural_engine()
 
         # Load configuration if provided
         if config_path and os.path.exists(config_path):
@@ -366,6 +384,62 @@ class SpatialAudioManager:
         except Exception as e:
             logger.warning(f"⚠️ Failed to load config: {e}")
     
+    def _force_enable_hrtf(self, device) -> None:
+        """Force-enable HRTF on the OpenAL-Soft device via ALC extension."""
+        # Try to get the raw ALC device pointer for ctypes calls
+        # PyOpenAL wraps the device; we need the raw handle
+        raw_device = getattr(device, '_device', None) or getattr(device, 'device', device)
+        
+        try:
+            # Load libopenal directly for ALC extension calls
+            import ctypes.util
+            lib_name = ctypes.util.find_library("openal")
+            if not lib_name:
+                # RPi5 common path
+                import platform
+                if platform.machine().startswith('aarch64'):
+                    lib_name = "libopenal.so.1"
+                else:
+                    lib_name = "libopenal.so"
+            
+            openal_lib = ctypes.cdll.LoadLibrary(lib_name)
+            
+            # Check ALC_SOFT_HRTF extension presence
+            _alcIsExt = openal_lib.alcIsExtensionPresent
+            _alcIsExt.restype = ctypes.c_ubyte
+            _alcIsExt.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+            
+            if not _alcIsExt(raw_device, b"ALC_SOFT_HRTF"):
+                logger.warning("⚠️ ALC_SOFT_HRTF extension not supported by this OpenAL implementation")
+                return
+            
+            # Query current HRTF status
+            _alcGetIntegerv = openal_lib.alcGetIntegerv
+            _alcGetIntegerv.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
+            
+            status = ctypes.c_int(0)
+            _alcGetIntegerv(raw_device, ALC_HRTF_SOFT, 1, ctypes.byref(status))
+            hrtf_active = status.value == ALC_TRUE
+            logger.info(f"🎧 HRTF currently {'ENABLED' if hrtf_active else 'DISABLED'}")
+            
+            if hrtf_active:
+                return
+            
+            # Force-enable via alcResetDeviceSOFT
+            _alcReset = openal_lib.alcResetDeviceSOFT
+            _alcReset.restype = ctypes.c_ubyte
+            _alcReset.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
+            
+            attrs = (ctypes.c_int * 3)(ALC_HRTF_SOFT, ALC_TRUE, 0)
+            result = _alcReset(raw_device, attrs)
+            if result:
+                logger.info("🎧 ✅ HRTF force-enabled via alcResetDeviceSOFT")
+            else:
+                logger.warning("⚠️ alcResetDeviceSOFT returned false — HRTF may need alsoft.conf config")
+        
+        except Exception as e:
+            logger.info(f"🎧 Could not force HRTF via ALC ({e}) — ensure 'hrtf = true' in ~/.alsoftrc")
+
     def start(self) -> bool:
         """
         Initialize OpenAL and start the audio system.
@@ -394,6 +468,7 @@ class SpatialAudioManager:
             self._initialized = True
             
             # Log which audio device is being used
+            device = None
             try:
                 device = oalGetDevice()
                 if device:
@@ -405,6 +480,10 @@ class SpatialAudioManager:
                         logger.info("🔊 Spatial Audio Device: (default system device)")
             except Exception as dev_err:
                 logger.debug(f"Could not query device name: {dev_err}")
+            
+            # Force-enable HRTF via OpenAL-Soft ALC extension
+            if self.enable_hrtf and device:
+                self._force_enable_hrtf(device)
             
             # Set distance model for realistic attenuation
             # INVERSE_DISTANCE_CLAMPED: volume = ref_dist / (ref_dist + rolloff * (dist - ref_dist))
@@ -792,8 +871,17 @@ class SpatialAudioManager:
                 # Check if it's time for next ping
                 elapsed = current_time_ms - self._last_beacon_ping_time
                 if elapsed >= self._beacon_ping_interval_ms:
-                    # Play ping
-                    if not self._beacon_source.get_state():  # Not already playing
+                    # Play ping if not currently mid-playback.
+                    # PyOpenAL get_state() returns AL_PLAYING (0x1012) when
+                    # actively playing; any other state (INITIAL, STOPPED,
+                    # PAUSED) means we're free to trigger a new ping.
+                    try:
+                        state = self._beacon_source.get_state()
+                    except Exception:
+                        state = 0
+                    # AL_PLAYING = 0x1012
+                    is_playing = (state == 0x1012)
+                    if not is_playing:
                         # Apply pitch based on distance
                         if self.comfort.pitch_distance_mapping and position.distance_meters:
                             pitch = self._calculate_pitch_for_distance(position.distance_meters)
@@ -803,7 +891,11 @@ class SpatialAudioManager:
                         self._last_beacon_ping_time = current_time_ms
             else:
                 # Continuous mode - start playing if not already
-                if not self._beacon_source.get_state():
+                try:
+                    state = self._beacon_source.get_state()
+                except Exception:
+                    state = 0
+                if state != 0x1012:  # Not AL_PLAYING
                     self._beacon_source.play()
                 
                 # Apply pitch adjustment
@@ -813,7 +905,39 @@ class SpatialAudioManager:
                 
         except Exception as e:
             logger.error(f"Failed to update beacon position: {e}")
-    
+
+    def tick_beacon(self) -> None:
+        """Keep the beacon pinging at its current position.
+
+        Called by the nav loop in indoor mode where GPS-based position
+        updates are skipped but the beacon must keep producing interval
+        pings so the user hears persistent directional audio.
+        """
+        if not self._beacon_source or not self._running:
+            return
+        try:
+            if self.comfort.use_interval_pings:
+                current_time_ms = time.time() * 1000
+                elapsed = current_time_ms - self._last_beacon_ping_time
+                if elapsed >= self._beacon_ping_interval_ms:
+                    try:
+                        state = self._beacon_source.get_state()
+                    except Exception:
+                        state = 0
+                    if state != 0x1012:  # Not AL_PLAYING
+                        self._beacon_source.play()
+                        self._last_beacon_ping_time = current_time_ms
+            else:
+                # Continuous mode — restart if stopped
+                try:
+                    state = self._beacon_source.get_state()
+                except Exception:
+                    state = 0
+                if state != 0x1012:
+                    self._beacon_source.play()
+        except Exception as e:
+            logger.debug(f"tick_beacon error: {e}")
+
     def _get_beacon_interval(self, distance_meters: float) -> int:
         """
         Get beacon ping interval based on distance.
@@ -843,6 +967,53 @@ class SpatialAudioManager:
             self._beacon_source = None
         
         logger.info("🛑 Beacon deactivated")
+
+    def guide_beam(self, position: Position3D) -> bool:
+        """
+        Set the 3D audio beam to a direction for Gemini indoor guidance.
+
+        Unlike _update_beacon_position (which silently returns when no beacon
+        exists), this method ensures a beacon source is created and an
+        immediate ping is played at the requested position.
+
+        Returns True if audio was triggered, False on failure.
+        """
+        if not self._running:
+            logger.warning("Cannot guide beam: audio system not running")
+            return False
+
+        # Ensure a beacon source exists — start one if needed (outside lock
+        # because start_beacon acquires the lock itself)
+        if not self._beacon_source:
+            ok = self.start_beacon("gemini_guide")
+            if not ok:
+                logger.warning("guide_beam: failed to start beacon source")
+                return False
+
+        with self._lock:
+            try:
+                if not self._beacon_source:
+                    return False  # race: beacon died between check and lock
+
+                self._beacon_source.set_position(position.as_tuple())
+
+                # Force an immediate ping regardless of interval timing
+                try:
+                    state = self._beacon_source.get_state()
+                except Exception:
+                    state = 0
+                if state != 0x1012:  # Not AL_PLAYING
+                    if self.comfort.pitch_distance_mapping and position.distance_meters:
+                        pitch = self._calculate_pitch_for_distance(position.distance_meters)
+                        self._beacon_source.set_pitch(pitch)
+                    self._beacon_source.play()
+
+                # Reset interval timer so the next interval ping stays in sync
+                self._last_beacon_ping_time = time.time() * 1000
+                return True
+            except Exception as e:
+                logger.error(f"guide_beam error: {e}")
+                return False
     
     # ========== PROXIMITY ALERTS ==========
     
@@ -959,26 +1130,38 @@ class SpatialAudioManager:
     
     def set_listener_orientation(self, yaw: float, pitch: float, roll: float = 0.0) -> None:
         """
-        Update listener orientation based on head tracking.
+        Update listener orientation based on IMU head tracking.
+        
+        yaw is an ABSOLUTE compass heading (0-360 from BNO055).
+        We compute the delta from the reference heading captured on first call,
+        so OpenAL "forward" matches the direction the user was initially facing.
         
         Args:
-            yaw: Rotation around Y axis (left/right) in degrees
-            pitch: Rotation around X axis (up/down) in degrees
-            roll: Rotation around Z axis (tilt) in degrees
+            yaw: Compass heading in degrees (0-360, from BNO055)
+            pitch: Pitch in degrees (-90 to +90)
+            roll: Roll in degrees (unused for now)
         """
-        self._listener_orientation = (yaw, pitch, roll)
-        
         if not OPENAL_AVAILABLE or not self._initialized:
             return
+        
+        # Capture reference once on first call
+        if self._reference_heading is None:
+            self._reference_heading = yaw
+            logger.info(f"🎧 Head-tracking reference heading set: {yaw:.0f}°")
+        
+        # Delta: how far the user has turned from their initial facing direction
+        delta_yaw = yaw - self._reference_heading
+        
+        self._listener_orientation = (delta_yaw, pitch, roll)
         
         try:
             import math
             
             # Convert to radians
-            yaw_rad = math.radians(yaw)
+            yaw_rad = math.radians(delta_yaw)
             pitch_rad = math.radians(pitch)
             
-            # Calculate forward vector
+            # Calculate forward vector from delta rotation
             forward_x = math.sin(yaw_rad) * math.cos(pitch_rad)
             forward_y = math.sin(pitch_rad)
             forward_z = -math.cos(yaw_rad) * math.cos(pitch_rad)
@@ -993,6 +1176,74 @@ class SpatialAudioManager:
             
         except Exception as e:
             logger.error(f"Failed to update listener orientation: {e}")
+    
+    def reset_reference_heading(self) -> None:
+        """Reset the head-tracking reference so 'forward' recalibrates to current facing."""
+        self._reference_heading = None
+        logger.info("🎧 Head-tracking reference heading reset — will recapture on next IMU read")
+    
+    # ========== BINAURAL ENGINE (Manual HRTF — bypasses OpenAL) ==========
+    
+    def enable_binaural_engine(self, gain: float = 1.0) -> bool:
+        """
+        Enable the manual binaural HRTF engine (bypasses OpenAL).
+        
+        This uses ITD/ILD/head-shadow convolution via sounddevice for
+        guaranteed 3D audio, independent of OpenAL-Soft's HRTF support.
+        
+        Once enabled, guide_beam_binaural() can be used instead of guide_beam().
+        
+        Returns True if initialized successfully.
+        """
+        try:
+            from .binaural_engine import BinauralEngine
+            self._binaural_engine = BinauralEngine(gain=gain)
+            if self._binaural_engine.start():
+                logger.info("✅ Binaural HRTF engine enabled (bypasses OpenAL)")
+                return True
+            else:
+                self._binaural_engine = None
+                return False
+        except Exception as e:
+            logger.error(f"Failed to enable binaural engine: {e}")
+            self._binaural_engine = None
+            return False
+    
+    def guide_beam_binaural(self, position: Position3D) -> bool:
+        """
+        Play a directional ping using the manual binaural engine.
+        
+        Converts Position3D (x,y,z) to azimuth/elevation and renders
+        via ITD/ILD/head-shadow convolution — guaranteed 3D on any hardware.
+        
+        Args:
+            position: 3D position in OpenAL coordinate space
+        
+        Returns True if audio was triggered.
+        """
+        if self._binaural_engine is None:
+            logger.warning("Binaural engine not enabled — call enable_binaural_engine() first")
+            return False
+        
+        try:
+            from .binaural_engine import compute_azimuth_elevation
+            az, el = compute_azimuth_elevation(position.x, position.y, position.z)
+            
+            # Apply head-tracking offset if IMU is active
+            if self._reference_heading is not None:
+                delta_yaw = self._listener_orientation[0]  # Already computed in set_listener_orientation
+                az -= delta_yaw  # Shift source relative to head rotation
+            
+            self._binaural_engine.play_at_nonblocking(
+                azimuth_deg=az,
+                elevation_deg=el,
+                sound="chirp",
+                duration_s=0.3,
+            )
+            return True
+        except Exception as e:
+            logger.error(f"guide_beam_binaural error: {e}")
+            return False
     
     # ========== COMFORT CONFIGURATION ==========
     

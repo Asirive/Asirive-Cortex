@@ -52,7 +52,34 @@ class NavState(Enum):
     NAVIGATING = "navigating"
     ARRIVED = "arrived"
     PAUSED = "paused"           # e.g., road crossing
+    WAITING_FOR_BUS = "waiting_for_bus"  # At bus stop, waiting for target bus
+    ON_VEHICLE = "on_vehicle"   # On bus/MRT, counting stops
     ERROR = "error"
+
+
+class LegType(Enum):
+    """Type of a route leg."""
+    WALKING = "walking"
+    BUS = "bus"
+    MRT = "mrt"
+
+
+@dataclass
+class TransitInfo:
+    """Details for a transit (bus/MRT) leg."""
+    service_no: str = ""        # e.g., "23", "NS Line"
+    departure_stop: str = ""    # e.g., "Opp Blk 831"
+    arrival_stop: str = ""      # e.g., "Tampines Int"
+    departure_stop_code: str = ""  # LTA bus stop code for API queries
+    arrival_stop_code: str = ""
+    num_stops: int = 0
+    headsign: str = ""          # direction label (e.g., "Tampines Int")
+    line_name: str = ""         # e.g., "North South Line"
+    line_color: str = ""        # e.g., "red"
+    departure_lat: float = 0.0
+    departure_lng: float = 0.0
+    arrival_lat: float = 0.0
+    arrival_lng: float = 0.0
 
 
 @dataclass
@@ -68,14 +95,31 @@ class Waypoint:
 
 @dataclass
 class NavRoute:
-    """A complete navigation route."""
+    """A complete navigation route, possibly multi-leg (walking + transit)."""
     origin: str
     destination: str
-    waypoints: List[Waypoint] = field(default_factory=list)
+    waypoints: List[Waypoint] = field(default_factory=list)  # flat list (walking-only fallback)
+    legs: List['RouteLeg'] = field(default_factory=list)      # multi-leg route
     total_distance_m: float = 0.0
     total_duration_s: float = 0.0
     polyline: str = ""          # encoded polyline from Google
     fetched_at: float = 0.0     # timestamp
+    is_transit: bool = False    # True if route uses public transport
+
+
+@dataclass
+class RouteLeg:
+    """A single leg of a multi-leg route."""
+    leg_type: LegType
+    waypoints: List[Waypoint] = field(default_factory=list)  # walking waypoints for this leg
+    transit_info: Optional[TransitInfo] = None                # bus/MRT details
+    distance_m: float = 0.0
+    duration_s: float = 0.0
+    start_lat: float = 0.0
+    start_lng: float = 0.0
+    end_lat: float = 0.0
+    end_lng: float = 0.0
+    instruction: str = ""       # human-readable (e.g., "Walk to bus stop Opp Blk 831")
 
 
 # =====================================================
@@ -262,6 +306,18 @@ class NavigationEngine:
         self._last_voice_time = 0.0
         self._turn_announced = set()  # waypoint indices where turn was announced
         self._road_crossing_active = False
+        self._road_crossing_pos = None  # GPS pos when crossing detected
+
+        # Multi-leg transit tracking
+        self.current_leg_idx = 0
+        self._current_leg: Optional[RouteLeg] = None
+        self._transit_stops_remaining = 0
+        self._transit_departure_pos = None  # (lat, lng) of transit departure stop
+        self._transit_arrival_pos = None    # (lat, lng) of transit arrival stop
+        self._on_vehicle_announced = False
+        self._alight_announced = False
+        self._leg_waypoints = None  # Current leg's waypoints (for transit walking legs)
+        self.bus_handler = None  # Set externally when bus_handler is available
 
         # Breadcrumb trail — GPS position log for "retrace steps" / "I'm lost"
         self._breadcrumbs: List[Tuple[float, float, float]] = []  # (lat, lng, timestamp)
@@ -270,10 +326,12 @@ class NavigationEngine:
         self._approaching_dest_announced = False  # Track "approaching destination" event
         self._nav_start_time = 0.0  # When navigation started (for GPS grace period)
         self._gps_grace_seconds = 30.0  # Don't switch to indoor mode for this long after start
+        self._started_without_gps = False  # True if nav started with saved location (no GPS)
 
         # GPS accuracy tracking (set by _get_current_position)
         self._gps_accuracy: float = 999.0
         self._last_known_heading: float = 0.0
+        self._last_waypoint_advance_time: float = 0.0  # Rate-limit waypoint advancement
 
         # Vision context from YOLO + depth (updated each frame by main loop)
         self._latest_detections: List[Dict[str, Any]] = []
@@ -566,17 +624,220 @@ class NavigationEngine:
             result.append(curr)
         return result
 
+    def fetch_transit_route(self, origin: str, destination: str) -> Optional[NavRoute]:
+        """
+        Fetch transit directions from Google Maps Directions API.
+        Returns a multi-leg route (WALKING + BUS/MRT legs).
+        
+        Falls back to walking-only if transit mode returns no results.
+        """
+        if not self.api_key:
+            logger.error("No Google Maps API key configured")
+            return None
+
+        self.state = NavState.LOADING_ROUTE
+        destination = self._sanitize_location(destination)
+        origin = self._sanitize_location(origin)
+
+        params = urllib.parse.urlencode({
+            "origin": origin,
+            "destination": destination,
+            "mode": "transit",
+            "transit_mode": "bus|rail",
+            "region": "sg",
+            "key": self.api_key,
+        })
+        url = f"https://maps.googleapis.com/maps/api/directions/json?{params}"
+        logger.info(f"🧭 [NAV] Google Maps transit request: origin='{origin}', dest='{destination}'")
+
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "ProjectCortex/2.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode())
+        except Exception as e:
+            logger.error(f"🧭 [NAV] Google Maps transit request FAILED: {e}")
+            return self.fetch_route(origin, destination)  # Fall back to walking
+
+        if data.get("status") != "OK" or not data.get("routes"):
+            logger.warning(f"🧭 [NAV] Transit API returned {data.get('status')} — falling back to walking")
+            return self.fetch_route(origin, destination)
+
+        route_data = data["routes"][0]
+        api_legs = route_data.get("legs", [])
+        if not api_legs:
+            return self.fetch_route(origin, destination)
+
+        # Google returns one "leg" for origin→destination, with "steps" that
+        # have travel_mode = WALKING or TRANSIT
+        api_leg = api_legs[0]
+        route_legs: List[RouteLeg] = []
+        all_waypoints: List[Waypoint] = []  # flat list for backward compat
+
+        has_transit = False
+        for step in api_leg.get("steps", []):
+            travel_mode = step.get("travel_mode", "WALKING")
+            step_start = step.get("start_location", {})
+            step_end = step.get("end_location", {})
+            step_dist = step.get("distance", {}).get("value", 0)
+            step_dur = step.get("duration", {}).get("value", 0)
+            import re
+            instruction = re.sub(r"<[^>]+>", "", step.get("html_instructions", ""))
+
+            if travel_mode == "TRANSIT":
+                has_transit = True
+                td = step.get("transit_details", {})
+                line = td.get("line", {})
+                dep_stop = td.get("departure_stop", {})
+                arr_stop = td.get("arrival_stop", {})
+                vehicle = line.get("vehicle", {})
+                vehicle_type = vehicle.get("type", "BUS")
+
+                leg_type = LegType.MRT if vehicle_type in ("SUBWAY", "HEAVY_RAIL", "METRO_RAIL", "RAIL") else LegType.BUS
+
+                transit_info = TransitInfo(
+                    service_no=line.get("short_name", line.get("name", "")),
+                    departure_stop=dep_stop.get("name", ""),
+                    arrival_stop=arr_stop.get("name", ""),
+                    departure_stop_code="",  # LTA code set later via bus_handler lookup
+                    arrival_stop_code="",
+                    num_stops=td.get("num_stops", 0),
+                    headsign=td.get("headsign", ""),
+                    line_name=line.get("name", ""),
+                    line_color=line.get("color", ""),
+                    departure_lat=dep_stop.get("location", {}).get("lat", 0),
+                    departure_lng=dep_stop.get("location", {}).get("lng", 0),
+                    arrival_lat=arr_stop.get("location", {}).get("lat", 0),
+                    arrival_lng=arr_stop.get("location", {}).get("lng", 0),
+                )
+
+                leg = RouteLeg(
+                    leg_type=leg_type,
+                    transit_info=transit_info,
+                    distance_m=step_dist,
+                    duration_s=step_dur,
+                    start_lat=step_start.get("lat", 0),
+                    start_lng=step_start.get("lng", 0),
+                    end_lat=step_end.get("lat", 0),
+                    end_lng=step_end.get("lng", 0),
+                    instruction=instruction,
+                )
+                route_legs.append(leg)
+
+                # Add transit endpoint as a waypoint for flat list
+                all_waypoints.append(Waypoint(
+                    lat=transit_info.arrival_lat,
+                    lng=transit_info.arrival_lng,
+                    instruction=f"Alight at {transit_info.arrival_stop}",
+                ))
+
+            else:
+                # WALKING step — may contain sub-steps
+                leg_waypoints: List[Waypoint] = []
+                sub_steps = step.get("steps", [])
+                if sub_steps:
+                    for sub in sub_steps:
+                        sub_instr = re.sub(r"<[^>]+>", "", sub.get("html_instructions", ""))
+                        sub_maneuver = sub.get("maneuver", "")
+                        sub_dist = sub.get("distance", {}).get("value", 0)
+                        is_turn = sub_maneuver in (
+                            "turn-left", "turn-right", "turn-slight-left", "turn-slight-right",
+                            "turn-sharp-left", "turn-sharp-right",
+                        )
+                        poly = sub.get("polyline", {}).get("points", "")
+                        if poly:
+                            points = decode_polyline(poly)
+                            for i, (plat, plng) in enumerate(points):
+                                leg_waypoints.append(Waypoint(
+                                    lat=plat, lng=plng,
+                                    instruction=sub_instr if i == 0 else "",
+                                    distance_m=sub_dist / max(len(points), 1) if i == 0 else 0,
+                                    maneuver=sub_maneuver if i == 0 else "",
+                                    is_turn=is_turn if i == 0 else False,
+                                ))
+                        else:
+                            s_start = sub.get("start_location", {})
+                            leg_waypoints.append(Waypoint(
+                                lat=s_start.get("lat", 0), lng=s_start.get("lng", 0),
+                                instruction=sub_instr, distance_m=sub_dist,
+                                maneuver=sub_maneuver, is_turn=is_turn,
+                            ))
+                else:
+                    # No sub-steps — decode the step polyline
+                    poly = step.get("polyline", {}).get("points", "")
+                    if poly:
+                        points = decode_polyline(poly)
+                        for i, (plat, plng) in enumerate(points):
+                            leg_waypoints.append(Waypoint(
+                                lat=plat, lng=plng,
+                                instruction=instruction if i == 0 else "",
+                                distance_m=step_dist / max(len(points), 1) if i == 0 else 0,
+                            ))
+                    else:
+                        leg_waypoints.append(Waypoint(
+                            lat=step_start.get("lat", 0), lng=step_start.get("lng", 0),
+                            instruction=instruction, distance_m=step_dist,
+                        ))
+
+                leg_waypoints = self._interpolate_waypoints(leg_waypoints)
+
+                leg = RouteLeg(
+                    leg_type=LegType.WALKING,
+                    waypoints=leg_waypoints,
+                    distance_m=step_dist,
+                    duration_s=step_dur,
+                    start_lat=step_start.get("lat", 0),
+                    start_lng=step_start.get("lng", 0),
+                    end_lat=step_end.get("lat", 0),
+                    end_lng=step_end.get("lng", 0),
+                    instruction=instruction,
+                )
+                route_legs.append(leg)
+                all_waypoints.extend(leg_waypoints)
+
+        if not has_transit:
+            # Google returned an all-walking transit route — use walking fetch instead
+            logger.info("🧭 [NAV] Transit route is all-walking — using walking mode")
+            return self.fetch_route(origin, destination)
+
+        route = NavRoute(
+            origin=origin,
+            destination=destination,
+            waypoints=all_waypoints,
+            legs=route_legs,
+            total_distance_m=api_leg.get("distance", {}).get("value", 0),
+            total_duration_s=api_leg.get("duration", {}).get("value", 0),
+            polyline=route_data.get("overview_polyline", {}).get("points", ""),
+            fetched_at=time.time(),
+            is_transit=True,
+        )
+
+        leg_summary = []
+        for lg in route_legs:
+            if lg.leg_type == LegType.WALKING:
+                leg_summary.append(f"Walk {lg.distance_m:.0f}m")
+            elif lg.transit_info:
+                leg_summary.append(f"{lg.leg_type.value.upper()} {lg.transit_info.service_no} ({lg.transit_info.num_stops} stops)")
+        logger.info(
+            f"🧭 [NAV] Transit route: {' → '.join(leg_summary)}, "
+            f"{route.total_distance_m:.0f}m total, ~{route.total_duration_s / 60:.0f}min"
+        )
+        return route
+
     # -------------------------------------------------
     # NAVIGATION CONTROL
     # -------------------------------------------------
 
-    async def start_navigation(self, origin: str, destination: str) -> bool:
+    async def start_navigation(self, origin: str, destination: str, prefer_transit: bool = True) -> bool:
         """
         Start navigating from origin to destination.
+        
+        Tries transit routing first (bus/MRT + walking). Falls back to
+        walking-only if transit is unavailable or returns a walking route.
         
         Args:
             origin: "lat,lng" or address (use "current" for GPS position)
             destination: "lat,lng" or address
+            prefer_transit: If True, try transit routing first
             
         Returns:
             True if navigation started successfully
@@ -594,12 +855,18 @@ class NavigationEngine:
                 logger.warning("🧭 [NAV] Cannot resolve 'current' — GPS not available")
                 return False
 
-        logger.info(f"🧭 [NAV] start_navigation: origin='{origin}', destination='{destination}'")
+        logger.info(f"🧭 [NAV] start_navigation: origin='{origin}', destination='{destination}', transit={prefer_transit}")
 
-        # Fetch route (blocking I/O, but fast enough for a single HTTP call)
-        route = await asyncio.get_event_loop().run_in_executor(
-            None, self.fetch_route, origin, destination
-        )
+        # Fetch route (try transit first, then walking)
+        route = None
+        if prefer_transit:
+            route = await asyncio.get_running_loop().run_in_executor(
+                None, self.fetch_transit_route, origin, destination
+            )
+        if not route or not route.waypoints:
+            route = await asyncio.get_running_loop().run_in_executor(
+                None, self.fetch_route, origin, destination
+            )
 
         if not route or not route.waypoints:
             logger.warning(f"🧭 [NAV] Route fetch FAILED: origin='{origin}', destination='{destination}'")
@@ -609,29 +876,78 @@ class NavigationEngine:
         self.current_waypoint_idx = 0
         self._turn_announced.clear()
         self._road_crossing_active = False
+        self._road_crossing_pos = None
         self._approaching_dest_announced = False
         self._nav_start_time = time.time()
-        self.state = NavState.NAVIGATING
+        self._started_without_gps = (self.gps is None or self.gps.get_fix() is None)
         self._running = True
+
+        # Multi-leg setup
+        if route.is_transit and route.legs:
+            self.current_leg_idx = 0
+            self._current_leg = route.legs[0]
+            self._on_vehicle_announced = False
+            self._alight_announced = False
+            # Set walking waypoints to first walking leg's waypoints
+            if self._current_leg.leg_type == LegType.WALKING and self._current_leg.waypoints:
+                self.current_waypoint_idx = 0
+                # Replace flat waypoints with first leg's waypoints for the nav loop
+                self._leg_waypoints = self._current_leg.waypoints
+            else:
+                self._leg_waypoints = None
+        else:
+            self.current_leg_idx = 0
+            self._current_leg = None
+            self._leg_waypoints = None
+
+        self.state = NavState.NAVIGATING
 
         total_min = route.total_duration_s / 60
         total_m = route.total_distance_m
-        logger.info(
-            f"🧭 [NAV] Route OK: {total_m:.0f}m, ~{total_min:.0f}min, "
-            f"{len(route.waypoints)} waypoints"
-        )
 
-        # Start beacon sound on spatial audio
-        if self.spatial_audio:
-            self.spatial_audio.start_beacon("navigation_target")
+        if route.is_transit and route.legs:
+            leg_summary = []
+            for i, leg in enumerate(route.legs):
+                if leg.leg_type == LegType.WALKING:
+                    leg_summary.append(f"Walk {leg.distance_m:.0f}m")
+                elif leg.leg_type == LegType.BUS:
+                    svc = leg.transit_info.service_no if leg.transit_info else "?"
+                    stops = leg.transit_info.num_stops if leg.transit_info else "?"
+                    leg_summary.append(f"Bus {svc} ({stops} stops)")
+                elif leg.leg_type == LegType.MRT:
+                    line = leg.transit_info.line_name if leg.transit_info else "?"
+                    stops = leg.transit_info.num_stops if leg.transit_info else "?"
+                    leg_summary.append(f"MRT {line} ({stops} stops)")
+            logger.info(
+                f"🧭 [NAV] Transit route OK: {total_m:.0f}m, ~{total_min:.0f}min, "
+                f"{len(route.legs)} legs: {' → '.join(leg_summary)}"
+            )
+        else:
+            logger.info(
+                f"🧭 [NAV] Route OK: {total_m:.0f}m, ~{total_min:.0f}min, "
+                f"{len(route.waypoints)} waypoints"
+            )
 
-        # Notify Gemini: navigation starting
-        self._fire_nav_event("navigating_to", {
+        # Start beacon for first walking leg (or whole walking route)
+        first_leg = self._current_leg
+        if not first_leg or first_leg.leg_type == LegType.WALKING:
+            if self.spatial_audio:
+                self.spatial_audio.start_beacon("navigation_target")
+
+        # Build nav event payload
+        nav_event_data = {
             "destination": destination,
             "distance_m": route.total_distance_m,
             "duration_min": round(route.total_duration_s / 60, 1),
             "waypoints": len(route.waypoints),
-        })
+            "is_transit": route.is_transit,
+        }
+        if route.is_transit and route.legs:
+            nav_event_data["legs"] = len(route.legs)
+            nav_event_data["leg_types"] = [l.leg_type.value for l in route.legs]
+
+        # Notify Gemini: navigation starting
+        self._fire_nav_event("navigating_to", nav_event_data)
 
         # Start the navigation loop on the persistent event loop
         self._ensure_event_loop()
@@ -667,9 +983,11 @@ class NavigationEngine:
         logger.info("Navigation stopped")
 
     async def pause_navigation(self):
-        """Pause navigation (e.g., for road crossing)."""
+        """Pause navigation (e.g., for road crossing). Beacon stops, loop keeps running to detect crossing."""
         self.state = NavState.PAUSED
         self._road_crossing_active = True
+        # Record position at crossing for movement detection
+        self._road_crossing_pos = self._get_current_position()
         if self.spatial_audio:
             self.spatial_audio.stop_beacon()
         logger.info("Navigation paused (road crossing)")
@@ -682,6 +1000,90 @@ class NavigationEngine:
             self.spatial_audio.start_beacon("navigation_target")
         await self._speak("Continuing navigation.")
         logger.info("Navigation resumed")
+
+    async def _advance_to_next_leg(self) -> bool:
+        """Advance to the next leg on a multi-leg transit route.
+        
+        Returns True if advanced, False if no more legs.
+        """
+        if not self.route or not self.route.legs:
+            return False
+
+        next_idx = self.current_leg_idx + 1
+        if next_idx >= len(self.route.legs):
+            return False
+
+        self.current_leg_idx = next_idx
+        self._current_leg = self.route.legs[next_idx]
+        self._on_vehicle_announced = False
+        self._alight_announced = False
+        self._transit_arrival_pos = None
+        self._transit_stops_remaining = 0
+
+        leg = self._current_leg
+        logger.info(f"🧭 [NAV] Advancing to leg {next_idx}: {leg.leg_type.value}")
+
+        if leg.leg_type == LegType.WALKING:
+            # Walking leg: set up waypoints and resume beacon
+            self.state = NavState.NAVIGATING
+            self._set_mode(NavMode.OUTDOOR)
+            self.current_waypoint_idx = 0
+            self._leg_waypoints = leg.waypoints if leg.waypoints else None
+            if self.spatial_audio:
+                self.spatial_audio.start_beacon("navigation_target")
+            walk_min = leg.duration_s / 60 if leg.duration_s else 0
+            await self._speak(
+                f"Walk {leg.distance_m:.0f} meters, about {walk_min:.0f} minutes. "
+                f"{leg.instruction or ''}"
+            )
+            self._fire_nav_event("leg_started", {
+                "leg_idx": next_idx,
+                "type": "walking",
+                "distance_m": leg.distance_m,
+                "instruction": leg.instruction,
+            })
+
+        elif leg.leg_type in (LegType.BUS, LegType.MRT):
+            # Transit leg: stop beacon, wait for vehicle
+            self.state = NavState.WAITING_FOR_BUS
+            if self.spatial_audio:
+                self.spatial_audio.stop_beacon()
+
+            ti = leg.transit_info
+            if ti:
+                if leg.leg_type == LegType.BUS:
+                    await self._speak(
+                        f"Wait for bus {ti.service_no} at {ti.departure_stop}. "
+                        f"It will take you {ti.num_stops} stops to {ti.arrival_stop}."
+                    )
+                    # Start bus monitoring if bus_handler is available
+                    if self.bus_handler and hasattr(self.bus_handler, 'start_monitoring'):
+                        try:
+                            await self.bus_handler.start_monitoring(
+                                ti.departure_lat, ti.departure_lng,
+                                target_service=ti.service_no
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to start bus monitoring: {e}")
+                else:
+                    await self._speak(
+                        f"Take the {ti.line_name} line from {ti.departure_stop}. "
+                        f"{ti.num_stops} stops to {ti.arrival_stop}."
+                    )
+                self._transit_arrival_pos = (ti.arrival_lat, ti.arrival_lng)
+                self._transit_stops_remaining = ti.num_stops
+            else:
+                await self._speak("Wait for your transport.")
+
+            self._fire_nav_event("leg_started", {
+                "leg_idx": next_idx,
+                "type": leg.leg_type.value,
+                "service": ti.service_no if ti else None,
+                "departure_stop": ti.departure_stop if ti else None,
+                "arrival_stop": ti.arrival_stop if ti else None,
+            })
+
+        return True
 
     # -------------------------------------------------
     # CORE NAVIGATION LOOP
@@ -703,7 +1105,10 @@ class NavigationEngine:
         interval = 1.0 / self.NAV_LOOP_HZ
         logger.info(f"Navigation loop started at {self.NAV_LOOP_HZ}Hz")
 
-        while self._running and self.state == NavState.NAVIGATING:
+        while self._running and self.state in (
+            NavState.NAVIGATING, NavState.PAUSED,
+            NavState.WAITING_FOR_BUS, NavState.ON_VEHICLE,
+        ):
             try:
                 loop_start = time.monotonic()
 
@@ -713,21 +1118,120 @@ class NavigationEngine:
                 # 1. Get current position
                 current_pos = self._get_current_position()
                 if current_pos is None:
-                    # No GPS — check if we're still in the grace period
-                    elapsed_since_start = time.time() - self._nav_start_time
-                    if elapsed_since_start < self._gps_grace_seconds:
-                        # Grace period: user may still be walking to get GPS fix
-                        logger.debug(
-                            f"No GPS fix yet ({elapsed_since_start:.0f}s / "
-                            f"{self._gps_grace_seconds:.0f}s grace period)"
-                        )
-                    elif self.mode != NavMode.INDOOR:
-                        # Grace period expired — genuinely indoors
+                    # No GPS — check grace period (skip if started without GPS)
+                    if not self._started_without_gps:
+                        elapsed_since_start = time.time() - self._nav_start_time
+                        if elapsed_since_start < self._gps_grace_seconds:
+                            logger.debug(
+                                f"No GPS fix yet ({elapsed_since_start:.0f}s / "
+                                f"{self._gps_grace_seconds:.0f}s grace period)"
+                            )
+                            await asyncio.sleep(interval)
+                            continue
+                    if self.mode != NavMode.INDOOR:
                         self._set_mode(NavMode.INDOOR)
-                        await self._speak(
-                            "I've lost GPS signal. Switching to voice guidance. "
-                            "I'll describe what I see to help you navigate."
+                    # Indoor: keep beacon alive by ticking
+                    if self.spatial_audio and hasattr(self.spatial_audio, 'tick_beacon'):
+                        self.spatial_audio.tick_beacon()
+                    await asyncio.sleep(interval)
+                    continue
+
+                # --- Road crossing auto-resume ---
+                # If paused at a crossing, check if user has moved >8m (crossed the road)
+                if self.state == NavState.PAUSED and self._road_crossing_active:
+                    if self._road_crossing_pos:
+                        cross_dist = haversine_distance(
+                            self._road_crossing_pos[0], self._road_crossing_pos[1],
+                            current_pos[0], current_pos[1]
                         )
+                        if cross_dist > 8.0:
+                            logger.info(f"Road crossing complete (moved {cross_dist:.1f}m). Resuming navigation.")
+                            await self.resume_navigation()
+                    await asyncio.sleep(interval)
+                    continue
+
+                # --- WAITING_FOR_BUS state ---
+                if self.state == NavState.WAITING_FOR_BUS:
+                    # Monitor GPS speed — boarding detected as >15km/h
+                    gps_fix = self.gps.get_fix() if self.gps else None
+                    gps_speed = gps_fix.speed_kmh if gps_fix and hasattr(gps_fix, 'speed_kmh') else 0.0
+                    if gps_speed > 15.0:
+                        self.state = NavState.ON_VEHICLE
+                        self._on_vehicle_announced = True
+                        self._set_mode(NavMode.TRANSIT)
+                        leg = self._current_leg
+                        if leg and leg.transit_info:
+                            ti = leg.transit_info
+                            await self._speak(
+                                f"You've boarded bus {ti.service_no}. "
+                                f"{ti.num_stops} stops to {ti.arrival_stop}."
+                            )
+                            self._transit_arrival_pos = (ti.arrival_lat, ti.arrival_lng)
+                            self._transit_stops_remaining = ti.num_stops
+                        else:
+                            await self._speak("You're on a vehicle. I'll track your progress.")
+                        self._fire_nav_event("boarded_vehicle", {
+                            "leg_idx": self.current_leg_idx,
+                            "service": leg.transit_info.service_no if leg and leg.transit_info else None,
+                        })
+                    await asyncio.sleep(interval)
+                    continue
+
+                # --- ON_VEHICLE state ---
+                if self.state == NavState.ON_VEHICLE:
+                    gps_fix = self.gps.get_fix() if self.gps else None
+                    gps_speed = gps_fix.speed_kmh if gps_fix and hasattr(gps_fix, 'speed_kmh') else 0.0
+
+                    # Check proximity to alighting stop
+                    if self._transit_arrival_pos:
+                        dist_to_alight = haversine_distance(
+                            current_pos[0], current_pos[1],
+                            self._transit_arrival_pos[0], self._transit_arrival_pos[1]
+                        )
+                        # Pre-announce when within 300m
+                        if dist_to_alight < 300.0 and not self._alight_announced:
+                            self._alight_announced = True
+                            leg = self._current_leg
+                            stop_name = leg.transit_info.arrival_stop if leg and leg.transit_info else "your stop"
+                            await self._speak(f"Approaching {stop_name}. Prepare to alight.")
+                            self._fire_nav_event("approaching_alight", {
+                                "stop": stop_name,
+                                "distance_m": round(dist_to_alight, 0),
+                            })
+
+                        # Alighted: speed dropped AND near the stop
+                        if gps_speed < 5.0 and dist_to_alight < 150.0 and self._alight_announced:
+                            logger.info(f"Alighted at transit stop (speed={gps_speed:.1f}, dist={dist_to_alight:.0f}m)")
+                            advanced = await self._advance_to_next_leg()
+                            if not advanced:
+                                # Last leg — arrived at destination
+                                self.state = NavState.ARRIVED
+                                self._running = False
+                                await self._speak("You've arrived at your destination.")
+                                self._fire_nav_event("arrived", {"destination": self.route.destination})
+                                break
+                            await asyncio.sleep(interval)
+                            continue
+
+                    # Fallback: if speed drops to walking and we don't have arrival pos
+                    elif gps_speed < 5.0 and self._on_vehicle_announced:
+                        # Check if we've been at walking speed for a while (avoid false triggers from traffic stops)
+                        if not hasattr(self, '_vehicle_slow_start') or self._vehicle_slow_start is None:
+                            self._vehicle_slow_start = time.monotonic()
+                        elif time.monotonic() - self._vehicle_slow_start > 30.0:
+                            logger.info("Vehicle speed dropped for 30s, likely alighted")
+                            self._vehicle_slow_start = None
+                            advanced = await self._advance_to_next_leg()
+                            if not advanced:
+                                self.state = NavState.ARRIVED
+                                self._running = False
+                                await self._speak("You've arrived at your destination.")
+                                self._fire_nav_event("arrived", {"destination": self.route.destination})
+                                break
+                    else:
+                        # Reset slow timer if speed picks back up
+                        self._vehicle_slow_start = None
+
                     await asyncio.sleep(interval)
                     continue
 
@@ -738,27 +1242,34 @@ class NavigationEngine:
                     self._last_breadcrumb_time = now
 
                 # Ensure outdoor mode when GPS is available
-                # Check for transit: speed > 15 km/h means vehicle, not walking
+                # For transit routes, the leg state machine handles vehicle detection
+                # Only use the simple speed-based transit detection on non-transit routes
                 gps_fix = self.gps.get_fix() if self.gps else None
                 gps_speed = gps_fix.speed_kmh if gps_fix and hasattr(gps_fix, 'speed_kmh') else 0.0
-                if gps_speed > 15.0:
-                    if self.mode != NavMode.TRANSIT:
-                        self._set_mode(NavMode.TRANSIT)
-                        if self.spatial_audio:
-                            self.spatial_audio.stop_beacon()
-                        await self._speak("You're on a vehicle. I'll track your progress.")
-                elif self.mode == NavMode.TRANSIT:
-                    # Speed dropped — exited vehicle
-                    self._set_mode(NavMode.OUTDOOR)
-                    await self._speak("You've stopped. Resuming navigation.")
-                elif self.mode != NavMode.OUTDOOR:
-                    self._set_mode(NavMode.OUTDOOR)
+                if not (self.route and self.route.is_transit):
+                    if gps_speed > 15.0:
+                        if self.mode != NavMode.TRANSIT:
+                            self._set_mode(NavMode.TRANSIT)
+                            if self.spatial_audio:
+                                self.spatial_audio.stop_beacon()
+                            await self._speak("You're on a vehicle. I'll track your progress.")
+                    elif self.mode == NavMode.TRANSIT:
+                        # Speed dropped — exited vehicle
+                        self._set_mode(NavMode.OUTDOOR)
+                        await self._speak("You've stopped. Resuming navigation.")
+                    elif self.mode != NavMode.OUTDOOR:
+                        self._set_mode(NavMode.OUTDOOR)
+                else:
+                    # Transit route: ensure outdoor mode for walking legs
+                    if self.state == NavState.NAVIGATING and self.mode != NavMode.OUTDOOR:
+                        self._set_mode(NavMode.OUTDOOR)
 
                 # 2. Get current heading from IMU
                 user_heading = self._get_user_heading()
 
-                # 3. Current waypoint
-                wp = self.route.waypoints[self.current_waypoint_idx]
+                # 3. Current waypoint (use leg-specific waypoints for transit routes)
+                active_wps = self._leg_waypoints if self._leg_waypoints else self.route.waypoints
+                wp = active_wps[self.current_waypoint_idx]
 
                 # 4. Distance and bearing to waypoint
                 dist_to_wp = haversine_distance(
@@ -773,28 +1284,33 @@ class NavigationEngine:
 
                 # 6. Update audio beam position
                 if self.spatial_audio and not self._road_crossing_active:
-                    hrtf_pos = angle_to_hrtf_position(rel_angle, dist_to_wp)
-                    # Update beacon via SpatialAudioManager's API
-                    if Position3D and hasattr(self.spatial_audio, '_update_beacon_position'):
-                        pos3d = Position3D(
-                            x=hrtf_pos[0], y=hrtf_pos[1], z=hrtf_pos[2],
-                            distance_meters=dist_to_wp
-                        )
-                        self.spatial_audio._update_beacon_position(pos3d)
-                    # Degraded beacon: reduce volume when GPS is stale/inaccurate
-                    beacon_src = getattr(self.spatial_audio, '_beacon_source', None)
-                    if beacon_src and hasattr(self.spatial_audio, 'comfort'):
-                        if self._gps_accuracy > 500:
-                            # Stale/last-known GPS — quiet beacon signals uncertainty
-                            beacon_src.set_gain(
-                                self.spatial_audio.comfort.master_volume * 0.2
+                    if self.mode == NavMode.INDOOR:
+                        # Indoor: keep beacon pinging at last Gemini-set direction
+                        if hasattr(self.spatial_audio, 'tick_beacon'):
+                            self.spatial_audio.tick_beacon()
+                    else:
+                        hrtf_pos = angle_to_hrtf_position(rel_angle, dist_to_wp)
+                        # Update beacon via SpatialAudioManager's API
+                        if Position3D and hasattr(self.spatial_audio, '_update_beacon_position'):
+                            pos3d = Position3D(
+                                x=hrtf_pos[0], y=hrtf_pos[1], z=hrtf_pos[2],
+                                distance_meters=dist_to_wp
                             )
-                        else:
-                            # Normal GPS — full beacon volume
-                            beacon_src.set_gain(
-                                self.spatial_audio.comfort.master_volume *
-                                self.spatial_audio.comfort.beacon_volume
-                            )
+                            self.spatial_audio._update_beacon_position(pos3d)
+                        # Degraded beacon: reduce volume when GPS is stale/inaccurate
+                        beacon_src = getattr(self.spatial_audio, '_beacon_source', None)
+                        if beacon_src and hasattr(self.spatial_audio, 'comfort'):
+                            if self._gps_accuracy > 500:
+                                # Stale/last-known GPS — quiet beacon signals uncertainty
+                                beacon_src.set_gain(
+                                    self.spatial_audio.comfort.master_volume * 0.2
+                                )
+                            else:
+                                # Normal GPS — full beacon volume
+                                beacon_src.set_gain(
+                                    self.spatial_audio.comfort.master_volume *
+                                    self.spatial_audio.comfort.beacon_volume
+                                )
 
                 # 7. Check for upcoming turn announcement
                 await self._check_turn_announcement(current_pos, dist_to_wp)
@@ -803,11 +1319,18 @@ class NavigationEngine:
                 await self._check_road_crossing(wp)
 
                 # 9. Determine if current waypoint is the final one
-                is_final = self.current_waypoint_idx >= len(self.route.waypoints) - 1
+                # For transit routes with leg waypoints, check against the leg's waypoints
+                active_waypoints = self._leg_waypoints if self._leg_waypoints else self.route.waypoints
+                is_leg_final = self.current_waypoint_idx >= len(active_waypoints) - 1
+                is_route_final = (
+                    is_leg_final
+                    and (not self.route.is_transit or not self.route.legs
+                         or self.current_leg_idx >= len(self.route.legs) - 1)
+                )
 
-                # 10. Check approaching destination (within 50m)
-                if is_final and not self._approaching_dest_announced:
-                    final_wp = self.route.waypoints[-1]
+                # 10. Check approaching destination (within 50m) — only for truly final destination
+                if is_route_final and not self._approaching_dest_announced:
+                    final_wp = active_waypoints[-1]
                     dist_to_dest = haversine_distance(
                         current_pos[0], current_pos[1], final_wp.lat, final_wp.lng
                     )
@@ -819,40 +1342,65 @@ class NavigationEngine:
                         })
 
                 # 11. Check waypoint arrival (scale threshold with GPS accuracy)
-                base_threshold = self.DESTINATION_THRESHOLD if is_final else self.ARRIVAL_THRESHOLD
+                base_threshold = self.DESTINATION_THRESHOLD if is_route_final else self.ARRIVAL_THRESHOLD
                 # With poor GPS (e.g. phone GPS ±100m), widen the arrival zone
                 accuracy_boost = max(0.0, self._gps_accuracy * 0.3) if self._gps_accuracy > 30 else 0.0
                 threshold = base_threshold + accuracy_boost
 
-                if dist_to_wp < threshold:
-                    if is_final:
-                        # Arrived at destination
-                        self.state = NavState.ARRIVED
-                        self._running = False
-                        if self.spatial_audio:
-                            self.spatial_audio.stop_beacon()
-                        await self._speak("You've arrived at your destination.")
-                        self._fire_nav_event("arrived", {
-                            "destination": self.route.destination,
-                        })
-                        if self.on_arrival:
-                            self.on_arrival()
-                        logger.info("Destination reached!")
-                        break
+                # Gate waypoint advancement on GPS quality: if accuracy is worse
+                # than the distance to the waypoint, GPS jitter is likely faking movement.
+                # Still allow final-destination arrival (user might genuinely be there).
+                if (dist_to_wp < threshold
+                        and (is_route_final or self._gps_accuracy < dist_to_wp * 1.5)):
+                    if is_leg_final:
+                        if is_route_final:
+                            # Arrived at final destination
+                            self.state = NavState.ARRIVED
+                            self._running = False
+                            if self.spatial_audio:
+                                self.spatial_audio.stop_beacon()
+                            await self._speak("You've arrived at your destination.")
+                            self._fire_nav_event("arrived", {
+                                "destination": self.route.destination,
+                            })
+                            if self.on_arrival:
+                                self.on_arrival()
+                            logger.info("Destination reached!")
+                            break
+                        else:
+                            # End of current leg on a multi-leg transit route — advance
+                            logger.info(f"Walking leg {self.current_leg_idx} complete, advancing to next leg")
+                            advanced = await self._advance_to_next_leg()
+                            if not advanced:
+                                # Shouldn't happen (is_route_final would be True), but safety net
+                                self.state = NavState.ARRIVED
+                                self._running = False
+                                await self._speak("You've arrived at your destination.")
+                                self._fire_nav_event("arrived", {"destination": self.route.destination})
+                                break
                     else:
-                        # Advance to next waypoint
-                        self.current_waypoint_idx += 1
-                        next_wp = self.route.waypoints[self.current_waypoint_idx]
-                        if next_wp.instruction and next_wp.is_turn:
-                            await self._speak_turn(next_wp)
-                        self._fire_nav_event("waypoint_reached", {
-                            "index": self.current_waypoint_idx,
-                            "total": len(self.route.waypoints),
-                            "next_instruction": next_wp.instruction,
-                        })
-                        logger.debug(
-                            f"Waypoint {self.current_waypoint_idx}/{len(self.route.waypoints)} reached"
-                        )
+                        # Rate-limit waypoint advancement: max 1 per second to
+                        # prevent GPS jitter (±5-15m) from cascading through
+                        # closely-spaced polyline waypoints.
+                        now_mono = time.monotonic()
+                        if now_mono - self._last_waypoint_advance_time < 1.0:
+                            # Skip advancement this cycle — we just advanced
+                            pass
+                        else:
+                            # Advance to next waypoint
+                            self.current_waypoint_idx += 1
+                            self._last_waypoint_advance_time = now_mono
+                            next_wp = active_waypoints[self.current_waypoint_idx]
+                            if next_wp.instruction and next_wp.is_turn:
+                                await self._speak_turn(next_wp)  # Silent — fires event only
+                            self._fire_nav_event("waypoint_reached", {
+                                "index": self.current_waypoint_idx,
+                                "total": len(active_waypoints),
+                                "next_instruction": next_wp.instruction,
+                            })
+                            logger.debug(
+                                f"Waypoint {self.current_waypoint_idx}/{len(active_waypoints)} reached"
+                            )
 
                 # Sleep for remainder of interval
                 elapsed = time.monotonic() - loop_start
@@ -951,7 +1499,12 @@ class NavigationEngine:
             logger.info(f"NAV VOICE: {text}")
 
     async def _speak_turn(self, wp: Waypoint):
-        """Announce a turn direction."""
+        """Handle a turn waypoint.
+        
+        Voice is intentionally silent — the 3D audio beam direction
+        change IS the guidance. Gemini receives the turn event via
+        context injection and can provide voice context if needed.
+        """
         maneuver = wp.maneuver
         if "left" in maneuver:
             direction = "left"
@@ -963,10 +1516,12 @@ class NavigationEngine:
             direction = ""
 
         if direction:
-            text = f"Turn {direction}."
-            if wp.instruction:
-                text = f"Turn {direction}. {wp.instruction}"
-            await self._speak(text)
+            # Beam direction change IS the guidance — no voice needed
+            self._fire_nav_event("turn_executed", {
+                "direction": direction,
+                "instruction": wp.instruction,
+            })
+            logger.debug(f"Turn {direction} — beam redirected (silent)")
 
     async def _check_turn_announcement(
         self, current_pos: Tuple[float, float], dist_to_current: float
@@ -975,11 +1530,12 @@ class NavigationEngine:
         if not self.route:
             return
 
-        # Look ahead for turns
+        # Look ahead for turns (use leg waypoints for transit routes)
+        active_wps = self._leg_waypoints if self._leg_waypoints else self.route.waypoints
         for i in range(self.current_waypoint_idx, min(
-            self.current_waypoint_idx + 3, len(self.route.waypoints)
+            self.current_waypoint_idx + 3, len(active_wps)
         )):
-            wp = self.route.waypoints[i]
+            wp = active_wps[i]
             if not wp.is_turn or i in self._turn_announced:
                 continue
 
@@ -987,15 +1543,15 @@ class NavigationEngine:
             if dist < self.TURN_ANNOUNCE_DISTANCE:
                 self._turn_announced.add(i)
                 maneuver = wp.maneuver
-                if "left" in maneuver:
-                    await self._speak(f"Turn left in {dist:.0f} meters.")
-                elif "right" in maneuver:
-                    await self._speak(f"Turn right in {dist:.0f} meters.")
+                direction = "left" if "left" in maneuver else "right" if "right" in maneuver else maneuver
+                # No voice — beam direction change IS the guidance.
+                # Fire event so Gemini receives context and can speak if needed.
                 self._fire_nav_event("approaching_turn", {
-                    "direction": "left" if "left" in maneuver else "right" if "right" in maneuver else maneuver,
+                    "direction": direction,
                     "distance_m": round(dist, 0),
                     "instruction": wp.instruction,
                 })
+                logger.debug(f"Approaching turn: {direction} in {dist:.0f}m (beam guides)")
                 break  # One announcement at a time
 
     async def _check_road_crossing(self, wp: Waypoint):
@@ -1022,11 +1578,12 @@ class NavigationEngine:
             else:
                 warning = "Road crossing detected. Check it's safe before crossing."
             await self._speak(warning)
+            # Pause beacon during road crossing (NAVIGATION_MASTER_PLAN §10)
+            await self.pause_navigation()
             self._fire_nav_event("road_crossing", {
                 "instruction": wp.instruction,
                 "vehicles_detected": road_objects[:5],
             })
-            # Don't auto-pause — just warn. User keeps walking at their own discretion.
 
     # -------------------------------------------------
     # VISION CONTEXT

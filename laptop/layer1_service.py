@@ -141,6 +141,9 @@ class Layer1Service:
         """Start inference loop"""
         if not self.model:
             self.initialize()
+        if not self.model:
+            logger.error("Model failed to initialize; Layer1Service will not start")
+            return
             
         self.running = True
         self.thread = threading.Thread(target=self._inference_loop, daemon=True)
