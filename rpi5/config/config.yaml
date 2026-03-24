@@ -204,12 +204,24 @@ camera:
 # AUDIO CONFIGURATION
 # =====================================================
 audio:
-  # Input (Microphone)
+  # Input (USB Lavalier Microphone)
+  # A2DP Bluetooth is output-only, so mic must be a separate USB device
   input_device:
     sample_rate: 16000  # Whisper STT sample rate
     channels: 1  # Mono
+    # Name patterns to match when auto-detecting the USB mic (case-insensitive, partial match)
+    # Run `python -c "import sounddevice; print(sounddevice.query_devices())"` to list devices
+    name_patterns:
+      - "USB Composite Device"  # Actual device on RPi5 (hw:2,0)
+      - "USB"         # Generic USB mic
+      - "lavalier"    # Lavalier-style mic
+      - "Lav"         # Abbreviated
+      - "USB PnP"     # Common USB-PnP audio device
+      - "USB Audio"   # Generic USB audio
+    # Or set a specific ALSA device name (overrides name_patterns if set)
+    # alsa_device: "hw:2,0"
 
-  # Output (Bluetooth Headphones)
+  # Output (Bluetooth A2DP Headphones)
   output_device:
     sample_rate: 24000  # Kokoro TTS sample rate
     channels: 1  # Mono
@@ -361,7 +373,7 @@ development:
 # LAPTOP SERVER CONFIGURATION
 # =====================================================
 laptop_server:
-  host: "10.130.26.101"  # Laptop IP address - UPDATE THIS for your network
+  host: "10.206.44.101"  # Laptop IP address - UPDATE THIS for your network
   port: 8765
 
 # =====================================================
@@ -376,7 +388,7 @@ zmq:
 # RPI5 DEVICE CONFIGURATION (for sync tools)
 # =====================================================
 rpi5_device:
-  host: "10.130.26.31"  # RPi5 IP address - used by sync tools
+  host: "10.206.44.31"  # RPi5 IP address - used by sync tools
   user: "cortex"  # SSH username for sync
   path: "/home/cortex/ProjectCortex"  # Remote path for sync
 

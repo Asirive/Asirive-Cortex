@@ -23,7 +23,7 @@ python -m rpi5 all
 | `python -m rpi5 all` | Start all layers + camera + sensors |
 | `python -m rpi5 all --offline` | Start without cloud/network |
 | `python -m rpi5 all --no-haptic` | Start without vibration motor |
-| `python -m rpi5 all --laptop 10.130.26.101` | Specify laptop IP |
+| `python -m rpi5 all --laptop 10.206.44.101` | Specify laptop IP |
 | `python -m rpi5 layer0` | Layer 0: Guardian (YOLO safety detection) |
 | `python -m rpi5 layer1` | Layer 1: Learner (adaptive YOLOE) |
 | `python -m rpi5 layer2` | Layer 2: Thinker (Gemini Live API) |
@@ -80,7 +80,7 @@ python sync_rpi5.py <command>
 | `python sync_rpi5.py install` | Install Python dependencies on RPi5 |
 | `python sync_rpi5.py full` | Sync to RPi5 AND install deps |
 
-**Network:** RPi5 `10.130.26.31` ↔ Laptop `10.130.26.101`
+**Network:** RPi5 `10.206.44.31` ↔ Laptop `10.206.44.101`
 
 ---
 

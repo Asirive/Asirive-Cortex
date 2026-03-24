@@ -6,7 +6,7 @@ AUDIO responses directly (not text). This is the most intelligent Gemini model t
 vision understanding with text-to-speech in a single API call.
 
 Key Features:
-- Send image + prompt to gemini-3-flash-preview
+- Send image + prompt to gemini-2.5-flash-preview-05-20
 - Receive PCM audio at 24kHz sample rate
 - Built-in TTS with natural voice ("Kore" default)
 - No separate TTS pipeline needed
@@ -161,7 +161,7 @@ class GeminiTTS:
         self.base_retry_delay = 1.0  # seconds
         
         logger.info(f"📋 Gemini TTS Config:")
-        logger.info(f"   Model: gemini-3-flash-preview")
+        logger.info(f"   Model: gemini-2.5-flash-preview-05-20")
         logger.info(f"   Voice: {voice_name}")
         logger.info(f"   Output Dir: {self.output_dir}")
         # Removed duplicate API key logging (already shown above with pool info)
@@ -476,13 +476,11 @@ class GeminiTTS:
                 types.Part.from_text(text=prompt)
             ]
             
-            # STEP 1: Use VISION model (gemini-3-flash-preview) with retry on rate limits
-            # Official docs: gemini-3-flash-preview is the most intelligent model (Jan 2025)
-            # Supports text, images, video, audio inputs with enhanced capabilities
+            # STEP 1: Use VISION model (gemini-2.5-flash-preview-05-20) with retry on rate limits
             # See: https://ai.google.dev/gemini-api/docs/models/gemini
             def _vision_api_call():
                 return self.client.models.generate_content(
-                    model='gemini-3-flash-preview',  # Most intelligent Gemini model
+                    model='gemini-2.5-flash-preview-05-20',
                     contents=contents,
                     config=types.GenerateContentConfig(
                         response_modalities=["TEXT"]  # Get text response (not audio)
@@ -662,10 +660,10 @@ class GeminiTTS:
                 thinking_config=thinking_config,
             )
             
-            # Use VISION model (gemini-3-flash-preview) with retry on rate limits
+            # Use VISION model (gemini-2.5-flash-preview-05-20) with retry on rate limits
             def _vision_api_call():
                 return self.client.models.generate_content(
-                    model='gemini-3-flash-preview',
+                    model='gemini-2.5-flash-preview-05-20',
                     contents=contents,
                     config=config,
                 )

@@ -140,6 +140,8 @@ class VADHandler:
         # PyAudio components
         self.pyaudio_instance = None
         self.audio_stream = None
+        self._device_sample_rate = sample_rate  # Actual device rate (may differ)
+        self._resample_ratio = 1.0  # device_rate / vad_rate
         
         # State management
         self.is_listening = False
@@ -228,8 +230,15 @@ class VADHandler:
         if status_flags:
             logger.debug(f"⚠️ Audio callback status flags: {status_flags}")
         
-        # Convert bytes to numpy array
+        # Convert bytes to numpy array (at device sample rate)
         audio_chunk = np.frombuffer(in_data, dtype=np.int16).astype(np.float32) / 32768.0
+        
+        # Resample to VAD rate (16kHz) if device runs at a different rate
+        if self._resample_ratio > 1.01:
+            # Simple linear interpolation resample (low-latency, good enough for VAD)
+            target_len = int(len(audio_chunk) / self._resample_ratio)
+            indices = np.linspace(0, len(audio_chunk) - 1, target_len)
+            audio_chunk = np.interp(indices, np.arange(len(audio_chunk)), audio_chunk).astype(np.float32)
         
         # Add to processing queue
         self.audio_queue.put(audio_chunk)
@@ -383,6 +392,100 @@ class VADHandler:
         
         logger.info("🛑 Audio processing thread stopped")
     
+    def _probe_device_rate(self, device_index: int) -> int:
+        """
+        Find a working sample rate for the given device.
+        
+        Tries the VAD rate (16kHz) first, then common rates.
+        Returns the first rate the device accepts.
+        """
+        preferred_rates = [self.sample_rate, 48000, 44100, 32000, 16000, 8000]
+        for rate in preferred_rates:
+            try:
+                supported = self.pyaudio_instance.is_format_supported(
+                    rate,
+                    input_device=device_index,
+                    input_channels=1,
+                    input_format=pyaudio.paInt16,
+                )
+                if supported:
+                    logger.info(f"🎙️ Device [{device_index}] supports {rate}Hz")
+                    return rate
+            except ValueError:
+                continue
+        # If nothing matched, return default and let PyAudio decide
+        logger.warning(f"⚠️ Could not probe device [{device_index}], using {self.sample_rate}Hz")
+        return self.sample_rate
+
+    def _find_usb_mic(self) -> Optional[int]:
+        """
+        Auto-detect USB lavalier microphone from available input devices.
+        
+        Searches by name patterns from config.yaml, then falls back to
+        any USB input device, then to system default.
+        
+        Returns:
+            PyAudio device index, or None for system default
+        """
+        # Load name patterns from config
+        name_patterns = ['USB', 'lavalier', 'Lav', 'USB PnP', 'USB Audio']
+        try:
+            from pathlib import Path
+            import yaml
+            config_path = Path(__file__).parent.parent / 'config' / 'config.yaml'
+            if config_path.exists():
+                with open(config_path, 'r') as f:
+                    cfg = yaml.safe_load(f)
+                patterns = (cfg.get('audio', {})
+                            .get('input_device', {})
+                            .get('name_patterns'))
+                if patterns:
+                    name_patterns = patterns
+        except Exception:
+            pass  # Use hardcoded defaults
+        
+        try:
+            count = self.pyaudio_instance.get_device_count()
+            input_devices = []
+            
+            for i in range(count):
+                info = self.pyaudio_instance.get_device_info_by_index(i)
+                if info.get('maxInputChannels', 0) <= 0:
+                    continue
+                name = info.get('name', '')
+                input_devices.append((i, name))
+            
+            if not input_devices:
+                logger.warning("⚠️ No input devices found, falling back to default")
+                return None
+            
+            # Log all available input devices for debugging
+            logger.info(f"🔍 Available input devices ({len(input_devices)}):")
+            for idx, name in input_devices:
+                logger.info(f"   [{idx}] {name}")
+            
+            # Search by config name patterns (case-insensitive)
+            for pattern in name_patterns:
+                pat_lower = pattern.lower()
+                for idx, name in input_devices:
+                    if pat_lower in name.lower():
+                        logger.info(f"🎙️ Auto-selected USB mic: [{idx}] {name} (matched '{pattern}')")
+                        return idx
+            
+            # Fallback: pick first non-default input device (likely the USB one)
+            if len(input_devices) > 1:
+                # Skip device 0 (usually built-in/default), prefer the added USB
+                idx, name = input_devices[-1]
+                logger.info(f"🎙️ Fallback: selected last input device: [{idx}] {name}")
+                return idx
+            
+            logger.info(f"🎙️ Using single available input: [{input_devices[0][0]}] {input_devices[0][1]}")
+            return input_devices[0][0]
+            
+        except Exception as e:
+            logger.warning(f"⚠️ USB mic auto-detect failed: {e}, using default")
+            return None
+
     def start_listening(self, device_index: Optional[int] = None) -> bool:
         """
         Start listening for voice activity.
@@ -408,29 +511,34 @@ class VADHandler:
                 # Initialize PyAudio
                 self.pyaudio_instance = pyaudio.PyAudio()
                 
-                # If index is None, try to find the best input device (Bluetooth preferably)
+                # If index is None, auto-detect USB mic from config or fallback patterns
                 if device_index is None:
-                    try:
-                        count = self.pyaudio_instance.get_device_count()
-                        for i in range(count):
-                            info = self.pyaudio_instance.get_device_info_by_index(i)
-                            name = info.get('name', '')
-                            # Priority for Bluetooth/Headset sources
-                            if info.get('maxInputChannels') > 0 and any(key in name for key in ['bluez', 'Headset', 'CMF Buds']):
-                                logger.info(f"🎧 Auto-selected Bluetooth Input: [{i}] {name}")
-                                device_index = i
-                                break
-                    except Exception as e:
-                        logger.debug(f"PyAudio device enumeration error: {e}")
+                    device_index = self._find_usb_mic()
 
-                # Open audio stream with callback
+                # Determine device native sample rate
+                self._device_sample_rate = self.sample_rate
+                self._resample_ratio = 1.0
+                if device_index is not None:
+                    self._device_sample_rate = self._probe_device_rate(device_index)
+                    self._resample_ratio = self._device_sample_rate / self.sample_rate
+
+                # Scale buffer size to match device rate so callback duration stays the same
+                device_chunk_size = int(self.chunk_size * self._resample_ratio)
+
+                logger.info(
+                    f"🎤 Opening stream: device_rate={self._device_sample_rate}Hz, "
+                    f"vad_rate={self.sample_rate}Hz, resample_ratio={self._resample_ratio:.2f}, "
+                    f"device_chunk={device_chunk_size}, vad_chunk={self.chunk_size}"
+                )
+
+                # Open audio stream with callback at device's native rate
                 self.audio_stream = self.pyaudio_instance.open(
                     format=pyaudio.paInt16,
                     channels=1,  # Mono
-                    rate=self.sample_rate,
+                    rate=self._device_sample_rate,
                     input=True,
                     input_device_index=device_index,
-                    frames_per_buffer=self.chunk_size,
+                    frames_per_buffer=device_chunk_size,
                     stream_callback=self._audio_callback
                 )
             

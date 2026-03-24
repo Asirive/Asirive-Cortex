@@ -968,14 +968,16 @@ class CortexSystem:
 
         # HRTF direction mapping for Gemini set_beam_direction
         self._direction_to_hrtf = {
-            "left":         (-2.0, 0.0, -1.0),
-            "right":        ( 2.0, 0.0, -1.0),
-            "ahead":        ( 0.0, 0.0, -2.0),
-            "behind":       ( 0.0, 0.0,  2.0),
-            "slight_left":  (-1.0, 0.0, -1.5),
-            "slight_right": ( 1.0, 0.0, -1.5),
-            "up":           ( 0.0, 1.0, -1.5),
-            "down":         ( 0.0,-1.0, -1.5),
+            "left":           (-2.0, 0.0, -1.0),
+            "right":          ( 2.0, 0.0, -1.0),
+            "ahead":          ( 0.0, 0.0, -2.0),
+            "behind":         ( 0.0, 0.0,  2.0),
+            "slight_left":    (-1.0, 0.0, -1.5),
+            "slight_right":   ( 1.0, 0.0, -1.5),
+            "slightly_left":  (-1.0, 0.0, -1.5),
+            "slightly_right": ( 1.0, 0.0, -1.5),
+            "up":             ( 0.0, 1.0, -1.5),
+            "down":           ( 0.0,-1.0, -1.5),
         }
 
         # Initialize Layer 4: Memory Manager (Hybrid)
@@ -1253,6 +1255,20 @@ class CortexSystem:
             except Exception as e:
                 logger.error(f"❌ Failed to init SpatialAudioManager: {e}")
                 self.spatial_audio = None
+
+        # Activate BinauralEngine on all available SpatialAudioManagers
+        # This gives guaranteed HRTF 3D audio via ITD/ILD/head-shadow,
+        # independent of OpenAL-Soft's HRTF support.
+        for _sa_ref in [self.spatial_audio,
+                        getattr(self.navigator, 'spatial_audio', None)]:
+            if _sa_ref and hasattr(_sa_ref, 'enable_binaural_engine'):
+                try:
+                    if _sa_ref.enable_binaural_engine(gain=0.8):
+                        logger.info("✅ BinauralEngine active — HRTF guaranteed without OpenAL")
+                    else:
+                        logger.warning("⚠️ BinauralEngine init failed — OpenAL is sole 3D audio path")
+                except Exception as e:
+                    logger.warning(f"⚠️ BinauralEngine enable error: {e}")
 
         # =====================================================
         # HARDWARE PERIPHERALS (GPS, IMU, Button)
@@ -1865,11 +1881,16 @@ class CortexSystem:
             elif self.spatial_audio:
                 sa = self.spatial_audio
 
-            if sa and hasattr(sa, 'guide_beam'):
+            if sa:
                 try:
                     from rpi5.layer3_guide.spatial_audio.manager import Position3D
                     pos3d = Position3D(x=hrtf[0], y=hrtf[1], z=hrtf[2], distance_meters=1.0)
-                    ok = sa.guide_beam(pos3d)
+                    ok = False
+                    # Prefer BinauralEngine (guaranteed HRTF), fall back to OpenAL
+                    if hasattr(sa, '_binaural_engine') and sa._binaural_engine:
+                        ok = sa.guide_beam_binaural(pos3d)
+                    if not ok and hasattr(sa, 'guide_beam'):
+                        ok = sa.guide_beam(pos3d)
                     if ok:
                         logger.info(f"🔊 Gemini set beam → {direction} ({reason})")
                         return {"status": "ok", "beam_direction": direction}
@@ -2098,8 +2119,14 @@ class CortexSystem:
                             # Gemini Live audio is prioritized over safety TTS
 
                             # 3D-positioned warning sound
-                            if self.navigator and alert.position_3d and hasattr(self.navigator, 'spatial_audio'):
-                                sa = self.navigator.spatial_audio
+                            if alert.position_3d:
+                                sa = None
+                                if self.navigator and hasattr(self.navigator, 'spatial_audio'):
+                                    sa = self.navigator.spatial_audio
+                                elif self.nav_engine and hasattr(self.nav_engine, 'spatial_audio'):
+                                    sa = self.nav_engine.spatial_audio
+                                elif self.spatial_audio:
+                                    sa = self.spatial_audio
                                 if sa:
                                     urgency = "critical" if alert.tier == 1 and alert.needs_haptic else (
                                         "warning" if alert.tier <= 2 else "notice"

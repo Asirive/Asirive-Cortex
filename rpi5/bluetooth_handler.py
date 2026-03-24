@@ -591,18 +591,10 @@ class BluetoothAudioManager:
             logger.warning(f"Bluetooth audio not ready - attempt {attempt}/3, retrying in 3s...")
             time.sleep(3)
         
-        # If we have sink but no source, try HFP/HSP profile switch
-        # ensure_hfp_profile already iterates through candidate profiles
-        # and verifies source appearance, so we only need to call it once
+        # Skip HFP/HSP profile switch — USB lavalier mic handles input,
+        # Bluetooth stays in A2DP mode (high-quality stereo output only)
         if sink_id is not None and source_id is None:
-            logger.info("Sink found but NO source (mic). Attempting HFP/HSP profile switch...")
-            profile_ok = self.ensure_hfp_profile(mac)
-            
-            if profile_ok:
-                # Re-scan to pick up the newly appeared source
-                sink_id, source_id = self.find_bluetooth_audio(mac)
-            else:
-                logger.warning("HFP/HSP profile switch failed - continuing with A2DP (output only)")
+            logger.info("A2DP output only (mic via USB lavalier) — skipping HFP/HSP switch")
         
         success = True
         
@@ -614,10 +606,9 @@ class BluetoothAudioManager:
             logger.error("Bluetooth audio sink not found")
             success = False
         
+        # Don't try to set BT source — mic is USB now
         if source_id:
-            if not self.set_default_source(source_id):
-                logger.error("Failed to set Bluetooth as default input")
-                success = False
+            logger.info(f"BT source found (ID {source_id}) but USB mic preferred — skipping")
         else:
             logger.warning("Bluetooth audio source (mic) not found - device may not support mic")
         

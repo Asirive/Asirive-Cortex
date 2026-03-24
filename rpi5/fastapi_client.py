@@ -13,7 +13,7 @@ Features:
 Usage:
     from rpi5.fastapi_client import RPi5Client
     client = RPi5Client(
-        host="10.173.242.101",  # Laptop IP
+        host="10.206.44.101",  # Laptop IP
         port=8765,
         device_id="rpi5-cortex-001"
     )
@@ -94,7 +94,7 @@ class RPi5Client(AsyncWebSocketClient):
         if host is None:
             from rpi5.config.config import get_config
             config = get_config()
-            host = config.get('laptop_server', {}).get('host', '10.173.242.101')
+            host = config.get('laptop_server', {}).get('host', '10.206.44.101')
         
         # Build WebSocket URL
         url = f"ws://{host}:{port}/ws/{device_id}"
