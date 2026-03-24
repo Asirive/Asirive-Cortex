@@ -55,11 +55,12 @@ class YOLOGuardian:
     """
     
     # Safety-critical object classes (COCO subset)
+    # NOTE: Only COCO-80 classes are listed here. Stair/curb/wall detection
+    # is handled by Hailo depth estimation (HailoDepthEstimator), not YOLO.
     SAFETY_CLASSES = {
         'person', 'bicycle', 'car', 'motorcycle', 'bus', 'truck',
         'traffic light', 'fire hydrant', 'stop sign', 'bench',
         'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
-        'stairs', 'curb', 'pole', 'tree', 'branch'
     }
     
     # Proximity thresholds for haptic feedback (based on bbox area)

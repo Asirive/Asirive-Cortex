@@ -619,6 +619,18 @@ class SpatialAudioManager:
             urgency: "critical", "warning", or "notice"
         """
         if not self._running or not OPENAL_AVAILABLE:
+            # Fallback: use binaural engine for directional alert
+            if self._binaural_engine and position:
+                try:
+                    from .binaural_engine import compute_azimuth_elevation
+                    az, el = compute_azimuth_elevation(position[0], position[1], position[2])
+                    freq_map = {"critical": 1100, "warning": 880, "notice": 660}
+                    # Use chirp for critical, tone for others
+                    sound = "chirp" if urgency == "critical" else "tone"
+                    self._binaural_engine.play_at_nonblocking(az, el, sound=sound, duration_s=0.2)
+                    logger.debug(f"Binaural directional alert: {alert_type} az={az:.0f}° ({urgency})")
+                except Exception as e:
+                    logger.debug(f"Binaural alert fallback error: {e}")
             return
         
         with self._lock:
