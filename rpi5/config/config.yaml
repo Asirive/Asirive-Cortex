@@ -1,4 +1,4 @@
-ï»¿# =====================================================
+# =====================================================
 # ProjectCortex v2.0 - Configuration File
 # 3-Tier Hybrid Architecture with Supabase Integration
 # =====================================================
@@ -161,9 +161,9 @@ layer3:
     nav_loop_hz: 10                  # Navigation update frequency
     voice_cooldown_s: 5              # Minimum seconds between voice announcements
 
-    # Saved Locations â€” used as origin when GPS is unavailable (indoor)
+    # Saved Locations — used as origin when GPS is unavailable (indoor)
     # Set default: true on the location you're most often at.
-    # Add aliases for natural speech matching ("grandma" â†’ "Grandma's House")
+    # Add aliases for natural speech matching ("grandma" ? "Grandma's House")
     saved_locations:
       - name: "Home"
         address: "9 Canberra Drive, Singapore"
@@ -193,7 +193,8 @@ camera:
   use_picamera: true  # True for RPi5 (Picamera2), False for laptop (OpenCV)
   resolution: [1920, 1080]  # Width, Height
   fps: 30  # Target FPS
-  format: "RGBX"  # Pixel format (Picamera2)
+  format: "BGR888"  # Pixel format (Picamera2) — BGR888 = native OpenCV format
+  rotation: -90  # Degrees: 0, 90, -90, 180 (for sideways-mounted camera)
 
   # Auto-exposure settings
   auto_exposure:
@@ -231,7 +232,7 @@ audio:
   vad:
     enabled: true
     model: "silero"  # Options: 'silero' (offline), 'webrtc' (online)
-    threshold: 0.65  # Speech probability threshold (0-1) â€” higher = reject more noise
+    threshold: 0.65  # Speech probability threshold (0-1) — higher = reject more noise
     min_speech_duration_ms: 400  # Minimum speech length to accept (filters short noise bursts)
     min_silence_duration_ms: 500  # Silence gap before speech end (longer = more tolerant)
     padding_duration_ms: 200  # Audio padding around speech segments
@@ -270,9 +271,9 @@ spatial_audio:
 # GPS/IMU/BUTTON CONFIGURATION
 # =====================================================
 sensors:
-  # GPS (NEO-6M / GT-U7) â€” UART serial
-  # Wire: GPS TX â†’ RPi5 GPIO15 (Pin 10), GPS RX â†’ RPi5 GPIO14 (Pin 8)
-  # Enable UART via raspi-config â†’ Interface Options â†’ Serial
+  # GPS (NEO-6M / GT-U7) — UART serial
+  # Wire: GPS TX ? RPi5 GPIO15 (Pin 10), GPS RX ? RPi5 GPIO14 (Pin 8)
+  # Enable UART via raspi-config ? Interface Options ? Serial
   gps:
     enabled: true
     port: "/dev/ttyAMA0"   # Primary UART on RPi5
@@ -281,23 +282,23 @@ sensors:
     phone_gps_enabled: true # Phone browser GPS as fallback
     phone_gps_port: 8766    # WebSocket port for phone GPS
 
-  # IMU (BNO055) â€” I2C
-  # Wire: SDA â†’ GPIO2 (Pin 3), SCL â†’ GPIO3 (Pin 5)
-  # Enable I2C via raspi-config â†’ Interface Options â†’ I2C
+  # IMU (BNO055) — I2C
+  # Wire: SDA ? GPIO2 (Pin 3), SCL ? GPIO3 (Pin 5)
+  # Enable I2C via raspi-config ? Interface Options ? I2C
   # Verify with: i2cdetect -y 1  (should show "28")
   imu:
-    enabled: true
+    enabled: false           # disabled — IMU not connected (short circuit, pending new wires)
     i2c_address: 0x29       # 0x29 (ADDR pin high on your board) or 0x28 (ADDR pin low)
     poll_hz: 25             # Polling frequency (BNO055 supports up to 100Hz)
     mounting: right_temple_down  # Chip face-down on right glasses temple, connectors right
 
-  # Physical Button â€” momentary push-button to GND
+  # Physical Button — momentary push-button to GND
   # Wire: one leg to GPIO16 (Pin 36), other leg to GND (Pin 34)
   # Internal pull-up keeps pin HIGH at rest; press pulls it LOW
   button:
     enabled: true
     gpio_pin: 16            # BCM pin number
-    auto_shutdown: true     # Very-long press (â‰¥5s) triggers OS shutdown
+    auto_shutdown: true     # Very-long press (=5s) triggers OS shutdown
 
 # =====================================================
 # DATA RECORDER CONFIGURATION
@@ -342,7 +343,7 @@ performance:
   thread_pool_size: 2
   
   # Number of CPU threads for NCNN/ONNX (OMP_NUM_THREADS)
-  # RPi5 has 4 cores â€” match physical core count to avoid over-subscription
+  # RPi5 has 4 cores — match physical core count to avoid over-subscription
   cpu_threads: 4
 
   # Frame queue size
@@ -352,7 +353,7 @@ performance:
   max_memory_mb: 3900  # Alert if memory usage > 3.9GB (RPi5 has 4GB)
 
   # CPU temperature limits
-  max_cpu_temp_c: 80  # Alert if CPU temp > 80Â°C
+  max_cpu_temp_c: 80  # Alert if CPU temp > 80°C
 
 # =====================================================
 # DEVELOPMENT/DEBUGGING
@@ -373,7 +374,7 @@ development:
 # LAPTOP SERVER CONFIGURATION
 # =====================================================
 laptop_server:
-  host: "10.206.44.101"  # Laptop IP address - UPDATE THIS for your network
+  host: "10.207.144.101"  # Laptop IP address - UPDATE THIS for your network
   port: 8765
 
 # =====================================================
@@ -388,7 +389,7 @@ zmq:
 # RPI5 DEVICE CONFIGURATION (for sync tools)
 # =====================================================
 rpi5_device:
-  host: "10.206.44.31"  # RPi5 IP address - used by sync tools
+  host: "10.207.144.31"  # RPi5 IP address - used by sync tools
   user: "cortex"  # SSH username for sync
   path: "/home/cortex/ProjectCortex"  # Remote path for sync
 
@@ -489,9 +490,9 @@ hailo:
 # Fuses YOLO detections + Hailo depth to alert on SILENT dangers only.
 # Transparency-mode headphones mean the user already hears cars/people.
 safety:
-  tier2_max_distance: 2.0        # Metres â€” alert for silent static obstacles closer than this
-  tier3_max_distance: 4.0        # Metres â€” alert for vehicles closer than this
-  tier3_approach_velocity: 1.0   # m/s â€” vehicle must be closing at least this fast
+  tier2_max_distance: 2.0        # Metres — alert for silent static obstacles closer than this
+  tier3_max_distance: 4.0        # Metres — alert for vehicles closer than this
+  tier3_approach_velocity: 1.0   # m/s — vehicle must be closing at least this fast
   alert_cooldown: 3.0            # Seconds between repeated alerts of the same type
   tts_cooldown: 8.0              # Seconds between TTS voice announcements
   haptic_cooldown: 2.0           # Seconds between haptic pulses

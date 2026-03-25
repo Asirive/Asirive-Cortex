@@ -90,6 +90,7 @@ V3 Goals:
 3. Single head-worn unit under 150g
 4. 8+ hour battery life
 5. Industrial-grade reliability
+6. Seamless user experience (via apps and voice)
 ```
 
 ---
