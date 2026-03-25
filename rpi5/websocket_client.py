@@ -1,5 +1,5 @@
-﻿"""
-WebSocket Client for RPi5 → Laptop Dashboard Communication
+"""
+WebSocket Client for RPi5 ? Laptop Dashboard Communication
 
 Sends real-time data from RPi5 to laptop dashboard:
 - Video frames (30 FPS)
@@ -53,7 +53,7 @@ class RPiWebSocketClient:
         if host is None:
             from rpi5.config.config import get_config
             config = get_config()
-            host = config.get('laptop_server', {}).get('host', '10.206.44.101')
+            host = config.get('laptop_server', {}).get('host', '10.207.144.101')
         
         """
         Initialize WebSocket client
@@ -98,7 +98,7 @@ class RPiWebSocketClient:
 
         while self.should_reconnect:
             try:
-                logger.info(f"🔌 Connecting to laptop dashboard: {uri}")
+                logger.info(f"?? Connecting to laptop dashboard: {uri}")
 
                 self.websocket = await websockets.connect(
                     uri,
@@ -110,26 +110,26 @@ class RPiWebSocketClient:
                 self.is_connected = True
                 self.connect_time = datetime.now()
 
-                logger.info(f"✅ Connected to laptop dashboard")
+                logger.info(f"? Connected to laptop dashboard")
                 await self._send_status("connected", f"Device {self.device_id} connected")
 
                 # Process incoming messages (if any)
                 await self._receive_loop()
 
             except (ConnectionRefusedError, ConnectionError) as e:
-                logger.warning(f"⚠️  Connection refused: {e}")
+                logger.warning(f"??  Connection refused: {e}")
                 self.is_connected = False
                 self.disconnect_count += 1
 
                 if self.auto_reconnect:
-                    logger.info(f"🔄 Reconnecting in {self.reconnect_interval}s...")
+                    logger.info(f"?? Reconnecting in {self.reconnect_interval}s...")
                     await asyncio.sleep(self.reconnect_interval)
                 else:
-                    logger.error("❌ Auto-reconnect disabled, giving up")
+                    logger.error("? Auto-reconnect disabled, giving up")
                     break
 
             except Exception as e:
-                logger.error(f"❌ Connection error: {e}")
+                logger.error(f"? Connection error: {e}")
                 self.is_connected = False
 
                 if self.auto_reconnect:
@@ -153,20 +153,20 @@ class RPiWebSocketClient:
 
                     # Handle COMMAND (future)
                     elif msg_type == MessageType.COMMAND.value:
-                        logger.info(f"📥 Received command: {data.get('data')}")
+                        logger.info(f"?? Received command: {data.get('data')}")
 
                     # Handle CONFIG (future)
                     elif msg_type == MessageType.CONFIG.value:
-                        logger.info(f"📥 Received config update: {data.get('data')}")
+                        logger.info(f"?? Received config update: {data.get('data')}")
 
                 except Exception as e:
                     logger.error(f"Error processing message: {e}")
 
         except websockets.exceptions.ConnectionClosed:
-            logger.warning("⚠️  Connection closed by laptop")
+            logger.warning("??  Connection closed by laptop")
             self.is_connected = False
         except Exception as e:
-            logger.error(f"❌ Error in receive loop: {e}")
+            logger.error(f"? Error in receive loop: {e}")
             self.is_connected = False
 
     async def _send_pong(self, device_id: str, latency: float, ping_id: Optional[str]):
@@ -195,7 +195,7 @@ class RPiWebSocketClient:
             try:
                 self.message_queue.put_nowait(message)
             except queue.Full:
-                logger.warning("⚠️  Message queue full, dropping message")
+                logger.warning("??  Message queue full, dropping message")
             return
 
         try:
@@ -215,7 +215,7 @@ class RPiWebSocketClient:
         except Exception as e:
             logger.error(f"Event loop error: {e}")
         finally:
-            logger.info("🛑 Event loop stopped")
+            logger.info("?? Event loop stopped")
             self.loop.close()
 
     def start(self):
@@ -224,7 +224,7 @@ class RPiWebSocketClient:
             logger.warning("WebSocket client already running")
             return
 
-        logger.info("🚀 Starting WebSocket client...")
+        logger.info("?? Starting WebSocket client...")
         self.should_reconnect = True
 
         self.thread = Thread(
@@ -234,11 +234,11 @@ class RPiWebSocketClient:
         )
         self.thread.start()
 
-        logger.info("✅ WebSocket client started")
+        logger.info("? WebSocket client started")
 
     def stop(self):
         """Stop WebSocket client"""
-        logger.info("🛑 Stopping WebSocket client...")
+        logger.info("?? Stopping WebSocket client...")
         self.should_reconnect = False
         self.is_connected = False
 
@@ -251,7 +251,7 @@ class RPiWebSocketClient:
         if self.thread:
             self.thread.join(timeout=5.0)
 
-        logger.info("✅ WebSocket client stopped")
+        logger.info("? WebSocket client stopped")
 
     # ============================================================================
     # PUBLIC API (Thread-safe)
@@ -393,7 +393,7 @@ class RPiWebSocketClient:
             try:
                 self.message_queue.put_nowait(message)
             except queue.Full:
-                logger.warning("⚠️  Message queue full, dropping message")
+                logger.warning("??  Message queue full, dropping message")
 
 
 # ============================================================================
@@ -451,5 +451,5 @@ if __name__ == "__main__":
             frame_count += 1
 
     except KeyboardInterrupt:
-        print("\n🛑 Stopping client...")
+        print("\n?? Stopping client...")
         client.stop()

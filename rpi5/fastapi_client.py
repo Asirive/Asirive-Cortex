@@ -1,4 +1,4 @@
-﻿"""
+"""
 RPi5 WebSocket Client using Shared API
 
 Uses the shared AsyncWebSocketClient and protocol for
@@ -13,7 +13,7 @@ Features:
 Usage:
     from rpi5.fastapi_client import RPi5Client
     client = RPi5Client(
-        host="10.206.44.101",  # Laptop IP
+        host="10.207.144.101",  # Laptop IP
         port=8765,
         device_id="rpi5-cortex-001"
     )
@@ -94,7 +94,7 @@ class RPi5Client(AsyncWebSocketClient):
         if host is None:
             from rpi5.config.config import get_config
             config = get_config()
-            host = config.get('laptop_server', {}).get('host', '10.206.44.101')
+            host = config.get('laptop_server', {}).get('host', '10.207.144.101')
         
         # Build WebSocket URL
         url = f"ws://{host}:{port}/ws/{device_id}"
@@ -181,28 +181,28 @@ class RPi5Client(AsyncWebSocketClient):
         cmd_data = message.data
         command = cmd_data.get("action")
 
-        logger.info(f"📥 Received COMMAND from laptop: {command}")
-        logger.info(f"📥 Full command data: {cmd_data}")  # Changed to INFO for visibility
+        logger.info(f"?? Received COMMAND from laptop: {command}")
+        logger.info(f"?? Full command data: {cmd_data}")  # Changed to INFO for visibility
 
         # Handle built-in commands
         if command == "START_VIDEO_STREAMING":
             self._send_video = True
-            logger.info("🎥 Video streaming ENABLED")
+            logger.info("?? Video streaming ENABLED")
         elif command == "STOP_VIDEO_STREAMING":
             self._send_video = False
-            logger.info("🎥 Video streaming DISABLED")
+            logger.info("?? Video streaming DISABLED")
         elif command == "RESTART":
-            logger.info("🔄 RESTART command received")
+            logger.info("?? RESTART command received")
         elif command == "SET_MODE":
             mode = cmd_data.get("mode")
-            logger.info(f"🔄 SET_MODE command: mode='{mode}'")
+            logger.info(f"?? SET_MODE command: mode='{mode}'")
 
         # Forward ALL commands to callback (for main.py to handle SET_MODE, TEXT_QUERY, etc.)
         if self.on_command:
-            logger.info(f"📡 Forwarding command to on_command callback: {command}")
+            logger.info(f"?? Forwarding command to on_command callback: {command}")
             self.on_command(cmd_data)
         else:
-            logger.warning("⚠️ No on_command callback registered!")
+            logger.warning("?? No on_command callback registered!")
 
     async def _handle_config(self, message: BaseMessage):
         """Handle CONFIG messages."""
@@ -276,7 +276,7 @@ class RPi5Client(AsyncWebSocketClient):
         """Handle NAVIGATION messages from laptop."""
         data = message.data
         action = data.get("action", "unknown")
-        logger.info(f"📍 Navigation command received: {action}")
+        logger.info(f"?? Navigation command received: {action}")
         # Forward to Layer 3 spatial audio system if callback registered
         if self.on_command:
             self.on_command({"action": "NAVIGATION", "navigation_data": data})
@@ -285,7 +285,7 @@ class RPi5Client(AsyncWebSocketClient):
         """Handle SPATIAL_AUDIO messages from laptop."""
         data = message.data
         enabled = data.get("enabled", True)
-        logger.info(f"🔊 Spatial audio config received: enabled={enabled}")
+        logger.info(f"?? Spatial audio config received: enabled={enabled}")
         # Forward to command handler
         if self.on_command:
             self.on_command({"action": "SPATIAL_AUDIO", "audio_data": data})
@@ -504,9 +504,9 @@ class RPi5Client(AsyncWebSocketClient):
             heading: GPS heading in degrees (optional)
             fix_quality: GPS fix quality 0-2 (optional)
             satellites: Number of satellites (optional)
-            accelerometer: [x, y, z] m/s² (optional)
+            accelerometer: [x, y, z] m/s� (optional)
             gyroscope: [x, y, z] deg/s (optional)
-            magnetometer: [x, y, z] µT (optional)
+            magnetometer: [x, y, z] �T (optional)
             euler: [heading, roll, pitch] degrees (optional)
             calibration: [sys, gyro, accel, mag] 0-3 (optional)
             environment: 'indoor', 'outdoor', or 'unknown' (optional)

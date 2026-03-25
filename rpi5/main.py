@@ -660,11 +660,12 @@ def init_status_display() -> StatusDisplay:
 class CameraHandler:
     """Continuous camera frame capture with threading"""
 
-    def __init__(self, camera_id: int = 0, use_picamera: bool = True, resolution: tuple = (1920, 1080), fps: int = 30):
+    def __init__(self, camera_id: int = 0, use_picamera: bool = True, resolution: tuple = (1920, 1080), fps: int = 30, rotation: int = 0):
         self.camera_id = camera_id
         self.use_picamera = use_picamera
         self.resolution = resolution
         self.fps = fps
+        self.rotation = rotation  # 0, 90, -90 (or 270), 180
         self.camera = None
         self.running = False
         self.latest_frame = None
@@ -684,7 +685,8 @@ class CameraHandler:
         else:
             self._start_opencv()
 
-        logger.info(f"✅ Camera started: {self.camera_id} @ {self.resolution[0]}x{self.resolution[1]}")
+        logger.info(f"✅ Camera started: {self.camera_id} @ {self.resolution[0]}x{self.resolution[1]}"
+                    f"{f', rotation={self.rotation}°' if self.rotation else ''}")
 
     def _start_picamera(self):
         """Initialize Picamera2 (RPi5)"""
@@ -719,8 +721,9 @@ class CameraHandler:
                         f"Rotation: {cam_info.get('Rotation', 'N/A')}")
             
             # 2. Use Video Configuration (Better for high FPS/continuous than preview)
+            #    BGR888 = direct OpenCV-compatible output from the ISP (no manual RGB→BGR needed)
             config = self.camera.create_video_configuration(
-                main={"format": 'RGB888', "size": self.resolution},
+                main={"format": 'BGR888', "size": self.resolution},
                 buffer_count=4  # Prevent starvation
             )
             self.camera.configure(config)
@@ -793,7 +796,7 @@ class CameraHandler:
                         
                         # Re-apply config
                         config = self.camera.create_video_configuration(
-                            main={"format": 'RGB888', "size": self.resolution},
+                            main={"format": 'BGR888', "size": self.resolution},
                             buffer_count=4
                         )
                         self.camera.configure(config)
@@ -876,16 +879,27 @@ class CameraHandler:
         )
         self.capture_thread.start()
 
+    def _apply_rotation(self, frame: np.ndarray) -> np.ndarray:
+        """Apply configured rotation to a frame."""
+        if self.rotation == -90 or self.rotation == 270:
+            return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+        elif self.rotation == 90:
+            return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+        elif self.rotation == 180:
+            return cv2.rotate(frame, cv2.ROTATE_180)
+        return frame
+
     def _picamera_capture_loop(self):
         """Continuous capture loop for Picamera2.
         
-        Picamera2 outputs RGB888 natively, but the entire downstream pipeline
-        (YOLO, cv2.imencode, Hailo, video streamer) expects BGR (OpenCV convention).
-        We convert RGB→BGR here so get_frame() always returns BGR regardless of backend.
+        Picamera2 outputs BGR888 directly (requested in config), matching
+        the OpenCV convention expected by the downstream pipeline
+        (YOLO, cv2.imencode, Hailo, video streamer).
+        Rotation is applied per config (e.g. -90° for sideways-mounted camera).
         """
         while self.running:
-            frame = self.camera.capture_array()       # RGB888
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)  # → BGR
+            frame = self.camera.capture_array()       # BGR888 (native)
+            frame = self._apply_rotation(frame)
             with self.frame_lock:
                 self.latest_frame = frame
             time.sleep(1.0 / self.fps)
@@ -895,6 +909,7 @@ class CameraHandler:
         while self.running:
             ret, frame = self.camera.read()
             if ret:
+                frame = self._apply_rotation(frame)
                 with self.frame_lock:
                     self.latest_frame = frame
             time.sleep(1.0 / self.fps)
@@ -1149,7 +1164,8 @@ class CortexSystem:
             camera_id=cam_cfg.get('device_id', 0),
             use_picamera=cam_cfg.get('use_picamera', False),
             resolution=tuple(cam_cfg.get('resolution', [640, 480])),
-            fps=cam_cfg.get('fps', 30)
+            fps=cam_cfg.get('fps', 30),
+            rotation=cam_cfg.get('rotation', 0)
         )
 
         # Initialize WebSocket Client (for laptop dashboard) - Use FastAPI client
@@ -1911,7 +1927,11 @@ class CortexSystem:
         self.running = True
 
         # Start camera
-        self.camera.start()
+        try:
+            self.camera.start()
+        except Exception as e:
+            logger.error(f"❌ Camera startup failed: {e}")
+            raise RuntimeError("Camera is required for demo — fix hardware and retry") from e
 
         # Connect to laptop dashboard
         if self.ws_client:

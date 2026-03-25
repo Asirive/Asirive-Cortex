@@ -1,11 +1,11 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Sync Project Cortex to Raspberry Pi 5 via rsync or scp.
 Installs dependencies on RPi5 after sync.
 
 Network Configuration:
-- RPi5 IP: 10.206.44.31
-- Laptop IP: 10.206.44.101
+- RPi5 IP: 10.207.144.31
+- Laptop IP: 10.207.144.101
 - RPi5 Password: Haziqshah21
 
 Usage:
@@ -55,7 +55,7 @@ def load_rpi_config():
                 
                 rpi_config = config.get('rpi5_device', {})
                 return {
-                    'host': rpi_config.get('host', '10.206.44.31'),
+                    'host': rpi_config.get('host', '10.207.144.31'),
                     'user': rpi_config.get('user', 'cortex'),
                     'path': rpi_config.get('path', '/home/cortex/ProjectCortex'),
                 }
@@ -65,7 +65,7 @@ def load_rpi_config():
     # Fallback to defaults
     print("Warning: Could not load config.yaml, using defaults")
     return {
-        'host': '10.206.44.31',
+        'host': '10.207.144.31',
         'user': 'cortex',
         'path': '/home/cortex/ProjectCortex',
     }
@@ -88,7 +88,7 @@ def get_rpi_password():
 
 RPI_PASSWORD = get_rpi_password()
 
-# Directories/Files to sync (code only — fast ~1MB)
+# Directories/Files to sync (code only � fast ~1MB)
 SYNC_PATHS = [
     "rpi5/",
     "laptop/",
@@ -481,7 +481,7 @@ def main():
     print("Project Cortex - RPi5 Sync Tool")
     print("="*60)
     print(f"RPi5 Host: {RPI_HOST}")
-    print(f"Laptop IP: 10.206.44.101")
+    print(f"Laptop IP: 10.207.144.101")
     print(f"Local Path: {LAPTOP_PATH}")
     print(f"Paramiko Available: {PARAMIKO_AVAILABLE}")
     if PARAMIKO_AVAILABLE:
@@ -494,9 +494,9 @@ def main():
 
     if with_models:
         SYNC_PATHS.extend(MODEL_PATHS)
-        print(f"\n📦 --with-models: Including models/ (~876MB)")
+        print(f"\n?? --with-models: Including models/ (~876MB)")
     else:
-        print(f"\n⚡ Code-only sync (~1MB). Use --with-models to include models/")
+        print(f"\n? Code-only sync (~1MB). Use --with-models to include models/")
 
     if not args:
         print("\nUsage: python sync_rpi5.py <command> [--with-models]")
