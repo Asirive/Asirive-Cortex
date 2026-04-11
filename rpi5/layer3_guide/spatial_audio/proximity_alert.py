@@ -399,11 +399,18 @@ class ProximityAlertSystem:
             else:
                 position = (0, 0, -1.0)
             
-            # Create and play source
+            # Create and play source — reuse/destroy previous to prevent OpenAL source leak
+            if hasattr(self, '_alert_source_obj') and self._alert_source_obj:
+                try:
+                    self._alert_source_obj.stop()
+                    self._alert_source_obj.destroy()
+                except:
+                    pass
             source = Source(buffer)
             source.set_position(position)
             source.set_gain(volume)
             source.play()
+            self._alert_source_obj = source
             
         except Exception as e:
             logger.error(f"Failed to play alert sound: {e}")

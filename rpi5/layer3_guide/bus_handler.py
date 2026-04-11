@@ -101,8 +101,8 @@ class BusHandler:
         await handler.stop_monitoring()
     """
 
-    LTA_BUS_ARRIVAL_URL = "http://datamall2.mytransport.sg/ltaodataservice/v3/BusArrival"
-    LTA_BUS_STOPS_URL = "http://datamall2.mytransport.sg/ltaodataservice/BusStops"
+    LTA_BUS_ARRIVAL_URL = "https://datamall2.mytransport.sg/ltaodataservice/v3/BusArrival"
+    LTA_BUS_STOPS_URL = "https://datamall2.mytransport.sg/ltaodataservice/BusStops"
 
     def __init__(
         self,

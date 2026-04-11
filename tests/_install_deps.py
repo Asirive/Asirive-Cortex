@@ -4,7 +4,7 @@ Temporary script - delete after use.
 """
 import paramiko
 
-HOST = "10.207.144.31"
+HOST = "10.135.122.31"
 USER = "cortex"
 PASS = "REDACTED-RPI-PASSWORD"
 

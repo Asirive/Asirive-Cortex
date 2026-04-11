@@ -119,10 +119,10 @@ class ComfortSettings:
     """
     
     # === Volume & Intensity ===
-    master_volume: float = 0.6        # Overall volume (0.0 - 1.0)
-    beacon_volume: float = 0.5        # Beacon ping volume
-    proximity_volume: float = 0.4     # Proximity alert volume
-    object_volume: float = 0.7        # Per-object tracking volume (increased for better audibility)
+    master_volume: float = 0.85       # Overall volume (0.0 - 1.0) — increased per user feedback
+    beacon_volume: float = 0.7        # Beacon ping volume
+    proximity_volume: float = 0.6     # Proximity alert volume
+    object_volume: float = 0.85       # Per-object tracking volume
     
     # === Beacon Timing (Interval Pings vs Continuous) ===
     # Key insight: Continuous sounds cause fatigue, interval pings don't
@@ -169,10 +169,10 @@ class ComfortSettings:
         """Create settings from a preset mode."""
         if mode == ComfortMode.GENTLE:
             return cls(
-                master_volume=0.4,
-                beacon_volume=0.35,
-                proximity_volume=0.3,
-                object_volume=0.5,
+                master_volume=0.6,
+                beacon_volume=0.5,
+                proximity_volume=0.45,
+                object_volume=0.65,
                 beacon_interval_far_ms=3000,
                 beacon_interval_mid_ms=2000,
                 beacon_interval_near_ms=1000,
@@ -373,7 +373,8 @@ class SpatialAudioManager:
                     frame_height=self.frame_height,
                     min_distance=pos_cfg.get('min_distance', 0.5),
                     max_distance=pos_cfg.get('max_distance', 10.0),
-                    focal_length_pixels=pos_cfg.get('focal_length', 1500)
+                    focal_length_pixels=pos_cfg.get('focal_length', 1500),
+                    spatial_width_meters=pos_cfg.get('spatial_width_meters', 5.0)
                 )
             
             if 'audio' in config:
@@ -523,6 +524,11 @@ class SpatialAudioManager:
         
         with self._lock:
             self._running = False
+            
+            # Stop hum thread before destroying OpenAL context
+            self._hum_stop_event.set()
+            if self._hum_thread and self._hum_thread.is_alive():
+                self._hum_thread.join(timeout=1.0)
             
             # Stop beacon
             self.stop_beacon()
@@ -1116,6 +1122,7 @@ class SpatialAudioManager:
             "warning": "alerts/warning.wav",
             "danger": "alerts/danger.wav",
             "critical": "alerts/critical.wav",
+            "emergency": "alerts/critical.wav",  # Reuse critical sound at higher volume
         }
         
         if level in sound_map:

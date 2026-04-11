@@ -30,13 +30,13 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Try to import RPi.GPIO (only available on Raspberry Pi)
+# Try to import lgpio (RPi5-compatible GPIO library)
 try:
-    import RPi.GPIO as GPIO
+    import lgpio
     GPIO_AVAILABLE = True
 except ImportError:
     GPIO_AVAILABLE = False
-    logger.info("ℹ️ RPi.GPIO not available (laptop mode)")
+    logger.info("ℹ️ lgpio not available (laptop mode)")
 
 
 class HapticController:
@@ -63,17 +63,14 @@ class HapticController:
         self.gpio_pin = gpio_pin
         self.pwm_frequency = pwm_frequency
         self.enabled = enabled and GPIO_AVAILABLE
-        self.pwm = None
+        self._chip_handle = None
         
         if self.enabled:
             try:
-                # Setup GPIO
-                GPIO.setmode(GPIO.BCM)
-                GPIO.setup(gpio_pin, GPIO.OUT)
-                
-                # Initialize PWM
-                self.pwm = GPIO.PWM(gpio_pin, pwm_frequency)
-                self.pwm.start(0)  # Start with 0% duty cycle (off)
+                # Setup GPIO using lgpio
+                self._chip_handle = lgpio.gpiochip_open(0)
+                # Start PWM with 0% duty cycle (off)
+                lgpio.tx_pwm(self._chip_handle, gpio_pin, pwm_frequency, 0)
                 
                 logger.info(f"✅ Haptic Controller initialized (GPIO {gpio_pin}, {pwm_frequency}Hz)")
             except Exception as e:
@@ -89,9 +86,9 @@ class HapticController:
         Args:
             intensity: Vibration intensity (0-100%)
         """
-        if self.enabled and self.pwm:
+        if self.enabled and self._chip_handle is not None:
             try:
-                self.pwm.ChangeDutyCycle(intensity)
+                lgpio.tx_pwm(self._chip_handle, self.gpio_pin, self.pwm_frequency, intensity)
                 logger.debug(f"🔊 Haptic: CONTINUOUS ({intensity}%)")
             except Exception as e:
                 logger.error(f"❌ Haptic control failed: {e}")
@@ -112,16 +109,16 @@ class HapticController:
             duration: Pulse duration in seconds
         """
         def _do_pulse():
-            if self.enabled and self.pwm:
+            if self.enabled and self._chip_handle is not None:
                 try:
-                    self.pwm.ChangeDutyCycle(intensity)
+                    lgpio.tx_pwm(self._chip_handle, self.gpio_pin, self.pwm_frequency, intensity)
                     time.sleep(duration)
-                    self.pwm.ChangeDutyCycle(0)
+                    lgpio.tx_pwm(self._chip_handle, self.gpio_pin, self.pwm_frequency, 0)
                     logger.debug(f"🔊 Haptic: PULSE ({intensity}%, {duration}s)")
                 except Exception as e:
                     logger.error(f"❌ Haptic control failed: {e}")
 
-        if self.enabled and self.pwm:
+        if self.enabled and self._chip_handle is not None:
             threading.Thread(target=_do_pulse, daemon=True).start()
         else:
             # Mock mode (laptop)
@@ -129,9 +126,9 @@ class HapticController:
     
     def stop(self) -> None:
         """Stop all vibration."""
-        if self.enabled and self.pwm:
+        if self.enabled and self._chip_handle is not None:
             try:
-                self.pwm.ChangeDutyCycle(0)
+                lgpio.tx_pwm(self._chip_handle, self.gpio_pin, self.pwm_frequency, 0)
                 logger.debug("🔇 Haptic: STOPPED")
             except Exception as e:
                 logger.error(f"❌ Haptic control failed: {e}")
@@ -143,9 +140,10 @@ class HapticController:
         """Release GPIO resources."""
         if self.enabled:
             try:
-                if self.pwm:
-                    self.pwm.stop()
-                GPIO.cleanup(self.gpio_pin)
+                if self._chip_handle is not None:
+                    lgpio.tx_pwm(self._chip_handle, self.gpio_pin, self.pwm_frequency, 0)
+                    lgpio.gpiochip_close(self._chip_handle)
+                    self._chip_handle = None
                 logger.info("🧹 Haptic Controller cleaned up")
             except Exception as e:
                 logger.error(f"❌ GPIO cleanup failed: {e}")

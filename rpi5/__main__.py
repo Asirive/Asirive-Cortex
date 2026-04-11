@@ -17,7 +17,7 @@ Usage:
     python -m rpi5 test                 # Run self-test diagnostics
 
 Options:
-    --laptop HOST   Laptop IP for dashboard connection (default: 10.207.144.101)
+    --laptop HOST   Laptop IP for dashboard connection (default: 10.135.122.101)
     --port PORT     Dashboard port (default: 8765)
     --offline       Disable cloud APIs (Gemini, Supabase)
     --no-haptic     Disable vibration motor
@@ -68,8 +68,8 @@ Examples:
     )
     all_parser.add_argument(
         "--laptop",
-        default="10.207.144.101",
-        help="Laptop IP for dashboard connection (default: 10.207.144.101)"
+        default="10.135.122.101",
+        help="Laptop IP for dashboard connection (default: 10.135.122.101)"
     )
     all_parser.add_argument(
         "--offline",
@@ -85,6 +85,12 @@ Examples:
         "--standalone",
         action="store_true",
         help="Run without laptop dashboard (no WebSocket/ZMQ connection)"
+    )
+    all_parser.add_argument(
+        "--earbuds",
+        choices=["in", "out", "cmf", "ugreen"],
+        default=None,
+        help="Select earbuds: 'in'/'cmf' for CMF Buds (in-ear), 'out'/'ugreen' for UGREEN HiTune S3 (open-ear)"
     )
 
     # layer commands
@@ -102,7 +108,7 @@ Examples:
         )
         layer_parser.add_argument(
             "--laptop",
-            default="10.207.144.101",
+            default="10.135.122.101",
             help="Laptop IP for dashboard connection"
         )
 
@@ -138,8 +144,8 @@ Examples:
     )
     connect_parser.add_argument(
         "--laptop",
-        default="10.207.144.101",
-        help="Laptop IP (default: 10.207.144.101)"
+        default="10.135.122.101",
+        help="Laptop IP (default: 10.135.122.101)"
     )
     connect_parser.add_argument(
         "--port",
@@ -168,13 +174,21 @@ def run_command(args: argparse.Namespace) -> int:
         print(f"Starting ProjectCortex v2.0 (all layers)...")
 
         config = get_config()
-        config['laptop_server']['host'] = getattr(args, "laptop", "10.207.144.101")
+        config['laptop_server']['host'] = getattr(args, "laptop", "10.135.122.101")
 
         standalone = getattr(args, "standalone", False)
         if getattr(args, "offline", False):
             print("Running in offline mode (cloud APIs disabled)")
         if standalone:
             print("Running in standalone mode (no laptop dashboard)")
+
+        # Handle --earbuds flag: map "in"->"cmf", "out"->"ugreen"
+        earbuds = getattr(args, "earbuds", None)
+        if earbuds:
+            earbuds_key = {"in": "cmf", "cmf": "cmf", "out": "ugreen", "ugreen": "ugreen"}[earbuds]
+            config.setdefault('bluetooth', {})['active_device'] = earbuds_key
+            label = "CMF Buds (in-ear)" if earbuds_key == "cmf" else "UGREEN HiTune S3 (open-ear)"
+            print(f"Earbuds: {label}")
 
         system = CortexSystem(standalone=standalone)
         system.start()
@@ -185,7 +199,7 @@ def run_command(args: argparse.Namespace) -> int:
         layer_num = command.replace("layer", "")
         run_layer(
             layer_num,
-            laptop_host=getattr(args, "laptop", "10.207.144.101")
+            laptop_host=getattr(args, "laptop", "10.135.122.101")
         )
 
     elif command == "camera":
@@ -205,7 +219,7 @@ def run_command(args: argparse.Namespace) -> int:
     elif command == "connect":
         from rpi5.cli.commands import connect_to_laptop
 
-        host = getattr(args, "laptop", "10.207.144.101")
+        host = getattr(args, "laptop", "10.135.122.101")
         port = getattr(args, "port", 8765)
         return connect_to_laptop(host=host, port=port)
 

@@ -54,7 +54,7 @@ class GeminiLiveHandler:
     def __init__(
         self,
         api_key: str,
-        model: str = "gemini-2.5-flash-native-audio-preview-12-2025",
+        model: str = "gemini-3.1-flash-live-preview",
         system_instruction: Optional[str] = None,
         response_modalities: list = None,
         temperature: float = 0.7,
@@ -77,10 +77,10 @@ class GeminiLiveHandler:
             max_delay: Max retry delay seconds (60.0)
             memory_manager: HybridMemoryManager for cloud storage (optional)
         """
-        # v1alpha required for proactive_audio and enable_affective_dialog
+        # v1beta required for gemini-3.1-flash-live-preview
         self.client = genai.Client(
             api_key=api_key,
-            http_options={"api_version": "v1alpha"},
+            http_options={"api_version": "v1beta"},
         )
         self.model = model
         self.system_instruction = system_instruction or self._default_system_instruction()
@@ -104,6 +104,11 @@ class GeminiLiveHandler:
         # Audio output queue (thread-safe, bounded to prevent memory leak)
         self.audio_queue = asyncio.Queue(maxsize=100)
 
+        # Debug counters for diagnosing 1007
+        self._audio_chunks_sent = 0
+        self._video_frames_sent = 0
+        self._audio_bytes_total = 0
+
         # Callback for status updates (optional)
         self.status_callback: Optional[Callable[[str], None]] = None
 
@@ -118,6 +123,11 @@ class GeminiLiveHandler:
         self._max_history_turns = 10  # Keep last 10 exchanges
         self._current_model_response_parts: list = []  # Buffer ongoing model response
 
+        # Echo detection: recent Gemini output transcriptions (for filtering
+        # mic echo when STT picks up speaker output)
+        self._recent_gemini_outputs: list = []  # [(timestamp, text), ...]
+        self._echo_buffer_seconds = 15.0  # Keep outputs for 15s
+
         # Tool callback for function calling (set by main.py)
         self._tool_callback: Optional[Callable] = None
 
@@ -130,26 +140,42 @@ class GeminiLiveHandler:
 You see through their camera. You hear through their microphone.
 You are their trusted companion — not a chatbot waiting for questions.
 
+CRITICAL CONTEXT — WHAT THE WHITE CANE ALREADY HANDLES:
+The user carries a white cane that detects ground-level obstacles (kerbs, steps,
+bollards, uneven ground, puddles). Do NOT warn about things the cane handles.
+Focus on what the cane CANNOT detect:
+- OVERHEAD obstacles: signboards, low branches, awnings, open cabinet doors, scaffolding
+- APPROACHING objects: vehicles, cyclists, e-scooters, other pedestrians on collision course
+- SIDE obstacles at torso/head height that the cane sweeps under
+- Visual information: text, signs, bus numbers, shop names, people's faces
+
 WHEN TO SPEAK (proactively, without being asked):
-- Something new or important appears (person approaching, door, sign, shop name)
+- Overhead hazard the cane cannot detect (low signboard, branch, scaffolding)
+- Vehicle or cyclist approaching from the side
+- Something new and important (person approaching, door, shop name, bus arriving)
 - The scene changes significantly (entered a building, reached a road, new room)
-- You see something potentially dangerous that the safety system might miss
-- You notice text worth reading (signs, labels, menus, screens)
+- You notice text worth reading (signs, labels, menus, screens, bus numbers)
 - The user seems lost, stopped, or uncertain
 
 WHEN TO STAY SILENT:
 - Nothing has changed (walking down a clear path)
-- The safety system already warned about the obstacle
+- The safety system already warned about this obstacle
 - The user is in a conversation with another person
 - You already described this scene and nothing changed
+- The cane can detect it (ground-level obstacles, steps directly ahead)
 
 SPEAKING RULES:
 - Maximum 2 sentences when speaking unprompted
 - When answering a question, be thorough but concise
-- Use spatial directions: "on your left", "ahead", "to your right"
+- Use clock directions or simple spatial terms: "on your left", "ahead", "to your right"
+- Include distance when relevant: "Wall, about 3 meters ahead"
 - Never say "I can see" — just describe directly: "Person approaching on your left"
 - Speak naturally like a trusted friend walking beside them
-- Prioritize: safety > navigation > interesting/useful info
+- NEVER use colour as the only identifier — some users are born blind and have no colour concept
+  Bad: "the red sign". Good: "the rectangular sign on the pole to your left"
+- Describe objects by shape, texture, position, and size instead of colour alone
+- Prioritize: safety > navigation > useful info
+- Do NOT spam — the user needs to concentrate. Only speak when it genuinely helps.
 
 SENSOR CONTEXT:
 You receive periodic [CONTEXT] messages with sensor data. These are background updates —
@@ -167,32 +193,47 @@ You MUST respond to these with a brief (1-2 sentence) description of what's new 
 NAVIGATION MODES — adapt your behavior based on the current mode:
 
 1. OUTDOOR NAVIGATION (you'll see [NAV] with waypoint/bearing data):
-   - You complement the 3D audio beam guiding the user
-   - Be MORE proactive than usual — narrate changes as they happen
+   - Give GPS-style voice directions: "Turn left ahead", "Continue straight for 50 meters"
    - Announce landmarks as they approach ("MRT station on your right")
    - Describe intersections and road crossings in detail
    - Read visible signs, shop names, building names
-   - On long straight stretches, provide reassurance ("Still on Tampines Avenue, about 200 meters to go")
-   - When approaching destination: describe what you see ("I can see the building entrance ahead")
-   - Never duplicate turn-by-turn directions (the beam + TTS handle that)
+   - On long straight stretches, reassure briefly ("Still on Tampines Ave, about 200 meters left")
+   - When approaching destination: describe what you see
+   - OVERHEAD HAZARDS are your top priority — the cane handles the ground
 
 2. INDOOR GUIDE MODE (you'll see [NAV_EVENT] indoor_mode_activated):
    - YOU are the primary navigator — GPS is unavailable indoors
    - Use set_beam_direction() to point the 3D audio beacon where the user should go
-   - The user FOLLOWS the audio beacon — it is the main guidance tool
-   - Give SHORT voice commands paired with beam moves: "door on your left" + set_beam_direction(left)
+   - Give GPS-style voice commands: "Turn left", "Go straight", "Door on your right"
    - Look at the camera feed: find exits, corridors, doors, stairs and point the beam there
    - Move the beam FREQUENTLY as the user walks and the scene changes
-   - Voice is for SHORT commands and warnings ONLY — do NOT narrate or describe scenes
-   - If the safety system overrides your beam (wall, cliff, obstacle too close), warn the user verbally
+   - Voice is for SHORT commands and warnings ONLY
    - Pattern: 1) See path in camera → 2) set_beam_direction → 3) short voice cue → repeat
 
-3. BUS STOP MODE (you'll see [BUS] context):
-   - Help identify approaching buses by reading bus numbers
-   - Describe the bus stop environment (shelter, queue, seating)
-   - When a bus approaches: "A bus is pulling up" + read bus number if visible
+3. BUS STOP MODE (you'll see [BUS] context with real-time arrival data):
+   - The user's #1 question at a bus stop: "Which bus is coming?"
+   - Read bus numbers from approaching buses and match to arrival data
+   - You can call get_bus_arrival(bus_stop_code) for real-time ETAs
+   - Tell the user: "Bus 21 arriving in 3 minutes, bus 69 in 8 minutes"
+   - Describe the bus stop environment (shelter, queue, seating, which bay)
+   - When a bus arrives: "Bus 21 is pulling up now"
+   - Help the user find the correct door / boarding point
 
-4. IDLE / EXPLORING (no [NAV] context):
+4. HAWKER CENTRE / FOOD COURT MODE:
+   - Help find empty tables: "There's an empty table about 5 meters ahead on your left"
+   - Read stall names and menu boards when asked
+   - If a stall has a queue, mention it: "This stall has about 4 people queuing"
+   - When the user carries food: warn about obstacles at tray/hand height
+   - Describe what food stalls are nearby when the user is browsing
+
+5. MRT / TRAIN STATION MODE:
+   - The textile guide (tactile ground indicators) only leads to exits/entrances
+   - Help with: platform screen doors, which side doors open, train direction
+   - Read overhead signs for station names and exit letter/numbers
+   - "Train approaching on your left" / "Doors opening on the right"
+   - Guide to specific exits by reading the exit markers
+
+6. IDLE / EXPLORING (no [NAV] context):
    - Standard companion mode — describe scene changes, read text, warn about hazards
    - Be concise, only speak when something is worth mentioning
 
@@ -200,15 +241,16 @@ NAVIGATION EVENTS:
 You receive [NAV_EVENT] messages for important navigation changes. When you see these:
 - "navigating_to: X" → The user just started navigating. Be ready to provide visual context.
 - "waypoint_reached" → Acknowledge only if something interesting is visible
-- "approaching_turn" → Describe what you see at the upcoming turn (intersection, crossing, etc.)
+- "approaching_turn" → Describe what you see at the upcoming turn
 - "approaching_destination" → Describe the destination as you see it
 - "arrived" → Confirm what you see matches the destination
-- "indoor_mode_activated" → Switch to Indoor Guide Mode (see above)
-- "outdoor_mode_activated" → Switch back to outdoor complement mode
+- "indoor_mode_activated" → Switch to Indoor Guide Mode
+- "outdoor_mode_activated" → Switch back to outdoor mode
 - "navigation_stopped" → Return to idle companion mode
 - "road_crossing" → Describe the crossing (traffic lights, zebra crossing, traffic)
 
-Remember: silence is fine. Only speak when it adds value. Safety always comes first."""
+Remember: silence is fine. Only speak when it adds value. Safety always comes first.
+Overhead hazards are your highest priority — the user's cane handles the ground."""
     
     async def connect(self) -> bool:
         """
@@ -232,30 +274,33 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                     response_modalities=self.response_modalities,
                     system_instruction=self.system_instruction,
                     temperature=self.temperature,
-                    # Thinking IS supported with native audio (docs confirm),
-                    # but budget=0 gives lowest latency for real-time companion.
-                    # Increase to 1024+ for complex reasoning tasks.
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    # Voice configuration — Zephyr voice
+                    speech_config=types.SpeechConfig(
+                        voice_config=types.VoiceConfig(
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Zephyr")
+                        )
+                    ),
+                    # Medium resolution for video frames (258 tokens/image)
+                    media_resolution="MEDIA_RESOLUTION_MEDIUM",
                     # Sliding window compression prevents session timeout (~15 min)
                     context_window_compression=types.ContextWindowCompressionConfig(
-                        sliding_window=types.SlidingWindow(),
+                        trigger_tokens=104857,
+                        sliding_window=types.SlidingWindow(target_tokens=52428),
                     ),
                     # Transcribe model audio output for logging
                     output_audio_transcription=types.AudioTranscriptionConfig(),
                     # Transcribe model audio INPUT for logging what Gemini hears
                     input_audio_transcription=types.AudioTranscriptionConfig(),
-                    # Disable automatic activity detection — the client controls
-                    # when the user is speaking via explicit activityStart/End.
-                    # This prevents Gemini from responding to ambient noise.
-                    realtime_input_config=types.RealtimeInputConfig(
-                        automatic_activity_detection=types.AutomaticActivityDetection(
-                            disabled=True,
-                        ),
-                    ),
-                    # Natural emotional voice
-                    enable_affective_dialog=True,
+                    # Auto-VAD enabled (default) — Gemini detects speech in the
+                    # continuous audio stream and decides when to respond.
+                    # Disabled VAD requires activity_start/end framing which
+                    # conflicts with continuous audio streaming (causes 1007).
                     # Function calling: let Gemini query nav state & report obstacles
-                    tools=[{"function_declarations": [
+                    tools=[
+                        # Google Search grounding — real-time info (bus routes, places, etc.)
+                        types.Tool(google_search=types.GoogleSearch()),
+                        # Custom function declarations
+                        types.Tool(function_declarations=[
                         {
                             "name": "get_navigation_state",
                             "description": (
@@ -325,7 +370,26 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                                 "required": ["direction"],
                             },
                         },
-                    ]}],
+                        {
+                            "name": "get_bus_arrival",
+                            "description": (
+                                "Get real-time bus arrival times for a Singapore bus stop. "
+                                "Returns service numbers, next bus ETA in minutes, and load. "
+                                "Call this when the user is at a bus stop or asks about buses. "
+                                "Use Google Search or GPS context to determine the bus stop code."
+                            ),
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "bus_stop_code": {
+                                        "type": "string",
+                                        "description": "5-digit bus stop code (e.g. '75009')",
+                                    },
+                                },
+                                "required": ["bus_stop_code"],
+                            },
+                        },
+                    ])],
                 )
                 
                 # Always enable session resumption so we receive handles
@@ -340,6 +404,27 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                     # First connect — request handles for future resumption
                     config.session_resumption = types.SessionResumptionConfig()
                 
+                # --- DEBUG: Log config summary before connecting ---
+                _tools_summary = []
+                for t in (config.tools or []):
+                    if getattr(t, 'google_search', None):
+                        _tools_summary.append('google_search')
+                    if getattr(t, 'function_declarations', None):
+                        _tools_summary.append(f'functions({len(t.function_declarations)})')
+                logger.info(
+                    f"📋 Config: model={self.model}, "
+                    f"modalities={config.response_modalities}, "
+                    f"temp={config.temperature}, "
+                    f"voice={'Zephyr'}, "
+                    f"media_res={config.media_resolution}, "
+                    f"tools={_tools_summary}, "
+                    f"sys_instruction_len={len(self.system_instruction)}, "
+                    f"session_handle={'yes' if self.session_handle else 'no'}, "
+                    f"compression=trigger:{getattr(getattr(config, 'context_window_compression', None), 'trigger_tokens', 'N/A')}, "
+                    f"input_transcription={config.input_audio_transcription is not None}, "
+                    f"output_transcription={config.output_audio_transcription is not None}"
+                )
+
                 # Establish WebSocket connection using async with context manager
                 # NOTE: The session MUST remain inside this async with block
                 async with self.client.aio.live.connect(
@@ -351,6 +436,9 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                     self._send_error_logged = False  # Reset on new connection
                     self._connect_time = time.time()
                     self._msg_count = 0
+                    self._audio_chunks_sent = 0
+                    self._video_frames_sent = 0
+                    self._audio_bytes_total = 0
                     logger.info(f"✅ Connected to Gemini Live API on attempt {attempt + 1}")
                     
                     if self.status_callback:
@@ -382,7 +470,15 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                     f"code={e.code}, reason='{e.reason}', duration={duration:.1f}s"
                 )
             except APIError as e:
-                logger.error(f"❌ API Error on attempt {attempt + 1}: {e.code} - {e.message}")
+                duration = time.time() - self._connect_time if self._connect_time else 0
+                logger.error(
+                    f"❌ API Error on attempt {attempt + 1}: code={e.code}, "
+                    f"message='{e.message}', duration={duration:.1f}s, "
+                    f"msgs_received={self._msg_count}, "
+                    f"audio_chunks_sent={self._audio_chunks_sent}, "
+                    f"video_frames_sent={self._video_frames_sent}, "
+                    f"audio_bytes_total={self._audio_bytes_total}"
+                )
                 if e.code == 404:
                     logger.error("❌ Model not found - check model name")
                     return False  # Don't retry if model doesn't exist
@@ -536,6 +632,13 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                         self._store_response(ot.text, 'gemini_live')
                         # Accumulate model response text for conversation history
                         self._current_model_response_parts.append(ot.text)
+                        # Store for echo detection
+                        self._recent_gemini_outputs.append((time.time(), ot.text))
+                        # Prune old entries
+                        cutoff = time.time() - self._echo_buffer_seconds
+                        self._recent_gemini_outputs = [
+                            (t, txt) for t, txt in self._recent_gemini_outputs if t > cutoff
+                        ]
                         continue
 
                     # Generation complete (model finished all output)
@@ -591,14 +694,16 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
             duration = time.time() - self._connect_time if self._connect_time else 0
             logger.error(
                 f"❌ WebSocket closed in receive loop: code={e.code}, "
-                f"reason='{e.reason}', duration={duration:.1f}s, msgs={self._msg_count}"
+                f"reason='{e.reason}', duration={duration:.1f}s, msgs={self._msg_count}, "
+                f"audio_sent={self._audio_chunks_sent}, video_sent={self._video_frames_sent}"
             )
             self.is_connected = False
         except Exception as e:
             duration = time.time() - self._connect_time if self._connect_time else 0
             logger.error(
                 f"❌ Error in receive loop: {type(e).__name__}: {e} "
-                f"(duration={duration:.1f}s, msgs={self._msg_count})"
+                f"(duration={duration:.1f}s, msgs={self._msg_count}, "
+                f"audio_sent={self._audio_chunks_sent}, video_sent={self._video_frames_sent})"
             )
             self.is_connected = False
 
@@ -620,6 +725,49 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
         except Exception as e:
             logger.warning(f"⚠️ Failed to store to memory manager: {e}")
 
+    def is_echo(self, text: str, threshold: float = 0.5) -> bool:
+        """Check if text is likely echo of recent Gemini audio output.
+
+        Compares word overlap between *text* (from STT) and recent Gemini
+        output transcriptions.  If >= *threshold* fraction of the STT words
+        appear in any recent Gemini output, it's considered echo.
+
+        Args:
+            text: STT transcription to check
+            threshold: minimum word-overlap ratio (0-1) to classify as echo
+
+        Returns:
+            True if the text is likely echo of Gemini's own speech
+        """
+        if not text or not self._recent_gemini_outputs:
+            return False
+
+        # Prune stale entries
+        cutoff = time.time() - self._echo_buffer_seconds
+        self._recent_gemini_outputs = [
+            (t, txt) for t, txt in self._recent_gemini_outputs if t > cutoff
+        ]
+        if not self._recent_gemini_outputs:
+            return False
+
+        # Build set of words from all recent Gemini output
+        gemini_words = set()
+        for _, gtxt in self._recent_gemini_outputs:
+            gemini_words.update(gtxt.lower().split())
+
+        stt_words = text.lower().split()
+        if not stt_words:
+            return False
+
+        overlap = sum(1 for w in stt_words if w in gemini_words)
+        ratio = overlap / len(stt_words)
+        if ratio >= threshold:
+            logger.info(
+                f"🔇 Echo detected ({ratio:.0%} overlap): '{text[:60]}...'"
+            )
+            return True
+        return False
+
     def _add_to_history(self, role: str, text: str):
         """Add a turn to conversation history buffer."""
         # Skip empty or very short entries
@@ -635,6 +783,9 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
 
         If we have a session_handle the server restores context natively.
         We still inject as a safety net — the model handles duplicates well.
+
+        Uses send_realtime_input(text=...) to avoid 1007 errors caused
+        by mixing send_client_content with active audio streaming.
         """
         if not self._conversation_history or not self.is_connected or not self.session:
             return
@@ -648,10 +799,7 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                 summary_parts.append(f"{prefix}: {truncated}")
             summary = "\n".join(summary_parts)
 
-            await self.session.send_client_content(
-                turns={"role": "user", "parts": [{"text": summary}]},
-                turn_complete=False,  # Don't trigger a response
-            )
+            await self.session.send_realtime_input(text=summary)
             logger.info(
                 f"📝 Injected conversation history "
                 f"({len(self._conversation_history)} turns) on reconnect"
@@ -709,7 +857,19 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
                     mime_type=f'audio/pcm;rate={sample_rate}'
                 )
             )
-            logger.debug(f"📤 Sent {len(audio_bytes)} bytes of audio")
+            self._audio_chunks_sent += 1
+            self._audio_bytes_total += len(audio_bytes)
+            # Log first 5 chunks, then every 100th
+            if self._audio_chunks_sent <= 5 or self._audio_chunks_sent % 100 == 0:
+                elapsed = time.time() - self._connect_time if self._connect_time else 0
+                logger.info(
+                    f"📤 Audio chunk #{self._audio_chunks_sent}: "
+                    f"{len(audio_bytes)}B, rate={sample_rate}, "
+                    f"total={self._audio_bytes_total}B, "
+                    f"elapsed={elapsed:.1f}s"
+                )
+            else:
+                logger.debug(f"📤 Sent {len(audio_bytes)} bytes of audio")
 
             # Track query for memory logging
             if not self._query_start_time:
@@ -752,7 +912,13 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
             await self.session.send_realtime_input(
                 video=types.Blob(data=jpeg_bytes, mime_type='image/jpeg')
             )
-            logger.debug(f"📤 Sent video frame ({frame.width}x{frame.height}, {len(jpeg_bytes)} bytes)")
+            self._video_frames_sent += 1
+            elapsed = time.time() - self._connect_time if self._connect_time else 0
+            logger.info(
+                f"📤 Video frame #{self._video_frames_sent}: "
+                f"{frame.width}x{frame.height}, {len(jpeg_bytes)}B JPEG, "
+                f"elapsed={elapsed:.1f}s"
+            )
             return True
             
         except Exception as e:
@@ -766,12 +932,13 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
         """
         Send text input to Gemini Live API.
 
-        Uses send_client_content(turn_complete=True) to explicitly trigger a
-        model response.  With AutomaticActivityDetection disabled, the model
-        only responds when it receives a completed turn via client_content.
-        send_realtime_input(text=...) would require activity_start/end framing
-        which we intentionally omit to prevent Gemini from auto-responding to
-        audio routed to other layers (e.g., Layer 3 navigation).
+        Uses send_realtime_input(text=...) to deliver text alongside the
+        active audio/video stream.  The server's automatic VAD treats this
+        as part of the real-time input and will generate a response.
+
+        NOTE: send_client_content MUST NOT be called while
+        send_realtime_input audio is streaming — mixing the two causes
+        error 1007 ("Request contains an invalid argument").
 
         Args:
             text: Text prompt
@@ -784,11 +951,8 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
             return False
 
         try:
-            await self.session.send_client_content(
-                turns={"role": "user", "parts": [{"text": text}]},
-                turn_complete=True,
-            )
-            logger.debug(f"📤 Sent text (turn_complete): {text[:50]}...")
+            await self.session.send_realtime_input(text=text)
+            logger.debug(f"📤 Sent text (realtime): {text[:50]}...")
 
             # Track query for memory logging and conversation history
             self._last_query = text
@@ -808,14 +972,19 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
 
     async def send_context(self, text: str) -> bool:
         """
-        Send silent context to Gemini Live API (no response triggered).
+        Send silent context to Gemini Live API.
 
-        Uses send_client_content() with turn_complete=False so Gemini absorbs
-        the information without generating a response. This is the correct
-        API for incremental context / history injection (not new user input).
+        Uses send_realtime_input(text=...) to deliver context alongside
+        the active audio/video stream.  The text is prefixed with
+        [CONTEXT] so the system instruction tells the model to absorb
+        it silently without responding.
+
+        NOTE: send_client_content MUST NOT be called while
+        send_realtime_input audio is streaming — mixing the two causes
+        error 1007 ("Request contains an invalid argument").
 
         Args:
-            text: Context text to inject silently
+            text: Context text to inject
 
         Returns:
             bool: True if sent successfully, False otherwise
@@ -824,10 +993,7 @@ Remember: silence is fine. Only speak when it adds value. Safety always comes fi
             return False
 
         try:
-            await self.session.send_client_content(
-                turns={"role": "user", "parts": [{"text": text}]},
-                turn_complete=False,
-            )
+            await self.session.send_realtime_input(text=text)
             return True
 
         except Exception as e:

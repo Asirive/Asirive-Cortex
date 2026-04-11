@@ -57,7 +57,7 @@ def load_config(config_path: str = None) -> Dict[str, Any]:
         },
         'layer2': {
             'gemini_api_key': os.getenv('GEMINI_API_KEY', ''),
-            'model': 'gemini-2.5-flash-native-audio-preview-12-2025',
+            'model': 'gemini-3.1-flash-live-preview',
             'enable_live_api': True
         },
         'camera': {

@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import math
+import re
 import sqlite3
 import threading
 import time
@@ -332,6 +333,7 @@ class NavigationEngine:
         self._gps_accuracy: float = 999.0
         self._last_known_heading: float = 0.0
         self._last_waypoint_advance_time: float = 0.0  # Rate-limit waypoint advancement
+        self._vehicle_slow_start: Optional[float] = None  # Track slow speed duration for alight detection
 
         # Vision context from YOLO + depth (updated each frame by main loop)
         self._latest_detections: List[Dict[str, Any]] = []
@@ -357,13 +359,12 @@ class NavigationEngine:
             daemon=True,
         )
         self._loop_thread.start()
+        logger.info("NavigationEngine initialized")
 
     def _run_event_loop(self):
         """Run the persistent event loop (blocking, on background thread)."""
         asyncio.set_event_loop(self._event_loop)
         self._event_loop.run_forever()
-
-        logger.info("NavigationEngine initialized")
 
     # -------------------------------------------------
     # ROUTE CACHE (SQLite)
@@ -548,7 +549,6 @@ class NavigationEngine:
             end = step.get("end_location", {})
             instruction = step.get("html_instructions", "")
             # Strip HTML tags from instruction
-            import re
             instruction = re.sub(r"<[^>]+>", "", instruction)
             maneuver = step.get("maneuver", "")
             distance_m = step.get("distance", {}).get("value", 0)
@@ -680,7 +680,6 @@ class NavigationEngine:
             step_end = step.get("end_location", {})
             step_dist = step.get("distance", {}).get("value", 0)
             step_dur = step.get("duration", {}).get("value", 0)
-            import re
             instruction = re.sub(r"<[^>]+>", "", step.get("html_instructions", ""))
 
             if travel_mode == "TRANSIT":
@@ -1028,6 +1027,8 @@ class NavigationEngine:
             self.state = NavState.NAVIGATING
             self._set_mode(NavMode.OUTDOOR)
             self.current_waypoint_idx = 0
+            self._turn_announced.clear()  # Reset turn tracking for new leg
+            self._vehicle_slow_start = None
             self._leg_waypoints = leg.waypoints if leg.waypoints else None
             if self.spatial_audio:
                 self.spatial_audio.start_beacon("navigation_target")
@@ -1568,7 +1569,7 @@ class NavigationEngine:
             road_objects = []
             vehicle_classes = {"car", "truck", "bus", "motorcycle", "bicycle", "traffic light"}
             for det in self._latest_detections:
-                cls = det.get('class', '')
+                cls = det.get('class_name') or det.get('class', '')
                 if cls in vehicle_classes:
                     dist = det.get('distance_m', 999)
                     road_objects.append(f"{cls}({dist:.0f}m)")
@@ -1606,7 +1607,7 @@ class NavigationEngine:
         if self._latest_detections:
             by_class: Dict[str, float] = {}
             for det in self._latest_detections:
-                cls = det.get('class', 'unknown')
+                cls = det.get('class_name') or det.get('class', 'unknown')
                 dist = det.get('distance_m', 999)
                 if cls not in by_class or dist < by_class[cls]:
                     by_class[cls] = dist
@@ -1770,8 +1771,12 @@ class NavigationEngine:
             f"Retracing your steps. {len(waypoints)} waypoints back to where you started."
         )
 
-        # Start the nav loop
-        self._nav_task = asyncio.create_task(self._navigation_loop())
+        # Start the nav loop on the dedicated event loop
+        self._ensure_event_loop()
+        future = asyncio.run_coroutine_threadsafe(
+            self._navigation_loop(), self._event_loop
+        )
+        self._nav_future = future
         return True
 
     def get_context_string(self) -> str:

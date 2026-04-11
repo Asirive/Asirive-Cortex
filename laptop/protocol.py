@@ -124,13 +124,14 @@ class VideoFrameMessage(BaseMessage):
 class GPSIMUMessage(BaseMessage):
     """GPS and IMU data message"""
     data: Dict[str, Any]  # {
-        # "latitude": 1.3521,
-        # "longitude": 103.8198,
-        # "altitude": 15.0,
-        # "speed": 0.0,
-        # "acceleration": [0.01, -0.02, 9.81],
-        # "gyroscope": [0.1, 0.2, 0.3],
-        # "compass": 45.0
+        # "gps": {"latitude": 1.3521, "longitude": 103.8198, "altitude": 15.0,
+        #         "accuracy": 5.0, "speed_kmh": 0.0, "heading": 180.0,
+        #         "fix_quality": "GPS", "satellites": 8},
+        # "imu": {"accelerometer": [0.01, -0.02, 9.81],
+        #         "gyroscope": [0.1, 0.2, 0.3],
+        #         "euler": [0.0, 0.0, 45.0],
+        #         "calibration": [3, 3, 3, 3]},
+        # "environment": {"temperature": 25.0}
     # }
 
 
