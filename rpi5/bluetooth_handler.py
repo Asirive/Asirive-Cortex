@@ -45,6 +45,7 @@ class BluetoothAudioManager:
     def __init__(
         self,
         device_name: str = "CMF Buds",
+        mac_address: Optional[str] = None,
         retry_delay: float = 2.0,
         max_retries: int = 3
     ):
@@ -53,6 +54,7 @@ class BluetoothAudioManager:
         
         Args:
             device_name: Partial name to match (e.g., "CMF Buds" matches "CMF Buds 2 Plus")
+            mac_address: Known MAC address from config (skips name search if provided)
             retry_delay: Seconds between retry attempts
             max_retries: Maximum connection attempts
         """
@@ -61,17 +63,21 @@ class BluetoothAudioManager:
             if device_name != self.device_name:
                 logger.info(f"BluetoothAudioManager: updating device_name from '{self.device_name}' to '{device_name}'")
                 self.device_name = device_name
+            if mac_address and mac_address != self.known_mac:
+                logger.info(f"BluetoothAudioManager: updating known_mac to '{mac_address}'")
+                self.known_mac = mac_address
             if max_retries != self.max_retries:
                 self.max_retries = max_retries
             return
             
         self.device_name = device_name
+        self.known_mac = mac_address
         self.retry_delay = retry_delay
         self.max_retries = max_retries
         self.connected_mac: Optional[str] = None
         self._initialized = True
         
-        logger.info(f"BluetoothAudioManager initialized (looking for '{device_name}')")
+        logger.info(f"BluetoothAudioManager initialized (device='{device_name}', mac={mac_address or 'auto-detect'})")
     
     # =========================================================================
     # Device Discovery
@@ -168,7 +174,7 @@ class BluetoothAudioManager:
             return False
     
     def power_on(self) -> bool:
-        """Power on the Bluetooth adapter."""
+        """Power on the Bluetooth adapter and ensure pairable mode."""
         try:
             result = subprocess.run(
                 ["bluetoothctl", "power", "on"],
@@ -179,6 +185,13 @@ class BluetoothAudioManager:
             success = "succeeded" in result.stdout.lower() or "yes" in result.stdout.lower()
             if success:
                 logger.debug("Bluetooth adapter powered on")
+            
+            # Always ensure pairable is on (required for bonding/key storage)
+            subprocess.run(
+                ["bluetoothctl", "pairable", "on"],
+                capture_output=True, text=True, timeout=5
+            )
+            
             return success
         except Exception as e:
             logger.error(f"Error powering on Bluetooth: {e}")
@@ -515,6 +528,50 @@ class BluetoothAudioManager:
         logger.warning("No HFP/HSP profile produced a mic source")
         return False
     
+    def ensure_a2dp_profile(self, mac_address: str) -> bool:
+        """
+        Force the Bluetooth device into A2DP Sink profile (high-quality stereo output).
+        
+        This prevents PipeWire from auto-switching to HFP/HSP (low-quality mono)
+        and ensures the earbuds stay in music/media playback mode.
+        
+        Args:
+            mac_address: Device MAC address
+            
+        Returns:
+            True if A2DP profile set successfully
+        """
+        card_name = f"bluez_card.{mac_address.replace(':', '_')}"
+        
+        # A2DP profile names in PipeWire/PulseAudio (try in order)
+        a2dp_profiles = ["a2dp-sink", "a2dp-sink-sbc", "a2dp-sink-aac"]
+        
+        logger.info(f"🎵 Forcing A2DP profile on card {card_name}")
+        
+        for profile_name in a2dp_profiles:
+            try:
+                result = subprocess.run(
+                    ["pactl", "set-card-profile", card_name, profile_name],
+                    capture_output=True, text=True, timeout=5
+                )
+                
+                if result.returncode == 0:
+                    logger.info(f"✅ A2DP profile '{profile_name}' set on {card_name}")
+                    time.sleep(1)  # Let PipeWire reconfigure
+                    return True
+                else:
+                    logger.debug(f"Profile '{profile_name}' not available: {result.stderr.strip()}")
+                    
+            except FileNotFoundError:
+                logger.error("pactl not found. Install pulseaudio-utils: sudo apt install pulseaudio-utils")
+                return False
+            except Exception as e:
+                logger.warning(f"Error trying A2DP profile '{profile_name}': {e}")
+                continue
+        
+        logger.warning("No A2DP profile could be set — device may already be in A2DP mode")
+        return False
+    
     # =========================================================================
     # High-Level API
     # =========================================================================
@@ -537,8 +594,16 @@ class BluetoothAudioManager:
         # Step 1: Power on adapter
         self.power_on()
         
-        # Step 2: Find device
-        mac = self.find_device_by_name(search_name)
+        # Step 2: Find device — prefer known MAC from config
+        mac = None
+        if self.known_mac:
+            # Try known MAC directly — even if not in paired list, we can attempt connect
+            mac = self.known_mac
+            logger.info(f"Using known MAC from config: {mac}")
+        
+        if not mac:
+            mac = self.find_device_by_name(search_name)
+        
         if not mac:
             logger.error(f"Device '{search_name}' not found. Please pair it first using bluetoothctl.")
             return False
@@ -591,8 +656,9 @@ class BluetoothAudioManager:
             logger.warning(f"Bluetooth audio not ready - attempt {attempt}/3, retrying in 3s...")
             time.sleep(3)
         
-        # Skip HFP/HSP profile switch — USB lavalier mic handles input,
+        # Force A2DP profile — USB lavalier mic handles input,
         # Bluetooth stays in A2DP mode (high-quality stereo output only)
+        self.ensure_a2dp_profile(mac)
         if sink_id is not None and source_id is None:
             logger.info("A2DP output only (mic via USB lavalier) — skipping HFP/HSP switch")
         
@@ -659,16 +725,18 @@ class BluetoothAudioManager:
         logger.info(f"🔍 Scanning for Bluetooth devices ({duration}s)...")
         
         try:
-            # Start scanning
-            subprocess.run(
+            # Start scanning in background (scan on never exits on its own)
+            scan_proc = subprocess.Popen(
                 ["bluetoothctl", "scan", "on"],
-                capture_output=True,
-                timeout=5
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
             )
             
             time.sleep(duration)
             
             # Stop scanning
+            scan_proc.terminate()
+            scan_proc.wait(timeout=3)
             subprocess.run(
                 ["bluetoothctl", "scan", "off"],
                 capture_output=True,
@@ -776,14 +844,26 @@ class BluetoothAudioManager:
         Args:
             interval: Seconds between checks
         """
+        consecutive_failures = 0
+        max_failures = 3  # Back off after 3 consecutive failures
+        
         while self._reconnect_running:
             try:
                 if self.connected_mac and not self.is_connected(self.connected_mac):
                     logger.warning("🔌 Bluetooth disconnected, attempting reconnect...")
                     if self.connect_and_setup():
                         logger.info("✅ Bluetooth reconnected")
+                        consecutive_failures = 0
                     else:
-                        logger.warning("⚠️ Reconnect failed, will retry")
+                        consecutive_failures += 1
+                        if consecutive_failures >= max_failures:
+                            backoff = min(interval * consecutive_failures, 120)
+                            logger.warning(f"⚠️ Reconnect failed {consecutive_failures}x, backing off {backoff:.0f}s")
+                            time.sleep(backoff - interval)  # Extra wait on top of normal interval
+                        else:
+                            logger.warning(f"⚠️ Reconnect failed ({consecutive_failures}/{max_failures}), will retry")
+                else:
+                    consecutive_failures = 0  # Reset on successful check
             except Exception as e:
                 logger.error(f"Reconnect check error: {e}")
             
@@ -804,7 +884,26 @@ class BluetoothAudioManager:
         Returns:
             True if connected successfully
         """
-        # Step 1: Try known paired devices
+        # Step 0: If we have a known MAC from config, use it directly
+        if self.known_mac:
+            logger.info(f"Using known MAC from config: {self.known_mac}")
+            # Check if already paired
+            paired = self.get_paired_devices()
+            is_paired = any(d['mac'].upper() == self.known_mac.upper() for d in paired)
+            
+            if is_paired:
+                logger.info(f"Device {self.known_mac} is paired, connecting directly...")
+                return self.connect_and_setup()
+            else:
+                logger.info(f"Device {self.known_mac} not paired, attempting pair...")
+                if self.pair_device(self.known_mac):
+                    self.trust_device(self.known_mac)
+                    time.sleep(1)
+                    return self.connect_and_setup()
+                else:
+                    logger.warning(f"Failed to pair {self.known_mac}, falling back to name search")
+        
+        # Step 1: Try known paired devices by name
         logger.info(f"Looking for paired device matching '{self.device_name}'...")
         mac = self.find_device_by_name()
         

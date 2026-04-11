@@ -13,7 +13,7 @@ Features:
 Usage:
     from rpi5.fastapi_client import RPi5Client
     client = RPi5Client(
-        host="10.207.144.101",  # Laptop IP
+        host="10.135.122.101",  # Laptop IP
         port=8765,
         device_id="rpi5-cortex-001"
     )
@@ -94,7 +94,7 @@ class RPi5Client(AsyncWebSocketClient):
         if host is None:
             from rpi5.config.config import get_config
             config = get_config()
-            host = config.get('laptop_server', {}).get('host', '10.207.144.101')
+            host = config.get('laptop_server', {}).get('host', '10.135.122.101')
         
         # Build WebSocket URL
         url = f"ws://{host}:{port}/ws/{device_id}"
@@ -504,9 +504,9 @@ class RPi5Client(AsyncWebSocketClient):
             heading: GPS heading in degrees (optional)
             fix_quality: GPS fix quality 0-2 (optional)
             satellites: Number of satellites (optional)
-            accelerometer: [x, y, z] m/s² (optional)
+            accelerometer: [x, y, z] m/s^2 (optional)
             gyroscope: [x, y, z] deg/s (optional)
-            magnetometer: [x, y, z] µT (optional)
+            magnetometer: [x, y, z] uT (optional)
             euler: [heading, roll, pitch] degrees (optional)
             calibration: [sys, gyro, accel, mag] 0-3 (optional)
             environment: 'indoor', 'outdoor', or 'unknown' (optional)

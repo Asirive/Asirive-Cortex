@@ -89,7 +89,7 @@ class IntentRouter:
         # Word stems (any word starting with these → L3 candidate)
         self._l3_stems = {"navigat", "route"}
         # Exact word hits (individual words that signal L3)
-        self._l3_words = {"navigate", "navigation", "directions", "bus", "gps"}
+        self._l3_words = {"navigate", "navigation", "directions", "bus", "gps", "stop"}
 
         # ===============================================================
         # LAYER 1: Object detection (fast, local YOLO)
@@ -107,7 +107,7 @@ class IntentRouter:
             "show me objects",
         ]
         # Exact word hits — single-word commands that clearly mean detection
-        self._l1_words = {"look", "identify", "detect", "count", "scan", "stop"}
+        self._l1_words = {"look", "identify", "detect", "count", "scan"}
 
         # ===============================================================
         # LAYER 2: Gemini (deep analysis, OCR, conversation, anything else)
@@ -186,7 +186,7 @@ class IntentRouter:
             "not go to", "not navigate to",
             "don't want directions", "dont want directions",
             "don't need directions", "dont need directions",
-            "cancel", "never mind", "nevermind",
+            "cancel that", "cancel it", "never mind", "nevermind",
         ]
         for pattern in negation_patterns:
             if pattern in text:

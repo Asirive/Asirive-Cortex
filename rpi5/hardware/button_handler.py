@@ -34,11 +34,11 @@ from typing import Callable, Optional
 logger = logging.getLogger(__name__)
 
 try:
-    import RPi.GPIO as GPIO
+    import lgpio
     GPIO_AVAILABLE = True
 except ImportError:
     GPIO_AVAILABLE = False
-    logger.info("ℹ️ RPi.GPIO not available — button in mock mode")
+    logger.info("ℹ️ lgpio not available — button in mock mode")
 
 
 class ButtonHandler:
@@ -80,6 +80,7 @@ class ButtonHandler:
         self._pin = gpio_pin
         self._enabled = enabled and GPIO_AVAILABLE
         self._auto_shutdown = auto_shutdown
+        self._chip_handle = None  # lgpio chip handle
 
         # Public callbacks — assign before calling start()
         self.on_short_press: Optional[Callable[[], None]] = None
@@ -108,8 +109,8 @@ class ButtonHandler:
             return True
 
         try:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setup(self._pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+            self._chip_handle = lgpio.gpiochip_open(0)
+            lgpio.gpio_claim_input(self._chip_handle, self._pin, lgpio.SET_PULL_UP)
             logger.info(f"✅ Button on GPIO {self._pin} (BCM) with internal pull-up")
         except Exception as exc:
             logger.error(f"❌ Button GPIO setup failed: {exc}")
@@ -128,9 +129,10 @@ class ButtonHandler:
         self._running = False
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=3.0)
-        if self._enabled:
+        if self._enabled and self._chip_handle is not None:
             try:
-                GPIO.cleanup(self._pin)
+                lgpio.gpiochip_close(self._chip_handle)
+                self._chip_handle = None
             except Exception:
                 pass
         logger.info("🛑 Button handler stopped")
@@ -143,19 +145,19 @@ class ButtonHandler:
         """
         Poll the button pin state.
 
-        Pin is HIGH at rest (pull-up active).
-        Pin goes LOW when button is pressed.
+        Pin is HIGH (1) at rest (pull-up active).
+        Pin goes LOW (0) when button is pressed.
         """
         logger.debug(f"Button monitor thread started on GPIO {self._pin}")
-        prev_state = GPIO.HIGH  # Track previous state for edge detection
+        prev_state = 1  # HIGH at rest
 
         while self._running:
-            state = GPIO.input(self._pin)
+            state = lgpio.gpio_read(self._chip_handle, self._pin)
 
             # Falling edge: button pressed (HIGH → LOW)
-            if prev_state == GPIO.HIGH and state == GPIO.LOW:
+            if prev_state == 1 and state == 0:
                 time.sleep(self.DEBOUNCE_S)  # Debounce
-                if GPIO.input(self._pin) == GPIO.LOW:  # Still pressed after debounce
+                if lgpio.gpio_read(self._chip_handle, self._pin) == 0:  # Still pressed after debounce
                     self._handle_press()
 
             prev_state = state
@@ -173,7 +175,7 @@ class ButtonHandler:
         logger.debug("🔘 Button pressed — measuring hold duration")
 
         # Wait for release (or very-long press timeout)
-        while GPIO.input(self._pin) == GPIO.LOW and self._running:
+        while lgpio.gpio_read(self._chip_handle, self._pin) == 0 and self._running:
             held = time.monotonic() - press_start
             if held >= self.VERY_LONG_PRESS:
                 logger.info(f"🔘 Very-long press ({held:.1f}s) — triggering shutdown")
@@ -181,7 +183,7 @@ class ButtonHandler:
                 if self._auto_shutdown:
                     self._do_shutdown()
                 # Wait for release so we don't re-trigger
-                while GPIO.input(self._pin) == GPIO.LOW:
+                while lgpio.gpio_read(self._chip_handle, self._pin) == 0:
                     time.sleep(0.1)
                 return
             time.sleep(0.05)

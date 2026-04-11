@@ -57,10 +57,13 @@ class YOLOGuardian:
     # Safety-critical object classes (COCO subset)
     # NOTE: Only COCO-80 classes are listed here. Stair/curb/wall detection
     # is handled by Hailo depth estimation (HailoDepthEstimator), not YOLO.
+    # Overhead hazards (signboard, branch, scaffolding) are detected by
+    # Layer 1 (YOLOE) open-vocabulary text prompts, not this static model.
     SAFETY_CLASSES = {
         'person', 'bicycle', 'car', 'motorcycle', 'bus', 'truck',
         'traffic light', 'fire hydrant', 'stop sign', 'bench',
         'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
+        'umbrella', 'backpack', 'suitcase',  # torso/head-height objects in crowds
     }
     
     # Proximity thresholds for haptic feedback (based on bbox area)

@@ -20,14 +20,18 @@ from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
-# Alert definitions: alert_key -> spoken text
+# Alert definitions: alert_key -> spoken text template
+# Use {distance} placeholder for runtime distance injection
 ALERT_TEXTS: Dict[str, str] = {
-    "wall":                "Wall ahead!",
-    "stairs_down":         "Stairs going down!",
-    "stairs_up":           "Stairs going up!",
-    "curb":                "Step ahead!",
-    "dropoff":             "Drop off ahead! Stop!",
-    "approaching_object":  "Watch out! Something approaching!",
+    "wall":                "Wall, {distance} ahead",
+    "stairs_down":         "Stairs going down, {distance} ahead",
+    "stairs_up":           "Stairs going up, {distance} ahead",
+    "curb":                "Step, {distance} ahead",
+    "dropoff":             "Drop off, {distance} ahead. Stop!",
+    "approaching_object":  "Something approaching, {distance} away",
+    "overhead":            "Overhead obstacle, {distance} ahead. Duck!",
+    "signboard":           "Low signboard ahead, {distance}",
+    "branch":              "Low branch ahead, {distance}",
 }
 
 
@@ -151,16 +155,20 @@ class AudioAlertManager:
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return False
 
-    def play(self, alert_key: str, blocking: bool = False) -> bool:
+    def play(self, alert_key: str, blocking: bool = False, distance_m: float = None) -> bool:
         """
-        Play an alert clip if not on cooldown.
+        Speak an alert with distance info if not on cooldown.
+        
+        Uses espeak-ng for real-time speech with distance, falling back to
+        pre-recorded clips if espeak is unavailable.
         
         Args:
             alert_key: Alert type (e.g., "wall", "stairs_down", "dropoff")
             blocking: If True, wait for playback to complete
+            distance_m: Distance in meters (injected into speech text)
             
         Returns:
-            True if clip was played, False if on cooldown or unavailable
+            True if alert was spoken, False if on cooldown or unavailable
         """
         now = time.time()
         
@@ -170,23 +178,40 @@ class AudioAlertManager:
             logger.debug(f"Alert '{alert_key}' on cooldown ({now - last:.1f}s < {self.cooldown}s)")
             return False
         
-        # Get clip path
-        clip_path = self._clips.get(alert_key)
-        if not clip_path or not os.path.exists(clip_path):
-            logger.warning(f"Alert clip not found: {alert_key}")
-            return False
-
         self._last_played[alert_key] = now
 
-        if blocking:
-            return self._play_sync(clip_path)
+        # Build spoken text with distance
+        template = ALERT_TEXTS.get(alert_key, alert_key.replace("_", " "))
+        if distance_m is not None:
+            if distance_m < 1.0:
+                dist_str = f"{distance_m:.1f} meters"
+            else:
+                dist_str = f"{distance_m:.0f} meters"
+            text = template.format(distance=dist_str)
         else:
-            # Non-blocking playback in background thread
-            thread = threading.Thread(
-                target=self._play_sync,
-                args=(clip_path,),
-                daemon=True
-            )
+            text = template.replace(", {distance}", "").replace("{distance} ", "").replace("{distance}", "")
+
+        # Try real-time TTS with espeak-ng (dynamic distance in speech)
+        def _speak():
+            try:
+                result = subprocess.run(
+                    ["espeak-ng", "-s", "180", "-p", "50", "-a", "200", text],
+                    capture_output=True, timeout=5
+                )
+                if result.returncode == 0:
+                    return True
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                pass
+            # Fallback: play pre-recorded clip (no distance info)
+            clip_path = self._clips.get(alert_key)
+            if clip_path and os.path.exists(clip_path):
+                return self._play_sync(clip_path)
+            return False
+
+        if blocking:
+            return _speak()
+        else:
+            thread = threading.Thread(target=_speak, daemon=True)
             thread.start()
             return True
 

@@ -143,7 +143,8 @@ class HailoDepthEstimator:
         self._owns_vdevice = False  # True if we created the VDevice ourselves
         self._external_vdevice = vdevice  # Shared VDevice from caller
         self._infer_model = None
-        self._configured_infer_model = None
+        self._configured_cm = None          # Context manager from configure()
+        self._configured_infer_model = None  # Entered context (actual usable object)
 
         # Model dimensions (fast_depth)
         self.input_height = 224
@@ -190,8 +191,10 @@ class HailoDepthEstimator:
             logger.info(f"  Output: shape={self._infer_model.output().shape}")
             
             # Configure once, keep alive for all frames
-            self._configured_infer_model = self._infer_model.configure()
-            logger.info("  Configured InferModel (persistent)")
+            # configure() returns a context manager — must enter it
+            self._configured_cm = self._infer_model.configure()
+            self._configured_infer_model = self._configured_cm.__enter__()
+            logger.info("  Configured InferModel (persistent, context entered)")
             
             self._is_initialized = True
             logger.info("Hailo depth estimator initialized successfully")
@@ -204,6 +207,24 @@ class HailoDepthEstimator:
     def is_available(self) -> bool:
         """Whether the depth estimator is ready to use."""
         return HAILO_AVAILABLE and self._is_initialized
+
+    def cleanup(self) -> None:
+        """Release Hailo resources and exit configured model context."""
+        if self._configured_cm is not None:
+            try:
+                self._configured_cm.__exit__(None, None, None)
+            except Exception:
+                pass
+            self._configured_cm = None
+            self._configured_infer_model = None
+        if self._owns_vdevice and self._vdevice is not None:
+            try:
+                del self._vdevice
+            except Exception:
+                pass
+            self._vdevice = None
+        self._is_initialized = False
+        logger.info("Hailo depth estimator cleaned up")
 
     @property
     def avg_latency_ms(self) -> float:
@@ -238,8 +259,8 @@ class HailoDepthEstimator:
             rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
             input_data = rgb.astype(np.float32) / 255.0
             
-            # Add batch dimension: (1, 224, 224, 3)
-            input_data = np.expand_dims(input_data, axis=0)
+            # Ensure contiguous memory layout (required by Hailo bindings)
+            input_data = np.ascontiguousarray(input_data)
 
             # Run inference using modern API with bindings
             bindings = self._configured_infer_model.create_bindings()
@@ -248,7 +269,7 @@ class HailoDepthEstimator:
             bindings.output().set_buffer(output_buffer)
             self._configured_infer_model.run([bindings], 5000)
             
-            # Extract depth map from output buffer
+            # Extract depth map from pre-allocated output buffer
             depth_map = output_buffer
             
             # Remove batch dimension and squeeze to 2D

@@ -272,11 +272,11 @@ class DetectionRouter:
         gemini_objects = []
         
         # Common object patterns in Gemini responses
-        object_indicators = ["a ", "an ", "the ", "some ", "several "]
+        object_indicators = {"a", "an", "the", "some", "several"}
         words = gemini_response.lower().split()
         
         for i, word in enumerate(words):
-            if any(word.startswith(ind) for ind in object_indicators):
+            if word in object_indicators:
                 if i + 1 < len(words):
                     potential_object = words[i + 1].strip('.,!?')
                     

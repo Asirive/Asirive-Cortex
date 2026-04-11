@@ -704,14 +704,30 @@ class CameraHandler:
             else:
                 logger.warning("⚠️ IMX708 wide tuning file not found, using libcamera auto-detect")
             
+            logger.info(f"📷 [CAM-DEBUG] Importing Picamera2...")
             from picamera2 import Picamera2
+
+            # Enumerate available cameras BEFORE trying to open one
+            try:
+                cam_list = Picamera2.global_camera_info()
+                logger.info(f"📷 [CAM-DEBUG] Available cameras: {cam_list}")
+                logger.info(f"📷 [CAM-DEBUG] Number of cameras detected: {len(cam_list)}")
+                if not cam_list:
+                    logger.error("📷 [CAM-DEBUG] NO CAMERAS DETECTED by libcamera! Check ribbon cable & run: python3 -c 'from picamera2 import Picamera2; print(Picamera2.global_camera_info())'")
+            except Exception as enum_err:
+                logger.warning(f"📷 [CAM-DEBUG] Could not enumerate cameras: {enum_err}")
+
+            logger.info(f"📷 [CAM-DEBUG] Attempting to open camera_id={self.camera_id}, tuning_file={tuning_file_path}")
 
             # Load tuning file properly via Picamera2 API (more reliable than env var)
             if tuning_file_path:
+                logger.info(f"📷 [CAM-DEBUG] Loading tuning file...")
                 tuning = Picamera2.load_tuning_file(tuning_file_path)
+                logger.info(f"📷 [CAM-DEBUG] Tuning file loaded OK, creating Picamera2 instance...")
                 self.camera = Picamera2(self.camera_id, tuning=tuning)
                 logger.info(f"✅ Picamera2 initialized with explicit tuning: {tuning_file_path}")
             else:
+                logger.info(f"📷 [CAM-DEBUG] Creating Picamera2 instance (no tuning)...")
                 self.camera = Picamera2(self.camera_id)
                 logger.info("✅ Picamera2 initialized with auto-detected tuning")
             
@@ -722,17 +738,21 @@ class CameraHandler:
             
             # 2. Use Video Configuration (Better for high FPS/continuous than preview)
             #    BGR888 = direct OpenCV-compatible output from the ISP (no manual RGB→BGR needed)
+            logger.info(f"📷 [CAM-DEBUG] Creating video config: format=BGR888, size={self.resolution}, buffer_count=4")
             config = self.camera.create_video_configuration(
                 main={"format": 'BGR888', "size": self.resolution},
                 buffer_count=4  # Prevent starvation
             )
+            logger.info(f"📷 [CAM-DEBUG] Video config created: {config}")
             self.camera.configure(config)
+            logger.info(f"📷 [CAM-DEBUG] Camera configured OK")
             
             # 3. Enable Continuous Auto-Focus, Auto-Exposure, Auto White Balance
             # AfMode: 0=Manual, 1=Auto(Single), 2=Continuous
             # AwbMode: 0=Auto, 1=Incandescent, 2=Tungsten, 3=Fluorescent,
             #          4=Indoor, 5=Daylight, 6=Cloudy
             try:
+                logger.info(f"📷 [CAM-DEBUG] Setting camera controls (AF/AE/AWB)...")
                 self.camera.set_controls({
                     "AfMode": 2,
                     "AfSpeed": 1,       # Fast AF
@@ -744,7 +764,9 @@ class CameraHandler:
             except Exception as e:
                 logger.warning(f"⚠️ Could not set Camera Controls: {e}")
 
+            logger.info(f"📷 [CAM-DEBUG] Starting camera stream...")
             self.camera.start()
+            logger.info(f"📷 [CAM-DEBUG] Camera stream started OK")
             
             # 4. Give AWB/AE time to converge, then log actual gains
             import time as _time
@@ -834,7 +856,10 @@ class CameraHandler:
             self.use_picamera = False
             self._start_opencv()
         except Exception as e:
+            import traceback
             logger.error(f"❌ Failed to start Picamera2: {e}")
+            logger.error(f"❌ [CAM-DEBUG] Exception type: {type(e).__name__}")
+            logger.error(f"❌ [CAM-DEBUG] Full traceback:\n{traceback.format_exc()}")
             raise
 
     def _start_opencv(self):
@@ -1226,19 +1251,11 @@ class CortexSystem:
         self.voice_coordinator.initialize()
 
         # Wire GeminiLiveManager into voice pipeline.
-        # Raw audio is streamed continuously for ambient context, but
-        # Activity START/END signals are NOT sent automatically.
-        # Gemini responds only to explicit send_text() calls from the
-        # Gemini-first gate — this prevents Gemini from independently
-        # processing audio and responding to queries routed elsewhere
-        # (e.g., Layer 3 navigation commands).
+        # Raw audio is streamed continuously for ambient context.
+        # Gemini's built-in auto-VAD detects speech and decides when to
+        # respond.  Text commands via send_text() also trigger responses.
         if self.layer2 is not None:
             self.voice_coordinator.on_raw_audio = self._forward_audio_to_gemini
-            # Do NOT wire activity signals. Auto VAD is disabled, so without
-            # activity_start/end Gemini buffers audio but never processes it.
-            # Gemini responds ONLY to explicit send_text() calls from the
-            # Gemini-first gate. This prevents Gemini from independently
-            # responding to speech routed elsewhere (e.g., Layer 3 nav).
             logger.info("✅ Gemini Live wired into voice pipeline (text-command mode)")
 
         # Initialize Bluetooth Manager (will be connected in start() if configured)
@@ -1555,8 +1572,14 @@ class CortexSystem:
         Forward raw PCM audio to GeminiLiveManager (audio-to-audio path).
         Called by VoiceCoordinator for every 32ms VAD chunk (continuous stream).
         Video is sent separately at 1 FPS from the detection loop.
+
+        Skips forwarding while Gemini audio is playing to prevent echo
+        feedback (mic picks up speaker output → Gemini hears itself).
         """
         if not self.layer2 or not self.layer2.is_running:
+            return
+        # Suppress mic→Gemini while Gemini audio is playing (echo cancellation)
+        if self.gemini_audio_player and self.gemini_audio_player.is_playing:
             return
         try:
             self.layer2.send_audio(pcm_bytes, sample_rate)
@@ -1585,8 +1608,8 @@ class CortexSystem:
             query = cmd.get("query")
             if query:
                 logger.info(f"⌨️ Text Query: '{query}'")
-                # Use safe async runner instead of asyncio.run()
-                run_async_safe(self.handle_voice_command(query))
+                # Use safe async runner — NON-BLOCKING to avoid deadlocking event loop
+                run_async_safe(self.handle_voice_command(query), blocking=False)
 
         # New: Layer Control (Restart)
         elif action == "RESTART_LAYER":
@@ -1614,6 +1637,19 @@ class CortexSystem:
                 else:
                     self.layer1.mode = mode # Direct attribute fallback
                 logger.info(f"✅ Layer 1 switched to {mode}")
+
+        # New: Navigation commands from laptop dashboard
+        elif action == "NAVIGATION":
+            nav_data = cmd.get("navigation_data", {})
+            nav_action = nav_data.get("action", "")
+            if nav_action == "set_destination" and self.nav_engine:
+                dest = nav_data.get("destination", {})
+                dest_str = dest.get("name") or f"{dest.get('lat')},{dest.get('lon')}"
+                run_async_safe(self.nav_engine.start_navigation("current", dest_str), blocking=False)
+            elif nav_action == "cancel" and self.nav_engine:
+                run_async_safe(self.nav_engine.stop_navigation(), blocking=False)
+            else:
+                logger.warning(f"⚠️ Unhandled NAVIGATION action: {nav_action}")
 
     def set_mode(self, mode: str):
         """Set system operation mode"""
@@ -1677,7 +1713,21 @@ class CortexSystem:
             logger.warning("⚠️ BluetoothAudioManager not available")
             return
         
-        device_name = bluetooth_config.get('device_name', 'CMF Buds')
+        # Support new multi-device config: bluetooth.active_device -> bluetooth.devices.<key>.name
+        active_key = bluetooth_config.get('active_device')
+        devices_map = bluetooth_config.get('devices', {})
+        
+        if active_key and active_key in devices_map:
+            dev_cfg = devices_map[active_key]
+            device_name = dev_cfg.get('name', 'CMF Buds')
+            device_mac = dev_cfg.get('mac')
+            device_type = dev_cfg.get('type', 'unknown')
+            logger.info(f"🎧 Active earbud: {active_key} ({device_type}) -> '{device_name}' [{device_mac or 'no MAC'}]")
+        else:
+            # Legacy fallback
+            device_name = bluetooth_config.get('device_name', 'CMF Buds')
+            device_mac = None
+        
         auto_connect = bluetooth_config.get('auto_connect', True)
         
         if not auto_connect:
@@ -1689,6 +1739,7 @@ class CortexSystem:
         try:
             self.bt_manager = BluetoothAudioManager(
                 device_name=device_name,
+                mac_address=device_mac,
                 max_retries=bluetooth_config.get('retry_count', 3)
             )
             
@@ -1918,6 +1969,29 @@ class CortexSystem:
                     return {"status": "error", "message": str(e)}
             return {"status": "error", "message": "Spatial audio not available"}
 
+        elif name == "get_bus_arrival":
+            bus_stop_code = args.get("bus_stop_code", "")
+            if not bus_stop_code:
+                return {"error": "bus_stop_code is required"}
+            try:
+                from rpi5.layer2_thinker.lta_datamall import get_bus_arrivals
+                import asyncio
+                try:
+                    loop = asyncio.get_running_loop()
+                    # Already in an async context — run sync fallback
+                    from rpi5.layer2_thinker.lta_datamall import _get_bus_arrivals_sync, _get_api_key
+                    api_key = _get_api_key()
+                    if not api_key:
+                        return {"error": "LTA_API_KEY not configured"}
+                    result = _get_bus_arrivals_sync(bus_stop_code, api_key)
+                except RuntimeError:
+                    result = asyncio.run(get_bus_arrivals(bus_stop_code))
+                logger.info(f"🚌 Bus arrival query for stop {bus_stop_code}: {result.get('summary', '')}")
+                return result
+            except Exception as e:
+                logger.error(f"Bus arrival query failed: {e}")
+                return {"error": f"Bus arrival lookup failed: {e}"}
+
         return {"error": f"Unknown function: {name}"}
 
     def start(self):
@@ -1927,11 +2001,13 @@ class CortexSystem:
         self.running = True
 
         # Start camera
+        self.camera_available = False
         try:
             self.camera.start()
+            self.camera_available = True
         except Exception as e:
             logger.error(f"❌ Camera startup failed: {e}")
-            raise RuntimeError("Camera is required for demo — fix hardware and retry") from e
+            logger.warning("⚠️ Running in NO-CAMERA mode — detection/vision disabled, audio-only features active")
 
         # Connect to laptop dashboard
         if self.ws_client:
@@ -2034,7 +2110,7 @@ class CortexSystem:
                 loop_start = time.time()
 
                 # Privacy mode: skip all vision, keep sensors running
-                if self.privacy_mode:
+                if self.privacy_mode or not self.camera_available:
                     time.sleep(0.5)
                     continue
 
@@ -2155,7 +2231,7 @@ class CortexSystem:
 
                             # TTS voice for first-time Tier 1 hazards
                             if alert.needs_tts and self.audio_alerts:
-                                self.audio_alerts.play(alert.alert_type)
+                                self.audio_alerts.play(alert.alert_type, distance_m=alert.distance_m)
 
                             # Haptic pulse for critical Tier 1
                             if (alert.needs_haptic
@@ -2754,6 +2830,13 @@ class CortexSystem:
 
         logger.info(f"🎤 Voice command: '{query}'")
 
+        # Echo filter: if STT picked up Gemini's own speaker output, discard it
+        if (self.layer2
+            and hasattr(self.layer2, 'handler')
+            and self.layer2.handler.is_echo(query)):
+            logger.info(f"🔇 Discarding echo: '{query[:60]}'")
+            return
+
         # Get routing with detailed flags
         routing = self.intent_router.route_with_flags(query)
         target_layer = routing["layer"]
@@ -2794,6 +2877,8 @@ class CortexSystem:
             "i'm lost", "im lost", "i am lost", "retrace", "take me back",
             "go back", "bus", "next bus", "resume nav", "resume route",
             "continue nav", "continue route", "keep going", "find the",
+            "where am i", "where are we", "what location", "my location",
+            "current location",
         ]
         query_lower_check = query.lower().strip()
         is_nav_command = (
@@ -2861,7 +2946,7 @@ class CortexSystem:
                 logger.debug(f"Audio event send error: {e}")
 
         frame = self.camera.get_frame()
-        if frame is None:
+        if frame is None and target_layer != "layer3":
             logger.warning("⚠️  No frame available")
             # Speak error via TTS
             if self.tts:
@@ -3314,6 +3399,33 @@ class CortexSystem:
                     response = "Navigation is already active."
                 else:
                     response = "There's no active route to resume. Say navigate to, followed by your destination."
+
+            # --- Where am I: reverse geocode current position ---
+            elif any(kw in query_lower for kw in ["where am i", "where are we", "what location", "my location", "current location"]):
+                gps_fix = self.gps.get_fix() if self.gps else None
+                if gps_fix and gps_fix.latitude != 0.0:
+                    try:
+                        maps_key = os.environ.get('GOOGLE_MAPS_API_KEY', '')
+                        if maps_key:
+                            import requests
+                            geo_url = "https://maps.googleapis.com/maps/api/geocode/json"
+                            geo_resp = requests.get(geo_url, params={
+                                'latlng': f"{gps_fix.latitude},{gps_fix.longitude}",
+                                'key': maps_key,
+                            }, timeout=5)
+                            geo_data = geo_resp.json()
+                            if geo_data.get('results'):
+                                address = geo_data['results'][0].get('formatted_address', '')
+                                response = f"You're near {address}."
+                            else:
+                                response = f"You're at latitude {gps_fix.latitude:.4f}, longitude {gps_fix.longitude:.4f}."
+                        else:
+                            response = f"You're at latitude {gps_fix.latitude:.4f}, longitude {gps_fix.longitude:.4f}."
+                    except Exception as e:
+                        logger.warning(f"Reverse geocode error: {e}")
+                        response = f"You're at latitude {gps_fix.latitude:.4f}, longitude {gps_fix.longitude:.4f}."
+                else:
+                    response = "I can't get a GPS fix right now. Stay in an open area and try again."
 
             # --- Spatial audio beacon: "find the [object]" ---
             elif routing.get("use_spatial_audio") and self.navigator:
