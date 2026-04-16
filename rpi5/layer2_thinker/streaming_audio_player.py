@@ -17,6 +17,7 @@ import numpy as np
 import logging
 import threading
 import queue
+import time
 from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
@@ -71,7 +72,10 @@ class StreamingAudioPlayer:
         self._last_logged_chunks = -1  # Prevent log spam at same chunk count
         self._leftover: Optional[np.ndarray] = None  # Leftover samples from previous callback
         self._queue_full_count = 0  # Debounce queue-full warnings
-        self._silence_timeout = 3.0  # Auto-stop after N seconds of empty queue
+        self._silence_timeout = 5.0  # Auto-stop after N seconds of empty queue (was 8.0 — too long, user muted for 8+0.5s)
+        
+        # Timestamp when playback last stopped (for echo cooldown)
+        self._last_stop_time: float = 0.0
         
         # Callback for playback events
         self.on_start_callback: Optional[Callable] = None
@@ -86,12 +90,20 @@ class StreamingAudioPlayer:
             logger.warning("⚠️ Audio player already playing")
             return
         
+        # Prevent infinite thread spawning if audio device is broken
+        if getattr(self, '_start_failure_count', 0) >= 5:
+            logger.error("❌ Audio device permanently unavailable — giving up after 5 failures")
+            return
+        
         self.is_playing = True
         self.is_interrupted = False
         self._silence_count = 0
         self._chunks_played = 0
         self._leftover = None
         self._queue_full_count = 0
+        
+        # Bump generation counter so old playback thread won't close our stream
+        self._stream_generation = getattr(self, '_stream_generation', 0) + 1
         
         # Clear audio queue
         while not self.audio_queue.empty():
@@ -119,6 +131,9 @@ class StreamingAudioPlayer:
         if not self.is_playing:
             return
         
+        # Set stop time BEFORE is_playing=False to prevent race condition
+        # where another thread sees is_playing=False + stale _last_stop_time
+        self._last_stop_time = time.time()
         self.is_playing = False
         self.is_interrupted = interrupted
         
@@ -178,6 +193,7 @@ class StreamingAudioPlayer:
     
     def _playback_loop(self):
         """Background thread for audio playback."""
+        my_generation = self._stream_generation  # Capture at thread start
         try:
             # Open audio output stream
             self.stream = sd.OutputStream(
@@ -205,29 +221,40 @@ class StreamingAudioPlayer:
                     logger.info(f"🔊 Audio player: {self._chunks_played} chunks played, qsize={qsize}")
                 
                 # Auto-stop after silence timeout (queue drained, no new audio)
-                if qsize == 0 and self._chunks_played > 0:
-                    if silence_start is None:
-                        silence_start = _time.time()
-                    else:
-                        if _time.time() - silence_start >= self._silence_timeout:
+                # Also handles startup case where player was started but no audio ever arrived
+                if qsize == 0:
+                    if self._chunks_played > 0 or (silence_start is not None and _time.time() - silence_start >= self._silence_timeout):
+                        if silence_start is None:
+                            silence_start = _time.time()
+                        elif _time.time() - silence_start >= self._silence_timeout:
                             logger.info(f"🔇 Audio player auto-stopping after {self._silence_timeout}s of silence")
+                            self._last_stop_time = _time.time()
                             self.is_playing = False
                             break
+                    elif silence_start is None:
+                        silence_start = _time.time()
                 else:
                     silence_start = None
             
         except Exception as e:
             logger.error(f"❌ Audio playback error: {e}")
+            self._last_stop_time = time.time()
             self.is_playing = False
+            self._start_failure_count = getattr(self, '_start_failure_count', 0) + 1
         finally:
-            stream = self.stream
-            self.stream = None
-            if stream:
-                try:
-                    stream.stop()
-                    stream.close()
-                except Exception as e:
-                    logger.debug(f"Stream cleanup in _playback_loop: {e}")
+            # Only close our own stream (generation check prevents race condition
+            # where old thread closes a newly opened stream)
+            if getattr(self, '_stream_generation', 0) == my_generation:
+                stream = self.stream
+                self.stream = None
+                if stream:
+                    try:
+                        stream.stop()
+                        stream.close()
+                    except Exception as e:
+                        logger.debug(f"Stream cleanup in _playback_loop: {e}")
+            else:
+                logger.debug("Skipping stream cleanup — newer generation took over")
     
     def _audio_callback(self, outdata, frames, time_info, status):
         """

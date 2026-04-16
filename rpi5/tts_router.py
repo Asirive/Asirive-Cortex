@@ -18,6 +18,7 @@ import logging
 import asyncio
 import time
 import re
+import threading
 from typing import Optional, Tuple, Callable
 from pathlib import Path
 
@@ -129,10 +130,26 @@ class TTSRouter:
         self._gemini_available = False
         self._kokoro_available = False
         self._cartesia_available = False
+        self._playback_lock = threading.Lock()
+        self._active_playbacks = 0
         
         self._initialized = True
         logger.info(f"TTSRouter initialized (threshold: {length_threshold} chars)")
         logger.info(f"TTS recordings will be saved to: {self.recordings_dir.absolute()}")
+
+    @property
+    def is_playing(self) -> bool:
+        """Return True while any local TTS playback is active."""
+        with self._playback_lock:
+            return self._active_playbacks > 0
+
+    def _mark_playback_start(self):
+        with self._playback_lock:
+            self._active_playbacks += 1
+
+    def _mark_playback_end(self):
+        with self._playback_lock:
+            self._active_playbacks = max(0, self._active_playbacks - 1)
     
     def _save_recording(self, audio_data: bytes, engine: str, text: str):
         """
@@ -436,21 +453,24 @@ class TTSRouter:
             return False, None
     
     async def _play_audio_file(self, audio_path: str):
-        """Play an audio file via aplay (Linux) or sounddevice (fallback).
+        """Play an audio file via paplay (Linux/PipeWire) or sounddevice (fallback).
         
-        On Linux (RPi5), uses aplay to avoid PortAudio mutex contention
-        between PyAudio (VAD input) and sounddevice (Gemini output).
+        On Linux (RPi5), uses paplay (PipeWire-aware) so audio routes through
+        the correct BT default sink set by BluetoothAudioManager.
         """
         import platform
+        self._mark_playback_start()
         if platform.system() == "Linux":
             import subprocess
             try:
                 await asyncio.to_thread(
-                    subprocess.run, ["aplay", "-q", audio_path],
+                    subprocess.run, ["paplay", audio_path],
                     check=False, timeout=30
                 )
             except Exception as e:
-                logger.error(f"aplay error: {e}")
+                logger.error(f"paplay error: {e}")
+            finally:
+                self._mark_playback_end()
             return
         
         # Non-Linux fallback
@@ -462,14 +482,17 @@ class TTSRouter:
             sd.wait()
         except Exception as e:
             logger.error(f"Audio playback error: {e}")
+        finally:
+            self._mark_playback_end()
     
     async def _play_audio_samples(self, samples, sample_rate: int):
-        """Play audio samples via aplay (Linux) or sounddevice (fallback).
+        """Play audio samples via paplay (Linux/PipeWire) or sounddevice (fallback).
         
-        On Linux (RPi5), writes a temp WAV and uses aplay to avoid
-        PortAudio mutex contention with concurrent PyAudio/sounddevice streams.
+        On Linux (RPi5), writes a temp WAV and uses paplay (PipeWire-aware)
+        so audio routes through the correct BT default sink.
         """
         import platform
+        self._mark_playback_start()
         if platform.system() == "Linux":
             import tempfile
             import wave
@@ -488,17 +511,18 @@ class TTSRouter:
                             samples = (samples * 32767).astype(np.int16)
                         wf.writeframes(samples.tobytes())
                 await asyncio.to_thread(
-                    subprocess.run, ["aplay", "-q", temp_path],
+                    subprocess.run, ["paplay", temp_path],
                     check=False, timeout=30
                 )
             except Exception as e:
-                logger.error(f"aplay samples error: {e}")
+                logger.error(f"paplay samples error: {e}")
             finally:
                 if temp_path:
                     try:
                         os.unlink(temp_path)
                     except OSError:
                         pass
+                self._mark_playback_end()
             return
         
         # Non-Linux fallback
@@ -508,6 +532,8 @@ class TTSRouter:
             sd.wait()
         except Exception as e:
             logger.error(f"Audio playback error: {e}")
+        finally:
+            self._mark_playback_end()
 
 
 # =============================================================================

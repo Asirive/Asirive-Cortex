@@ -156,6 +156,73 @@ class HybridMemoryManager:
         logger.info("✅ Local SQLite database initialized")
         return conn
 
+    def recall(self, object_name: str, latest: bool = True) -> Optional[Dict[str, Any]]:
+        """Legacy object-recall adapter used by Gemini tool calls."""
+        try:
+            cursor = self.local_db.cursor()
+            search_term = f"%{object_name}%"
+            order_clause = "DESC" if latest else "ASC"
+
+            columns = {
+                row[1] for row in cursor.execute("PRAGMA table_info(conversations_local)").fetchall()
+            }
+
+            if "full_response" in columns:
+                row = cursor.execute(
+                    f"""
+                    SELECT COALESCE(full_response, content), timestamp
+                    FROM conversations_local
+                    WHERE LOWER(content) LIKE LOWER(?)
+                       OR LOWER(full_response) LIKE LOWER(?)
+                    ORDER BY timestamp {order_clause}
+                    LIMIT 1
+                    """,
+                    (search_term, search_term),
+                ).fetchone()
+            else:
+                row = cursor.execute(
+                    f"""
+                    SELECT content, timestamp
+                    FROM conversations_local
+                    WHERE LOWER(content) LIKE LOWER(?)
+                    ORDER BY timestamp {order_clause}
+                    LIMIT 1
+                    """,
+                    (search_term,),
+                ).fetchone()
+
+            if row:
+                description, timestamp = row
+                return {
+                    "object_name": object_name,
+                    "description": description or "",
+                    "location_estimate": "",
+                    "timestamp": datetime.fromtimestamp(timestamp).isoformat() if timestamp else "",
+                }
+
+            detection_row = cursor.execute(
+                f"""
+                SELECT class_name, timestamp
+                FROM detections_local
+                WHERE LOWER(class_name) LIKE LOWER(?)
+                ORDER BY timestamp {order_clause}
+                LIMIT 1
+                """,
+                (search_term,),
+            ).fetchone()
+            if detection_row:
+                class_name, timestamp = detection_row
+                return {
+                    "object_name": class_name,
+                    "description": f"I last logged a detection for {class_name}.",
+                    "location_estimate": "",
+                    "timestamp": datetime.fromtimestamp(timestamp).isoformat() if timestamp else "",
+                }
+        except Exception as e:
+            logger.debug(f"Recall adapter failed for '{object_name}': {e}")
+
+        return None
+
     async def init_supabase(self):
         """Lazy initialization of Supabase client"""
         # H26: If disabled, check if cooldown has elapsed for retry

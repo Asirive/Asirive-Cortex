@@ -291,7 +291,7 @@ class NavigationEngine:
         self.api_key = api_key
         self.gps = gps
         self.imu = imu
-        self.spatial_audio = spatial_audio
+        self.spatial_audio = spatial_audio  # SCRAPPED — kept for API compat, never used
         self.tts = tts
         self.on_mode_change = on_mode_change
         self.on_arrival = on_arrival
@@ -927,11 +927,10 @@ class NavigationEngine:
                 f"{len(route.waypoints)} waypoints"
             )
 
-        # Start beacon for first walking leg (or whole walking route)
+        # Start beacon for first walking leg (SCRAPPED)
         first_leg = self._current_leg
         if not first_leg or first_leg.leg_type == LegType.WALKING:
-            if self.spatial_audio:
-                self.spatial_audio.start_beacon("navigation_target")
+            pass  # was: self.spatial_audio.start_beacon("navigation_target")
 
         # Build nav event payload
         nav_event_data = {
@@ -971,8 +970,7 @@ class NavigationEngine:
                 pass
             self._nav_task = None
 
-        if self.spatial_audio:
-            self.spatial_audio.stop_beacon()
+        # Spatial audio beacon SCRAPPED
 
         self.state = NavState.INACTIVE
         self.route = None
@@ -982,21 +980,17 @@ class NavigationEngine:
         logger.info("Navigation stopped")
 
     async def pause_navigation(self):
-        """Pause navigation (e.g., for road crossing). Beacon stops, loop keeps running to detect crossing."""
+        """Pause navigation (e.g., for road crossing)."""
         self.state = NavState.PAUSED
         self._road_crossing_active = True
         # Record position at crossing for movement detection
         self._road_crossing_pos = self._get_current_position()
-        if self.spatial_audio:
-            self.spatial_audio.stop_beacon()
         logger.info("Navigation paused (road crossing)")
 
     async def resume_navigation(self):
         """Resume navigation after pause."""
         self.state = NavState.NAVIGATING
         self._road_crossing_active = False
-        if self.spatial_audio:
-            self.spatial_audio.start_beacon("navigation_target")
         await self._speak("Continuing navigation.")
         logger.info("Navigation resumed")
 
@@ -1023,15 +1017,13 @@ class NavigationEngine:
         logger.info(f"🧭 [NAV] Advancing to leg {next_idx}: {leg.leg_type.value}")
 
         if leg.leg_type == LegType.WALKING:
-            # Walking leg: set up waypoints and resume beacon
+            # Walking leg: set up waypoints
             self.state = NavState.NAVIGATING
             self._set_mode(NavMode.OUTDOOR)
             self.current_waypoint_idx = 0
             self._turn_announced.clear()  # Reset turn tracking for new leg
             self._vehicle_slow_start = None
             self._leg_waypoints = leg.waypoints if leg.waypoints else None
-            if self.spatial_audio:
-                self.spatial_audio.start_beacon("navigation_target")
             walk_min = leg.duration_s / 60 if leg.duration_s else 0
             await self._speak(
                 f"Walk {leg.distance_m:.0f} meters, about {walk_min:.0f} minutes. "
@@ -1045,10 +1037,8 @@ class NavigationEngine:
             })
 
         elif leg.leg_type in (LegType.BUS, LegType.MRT):
-            # Transit leg: stop beacon, wait for vehicle
+            # Transit leg: wait for vehicle
             self.state = NavState.WAITING_FOR_BUS
-            if self.spatial_audio:
-                self.spatial_audio.stop_beacon()
 
             ti = leg.transit_info
             if ti:
@@ -1131,9 +1121,7 @@ class NavigationEngine:
                             continue
                     if self.mode != NavMode.INDOOR:
                         self._set_mode(NavMode.INDOOR)
-                    # Indoor: keep beacon alive by ticking
-                    if self.spatial_audio and hasattr(self.spatial_audio, 'tick_beacon'):
-                        self.spatial_audio.tick_beacon()
+                    # Spatial audio beacon tick SCRAPPED
                     await asyncio.sleep(interval)
                     continue
 
@@ -1251,8 +1239,6 @@ class NavigationEngine:
                     if gps_speed > 15.0:
                         if self.mode != NavMode.TRANSIT:
                             self._set_mode(NavMode.TRANSIT)
-                            if self.spatial_audio:
-                                self.spatial_audio.stop_beacon()
                             await self._speak("You're on a vehicle. I'll track your progress.")
                     elif self.mode == NavMode.TRANSIT:
                         # Speed dropped — exited vehicle
@@ -1283,35 +1269,8 @@ class NavigationEngine:
                 # 5. Relative angle from user heading
                 rel_angle = relative_angle(target_bearing, user_heading)
 
-                # 6. Update audio beam position
-                if self.spatial_audio and not self._road_crossing_active:
-                    if self.mode == NavMode.INDOOR:
-                        # Indoor: keep beacon pinging at last Gemini-set direction
-                        if hasattr(self.spatial_audio, 'tick_beacon'):
-                            self.spatial_audio.tick_beacon()
-                    else:
-                        hrtf_pos = angle_to_hrtf_position(rel_angle, dist_to_wp)
-                        # Update beacon via SpatialAudioManager's API
-                        if Position3D and hasattr(self.spatial_audio, '_update_beacon_position'):
-                            pos3d = Position3D(
-                                x=hrtf_pos[0], y=hrtf_pos[1], z=hrtf_pos[2],
-                                distance_meters=dist_to_wp
-                            )
-                            self.spatial_audio._update_beacon_position(pos3d)
-                        # Degraded beacon: reduce volume when GPS is stale/inaccurate
-                        beacon_src = getattr(self.spatial_audio, '_beacon_source', None)
-                        if beacon_src and hasattr(self.spatial_audio, 'comfort'):
-                            if self._gps_accuracy > 500:
-                                # Stale/last-known GPS — quiet beacon signals uncertainty
-                                beacon_src.set_gain(
-                                    self.spatial_audio.comfort.master_volume * 0.2
-                                )
-                            else:
-                                # Normal GPS — full beacon volume
-                                beacon_src.set_gain(
-                                    self.spatial_audio.comfort.master_volume *
-                                    self.spatial_audio.comfort.beacon_volume
-                                )
+                # 6. Audio beam position update SCRAPPED
+                # Legacy spatial audio code in rpi5/layer3_guide/spatial_audio/
 
                 # 7. Check for upcoming turn announcement
                 await self._check_turn_announcement(current_pos, dist_to_wp)
@@ -1358,8 +1317,6 @@ class NavigationEngine:
                             # Arrived at final destination
                             self.state = NavState.ARRIVED
                             self._running = False
-                            if self.spatial_audio:
-                                self.spatial_audio.stop_beacon()
                             await self._speak("You've arrived at your destination.")
                             self._fire_nav_event("arrived", {
                                 "destination": self.route.destination,

@@ -53,7 +53,7 @@ class RPiWebSocketClient:
         if host is None:
             from rpi5.config.config import get_config
             config = get_config()
-            host = config.get('laptop_server', {}).get('host', '10.135.122.101')
+            host = config.get('laptop_server', {}).get('host', '10.245.247.101')
         
         """
         Initialize WebSocket client
@@ -85,6 +85,7 @@ class RPiWebSocketClient:
         # Message queue (for thread-safe communication)
         self.message_queue = queue.Queue(maxsize=queue_size)
         self.queue_lock = Lock()
+        self._queue_full_warned = False  # Log queue-full once, suppress until reconnect
 
         # Connection state
         self.connect_time: Optional[datetime] = None
@@ -109,6 +110,7 @@ class RPiWebSocketClient:
 
                 self.is_connected = True
                 self.connect_time = datetime.now()
+                self._queue_full_warned = False  # Reset on reconnect
 
                 logger.info(f"? Connected to laptop dashboard")
                 await self._send_status("connected", f"Device {self.device_id} connected")
@@ -195,7 +197,9 @@ class RPiWebSocketClient:
             try:
                 self.message_queue.put_nowait(message)
             except queue.Full:
-                logger.warning("??  Message queue full, dropping message")
+                if not self._queue_full_warned:
+                    logger.warning("⚠️  Message queue full (laptop unreachable), suppressing further")
+                    self._queue_full_warned = True
             return
 
         try:
@@ -393,7 +397,9 @@ class RPiWebSocketClient:
             try:
                 self.message_queue.put_nowait(message)
             except queue.Full:
-                logger.warning("??  Message queue full, dropping message")
+                if not self._queue_full_warned:
+                    logger.warning("⚠️  Message queue full (laptop unreachable), suppressing further")
+                    self._queue_full_warned = True
 
 
 # ============================================================================

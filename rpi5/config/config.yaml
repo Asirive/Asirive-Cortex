@@ -31,6 +31,7 @@ supabase:
 # LAYER 0: THE GUARDIAN (Safety-Critical Detection)
 # =====================================================
 layer0:
+  enabled: false  # Disabled for now as per user request
   model_path: "models/converted/yolo26n_ncnn_model"  # YOLO v26n NCNN - user requested
   framework: "ncnn"  # NCNN - ARM-optimized for RPi5
   device: "cpu"  # Options: 'cpu' (RPi), 'cuda' (laptop with GPU)
@@ -207,7 +208,7 @@ camera:
   use_picamera: true  # True for RPi5 (Picamera2), False for laptop (OpenCV)
   resolution: [1920, 1080]  # Width, Height
   fps: 30  # Target FPS
-  format: "BGR888"  # Pixel format (Picamera2) - BGR888 = native OpenCV format
+  format: "RGB888"  # Picamera2 output format; main.py converts RGB frames back to OpenCV BGR
   rotation: -90  # Degrees: 0, 90, -90, 180 (for sideways-mounted camera)
 
   # Auto-exposure settings
@@ -388,7 +389,7 @@ development:
 # LAPTOP SERVER CONFIGURATION
 # =====================================================
 laptop_server:
-  host: "10.135.122.101"  # Laptop IP address - UPDATE THIS for your network
+  host: "10.245.247.101"  # Laptop IP address - UPDATE THIS for your network
   port: 8765
 
 # =====================================================
@@ -403,7 +404,7 @@ zmq:
 # RPI5 DEVICE CONFIGURATION (for sync tools)
 # =====================================================
 rpi5_device:
-  host: "10.135.122.31"  # RPi5 IP address - used by sync tools
+  host: "10.245.247.31"  # RPi5 IP address - used by sync tools
   user: "cortex"  # SSH username for sync
   path: "/home/cortex/ProjectCortex"  # Remote path for sync
 
