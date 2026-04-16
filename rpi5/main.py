@@ -25,6 +25,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import threading
@@ -115,10 +116,15 @@ if dotenv_path.exists():
 # THREADING OPTIMIZATION (Must be set before importing Torch/NCNN)
 # =====================================================
 # Read directly from config file as we haven't loaded the full config module yet
+_cfg = {}
+_layer0_enabled = False
+_layer1_enabled = False
 try:
     with open('rpi5/config/config.yaml') as f:
-        _cfg = yaml.safe_load(f)
+        _cfg = yaml.safe_load(f) or {}
         _threads = str(_cfg.get('performance', {}).get('cpu_threads', 3))
+        _layer0_enabled = bool(_cfg.get('layer0', {}).get('enabled', False))
+        _layer1_enabled = bool(_cfg.get('layer1', {}).get('enabled', False))
         
         logger.info(f"🚀 Performance Optimization: Setting OMP_NUM_THREADS={_threads}")
         os.environ["OMP_NUM_THREADS"] = _threads
@@ -132,18 +138,27 @@ except Exception as e:
 # IMPORT LAYERS
 # =====================================================
 logger.info("[DEBUG] ===== LAYER IMPORTS STARTING =====")
-try:
-    from rpi5.layer0_guardian import YOLOGuardian
-    logger.info("[DEBUG] ✅ Layer 0 (Guardian) imported successfully")
-except ImportError as e:
-    logger.error(f"[DEBUG] ❌ Layer 0 (Guardian) import failed: {e}")
+if _layer0_enabled:
+    try:
+        from rpi5.layer0_guardian import YOLOGuardian
+        logger.info("[DEBUG] ✅ Layer 0 (Guardian) imported successfully")
+    except ImportError as e:
+        logger.error(f"[DEBUG] ❌ Layer 0 (Guardian) import failed: {e}")
+        YOLOGuardian = None
+else:
+    logger.info("[DEBUG] ⏭️ Skipping Layer 0 (Guardian) import because layer0.enabled=false")
     YOLOGuardian = None
 
-try:
-    from rpi5.layer1_learner import YOLOELearner, YOLOEMode
-    logger.info("[DEBUG] ✅ Layer 1 (Learner) imported successfully")
-except ImportError as e:
-    logger.error(f"[DEBUG] ❌ Layer 1 (Learner) import failed: {e}")
+if _layer1_enabled:
+    try:
+        from rpi5.layer1_learner import YOLOELearner, YOLOEMode
+        logger.info("[DEBUG] ✅ Layer 1 (Learner) imported successfully")
+    except ImportError as e:
+        logger.error(f"[DEBUG] ❌ Layer 1 (Learner) import failed: {e}")
+        YOLOELearner = None
+        YOLOEMode = None
+else:
+    logger.info("[DEBUG] ⏭️ Skipping Layer 1 (Learner) import because layer1.enabled=false")
     YOLOELearner = None
     YOLOEMode = None
 
@@ -166,14 +181,13 @@ try:
     from rpi5.layer3_guide.router import IntentRouter
     from rpi5.layer3_guide.detection_router import DetectionRouter
     from rpi5.layer3_guide import Navigator
-    from rpi5.layer3_guide.spatial_audio.manager import SpatialAudioManager
-    logger.info("[DEBUG] ✅ Layer 3 (Router + Navigator + SpatialAudio) imported successfully")
+    # NOTE: SpatialAudioManager SCRAPPED — legacy code kept in rpi5/layer3_guide/spatial_audio/
+    logger.info("[DEBUG] ✅ Layer 3 (Router + Navigator) imported successfully")
 except ImportError as e:
     logger.error(f"[DEBUG] ❌ Layer 3 (Router) import failed: {e}")
     IntentRouter = None
     DetectionRouter = None
     Navigator = None
-    SpatialAudioManager = None
 
 try:
     from rpi5.layer4_memory.hybrid_memory_manager import HybridMemoryManager
@@ -342,16 +356,28 @@ def run_async_safe(coro, blocking=True):
         # No running loop, safe to use asyncio.run()
         return asyncio.run(coro)
     else:
-        # Loop is running, schedule coroutine
-        future = asyncio.run_coroutine_threadsafe(coro, loop)
         if not blocking:
-            return future  # fire-and-forget — don't block the caller
-        try:
-            # Wait for result with timeout
-            return future.result(timeout=30)
-        except Exception as e:
-            logger.error(f"Async execution failed: {e}")
+            return asyncio.create_task(coro)
+
+        result_holder = {}
+        done_event = threading.Event()
+
+        def _worker():
+            try:
+                result_holder["result"] = asyncio.run(coro)
+            except Exception as worker_error:
+                result_holder["error"] = worker_error
+            finally:
+                done_event.set()
+
+        threading.Thread(target=_worker, daemon=True).start()
+        if not done_event.wait(timeout=30):
+            logger.error("Async execution failed: timed out waiting for worker coroutine")
             return None
+        if "error" in result_holder:
+            logger.error(f"Async execution failed: {result_holder['error']}")
+            return None
+        return result_holder.get("result")
 
 
 # =====================================================
@@ -401,6 +427,10 @@ class StatusDisplay:
         self._imu_heading = 0.0
         self._imu_calibration = [0, 0, 0, 0]  # sys, gyro, accel, mag
         self._environment = "unknown"
+        
+        # AI routing state
+        self._ai_active = False  # True = Gemini routing, False = local IntentRouter
+        self._ai_last_call = ""  # Last function call from Gemini
         
         # Rich console and live display - use shared console to prevent logging interference
         self._console = _rich_console  # Use the module-level shared console
@@ -494,6 +524,14 @@ class StatusDisplay:
                     getattr(imu_reading, 'cal_accel', 0),
                     getattr(imu_reading, 'cal_mag', 0),
                 ]
+        self._refresh()
+    
+    def update_ai(self, active: bool, last_call: str = ""):
+        """Update AI routing display (thread-safe)."""
+        with self._lock:
+            self._ai_active = active
+            if last_call:
+                self._ai_last_call = last_call
         self._refresh()
     
     def _format_classes(self, classes: List[str], max_show: int = 8) -> str:
@@ -603,6 +641,20 @@ class StatusDisplay:
                 table.add_row(row4)
                 table.add_row(row5)
                 
+                # Row 6: AI routing status
+                row6 = Text()
+                row6.append("AI:          ", style="bold yellow")
+                if self._ai_active:
+                    row6.append("🤖 GEMINI ROUTING", style="bold green")
+                    if self._ai_last_call:
+                        # Truncate long function call strings
+                        call_display = self._ai_last_call[:50]
+                        row6.append(f"  |  Last: {call_display}", style="dim")
+                else:
+                    row6.append("⚡ LOCAL ROUTING", style="bold yellow")
+                
+                table.add_row(row6)
+                
                 return Panel(
                     table,
                     title="[bold white]ProjectCortex Status[/bold white]",
@@ -660,12 +712,21 @@ def init_status_display() -> StatusDisplay:
 class CameraHandler:
     """Continuous camera frame capture with threading"""
 
-    def __init__(self, camera_id: int = 0, use_picamera: bool = True, resolution: tuple = (1920, 1080), fps: int = 30, rotation: int = 0):
+    def __init__(
+        self,
+        camera_id: int = 0,
+        use_picamera: bool = True,
+        resolution: tuple = (1920, 1080),
+        fps: int = 30,
+        rotation: int = 0,
+        pixel_format: str = "RGB888",
+    ):
         self.camera_id = camera_id
         self.use_picamera = use_picamera
         self.resolution = resolution
         self.fps = fps
         self.rotation = rotation  # 0, 90, -90 (or 270), 180
+        self.pixel_format = str(pixel_format or "RGB888").upper()
         self.camera = None
         self.running = False
         self.latest_frame = None
@@ -686,6 +747,7 @@ class CameraHandler:
             self._start_opencv()
 
         logger.info(f"✅ Camera started: {self.camera_id} @ {self.resolution[0]}x{self.resolution[1]}"
+                    f", format={self.pixel_format}"
                     f"{f', rotation={self.rotation}°' if self.rotation else ''}")
 
     def _start_picamera(self):
@@ -736,11 +798,15 @@ class CameraHandler:
             logger.info(f"📷 Camera model: {cam_info.get('Model', 'unknown')}, "
                         f"Rotation: {cam_info.get('Rotation', 'N/A')}")
             
-            # 2. Use Video Configuration (Better for high FPS/continuous than preview)
-            #    BGR888 = direct OpenCV-compatible output from the ISP (no manual RGB→BGR needed)
-            logger.info(f"📷 [CAM-DEBUG] Creating video config: format=BGR888, size={self.resolution}, buffer_count=4")
+            # 2. Use Video Configuration (better for continuous capture)
+            # Normalize back to OpenCV BGR after capture so the rest of the
+            # pipeline has a single color convention regardless of ISP format.
+            logger.info(
+                f"📷 [CAM-DEBUG] Creating video config: format={self.pixel_format}, "
+                f"size={self.resolution}, buffer_count=4"
+            )
             config = self.camera.create_video_configuration(
-                main={"format": 'BGR888', "size": self.resolution},
+                main={"format": self.pixel_format, "size": self.resolution},
                 buffer_count=4  # Prevent starvation
             )
             logger.info(f"📷 [CAM-DEBUG] Video config created: {config}")
@@ -818,7 +884,7 @@ class CameraHandler:
                         
                         # Re-apply config
                         config = self.camera.create_video_configuration(
-                            main={"format": 'BGR888', "size": self.resolution},
+                            main={"format": self.pixel_format, "size": self.resolution},
                             buffer_count=4
                         )
                         self.camera.configure(config)
@@ -914,16 +980,24 @@ class CameraHandler:
             return cv2.rotate(frame, cv2.ROTATE_180)
         return frame
 
+    def _normalize_picamera_frame(self, frame: np.ndarray) -> np.ndarray:
+        """Normalize Picamera2 output into OpenCV BGR channel order."""
+        if frame is None:
+            return frame
+        if self.pixel_format == "RGB888":
+            return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        return frame
+
     def _picamera_capture_loop(self):
         """Continuous capture loop for Picamera2.
         
-        Picamera2 outputs BGR888 directly (requested in config), matching
-        the OpenCV convention expected by the downstream pipeline
-        (YOLO, cv2.imencode, Hailo, video streamer).
+        Picamera2 output is normalized to OpenCV BGR immediately after
+        capture so downstream code can assume a single color convention.
         Rotation is applied per config (e.g. -90° for sideways-mounted camera).
         """
         while self.running:
-            frame = self.camera.capture_array()       # BGR888 (native)
+            frame = self.camera.capture_array()
+            frame = self._normalize_picamera_frame(frame)
             frame = self._apply_rotation(frame)
             with self.frame_lock:
                 self.latest_frame = frame
@@ -992,33 +1066,27 @@ class CortexSystem:
 
         # System-level flags
         self.privacy_mode = False
+        self._explore_mode = False  # User requested "describe around me"
         self._battery_warned = set()  # Track which battery thresholds have been warned
         self._last_battery_check = 0.0
         self._camera_blocked_since = 0.0  # Timestamp when dark frames started
         self._camera_blocked_warned = False
         self._last_env_check = 0.0  # Environment classification timestamp
         self._last_gemini_frame_time = 0.0  # Last time we sent a frame to Gemini
+        self._last_gemini_connect_time = 0.0
         self._last_gemini_context_time = 0.0  # Last time we sent context to Gemini
         self._was_indoor = False  # Track indoor→outdoor transitions for Gemini
+        self._background_gemini_turns_disabled_logged = False
+        self._user_speaking_to_gemini = False
+        self._last_proactive_gemini_time = 0.0
+        self._last_proactive_gemini_signature = ""
 
-        # Safety override for beam control (Safety L0 > Gemini L2 > GPS L3)
-        self._beam_safety_override = False   # True when safety forces beam to danger
-        self._beam_override_until = 0.0      # Timestamp when override expires
-        self._beam_override_direction = None  # Position3D of the danger
-
-        # HRTF direction mapping for Gemini set_beam_direction
-        self._direction_to_hrtf = {
-            "left":           (-2.0, 0.0, -1.0),
-            "right":          ( 2.0, 0.0, -1.0),
-            "ahead":          ( 0.0, 0.0, -2.0),
-            "behind":         ( 0.0, 0.0,  2.0),
-            "slight_left":    (-1.0, 0.0, -1.5),
-            "slight_right":   ( 1.0, 0.0, -1.5),
-            "slightly_left":  (-1.0, 0.0, -1.5),
-            "slightly_right": ( 1.0, 0.0, -1.5),
-            "up":             ( 0.0, 1.0, -1.5),
-            "down":           ( 0.0,-1.0, -1.5),
-        }
+        # AI routing state — tracks Gemini function-call routing for status display
+        self._ai_routing_active = False  # True when Gemini handles all routing
+        self._last_tool_call = ""  # e.g. 'guide_indoor("living room")'
+        self._last_tool_call_time = 0.0
+        self._last_confirmed_voice_query = ""
+        self._last_confirmed_voice_query_time = 0.0
 
         # Initialize Layer 4: Memory Manager (Hybrid)
         logger.info("[DEBUG] ===== LAYER 4 INITIALIZATION START =====")
@@ -1073,50 +1141,13 @@ class CortexSystem:
             except Exception as e:
                 logger.error(f"❌ ConversationManager init failed: {e}")
 
-        # Initialize Layer 0: Guardian (Safety-Critical Detection)
-        logger.info("[DEBUG] ===== LAYER 0 INITIALIZATION START =====")
-        if YOLOGuardian:
-            logger.info("🛡️  Initializing Layer 0: Guardian...")
-            layer0_cfg = self.config.get('layer0', {})
-            logger.info(f"[DEBUG] Layer 0 config: model_path={layer0_cfg.get('model_path', 'N/A')}, device={layer0_cfg.get('device', 'cpu')}")
-            self.layer0 = YOLOGuardian(
-                model_path=layer0_cfg.get('model_path', 'models/yolo26n.pt'),
-                device=layer0_cfg.get('device', 'cpu'),
-                confidence=layer0_cfg.get('confidence', 0.5),
-                enable_haptic=layer0_cfg.get('enable_haptic', False),
-                gpio_pin=layer0_cfg.get('gpio_pin', 18),
-                memory_manager=self.memory_manager
-            )
-            logger.info("✅ Layer 0 initialized")
-        else:
-            self.layer0 = None
-            logger.warning("⚠️  Layer 0 not available")
-        logger.info("[DEBUG] ===== LAYER 0 INITIALIZATION COMPLETE =====")
+        # Layer 0: DISABLED — Gemini-only mode (saves ~200MB RAM + CPU)
+        self.layer0 = None
+        logger.info("⏭️ Layer 0 DISABLED (Gemini-only mode)")
 
-        # Initialize Layer 1: Learner (Adaptive Detection)
-        logger.info("[DEBUG] ===== LAYER 1 INITIALIZATION START =====")
-        layer1_cfg = self.config.get('layer1', {})
-        layer1_enabled = layer1_cfg.get('enabled', True)
-        if YOLOELearner and YOLOEMode and layer1_enabled:
-            logger.info("🎯 Initializing Layer 1: Learner...")
-            logger.info(f"[DEBUG] Layer 1 config: model_path={layer1_cfg.get('model_path', 'N/A')}, mode={layer1_cfg.get('mode', 'TEXT_PROMPTS')}")
-            mode_map = {
-                'PROMPT_FREE': YOLOEMode.PROMPT_FREE,
-                'TEXT_PROMPTS': YOLOEMode.TEXT_PROMPTS,
-                'VISUAL_PROMPTS': YOLOEMode.VISUAL_PROMPTS
-            }
-            self.layer1 = YOLOELearner(
-                model_path=layer1_cfg.get('model_path', 'models/yoloe-26s-seg.pt'),
-                device=layer1_cfg.get('device', 'cpu'),
-                confidence=layer1_cfg.get('confidence', 0.25),
-                mode=mode_map.get(layer1_cfg.get('mode', 'TEXT_PROMPTS'), YOLOEMode.TEXT_PROMPTS),
-                memory_manager=self.memory_manager
-            )
-            logger.info("✅ Layer 1 initialized")
-        else:
-            self.layer1 = None
-            logger.warning("⚠️  Layer 1 not available")
-        logger.info("[DEBUG] ===== LAYER 1 INITIALIZATION COMPLETE =====")
+        # Layer 1: DISABLED — Gemini-only mode (saves ~300MB RAM + CPU)
+        self.layer1 = None
+        logger.info("⏭️ Layer 1 DISABLED (Gemini-only mode)")
 
         # Initialize Layer 2: Thinker (Gemini Live API via Manager)
         logger.info("[DEBUG] ===== LAYER 2 INITIALIZATION START =====")
@@ -1143,6 +1174,16 @@ class CortexSystem:
             def _on_gemini_audio(audio_bytes: bytes):
                 """Callback: play Gemini audio responses via StreamingAudioPlayer."""
                 if self.gemini_audio_player:
+                    handler = getattr(self.layer2, 'handler', None) if self.layer2 else None
+                    if handler and getattr(handler, 'interrupted', False):
+                        return
+                    # Record timestamp IMMEDIATELY so is_output_playing() returns True
+                    # before the player's start() finishes opening the audio stream.
+                    # This prevents real mic audio leaking to Gemini's auto-VAD
+                    # during the startup window → false barge-in → session death.
+                    self._gemini_audio_active_since = time.time()
+                    if self.scene_detector:
+                        self.scene_detector.record_speech()
                     if not self.gemini_audio_player.is_playing:
                         logger.info("🔊 Auto-starting audio player for Gemini response")
                         self.gemini_audio_player.start()
@@ -1152,6 +1193,12 @@ class CortexSystem:
                 api_key=api_key,
                 audio_callback=_on_gemini_audio,
             )
+            # Wire barge-in callback so interrupted events flush the hardware audio buffer
+            if hasattr(self.layer2, 'handler') and self.gemini_audio_player:
+                self.layer2.handler._on_barge_in_callback = lambda: self.gemini_audio_player.stop(interrupted=True)
+            # Wire connected callback to re-send mode context after each reconnection
+            if hasattr(self.layer2, 'handler'):
+                self.layer2.handler._on_connected_callback = self._on_gemini_reconnected
             logger.info("✅ Layer 2 initialized (GeminiLiveManager)")
         elif GeminiLiveHandler:
             logger.info("🧠 Initializing Layer 2: Thinker (GeminiLiveHandler fallback)...")
@@ -1190,7 +1237,8 @@ class CortexSystem:
             use_picamera=cam_cfg.get('use_picamera', False),
             resolution=tuple(cam_cfg.get('resolution', [640, 480])),
             fps=cam_cfg.get('fps', 30),
-            rotation=cam_cfg.get('rotation', 0)
+            rotation=cam_cfg.get('rotation', 0),
+            pixel_format=cam_cfg.get('format', 'RGB888')
         )
 
         # Initialize WebSocket Client (for laptop dashboard) - Use FastAPI client
@@ -1252,11 +1300,36 @@ class CortexSystem:
 
         # Wire GeminiLiveManager into voice pipeline.
         # Raw audio is streamed continuously for ambient context.
-        # Gemini's built-in auto-VAD detects speech and decides when to
-        # respond.  Text commands via send_text() also trigger responses.
+        # Local VAD owns turn boundaries for Gemini 3.1 via explicit
+        # activity_start/activity_end signals. Text commands still trigger
+        # model turns when explicitly used.
         if self.layer2 is not None:
             self.voice_coordinator.on_raw_audio = self._forward_audio_to_gemini
-            logger.info("✅ Gemini Live wired into voice pipeline (text-command mode)")
+            self.voice_coordinator.on_speech_start_callback = self._forward_gemini_activity_start
+            self.voice_coordinator.on_speech_end_callback = self._forward_gemini_activity_end
+            self.voice_coordinator.on_barge_in_callback = self._handle_gemini_barge_in
+            logger.info("✅ Gemini Live wired into voice pipeline (audio-first mode, explicit VAD)")
+
+        # Wire echo suppression: tell VoiceCoordinator when speaker is active
+        # so it discards speech segments that are just Gemini's own output
+        if self.gemini_audio_player:
+            self._gemini_audio_active_since = 0  # Timestamp of first Gemini audio chunk
+            def _is_output_playing() -> bool:
+                p = self.gemini_audio_player
+                if p.is_playing:
+                    return True
+                # 0.5s cooldown after playback stops (residual echo)
+                # Was 2.0s but that + 8s silence timeout = user muted for 10s
+                if (time.time() - p._last_stop_time) < 0.5:
+                    return True
+                # Early protection: covers the gap between first Gemini audio
+                # chunk arriving and the player stream actually opening.
+                # Auto-expires after 0.5s — just enough for stream open latency.
+                if self._gemini_audio_active_since > 0 and (time.time() - self._gemini_audio_active_since) < 0.5:
+                    return True
+                return False
+            self.voice_coordinator.is_output_playing = _is_output_playing
+            logger.info("✅ Echo suppression wired (VAD + mic gate)")
 
         # Initialize Bluetooth Manager (will be connected in start() if configured)
         self.bt_manager = None
@@ -1268,40 +1341,19 @@ class CortexSystem:
         self.status_display = init_status_display()
         logger.info("📊 Interactive status display initialized")
 
-        # Initialize Navigator (Layer 3 spatial audio)
+        # Initialize Navigator (Layer 3 — spatial audio SCRAPPED, kept for routing only)
         self.navigator = None
         if Navigator:
             try:
-                self.navigator = Navigator(enable_spatial_audio=True)
+                self.navigator = Navigator(enable_spatial_audio=False)
                 self.navigator.start()
-                logger.info("✅ Navigator (spatial audio) initialized")
+                logger.info("✅ Navigator initialized (spatial audio disabled)")
             except Exception as e:
                 logger.error(f"❌ Failed to init Navigator: {e}")
                 self.navigator = None
 
-        # Initialize SpatialAudioManager (standalone 3D audio engine)
+        # SpatialAudioManager SCRAPPED — legacy code in rpi5/layer3_guide/spatial_audio/
         self.spatial_audio = None
-        if SpatialAudioManager:
-            try:
-                self.spatial_audio = SpatialAudioManager()
-                logger.info("✅ SpatialAudioManager initialized")
-            except Exception as e:
-                logger.error(f"❌ Failed to init SpatialAudioManager: {e}")
-                self.spatial_audio = None
-
-        # Activate BinauralEngine on all available SpatialAudioManagers
-        # This gives guaranteed HRTF 3D audio via ITD/ILD/head-shadow,
-        # independent of OpenAL-Soft's HRTF support.
-        for _sa_ref in [self.spatial_audio,
-                        getattr(self.navigator, 'spatial_audio', None)]:
-            if _sa_ref and hasattr(_sa_ref, 'enable_binaural_engine'):
-                try:
-                    if _sa_ref.enable_binaural_engine(gain=0.8):
-                        logger.info("✅ BinauralEngine active — HRTF guaranteed without OpenAL")
-                    else:
-                        logger.warning("⚠️ BinauralEngine init failed — OpenAL is sole 3D audio path")
-                except Exception as e:
-                    logger.warning(f"⚠️ BinauralEngine enable error: {e}")
 
         # =====================================================
         # HARDWARE PERIPHERALS (GPS, IMU, Button)
@@ -1573,18 +1625,146 @@ class CortexSystem:
         Called by VoiceCoordinator for every 32ms VAD chunk (continuous stream).
         Video is sent separately at 1 FPS from the detection loop.
 
-        Skips forwarding while Gemini audio is playing to prevent echo
-        feedback (mic picks up speaker output → Gemini hears itself).
+        During speaker playback, sends zero-filled silence instead of real audio.
+        This keeps the audio stream continuous — dropping audio creates
+        silence→audio transitions that destabilize Gemini's live turn state.
         """
         if not self.layer2 or not self.layer2.is_running:
-            return
-        # Suppress mic→Gemini while Gemini audio is playing (echo cancellation)
-        if self.gemini_audio_player and self.gemini_audio_player.is_playing:
             return
         try:
             self.layer2.send_audio(pcm_bytes, sample_rate)
         except Exception as e:
             logger.debug(f"GeminiLive audio forward error: {e}")
+
+    def _handle_gemini_barge_in(self) -> None:
+        """Stop Gemini playback immediately when the user starts speaking."""
+        if self.layer2 and hasattr(self.layer2, 'handler'):
+            self.layer2.handler.interrupted = True
+        if not self.gemini_audio_player:
+            return
+        if self.gemini_audio_player.is_playing:
+            logger.info("🛑 User barge-in detected — stopping Gemini playback")
+            self.gemini_audio_player.stop(interrupted=True)
+
+    def _forward_gemini_activity_start(self) -> None:
+        """Forward local speech-start to Gemini 3.1 explicit VAD."""
+        if not self.layer2 or not self.layer2.is_running:
+            return
+        self._user_speaking_to_gemini = True
+        try:
+            self.layer2.send_activity_start()
+        except Exception as e:
+            logger.debug(f"Gemini activity start forward error: {e}")
+
+    def _forward_gemini_activity_end(self) -> None:
+        """Forward local speech-end to Gemini 3.1 explicit VAD."""
+        if not self.layer2 or not self.layer2.is_running:
+            self._user_speaking_to_gemini = False
+            return
+        try:
+            self.layer2.send_activity_end()
+        except Exception as e:
+            logger.debug(f"Gemini activity end forward error: {e}")
+        finally:
+            self._user_speaking_to_gemini = False
+
+    def _gemini_is_live_31(self) -> bool:
+        """Return True when the active Live runtime is Gemini 3.1."""
+        return bool(
+            self.layer2
+            and hasattr(self.layer2, 'handler')
+            and getattr(self.layer2.handler, '_is_gemini_live_31', False)
+        )
+
+    def _gemini_background_turns_allowed(self) -> bool:
+        """Synthetic system-triggered Gemini turns are disabled on 3.1."""
+        return bool(self.layer2 and self.layer2.is_running and not self._gemini_is_live_31())
+
+    def _log_gemini_background_turn_skipped(self, reason: str) -> None:
+        """Log once that 3.1 background turns are intentionally suppressed."""
+        if not self._background_gemini_turns_disabled_logged:
+            logger.info("🛡️ Synthetic Gemini background turns disabled on Gemini 3.1 Live")
+            self._background_gemini_turns_disabled_logged = True
+        logger.debug(f"Skipped Gemini background turn: {reason}")
+
+    def _send_gemini_video(self, frame=None, min_interval: float = 1.0) -> bool:
+        """Send a frame to Gemini while coalescing reconnect/query/periodic bursts."""
+        if not self.layer2 or not self.layer2.is_running:
+            return False
+        if self._user_speaking_to_gemini:
+            return False
+        now = time.time()
+        if min_interval > 0 and (now - self._last_gemini_frame_time) < min_interval:
+            return False
+        try:
+            if frame is None:
+                if not self.camera:
+                    return False
+                frame = self.camera.get_frame()
+            if frame is None:
+                return False
+            from PIL import Image
+            pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            self.layer2.send_video(pil_frame)
+            self._last_gemini_frame_time = now
+            return True
+        except Exception as e:
+            logger.debug(f"Gemini video send error: {e}")
+            return False
+
+    def _can_send_proactive_gemini_guidance(self) -> bool:
+        """Return True when a proactive Gemini guidance turn is safe to send."""
+        now = time.time()
+        if not self.layer2 or not self.layer2.is_running:
+            return False
+        if self._gemini_is_live_31():
+            self._log_gemini_background_turn_skipped("proactive_guidance_live31")
+            return False
+        if not hasattr(self.layer2, 'handler') or not self.layer2.handler.is_connected:
+            return False
+        if self._last_gemini_connect_time and (now - self._last_gemini_connect_time) < 5.0:
+            return False
+        if self._user_speaking_to_gemini:
+            return False
+        if (self.voice_coordinator
+            and self.voice_coordinator.is_output_playing
+            and self.voice_coordinator.is_output_playing()):
+            return False
+        if self.tts and getattr(self.tts, 'is_playing', False):
+            return False
+        if not self.nav_engine or not hasattr(self.nav_engine, 'mode') or not hasattr(self.nav_engine, 'state'):
+            return False
+        return (
+            getattr(self.nav_engine.mode, 'value', self.nav_engine.mode) == 'indoor'
+            and getattr(self.nav_engine.state, 'value', self.nav_engine.state) == 'navigating'
+        )
+
+    def _send_proactive_gemini_guidance(
+        self,
+        prompt: str,
+        reason: str,
+        signature: str,
+        frame=None,
+        min_interval: float = 6.0,
+    ) -> bool:
+        """Send a proactive indoor-guidance turn when the active runtime supports it."""
+        if not self._can_send_proactive_gemini_guidance():
+            return False
+        now = time.time()
+        if now - self._last_proactive_gemini_time < min_interval:
+            return False
+        if signature and signature == self._last_proactive_gemini_signature:
+            if now - self._last_proactive_gemini_time < (min_interval * 2):
+                return False
+        if frame is not None:
+            self._send_gemini_video(frame, min_interval=0.0)
+        self.layer2.send_text(prompt)
+        self._last_proactive_gemini_time = now
+        self._last_proactive_gemini_signature = signature
+        if self.scene_detector:
+            self.scene_detector.record_speech()
+        logger.info(f"🧭 Proactive Gemini guidance triggered ({reason})")
+        return True
 
     def handle_dashboard_command(self, cmd: Dict[str, Any]):
         """Handle incoming commands from dashboard"""
@@ -1758,6 +1938,37 @@ class CortexSystem:
         except Exception as e:
             logger.error(f"❌ Bluetooth initialization error: {e}")
 
+    def get_gemini_mode(self) -> str:
+        """
+        Get the current system mode for Gemini context injection.
+        
+        Derives mode from NavigationEngine state + user flags.
+        Returns one of: IDLE, OUTDOOR_NAV, INDOOR_NAV, BUS_WATCH, TRANSIT, EXPLORE
+        """
+        if self._explore_mode:
+            return "EXPLORE"
+        if self.nav_engine:
+            try:
+                from rpi5.layer3_guide.navigation_engine import NavMode, NavState
+                nav_mode = getattr(self.nav_engine, 'mode', NavMode.IDLE)
+                nav_state = getattr(self.nav_engine, 'state', NavState.INACTIVE)
+                if nav_state in (NavState.NAVIGATING, NavState.PAUSED):
+                    if nav_mode == NavMode.INDOOR:
+                        return "INDOOR_NAV"
+                    elif nav_mode == NavMode.TRANSIT:
+                        return "TRANSIT"
+                    else:
+                        return "OUTDOOR_NAV"
+                elif nav_state in (NavState.WAITING_FOR_BUS,):
+                    return "BUS_WATCH"
+                elif nav_state == NavState.ON_VEHICLE:
+                    return "TRANSIT"
+                elif nav_mode == NavMode.BUS_STOP:
+                    return "BUS_WATCH"
+            except Exception:
+                pass
+        return "IDLE"
+
     def _on_nav_arrival(self):
         """Callback when NavigationEngine reaches the destination — play arrival chime."""
         try:
@@ -1776,9 +1987,7 @@ class CortexSystem:
         try:
             from rpi5.layer3_guide.navigation_engine import NavMode
             if new_mode == NavMode.INDOOR:
-                # Indoor: keep beacon alive with last-known GPS position (degraded mode)
-                # Don't kill the beacon — it still points toward the destination
-                logger.info("🏢 Indoor mode — beacon DEGRADED (last-known GPS), Gemini Guide Mode active")
+                logger.info("🏢 Indoor mode — Gemini Guide Mode active")
                 if self.scene_detector:
                     self.scene_detector.cooldown_seconds = 3.0  # Narrate more often indoors
                     self.scene_detector.cooldown_navigating = 5.0  # Indoor nav needs frequent updates
@@ -1787,19 +1996,11 @@ class CortexSystem:
                 if self.imu and hasattr(self.imu, 'set_gyro_only'):
                     self.imu.set_gyro_only()
             elif new_mode == NavMode.TRANSIT:
-                logger.info("🚌 Transit mode — beacon OFF, reduced processing")
-                # Stop the beacon on the NavEngine's SpatialAudio (not the standalone one)
-                nav_sa = None
-                if self.nav_engine and hasattr(self.nav_engine, 'spatial_audio'):
-                    nav_sa = self.nav_engine.spatial_audio
-                elif self.navigator and hasattr(self.navigator, 'spatial_audio'):
-                    nav_sa = self.navigator.spatial_audio
-                if nav_sa and hasattr(nav_sa, 'stop_beacon'):
-                    nav_sa.stop_beacon()
+                logger.info("🚌 Transit mode — reduced processing")
                 if self.scene_detector:
                     self.scene_detector.cooldown_seconds = 15.0  # Less narration on vehicle
             elif new_mode == NavMode.OUTDOOR:
-                logger.info("🌳 Outdoor mode — beacon resumed")
+                logger.info("🌳 Outdoor mode")
                 if self.scene_detector:
                     self.scene_detector.cooldown_seconds = 5.0  # Normal cooldown
                     self.scene_detector.cooldown_navigating = 15.0  # Outdoor nav standard
@@ -1848,29 +2049,27 @@ class CortexSystem:
                 if event == "indoor_mode_activated":
                     msg += (
                         "\nGPS lost — user is INDOORS. You are now the PRIMARY NAVIGATOR. "
-                        "Use set_beam_direction to point the 3D audio beacon toward exits, doors, corridors. "
                         "Give SHORT voice commands: 'door left', 'straight ahead', 'stairs right'. "
-                        "Do NOT describe the scene. GUIDE with beam + short commands. "
-                        "Safety system will override your beam if the user is too close to a wall or hazard."
+                        "Read signs, exit markers, and room labels from camera. "
+                        "Do NOT describe the scene. GUIDE with short voice commands."
                     )
                     # Send current camera frame so Gemini can SEE the indoor environment
                     if self.camera:
                         try:
                             _frame = self.camera.get_frame()
-                            if _frame is not None:
-                                from PIL import Image
-                                _pil = Image.fromarray(cv2.cvtColor(_frame, cv2.COLOR_BGR2RGB))
-                                self.layer2.send_video(_pil)
+                            self._send_gemini_video(_frame)
                         except Exception:
                             pass  # best-effort — text still goes through
                 elif event == "leg_started":
                     msg += "\nBriefly tell the user what this next leg involves."
                 else:
                     msg += "\nBriefly describe what you see to help the user."
-                self.layer2.send_text(msg)
-                # Ensure audio player is ready
-                if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
-                    self.gemini_audio_player.start()
+                if self._gemini_background_turns_allowed():
+                    self.layer2.send_text(msg)
+                    if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
+                        self.gemini_audio_player.start()
+                else:
+                    self._log_gemini_background_turn_skipped(f"nav_event:{event}")
             else:
                 # Routine events → silent context absorption
                 self.layer2.send_context(msg)
@@ -1878,6 +2077,130 @@ class CortexSystem:
             logger.info(f"🧭➡️🤖 Gemini nav event: {event} ({detail_str})")
         except Exception as e:
             logger.debug(f"Nav event Gemini forward error: {e}")
+
+    def _on_gemini_reconnected(self):
+        """Called after each Gemini Live API (re)connection.
+
+        Sends an initial video frame so Gemini has visual context.
+        Schedules a DELAYED context injection (5s) so mode/nav state is
+        restored without killing the fresh session.
+        Runs on Gemini's background thread.
+        """
+        try:
+            import time
+            # Record connect time so periodic context waits before firing
+            self._last_gemini_connect_time = time.time()
+            # Reset periodic context timer so it doesn't fire immediately
+            self._last_gemini_context_time = time.time()
+
+            # Send an initial video frame FIRST so Gemini has visual context
+            # before any queries arrive. Video data (JPEG) does NOT trigger
+            # a model turn — only text input does.
+            if self._send_gemini_video(min_interval=0.0):
+                logger.info("📤 Sent initial video frame after reconnect")
+
+            # Gemini 3.1 Live does not support mid-session context updates.
+            # Keep reconnect lightweight: rely on session resumption and the
+            # ambient audio/video stream instead of synthetic context turns.
+            connect_time = self._last_gemini_connect_time
+            has_handle = (self.layer2 and self.layer2.handler
+                          and self.layer2.handler.session_handle)
+            supports_mid_session_context = not (
+                self.layer2 and self.layer2.handler
+                and getattr(self.layer2.handler, '_is_gemini_live_31', False)
+            )
+            if self.layer2 and self.layer2.loop and not has_handle and supports_mid_session_context:
+                async def _delayed_context_send():
+                    import asyncio as _aio
+                    await _aio.sleep(5.0)
+                    # Verify connection is still the same one (not stale)
+                    if getattr(self, '_last_gemini_connect_time', 0) != connect_time:
+                        return  # A newer connection superseded this one
+                    if not self.layer2 or not self.layer2.is_running:
+                        return
+                    # Build mode context
+                    ctx_parts = ["[CONTEXT] Session state update:"]
+                    if self.privacy_mode:
+                        mode = "IDLE"
+                    else:
+                        mode = self.get_gemini_mode()
+                    ctx_parts.append(f"[MODE] {mode}")
+                    if self.nav_engine:
+                        nav_ctx = self.nav_engine.get_context_string()
+                        if nav_ctx:
+                            ctx_parts.append(nav_ctx)
+                    env_label = "indoor" if (self.depth_estimator and hasattr(self.depth_estimator, '_is_indoor') and self.depth_estimator._is_indoor) else "outdoor"
+                    ctx_parts.append(f"[ENV] {env_label}")
+                    context_msg = "\n".join(ctx_parts)
+                    await self.layer2.handler.send_context(context_msg)
+                    logger.info(f"📤 Delayed context injection after reconnect: [MODE] {mode}")
+                asyncio.run_coroutine_threadsafe(_delayed_context_send(), self.layer2.loop)
+            else:
+                logger.info("📝 Skipping delayed context (session resumption / Gemini 3.1)")
+
+            logger.info(
+                f"📤 Reconnect callback done (context scheduled={'5s' if (not has_handle and supports_mid_session_context) else 'SKIP'})"
+            )
+        except Exception as e:
+            logger.debug(f"Reconnect callback failed: {e}")
+
+    def _update_ai_routing(self, func_name: str, args: dict):
+        """Update AI routing state for status display (thread-safe)."""
+        import time
+        arg_str = ", ".join(f'"{v}"' if isinstance(v, str) else str(v)
+                           for v in args.values()) if args else ""
+        self._last_tool_call = f'{func_name}({arg_str})'
+        self._last_tool_call_time = time.time()
+        if self.status_display:
+            self.status_display.update_ai(True, self._last_tool_call)
+
+    def _remember_confirmed_voice_query(self, query: str) -> None:
+        """Store the latest accepted STT transcript for tool-call verification."""
+        self._last_confirmed_voice_query = " ".join((query or "").lower().split())
+        self._last_confirmed_voice_query_time = time.time()
+
+    def _tokenize_intent_text(self, text: str) -> List[str]:
+        """Tokenize free-form user text for lightweight intent matching."""
+        return [token for token in re.findall(r"[a-z0-9']+", (text or "").lower()) if len(token) > 1]
+
+    def _recent_query_supports_tool_call(self, name: str, args: Dict[str, Any], max_age_s: float = 8.0) -> bool:
+        """Allow high-impact Gemini tools only when recent STT confirms user intent."""
+        if name not in {"start_outdoor_navigation", "guide_indoor"}:
+            return True
+
+        query = self._last_confirmed_voice_query
+        if not query or (time.time() - self._last_confirmed_voice_query_time) > max_age_s:
+            logger.warning(f"⚠️ Blocking {name}: no recent confirmed STT query")
+            return False
+
+        query_tokens = set(self._tokenize_intent_text(query))
+        outdoor_phrases = (
+            "navigate to", "take me to", "directions to", "go to",
+            "how do i get to", "route to", "bring me to"
+        )
+        indoor_phrases = (
+            "guide me to", "lead me to", "help me get to", "take me to",
+            "bring me to", "find the", "where is the", "show me the"
+        )
+        required_phrases = outdoor_phrases if name == "start_outdoor_navigation" else indoor_phrases
+        if not any(phrase in query for phrase in required_phrases):
+            logger.warning(
+                f"⚠️ Blocking {name}: recent STT '{query[:80]}' does not confirm the required user intent"
+            )
+            return False
+
+        destination = str(args.get("destination", "") or "").strip().lower()
+        destination_tokens = [
+            token for token in self._tokenize_intent_text(destination)
+            if token not in {"the", "a", "an", "my", "me", "to", "please"}
+        ]
+        if destination_tokens and not any(token in query_tokens for token in destination_tokens):
+            logger.warning(
+                f"⚠️ Blocking {name}: destination '{destination}' was not present in recent STT '{query[:80]}'"
+            )
+            return False
+
+        return True
 
     def _handle_gemini_tool_call(self, name: str, args: dict) -> dict:
         """Handle function calls from Gemini Live API.
@@ -1899,7 +2222,7 @@ class CortexSystem:
                 f"🚧 Gemini reported obstacle: {obj_type} at {direction}"
                 f"{f', ~{distance:.0f}m' if distance else ''}"
             )
-            # Phase 1: Acknowledge. Phase 2: Adjust beam away from obstacle.
+            # Phase 1: Acknowledge.
             return {"acknowledged": True, "action": "noted_for_user_warning"}
 
         elif name == "get_gps_accuracy":
@@ -1919,55 +2242,8 @@ class CortexSystem:
                 }
             return {"accuracy_m": -1, "has_fix": False}
 
-        elif name == "set_beam_direction":
-            direction = args.get("direction", "ahead")
-            reason = args.get("reason", "")
-
-            # SAFETY OVERRIDE CHECK: if L0 forced beam to danger, reject Gemini's request
-            if self._beam_safety_override and time.time() < self._beam_override_until:
-                logger.warning(
-                    f"🛡️ Beam safety override ACTIVE — rejecting Gemini beam '{direction}' "
-                    f"(override expires in {self._beam_override_until - time.time():.1f}s)"
-                )
-                return {
-                    "status": "safety_override_active",
-                    "message": (
-                        "Safety system has taken control of the beam — "
-                        "the user is too close to a hazard. Wait for the override to clear, "
-                        "then give a SHORT voice warning about the danger."
-                    ),
-                }
-
-            # Map direction to HRTF 3D position
-            hrtf = self._direction_to_hrtf.get(direction, (0.0, 0.0, -2.0))
-            sa = None
-            if self.nav_engine and self.nav_engine.spatial_audio:
-                sa = self.nav_engine.spatial_audio
-            elif self.navigator and hasattr(self.navigator, 'spatial_audio'):
-                sa = self.navigator.spatial_audio
-            elif self.spatial_audio:
-                sa = self.spatial_audio
-
-            if sa:
-                try:
-                    from rpi5.layer3_guide.spatial_audio.manager import Position3D
-                    pos3d = Position3D(x=hrtf[0], y=hrtf[1], z=hrtf[2], distance_meters=1.0)
-                    ok = False
-                    # Prefer BinauralEngine (guaranteed HRTF), fall back to OpenAL
-                    if hasattr(sa, '_binaural_engine') and sa._binaural_engine:
-                        ok = sa.guide_beam_binaural(pos3d)
-                    if not ok and hasattr(sa, 'guide_beam'):
-                        ok = sa.guide_beam(pos3d)
-                    if ok:
-                        logger.info(f"🔊 Gemini set beam → {direction} ({reason})")
-                        return {"status": "ok", "beam_direction": direction}
-                    else:
-                        logger.warning(f"🔊 Gemini beam → {direction} FAILED (no audio)")
-                        return {"status": "error", "message": "Beacon could not start"}
-                except Exception as e:
-                    logger.error(f"Beam direction error: {e}")
-                    return {"status": "error", "message": str(e)}
-            return {"status": "error", "message": "Spatial audio not available"}
+        # set_beam_direction SCRAPPED — spatial audio removed
+        # Legacy code in rpi5/layer3_guide/spatial_audio/
 
         elif name == "get_bus_arrival":
             bus_stop_code = args.get("bus_stop_code", "")
@@ -1991,6 +2267,137 @@ class CortexSystem:
             except Exception as e:
                 logger.error(f"Bus arrival query failed: {e}")
                 return {"error": f"Bus arrival lookup failed: {e}"}
+
+        # ── Routing functions — Gemini decides actions ──
+
+        elif name == "start_outdoor_navigation":
+            destination = args.get("destination", "")
+            if not destination:
+                return {"error": "destination is required"}
+            if not self._recent_query_supports_tool_call(name, args):
+                return {
+                    "success": False,
+                    "blocked": True,
+                    "message": (
+                        "Navigation tool call blocked because recent confirmed STT did not "
+                        "match this destination. Ask the user to restate the destination clearly."
+                    ),
+                }
+            self._update_ai_routing("start_outdoor_navigation", args)
+            if not self.nav_engine:
+                return {"error": "Navigation engine not available"}
+            logger.info(f"🧭 Gemini→start_outdoor_navigation('{destination}')")
+            try:
+                # Resolve origin: use default saved location or "current" for GPS
+                origin = "current"
+                if self.saved_locations:
+                    default_loc = self.saved_locations.get_default()
+                    if default_loc and default_loc.get("address"):
+                        origin = default_loc["address"]
+                result = run_async_safe(
+                    self.nav_engine.start_navigation(origin, destination),
+                    blocking=True
+                )
+                if result:
+                    route = self.nav_engine.route
+                    if route:
+                        dist = f"{route.total_distance_m:.0f}m"
+                        dur = f"{route.total_duration_s / 60:.0f} min" if route.total_duration_s else ""
+                        return {
+                            "success": True,
+                            "distance": dist,
+                            "duration": dur,
+                            "message": f"Navigation started to {destination}. {dist}, {dur}.",
+                        }
+                    return {"success": True, "message": f"Navigation started to {destination}."}
+                return {"success": False, "message": "Could not find a route. Try a more specific address."}
+            except Exception as e:
+                logger.error(f"Outdoor navigation failed: {e}")
+                return {"error": f"Navigation failed: {e}"}
+
+        elif name == "guide_indoor":
+            destination = args.get("destination", "")
+            if not self._recent_query_supports_tool_call(name, args):
+                return {
+                    "success": False,
+                    "blocked": True,
+                    "message": (
+                        "Indoor guidance tool call blocked because recent confirmed STT did not "
+                        "support this request. Ask the user to repeat the destination clearly."
+                    ),
+                }
+            self._update_ai_routing("guide_indoor", args)
+            logger.info(f"🏢 Gemini→guide_indoor('{destination}')")
+            try:
+                from rpi5.layer3_guide.navigation_engine import NavMode
+                if self.nav_engine and hasattr(self.nav_engine, 'mode'):
+                    self.nav_engine.mode = NavMode.INDOOR
+                    self._on_nav_mode_change(NavMode.INDOOR)
+                return {
+                    "success": True,
+                    "mode": "INDOOR_NAV",
+                    "message": (
+                        f"Indoor guidance activated for '{destination}'. "
+                        "You are now the primary navigator. Use the camera feed "
+                        "to guide the user with short voice directions. "
+                        "Give STEP-BY-STEP instructions: first describe what you see, "
+                        "then tell the user which direction to go. Continue guiding "
+                        "with multiple instructions until they reach the destination. "
+                        "Do NOT stop after one instruction."
+                    ),
+                }
+            except Exception as e:
+                logger.error(f"Indoor guidance activation failed: {e}")
+                return {"success": True, "mode": "INDOOR_NAV",
+                        "message": f"Indoor guidance mode active for '{destination}'. Guide the user using camera."}
+
+        elif name == "stop_navigation":
+            self._update_ai_routing("stop_navigation", {})
+            logger.info("🛑 Gemini→stop_navigation()")
+            if self.nav_engine:
+                try:
+                    run_async_safe(self.nav_engine.stop_navigation(), blocking=True)
+                    return {"success": True, "message": "Navigation stopped."}
+                except Exception as e:
+                    logger.error(f"Stop navigation failed: {e}")
+                    return {"error": f"Failed to stop navigation: {e}"}
+            return {"success": True, "message": "No active navigation to stop."}
+
+        elif name == "search_memory":
+            item_name = args.get("item_name", "")
+            if not item_name:
+                return {"error": "item_name is required"}
+            self._update_ai_routing("search_memory", args)
+            logger.info(f"🧠 Gemini→search_memory('{item_name}')")
+            if self.memory_manager:
+                try:
+                    result = self.memory_manager.recall(item_name)
+                    if result:
+                        return {
+                            "found": True,
+                            "item": item_name,
+                            "description": result.get("description", ""),
+                            "location": result.get("location_estimate", ""),
+                            "timestamp": result.get("timestamp", ""),
+                        }
+                    return {"found": False, "item": item_name, "message": f"No memory found for '{item_name}'."}
+                except Exception as e:
+                    logger.error(f"Memory search failed: {e}")
+                    return {"error": f"Memory search failed: {e}"}
+            return {"found": False, "item": item_name, "message": "Memory system not available."}
+
+        elif name == "set_system_mode":
+            mode = args.get("mode", "")
+            if mode not in ("PRODUCTION", "DEV"):
+                return {"error": f"Invalid mode '{mode}'. Must be PRODUCTION or DEV."}
+            self._update_ai_routing("set_system_mode", args)
+            logger.info(f"⚙️ Gemini→set_system_mode('{mode}')")
+            try:
+                self.set_mode(mode)
+                return {"success": True, "mode": mode, "message": f"Switched to {mode} mode."}
+            except Exception as e:
+                logger.error(f"Mode switch failed: {e}")
+                return {"error": f"Mode switch failed: {e}"}
 
         return {"error": f"Unknown function: {name}"}
 
@@ -2043,9 +2450,10 @@ class CortexSystem:
                 try:
                     # GeminiLiveManager.start() launches background thread (non-blocking)
                     self.layer2.start()
-                    # Start audio player for Gemini output
-                    if self.gemini_audio_player:
-                        self.gemini_audio_player.start()
+                    # Audio player starts lazily on first Gemini audio chunk
+                    # via _on_gemini_audio → add_audio_chunk → auto-start.
+                    # Do NOT start it here — premature start sets is_playing=True
+                    # which triggers echo suppression and suppresses all speech.
                     logger.info("✅ Gemini Live API started (background thread)")
                 except Exception as e:
                     logger.warning(f"⚠️ Gemini Live API failed: {e}")
@@ -2186,20 +2594,20 @@ class CortexSystem:
                                 if is_indoor and not self._was_indoor and is_nav_active_now:
                                     # Just entered indoor — tell Gemini to guide the user out
                                     if self.layer2 and self.layer2.is_running:
-                                        self.layer2.send_text(
-                                            "[INDOOR_GUIDE] GPS lost — user is INDOORS while navigating. "
-                                            "You are now the PRIMARY NAVIGATOR. Use set_beam_direction to point "
-                                            "the 3D audio beacon toward exits, doors, or safe paths you see. "
-                                            "GUIDE with the beam + SHORT voice commands: 'door on your left' then "
-                                            "call set_beam_direction(direction='left', reason='exit door'). "
-                                            "Do NOT describe the scene — GUIDE the user out. "
-                                            "Voice is for SHORT commands and warnings ONLY. "
-                                            "The beam is the guidance tool — move it frequently as the user walks. "
-                                            "If safety overrides your beam, warn the user about the hazard."
-                                        )
-                                        if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
-                                            self.gemini_audio_player.start()
-                                        logger.info("🏢 Indoor + navigating → Gemini indoor guide mode activated")
+                                        self._send_gemini_video(frame)
+                                        if self._gemini_background_turns_allowed():
+                                            self.layer2.send_text(
+                                                "[INDOOR_GUIDE] GPS lost — user is INDOORS while navigating. "
+                                                "You are now the PRIMARY NAVIGATOR. "
+                                                "Give SHORT voice commands: 'door on your left', 'go straight', 'stairs right'. "
+                                                "Read signs, exit markers, and room labels from camera. "
+                                                "Do NOT describe the scene — GUIDE the user out."
+                                            )
+                                            if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
+                                                self.gemini_audio_player.start()
+                                            logger.info("🏢 Indoor + navigating → Gemini indoor guide mode activated")
+                                        else:
+                                            self._log_gemini_background_turn_skipped("indoor_transition")
                                 self._was_indoor = is_indoor
                     except Exception as e:
                         logger.warning(f"Depth processing error: {e}")
@@ -2211,7 +2619,7 @@ class CortexSystem:
                             all_detections, hazards, depth_map, frame.shape
                         )
                         if alert:
-                            # DON'T interrupt Gemini audio — safety uses haptic + spatial audio
+                            # DON'T interrupt Gemini audio — safety uses haptic + TTS
                             # Gemini Live audio is prioritized over safety TTS
 
                             # 3D-positioned warning sound
@@ -2252,41 +2660,8 @@ class CortexSystem:
                                     score=alert.score,
                                 )
 
-                            # SAFETY BEAM OVERRIDE: Tier 1 critical (<1.0m) or any hazard <0.5m
-                            # forces beam to point AT the danger so user hears where to avoid.
-                            # Priority: Safety (L0) > Gemini (L2) > GPS (L3)
-                            if (alert.tier == 1 and alert.distance_m < 1.0) or alert.distance_m < 0.5:
-                                override_pos = alert.position_3d
-                                if override_pos:
-                                    sa = None
-                                    if self.nav_engine and self.nav_engine.spatial_audio:
-                                        sa = self.nav_engine.spatial_audio
-                                    elif self.navigator and hasattr(self.navigator, 'spatial_audio'):
-                                        sa = self.navigator.spatial_audio
-                                    if sa and hasattr(sa, '_update_beacon_position'):
-                                        try:
-                                            from rpi5.layer3_guide.spatial_audio.manager import Position3D
-                                            pos3d = Position3D(
-                                                x=override_pos[0], y=override_pos[1],
-                                                z=override_pos[2], distance_meters=alert.distance_m,
-                                            )
-                                            sa._update_beacon_position(pos3d)
-                                            self._beam_safety_override = True
-                                            self._beam_override_until = time.time() + 3.0
-                                            self._beam_override_direction = pos3d
-                                            logger.warning(
-                                                f"🛡️ SAFETY BEAM OVERRIDE: {alert.alert_type} "
-                                                f"{alert.direction} {alert.distance_m:.1f}m — "
-                                                f"beam forced to danger for 3s"
-                                            )
-                                        except Exception as e:
-                                            logger.debug(f"Safety beam override error: {e}")
+                            # Spatial audio beam override SCRAPPED
 
-                        # Clear expired safety overrides
-                        if self._beam_safety_override and time.time() >= self._beam_override_until:
-                            self._beam_safety_override = False
-                            self._beam_override_direction = None
-                            logger.info("🛡️ Safety beam override expired — Gemini/GPS beam control restored")
                     except Exception as e:
                         logger.error(f"Safety monitor error: {e}")
 
@@ -2311,7 +2686,10 @@ class CortexSystem:
                     except Exception as e:
                         logger.debug(f"Bus detection update error: {e}")
 
-                # 2f. Scene change detection → proactive Gemini narration
+                # 2f. Scene change detection → proactive Gemini indoor guidance
+                # Re-enabled only for INDOOR navigation with strict gating so
+                # Gemini can volunteer short movement cues without waiting for
+                # the user to ask again.
                 if self.scene_detector and self.layer2 and self.layer2.is_running:
                     try:
                         avg_depth = None
@@ -2324,13 +2702,16 @@ class CortexSystem:
                                 nav_event = "road_crossing"
                         is_navigating = self.nav_engine.state.value if self.nav_engine and hasattr(self.nav_engine, 'state') else False
                         is_nav_active = is_navigating == "navigating" if isinstance(is_navigating, str) else False
+                        is_indoor_nav = bool(
+                            self.nav_engine
+                            and hasattr(self.nav_engine, 'mode')
+                            and getattr(self.nav_engine.mode, 'value', self.nav_engine.mode) == 'indoor'
+                            and is_nav_active
+                        )
 
-                        if self.scene_detector.should_narrate(all_detections, avg_depth, nav_event, is_nav_active):
+                        if is_indoor_nav and self._can_send_proactive_gemini_guidance() and self.scene_detector.should_narrate(all_detections, avg_depth, nav_event, is_nav_active):
                             trigger = self.scene_detector.get_last_trigger()
-                            logger.info(f"🎙️ Scene change detected ({trigger}), requesting Gemini narration")
-                            # Build context for Gemini (NO YOLO class names — Gemini
-                            # should describe what IT sees in the video, not echo
-                            # YOLO labels which may be misdetections)
+                            logger.info(f"🎙️ Indoor scene change detected ({trigger}), requesting proactive Gemini guidance")
                             context_parts = []
                             if self.nav_engine:
                                 context_parts.append(self.nav_engine.get_context_string())
@@ -2339,82 +2720,75 @@ class CortexSystem:
                             if avg_depth is not None:
                                 context_parts.append(f"[DEPTH] avg={avg_depth:.1f}m")
 
-                            context_str = "\n".join(context_parts)
-                            # Send video frame + explicit narration prompt to Gemini
-                            # Use a generic trigger descriptor — don't leak YOLO class names
                             trigger_desc = "scene_change"
                             if trigger.startswith("silence:"):
                                 trigger_desc = "periodic_update"
                             elif trigger.startswith("depth_change:"):
                                 trigger_desc = "environment_change"
                             elif trigger.startswith("nav_event:"):
-                                trigger_desc = trigger  # Nav events are fine to pass through
+                                trigger_desc = trigger
 
                             context_str = "\n".join(context_parts)
-                            # Send video frame + narration prompt to Gemini
-                            if self.layer2 and self.layer2.is_running:
-                                logger.info(f"🎙️ [SCENE] Sending to Gemini — handler.connected={self.layer2.handler.is_connected}")
-                                # Send current frame so Gemini can SEE what triggered the change
-                                if frame is not None:
-                                    from PIL import Image
-                                    pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                                    self.layer2.send_video(pil_frame)
-
-                                narration_msg = (
-                                    f"[SCENE_CHANGE] Reason: {trigger_desc}. "
-                                    f"Describe ONLY what you actually see in the camera frame right now. "
-                                    f"Do NOT guess or assume objects — only describe what is clearly visible. "
-                                    f"Keep it brief and relevant for a blind user.\n{context_str}"
-                                )
-
-                                # Check if indoors during navigation
-                                is_indoor_now = (
-                                    self.depth_estimator
-                                    and hasattr(self.depth_estimator, '_is_indoor')
-                                    and self.depth_estimator._is_indoor
-                                )
-                                if is_nav_active and is_indoor_now:
-                                    # Indoor + navigating: Gemini speaks to guide user out
-                                    indoor_guide_msg = (
-                                        f"[INDOOR_GUIDE] Guide this blind user through the building using "
-                                        f"set_beam_direction to point the audio beacon. Look at the camera: "
-                                        f"where should the user go? Point beam there + give a SHORT command. "
-                                        f"Do NOT describe — GUIDE. Example: 'corridor ahead' then "
-                                        f"set_beam_direction(direction='ahead', reason='corridor to exit').\n{context_str}"
-                                    )
-                                    if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
-                                        self.gemini_audio_player.start()
-                                    self.layer2.send_text(indoor_guide_msg)
-                                elif is_nav_active:
-                                    # Outdoor + navigating: silent context (beam guides, not voice)
-                                    self.layer2.send_context(narration_msg)
-                                else:
-                                    # Idle mode — trigger spoken narration
-                                    if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
-                                        self.gemini_audio_player.start()
-                                    self.layer2.send_text(narration_msg)
-                                if self.scene_detector:
-                                    self.scene_detector.record_speech()
+                            proactive_prompt = (
+                                "[PROACTIVE_GUIDE] Indoor navigation is active. "
+                                "Without waiting for the user, give ONE short movement cue based on the current camera view. "
+                                "Speak only if there is an immediate navigation-relevant cue such as a doorway, corridor opening, clear path, obstacle, furniture hazard, stairs, wall edge, or target landmark. "
+                                "Use direct commands like 'Door ahead slightly left', 'Clear path forward', 'Obstacle right, keep left', 'Turn a little right'. "
+                                "Do NOT ask questions. Do NOT describe the whole room. Keep it under 12 words.\n"
+                                f"[TRIGGER] {trigger_desc}\n{context_str}"
+                            )
+                            signature = f"{trigger_desc}|{context_str}"
+                            self._send_proactive_gemini_guidance(
+                                proactive_prompt,
+                                reason=f"scene_change:{trigger_desc}",
+                                signature=signature,
+                                frame=frame,
+                            )
                     except Exception as e:
                         logger.debug(f"Scene change detection error: {e}")
 
                 # 2g. Periodic video frame streaming to Gemini (1 FPS)
                 # Gemini needs continuous visual context to be an effective companion
-                if self.layer2 and self.layer2.is_running and frame is not None:
+                # Gate: skip while Gemini is outputting audio — sending frames
+                # during a response triggers server-side barge-in detection.
+                _vid_audio_playing = (
+                    self.voice_coordinator.is_output_playing
+                    and self.voice_coordinator.is_output_playing()
+                )
+                _vid_user_speaking = self._user_speaking_to_gemini
+                # Reset timer while gated so frames don't burst on gate-open
+                if _vid_audio_playing or _vid_user_speaking:
+                    self._last_gemini_frame_time = time.time()
+                if self.layer2 and self.layer2.is_running and frame is not None and not _vid_audio_playing and not _vid_user_speaking:
                     now_vid = time.time()
                     if now_vid - self._last_gemini_frame_time >= 1.0:
-                        self._last_gemini_frame_time = now_vid
-                        try:
-                            from PIL import Image
-                            pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                            self.layer2.send_video(pil_frame)
-                        except Exception as e:
-                            logger.debug(f"Periodic Gemini video send error: {e}")
+                        self._send_gemini_video(frame, min_interval=1.0)
 
                 # 2h. Periodic context injection to Gemini (every 5s)
-                if self.layer2 and self.layer2.is_running:
+                # Gate: skip while Gemini is outputting audio — sending text
+                # during a response can trigger server-side barge-in.
+                _ctx_audio_playing = (
+                    self.voice_coordinator.is_output_playing
+                    and self.voice_coordinator.is_output_playing()
+                )
+                if _ctx_audio_playing:
+                    # Reset timer while gated so context doesn't fire
+                    # immediately when audio ends (avoids stimulus during echo cooldown)
+                    self._last_gemini_context_time = time.time()
+                _supports_mid_session_context = not (
+                    self.layer2
+                    and hasattr(self.layer2, 'handler')
+                    and getattr(self.layer2.handler, '_is_gemini_live_31', False)
+                )
+                if self.layer2 and self.layer2.is_running and not _ctx_audio_playing and _supports_mid_session_context:
                     now_ctx = time.time()
-                    if now_ctx - self._last_gemini_context_time >= 5.0:
+                    # Post-connect cooldown: don't inject context for 15s after
+                    # a (re)connection — text triggers turn_complete which kills
+                    # fresh sessions before they stabilise.
+                    _connect_age = now_ctx - getattr(self, '_last_gemini_connect_time', 0)
+                    if _connect_age < 15.0:
+                        self._last_gemini_context_time = now_ctx  # keep timer reset
+                    if now_ctx - self._last_gemini_context_time >= 30.0:  # was 15.0 — each injection triggers a turn_complete
                         self._last_gemini_context_time = now_ctx
                         try:
                             ctx_parts = []
@@ -2437,8 +2811,11 @@ class CortexSystem:
                                 bus_ctx = self.bus_handler.get_context_string()
                                 if bus_ctx:
                                     ctx_parts.append(bus_ctx)
-                            # Mode
-                            mode = "PRIVACY" if self.privacy_mode else "PRODUCTION"
+                            # Mode — drives Gemini proactivity
+                            if self.privacy_mode:
+                                mode = "IDLE"  # Privacy overrides to quiet
+                            else:
+                                mode = self.get_gemini_mode()
                             ctx_parts.append(f"[MODE] {mode}")
                             # Battery (if available via power monitor)
                             try:
@@ -2467,9 +2844,15 @@ class CortexSystem:
                             logger.debug(f"Periodic Gemini context injection error: {e}")
 
                 # 3. Send to laptop dashboard via ZMQ (Hybrid Architecture)
+                # Rate-limit to ~10 FPS to save CPU (encode+resize runs per call)
                 if self.video_streamer:
-                    self.video_streamer.send_frame(frame)
-                    logger.debug(f"[ZMQ] Sent frame to laptop, frame shape: {frame.shape}")
+                    _now_zmq = time.time()
+                    if not hasattr(self, '_last_zmq_frame_time'):
+                        self._last_zmq_frame_time = 0.0
+                    if _now_zmq - self._last_zmq_frame_time >= 0.1:  # 10 FPS max
+                        self._last_zmq_frame_time = _now_zmq
+                        self.video_streamer.send_frame(frame)
+                        logger.debug(f"[ZMQ] Sent frame to laptop, frame shape: {frame.shape}")
                 
                 # Still send DETECTIONS via WebSocket (Metadata only)
                 if self.ws_client:
@@ -2539,7 +2922,7 @@ class CortexSystem:
                                         if route and self.tts:
                                             dist_str = f"{route.total_distance_m:.0f} meters"
                                             dur_str = f"{route.total_duration_s / 60:.0f} minutes" if route.total_duration_s else ""
-                                            await self.tts.speak_async(f"GPS signal found. Route to {dest}: {dist_str}, {dur_str}. Follow the audio beam.")
+                                            await self.tts.speak_async(f"GPS signal found. Route to {dest}: {dist_str}, {dur_str}.")
                                             logger.info(f"🧭 [NAV] Deferred route SUCCESS: {dest}")
                                     elif self.tts:
                                         await self.tts.speak_async(f"GPS signal found, but I couldn't find a walking route to {dest}.")
@@ -2589,17 +2972,8 @@ class CortexSystem:
                 # 6b. Battery monitoring
                 self._check_battery()
 
-                # 6c. IMU head-tracking → update spatial audio listener orientation
-                if self.imu and self.spatial_audio:
-                    try:
-                        imu_r = self.imu.get_reading()
-                        if imu_r is not None:
-                            self.spatial_audio.set_listener_orientation(
-                                yaw=imu_r.heading,
-                                pitch=imu_r.pitch,
-                            )
-                    except Exception:
-                        pass  # Non-critical, skip silently
+                # 6c. IMU head-tracking (spatial audio listener orientation SCRAPPED)
+                # Legacy: rpi5/layer3_guide/spatial_audio/
 
                 # 7. Track FPS for Logging and Status Display
                 loop_time = time.time() - loop_start
@@ -2685,7 +3059,11 @@ class CortexSystem:
         layer0_detections = []
         layer1_detections = []
 
-        with ThreadPoolExecutor(max_workers=2) as executor:
+        # Reuse persistent executor (creating one per frame = 40 OS threads/s)
+        if not hasattr(self, '_detection_executor') or self._detection_executor is None:
+            self._detection_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="yolo")
+        executor = self._detection_executor
+        if True:  # Replaces 'with' block — executor is persistent
             futures = []
             start_times = {}
 
@@ -2829,6 +3207,19 @@ class CortexSystem:
             return
 
         logger.info(f"🎤 Voice command: '{query}'")
+        query_lower = query.lower().strip()
+
+        # Q&A backlog prevention: if Gemini is currently responding with audio,
+        # discard new queries to prevent chain reaction where slow responses
+        # pile up and spam the user with stale answers.
+        # Allow critical/safety commands through even during playback.
+        if (self.voice_coordinator
+            and self.voice_coordinator.is_output_playing
+            and self.voice_coordinator.is_output_playing()):
+            _critical_kws = ["stop", "cancel", "privacy mode", "camera off", "camera on", "help", "emergency"]
+            if not any(kw in query_lower for kw in _critical_kws):
+                logger.info(f"🔇 Discarding query during Gemini response: '{query[:50]}'")
+                return
 
         # Echo filter: if STT picked up Gemini's own speaker output, discard it
         if (self.layer2
@@ -2837,30 +3228,31 @@ class CortexSystem:
             logger.info(f"🔇 Discarding echo: '{query[:60]}'")
             return
 
-        # Get routing with detailed flags
-        routing = self.intent_router.route_with_flags(query)
-        target_layer = routing["layer"]
-        
-        logger.info(f"🔀 Routed to: {target_layer} | L0={routing['use_layer0']}, "
-                   f"L1={routing['use_layer1']}, Gemini={routing['use_gemini']}, "
-                   f"Type={routing['query_type']}")
-        
-        # Ignore filler/non-command utterances (e.g., "yeah", "thanks", "um")
-        if target_layer == "ignore":
-            logger.debug(f"Ignoring filler utterance: '{query}'")
+        self._remember_confirmed_voice_query(query)
+
+        if any(kw in query_lower for kw in ["privacy mode", "camera off", "turn off camera", "turn off the camera"]):
+            self.privacy_mode = True
+            self.camera.stop()
+            if self.tts:
+                await self.tts.speak_async(
+                    "Camera off. Using sensors only. Say camera on to re-enable."
+                )
+            logger.info("🔒 Privacy mode enabled — camera stopped")
+            return
+
+        if any(kw in query_lower for kw in ["camera on", "turn on camera", "turn on the camera", "disable privacy"]):
+            self.privacy_mode = False
+            self.camera.start()
+            if self.tts:
+                await self.tts.speak_async("Camera back on. Full system active.")
+            logger.info("🔓 Privacy mode disabled — camera restarted")
             return
 
         # ══════════════════════════════════════════════════════════════════
-        # GEMINI-FIRST PIPELINE: When Gemini Live is connected, it handles
-        # ALL perception queries (Layer 1 detection + Layer 2 analysis)
-        # and general Layer 3 questions. Gemini already has continuous
-        # video context, so its answers are richer and faster than local
-        # YOLO aggregation + Cartesia TTS.
-        #
-        # Layer 3 navigation COMMANDS (navigate to X, stop nav, bus, etc.)
-        # stay local — they interact with GPS, nav engine, and bus APIs.
-        # System commands (privacy, camera on/off) also stay local.
-        # Layer 0 safety + Layer 1 YOLO detection still run for dashboard.
+        # GEMINI-ONLY MODE: When Gemini is connected, ALL queries go
+        # directly to Gemini. No local router, no filler filter, no L0/L1.
+        # Gemini handles detection, analysis, navigation, greetings, etc.
+        # via its function calling and continuous audio/video context.
         # ══════════════════════════════════════════════════════════════════
         gemini_online = (
             self.layer2
@@ -2870,52 +3262,56 @@ class CortexSystem:
             and self.layer2.handler.is_connected
         )
 
-        # Layer 3 commands that MUST stay local (they need GPS/nav engine)
+        if gemini_online:
+            logger.info(f"🤖 Gemini handling: '{query[:60]}'")
+            self._ai_routing_active = True
+            if self.status_display:
+                self.status_display.update_ai(True, self._last_tool_call)
+            logger.info("🎧 Live audio already forwarded to Gemini — suppressing duplicate text resend")
+            self._send_gemini_video(min_interval=1.0)
+            return
+
+        # ══════════════════════════════════════════════════════════════════
+        # GEMINI OFFLINE FALLBACK: Gemini is reconnecting.
+        # Only system commands and nav commands work locally.
+        # Everything else: tell user to wait.
+        # ══════════════════════════════════════════════════════════════════
+        logger.info(f"⚠️ Gemini offline — local fallback for: '{query[:60]}'")
+        self._ai_routing_active = False
+        if self.status_display:
+            self.status_display.update_ai(False, "")
+
+        # Check if this is a nav command that can be handled locally
         _nav_command_kws = [
             "navigate to", "take me to", "directions to", "go to",
             "how do i get to", "stop nav", "cancel nav", "cancel route",
+            "stop navigation", "cancel navigation",
             "i'm lost", "im lost", "i am lost", "retrace", "take me back",
             "go back", "bus", "next bus", "resume nav", "resume route",
-            "continue nav", "continue route", "keep going", "find the",
+            "continue nav", "continue route", "keep going",
             "where am i", "where are we", "what location", "my location",
             "current location",
         ]
-        query_lower_check = query.lower().strip()
-        is_nav_command = (
-            target_layer == "layer3"
-            and any(kw in query_lower_check for kw in _nav_command_kws)
-        )
+        _has_nav_keyword = any(kw in query_lower for kw in _nav_command_kws)
 
-        # Gate: Gemini handles L1, L2, and general L3 questions
-        gemini_handles = target_layer in ("layer1", "layer2") or (
-            target_layer == "layer3" and not is_nav_command
-        )
+        # Route locally: only system commands + nav commands
+        # Use router ONLY to get routing flags for nav queries
+        routing = self.intent_router.route_with_flags(query)
+        target_layer = routing["layer"]
 
-        if gemini_online and gemini_handles:
-            logger.info(f"🤖 Gemini Live handling {target_layer} query: '{query[:60]}'")
-            # Ensure audio player is ready to receive Gemini's response
-            if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
-                self.gemini_audio_player.start()
-                logger.info("🔊 Auto-started Gemini audio player for response")
-            # Build context-enriched prompt
-            prompt_parts = [f"[User voice command]: {query}"]
-            # Include nav context if navigating
-            if self.nav_engine and hasattr(self.nav_engine, 'get_context_string'):
-                nav_ctx = self.nav_engine.get_context_string()
-                if nav_ctx:
-                    prompt_parts.append(nav_ctx)
-            self.layer2.send_text("\n".join(prompt_parts))
-            # Send current video frame for visual context
-            if self.camera:
-                frame = self.camera.get_frame()
-                if frame is not None:
-                    from PIL import Image
-                    pil_frame = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-                    self.layer2.send_video(pil_frame)
+        # Force nav keyword queries to layer3
+        if _has_nav_keyword and target_layer != "layer3":
+            target_layer = "layer3"
+
+        # If not a nav/system command, tell user to wait for Gemini
+        if target_layer not in ("layer3",) and not any(kw in query_lower for kw in [
+            "privacy mode", "camera off", "turn off camera", "camera on",
+            "turn on camera", "disable privacy"
+        ]):
+            logger.info(f"⏳ Query needs Gemini but it's offline: '{query[:60]}'")
+            if self.tts:
+                await self.tts.speak_async("One moment, I'm reconnecting.")
             return
-
-        # ---- System-level commands (before routing/frame capture) ----
-        query_lower = query.lower().strip()
 
         # Privacy mode ON
         if any(kw in query_lower for kw in ["privacy mode", "camera off", "turn off camera", "turn off the camera"]):
@@ -3427,31 +3823,27 @@ class CortexSystem:
                 else:
                     response = "I can't get a GPS fix right now. Stay in an open area and try again."
 
-            # --- Spatial audio beacon: "find the [object]" ---
-            elif routing.get("use_spatial_audio") and self.navigator:
-                target = routing.get("target_object", query.split()[-1])
-                started = self.navigator.start_navigation_beacon(target)
-                if started:
-                    response = f"Guiding you to {target} with spatial audio."
-                else:
-                    response = f"I can't locate {target} right now. Try asking me to look around first."
-            elif self.navigator:
-                response = "Navigation features are coming soon."
+            # --- Catch-all: Query reached L3 but doesn't match any nav handler ---
+            # This happens when Gemini is offline and the query has nav keywords
+            # but isn't a specific command. Ask user to try again.
             else:
-                response = "Spatial audio system is not available."
+                response = "I can't process that right now. Try saying navigate to, followed by your destination."
             
             if self.tts and response:
                 await self.tts.speak_async(response)
 
             # After Cartesia speaks the route summary, prompt Gemini to elaborate
             if _nav_just_started and self.layer2:
-                self.layer2.send_text(
-                    "[SYSTEM] The route summary was just spoken to the user via TTS. "
-                    "Now briefly describe what you see ahead on their path — "
-                    "1-2 sentences max. Mention obstacles or people if visible."
-                )
-                if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
-                    self.gemini_audio_player.start()
+                if self._gemini_background_turns_allowed():
+                    self.layer2.send_text(
+                        "[SYSTEM] The route summary was just spoken to the user via TTS. "
+                        "Now briefly describe what you see ahead on their path — "
+                        "1-2 sentences max. Mention obstacles or people if visible."
+                    )
+                    if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
+                        self.gemini_audio_player.start()
+                else:
+                    self._log_gemini_background_turn_skipped("post_route_summary")
         
         logger.info(f"✅ Voice command processed: '{response[:50]}...'" if len(response) > 50 else f"✅ Voice command processed: '{response}'")
 

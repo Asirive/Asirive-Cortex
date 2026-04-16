@@ -3,7 +3,7 @@ import paramiko, time
 
 c = paramiko.SSHClient()
 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect('10.135.122.31', username='cortex', password='REDACTED-RPI-PASSWORD')
+c.connect('10.245.247.31', username='cortex', password='REDACTED-RPI-PASSWORD')
 
 # 1. Kill any running cortex processes
 print("=== Killing cortex processes ===")

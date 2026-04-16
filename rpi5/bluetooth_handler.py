@@ -510,6 +510,9 @@ class BluetoothAudioManager:
                 mac_formatted = mac_address.replace(":", "_").lower()
                 for source in sources:
                     source_lower = source["name"].lower()
+                    # Skip monitor sources (e.g. bluez_output.XX.monitor) — not real mics
+                    if ".monitor" in source_lower:
+                        continue
                     if (mac_formatted in source_lower or 
                         self.device_name.lower() in source_lower or
                         "bluez" in source_lower):
@@ -527,6 +530,36 @@ class BluetoothAudioManager:
         
         logger.warning("No HFP/HSP profile produced a mic source")
         return False
+    
+    def _detect_usb_mic(self) -> bool:
+        """
+        Check if a USB microphone is connected by querying PipeWire/PulseAudio sources.
+        
+        Returns:
+            True if a USB audio input device is detected
+        """
+        try:
+            result = subprocess.run(
+                ["pactl", "list", "sources", "short"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode != 0:
+                logger.debug(f"pactl list sources failed: {result.stderr.strip()}")
+                return False
+            
+            usb_patterns = ["usb", "USB", "usb_pnp", "USB_PnP", "usb-audio", "USB_Audio"]
+            for line in result.stdout.strip().splitlines():
+                line_lower = line.lower()
+                if any(p.lower() in line_lower for p in usb_patterns):
+                    if "input" in line_lower or "source" in line_lower or "alsa_input" in line_lower:
+                        logger.info(f"🎙️ USB mic detected: {line.strip()}")
+                        return True
+            
+            logger.info("🎙️ No USB mic detected in audio sources")
+            return False
+        except Exception as e:
+            logger.warning(f"USB mic detection failed: {e}")
+            return False
     
     def ensure_a2dp_profile(self, mac_address: str) -> bool:
         """
@@ -656,11 +689,23 @@ class BluetoothAudioManager:
             logger.warning(f"Bluetooth audio not ready - attempt {attempt}/3, retrying in 3s...")
             time.sleep(3)
         
-        # Force A2DP profile — USB lavalier mic handles input,
-        # Bluetooth stays in A2DP mode (high-quality stereo output only)
-        self.ensure_a2dp_profile(mac)
-        if sink_id is not None and source_id is None:
-            logger.info("A2DP output only (mic via USB lavalier) — skipping HFP/HSP switch")
+        # Decide BT audio profile based on USB mic availability:
+        # - USB mic present → A2DP (high-quality stereo output, mic via USB)
+        # - No USB mic      → HSP/HFP (mono output + BT mic)
+        usb_mic_connected = self._detect_usb_mic()
+        
+        if usb_mic_connected:
+            logger.info("🎙️ USB mic detected → using A2DP profile (high-quality output)")
+            self.ensure_a2dp_profile(mac)
+            # Re-detect audio devices — PipeWire node IDs change after profile switch
+            sink_id, source_id = self.find_bluetooth_audio(mac)
+            if sink_id is not None and source_id is None:
+                logger.info("A2DP output only (mic via USB) — skipping HFP/HSP switch")
+        else:
+            logger.info("🎙️ No USB mic detected → using HSP/HFP profile (BT mic)")
+            self.ensure_hfp_profile(mac)
+            # Re-detect audio devices after profile switch
+            sink_id, source_id = self.find_bluetooth_audio(mac)
         
         success = True
         
@@ -672,11 +717,21 @@ class BluetoothAudioManager:
             logger.error("Bluetooth audio sink not found")
             success = False
         
-        # Don't try to set BT source — mic is USB now
-        if source_id:
-            logger.info(f"BT source found (ID {source_id}) but USB mic preferred — skipping")
+        if usb_mic_connected:
+            # USB mic handles input — skip BT source
+            if source_id:
+                logger.info(f"BT source found (ID {source_id}) but USB mic preferred — skipping")
+            else:
+                logger.debug("No BT source (expected in A2DP mode)")
         else:
-            logger.warning("Bluetooth audio source (mic) not found - device may not support mic")
+            # No USB mic — need BT source from HSP/HFP
+            if source_id:
+                if not self.set_default_source(source_id):
+                    logger.warning("Failed to set BT mic as default input")
+                else:
+                    logger.info(f"✅ BT mic set as default input (ID {source_id})")
+            else:
+                logger.warning("Bluetooth audio source (mic) not found after HSP/HFP switch")
         
         if success:
             logger.info(f"Bluetooth audio setup complete for '{search_name}'")

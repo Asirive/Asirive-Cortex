@@ -3,7 +3,7 @@ import sys
 
 ssh = paramiko.SSHClient()
 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect('10.135.122.31', username='cortex', password='REDACTED-RPI-PASSWORD', timeout=10)
+ssh.connect('10.245.247.31', username='cortex', password='REDACTED-RPI-PASSWORD', timeout=10)
 
 VENV = "source /home/cortex/ProjectCortex/venv/bin/activate"
 

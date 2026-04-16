@@ -69,6 +69,7 @@ class DashboardConfig:
     enable_detections: bool = True
     enable_gps: bool = True
     enable_audio: bool = False
+    enable_layer1_detection: bool = os.getenv("CORTEX_ENABLE_LAPTOP_LAYER1", "").lower() in {"1", "true", "yes", "on"}
 
     # Colors (Dark Theme)
     color_background: str = "#1e1e1e"

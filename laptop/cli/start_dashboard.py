@@ -37,7 +37,6 @@ logger = logging.getLogger(__name__)
 
 
 from laptop.server.video_receiver import VideoReceiver
-from laptop.layer1_service import Layer1Service
 import cv2
 
 class DashboardApplication:
@@ -81,14 +80,22 @@ class DashboardApplication:
 
         # Custom ZMQ Pipeline (Hybrid Architecture)
         self.zmq_receiver = VideoReceiver(port=5555, on_frame=self._handle_zmq_frame)
-        self.yoloe_config = YOLOEConfig()
-        self.layer1_service = Layer1Service(
-            model_path=self.yoloe_config.model_path,      # yoloe-26x-seg.pt (text-prompt)
-            device=self.yoloe_config.device,
-            confidence=self.yoloe_config.confidence,       # 0.40 (raised from 0.25)
-            class_names=self.yoloe_config.text_prompts     # ~118 curated classes
-        )
-        self.layer1_service.on_result = self._handle_inference_result
+        self.yoloe_config = None
+        self.layer1_service = None
+        if self.config.enable_layer1_detection:
+            from laptop.layer1_service import Layer1Service
+
+            self.yoloe_config = YOLOEConfig()
+            self.layer1_service = Layer1Service(
+                model_path=self.yoloe_config.model_path,      # yoloe-26x-seg.pt (text-prompt)
+                device=self.yoloe_config.device,
+                confidence=self.yoloe_config.confidence,       # 0.40 (raised from 0.25)
+                class_names=self.yoloe_config.text_prompts     # ~118 curated classes
+            )
+            self.layer1_service.on_result = self._handle_inference_result
+            logger.info("Laptop Layer 1 enabled; YOLOE service will start with the dashboard")
+        else:
+            logger.info("⏭️ Laptop Layer 1 disabled; YOLOE model will not be loaded")
 
         # Metrics history (for last update tracking)
         self.last_metrics = {}
@@ -103,8 +110,8 @@ class DashboardApplication:
             return
 
         try:
-            # 1. Feed to inference engine
-            self.layer1_service.process_frame(frame_bgr)
+            if self.layer1_service:
+                self.layer1_service.process_frame(frame_bgr)
             
             # 2. Get latest inference results
             # (Inference runs async, so we just grab what's available to keep video smooth)
@@ -118,7 +125,7 @@ class DashboardApplication:
             # So we should attach them here if we want them sync-ish.
             
             # Ideally:
-            detections = self.layer1_service.latest_results # We need to access this property
+            detections = self.layer1_service.latest_results if self.layer1_service else []
             # Wait, I didn't verify if I exposed `latest_results` in Layer1Service.
             # I did: `self.latest_results = []` in __init__.
             # But the on_result callback is for logging/broadcasting events.
@@ -318,29 +325,36 @@ class DashboardApplication:
                         import numpy as np
                         
                         frame_b64 = message.data.get("frame")
-                        if frame_b64 and self.layer1_service:
-                            # Decode frame
-                            frame_bytes = base64.b64decode(frame_b64)
-                            nparr = np.frombuffer(frame_bytes, np.uint8)
-                            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                            
-                            if frame is not None:
-                                # Run Layer 1 inference
-                                result = self.layer1_service.run_inference(frame)
-                                detections = result.get("data", [])
-                                
-                                # Send response back to RPi5
-                                response = {
-                                    "type": "LAYER1_RESPONSE",
-                                    "timestamp": datetime.utcnow().isoformat() + "Z",
-                                    "data": {
-                                        "detections": detections,
-                                        "inference_time_ms": result.get("inference_time_ms", 0),
-                                        "source": "laptop"
-                                    }
+                        if frame_b64:
+                            detections = []
+                            inference_time_ms = 0
+
+                            if self.layer1_service:
+                                # Decode frame
+                                frame_bytes = base64.b64decode(frame_b64)
+                                nparr = np.frombuffer(frame_bytes, np.uint8)
+                                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+                                if frame is not None:
+                                    # Run Layer 1 inference
+                                    result = self.layer1_service.run_inference(frame)
+                                    detections = result.get("data", [])
+                                    inference_time_ms = result.get("inference_time_ms", 0)
+                            else:
+                                logger.debug("LAYER1_QUERY received while laptop Layer 1 is disabled; returning empty detections")
+
+                            # Send response back to RPi5 even when Layer 1 is disabled
+                            response = {
+                                "type": "LAYER1_RESPONSE",
+                                "timestamp": datetime.utcnow().isoformat() + "Z",
+                                "data": {
+                                    "detections": detections,
+                                    "inference_time_ms": inference_time_ms,
+                                    "source": "laptop"
                                 }
-                                await websocket.send(json.dumps(response))
-                                logger.debug(f"LAYER1_QUERY: Sent {len(detections)} detections to RPi5")
+                            }
+                            await websocket.send(json.dumps(response))
+                            logger.debug(f"LAYER1_QUERY: Sent {len(detections)} detections to RPi5")
                     except Exception as e:
                         logger.error(f"Error handling LAYER1_QUERY: {e}")
 
@@ -443,7 +457,10 @@ class DashboardApplication:
             # Start ZMQ Pipeline (Hybrid Architecture)
             logger.info("Starting ZMQ Video Receiver...")
             self.zmq_receiver.start()
-            self.layer1_service.start()
+            if self.layer1_service:
+                self.layer1_service.start()
+            else:
+                logger.info("⏭️ Skipping laptop Layer 1 startup because enable_layer1_detection=false")
 
             if self.use_fastapi:
                 # Start FastAPI server in background thread
@@ -470,6 +487,8 @@ class DashboardApplication:
             self.dashboard.on_system_log("Dashboard started successfully", "SUCCESS")
             self.dashboard.on_system_log(f"{mode_str} server listening on {self.config.ws_host}:{self.config.ws_port}", "INFO")
             self.dashboard.on_system_log("ZMQ Receiver active on port 5555", "INFO")
+            if not self.layer1_service:
+                self.dashboard.on_system_log("Laptop Layer 1 disabled; YOLOE model not loaded", "INFO")
             self.dashboard.on_system_log("Waiting for RPi5 connections...", "INFO")
 
             # Run Qt application

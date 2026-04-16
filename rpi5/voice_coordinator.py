@@ -44,8 +44,14 @@ class VoiceCoordinator:
         # Optional activity signal callbacks for explicit VAD
         self.on_speech_start_callback: Optional[Callable] = None
         self.on_speech_end_callback: Optional[Callable] = None
+        # Optional callback fired when the user interrupts model playback.
+        self.on_barge_in_callback: Optional[Callable] = None
+        # Callback that returns True when speaker output is active (echo suppression)
+        # Set by main.py to check gemini_audio_player state
+        self.is_output_playing: Optional[Callable[[], bool]] = None
         # Tracks whether continuous audio hook is wired
         self._continuous_audio_wired = False
+        self._speech_started_during_output = False
     
     @property
     def is_listening(self) -> bool:
@@ -69,7 +75,8 @@ class VoiceCoordinator:
                 min_silence_duration_ms=vad_min_silence,
                 padding_duration_ms=vad_padding,
                 on_speech_start=self._on_speech_start,
-                on_speech_end=self._on_speech_end
+                on_speech_end=self._on_speech_end,
+                on_valid_speech_end=self._on_valid_speech_end
             )
             logger.info(
                 f"VAD config: threshold={vad_threshold}, "
@@ -139,16 +146,38 @@ class VoiceCoordinator:
         """Forward every VAD audio chunk to Gemini Live for continuous streaming."""
         if self.on_raw_audio is not None:
             try:
-                pcm_bytes = (chunk * 32767).astype(np.int16).tobytes()
-                self.on_raw_audio(pcm_bytes, 16000)
+                # During speaker playback, send silence instead of dropping audio.
+                # Dropping creates silence→audio transitions that Gemini's server-side
+                # auto-VAD interprets as speech onset → barge-in → session killed.
+                if self.is_output_playing and self.is_output_playing():
+                    silence = b'\x00' * (len(chunk) * 2)  # int16 = 2 bytes per sample
+                    self.on_raw_audio(silence, 16000)
+                else:
+                    pcm_bytes = (chunk * 32767).astype(np.int16).tobytes()
+                    self.on_raw_audio(pcm_bytes, 16000)
             except Exception:
                 pass  # Don't log per-chunk errors
 
     def _on_speech_start(self):
         """Callback from VAD when speech starts. Signal Gemini to listen."""
+        output_active = bool(self.is_output_playing and self.is_output_playing())
+        self._speech_started_during_output = output_active
+        if output_active and self.on_barge_in_callback:
+            try:
+                self.on_barge_in_callback()
+            except Exception:
+                pass
         if self.on_speech_start_callback:
             try:
                 self.on_speech_start_callback()
+            except Exception:
+                pass
+
+    def _on_valid_speech_end(self, _audio: np.ndarray):
+        """Signal Gemini turn-end immediately for each valid VAD segment."""
+        if self.on_speech_end_callback:
+            try:
+                self.on_speech_end_callback()
             except Exception:
                 pass
 
@@ -157,15 +186,14 @@ class VoiceCoordinator:
         
         Pipeline: Cartesia Ink (cloud, ~66ms) → Whisper (offline fallback, ~8s)
         Gemini Live audio path runs in parallel via continuous chunk streaming.
-        """
+        """        # Suppress echo: discard speech captured while speaker was playing
+        output_active = bool(self.is_output_playing and self.is_output_playing())
+        speech_started_during_output = self._speech_started_during_output
+        self._speech_started_during_output = False
+        if output_active and not speech_started_during_output:
+            logger.info(f"🔇 Suppressing {len(audio)} sample speech segment (speaker active)")
+            return
         logger.info(f"🎤 Speech segment detected ({len(audio)} samples), transcribing...")
-
-        # Signal Gemini that user stopped speaking
-        if self.on_speech_end_callback:
-            try:
-                self.on_speech_end_callback()
-            except Exception:
-                pass
 
         try:
             text = None

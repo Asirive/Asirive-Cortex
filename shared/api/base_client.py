@@ -102,6 +102,7 @@ class AsyncWebSocketClient(ABC):
         # Components
         self._message_queue: Deque[BaseMessage] = deque(maxlen=config.message_queue_size)
         self._heartbeat = HeartbeatState(config.ping_interval, config.ping_timeout)
+        self._queue_full_warned = False  # Log queue-full once, suppress until reconnect
 
         # Event loops (for async/sync bridge)
         self._async_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -263,7 +264,9 @@ class AsyncWebSocketClient(ABC):
     def _queue_message(self, message: BaseMessage) -> bool:
         """Queue a message for later sending."""
         if len(self._message_queue) >= self.config.message_queue_size:
-            logger.warning("Message queue full, dropping message")
+            if not self._queue_full_warned:
+                logger.warning("Message queue full (laptop unreachable), suppressing further")
+                self._queue_full_warned = True
             return False
 
         self._message_queue.append(message)

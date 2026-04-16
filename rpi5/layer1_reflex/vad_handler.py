@@ -83,7 +83,8 @@ class VADHandler:
         min_silence_duration_ms: int = 300,  # Silence duration to end speech
         padding_duration_ms: int = 100,  # Add padding before/after speech
         on_speech_start: Optional[Callable] = None,
-        on_speech_end: Optional[Callable[[np.ndarray], None]] = None
+        on_speech_end: Optional[Callable[[np.ndarray], None]] = None,
+        on_valid_speech_end: Optional[Callable[[np.ndarray], None]] = None
     ):
         """
         Initialize VAD handler.
@@ -103,9 +104,15 @@ class VADHandler:
         """
         if self._initialized:
             logger.debug("VADHandler already initialized, skipping...")
+            if on_speech_start is not None:
+                self.on_speech_start = on_speech_start
+                logger.info("🔄 VAD: refreshed on_speech_start callback")
             if on_speech_end is not None:
                 self.on_speech_end = on_speech_end
                 logger.info("🔄 VAD: refreshed on_speech_end callback")
+            if on_valid_speech_end is not None:
+                self.on_valid_speech_end = on_valid_speech_end
+                logger.info("🔄 VAD: refreshed on_valid_speech_end callback")
             return
             
         logger.info("🎤 Initializing VAD Handler...")
@@ -130,6 +137,7 @@ class VADHandler:
         # Callbacks
         self.on_speech_start = on_speech_start
         self.on_speech_end = on_speech_end
+        self.on_valid_speech_end = on_valid_speech_end
         self.on_audio_chunk: Optional[Callable] = None  # Every chunk (for Gemini continuous stream)
         self._stt_lock = threading.Lock()  # Prevent overlapping STT calls
         
@@ -234,9 +242,9 @@ class VADHandler:
         audio_chunk = np.frombuffer(in_data, dtype=np.int16).astype(np.float32) / 32768.0
         
         # Resample to VAD rate (16kHz) if device runs at a different rate
-        if self._resample_ratio > 1.01:
-            # Simple linear interpolation resample (low-latency, good enough for VAD)
-            target_len = int(len(audio_chunk) / self._resample_ratio)
+        if abs(self._resample_ratio - 1.0) > 0.01:
+            # Linear interpolation resample (low-latency, handles both up and down)
+            target_len = self.chunk_size  # Always produce exactly chunk_size samples for Silero VAD
             indices = np.linspace(0, len(audio_chunk) - 1, target_len)
             audio_chunk = np.interp(indices, np.arange(len(audio_chunk)), audio_chunk).astype(np.float32)
         
@@ -356,6 +364,12 @@ class VADHandler:
                                 f"Min required={self.min_speech_duration_ms}ms, "
                                 f"Status=SENDING_TO_PIPELINE"
                             )
+
+                            if self.on_valid_speech_end:
+                                try:
+                                    self.on_valid_speech_end(speech_audio)
+                                except Exception as e:
+                                    logger.error(f"❌ Error in on_valid_speech_end callback: {e}")
                             
                             # Trigger callback in background thread to avoid blocking VAD
                             if self.on_speech_end:
@@ -381,7 +395,8 @@ class VADHandler:
                         self.speech_buffer = []
                 
                 # Continue accumulating chunks if speech is active (even when speech_dict is None)
-                if self.is_speech_active:
+                # Use elif to avoid duplicating the chunk that triggered 'start' (already in padding_buffer)
+                elif self.is_speech_active:
                     self.speech_buffer.append(audio_chunk)
                 
                 self.audio_queue.task_done()
@@ -523,7 +538,7 @@ class VADHandler:
                     self._resample_ratio = self._device_sample_rate / self.sample_rate
 
                 # Scale buffer size to match device rate so callback duration stays the same
-                device_chunk_size = int(self.chunk_size * self._resample_ratio)
+                device_chunk_size = round(self.chunk_size * self._resample_ratio)
 
                 logger.info(
                     f"🎤 Opening stream: device_rate={self._device_sample_rate}Hz, "
