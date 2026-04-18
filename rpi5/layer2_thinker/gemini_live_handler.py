@@ -87,7 +87,10 @@ class GeminiLiveHandler:
             http_options={"api_version": "v1beta"},
         )
         self.model = model
-        self.system_instruction = system_instruction or self._default_system_instruction()
+        self._is_gemini_live_31 = model.startswith("gemini-3.1-flash-live-preview")
+        self.system_instruction = system_instruction or self._default_system_instruction(
+            is_gemini_live_31=self._is_gemini_live_31
+        )
         self.response_modalities = response_modalities or ['AUDIO']
         self.temperature = temperature
         response_modality_values = {
@@ -121,13 +124,13 @@ class GeminiLiveHandler:
 
         # Per-session write lock to prevent interleaved WebSocket frames
         self._send_lock: Optional[asyncio.Lock] = None
-        self._is_gemini_live_31 = model.startswith("gemini-3.1-flash-live-preview")
         self._context_disabled_logged = False
 
         # Debug counters for diagnosing 1007
         self._audio_chunks_sent = 0
         self._video_frames_sent = 0
         self._audio_bytes_total = 0
+        self._last_session_handle_log_time = 0.0
 
         # Callback for status updates (optional)
         self.status_callback: Optional[Callable[[str], None]] = None
@@ -154,9 +157,64 @@ class GeminiLiveHandler:
         logger.info(f"✅ GeminiLiveHandler initialized (model={model})")
     
     @staticmethod
-    def _default_system_instruction() -> str:
+    def _default_system_instruction(is_gemini_live_31: bool = False) -> str:
         """Default system instruction for autonomous AI companion."""
-        return """You are the eyes of a visually impaired person wearing you as smart glasses.
+        mode_context_contract = (
+            "Do NOT expect periodic [MODE] tags or hidden background state updates. "
+            "Infer the current task from live user speech, explicit tool results, "
+            "and any direct system prompt you receive."
+            if is_gemini_live_31 else
+            "You receive a [MODE] tag in every context update. Your proactivity level depends on it:"
+        )
+        route_handoff_contract = (
+            "  5. After the handoff, the on-device navigator will handle routine "
+            "turn-by-turn speech locally. Only add extra guidance if the user asks "
+            "a follow-up question or you receive a direct prompt with fresh route context."
+            if is_gemini_live_31 else
+            "  5. After the handoff, narrate turn events as they arrive via [NAV_EVENT]."
+        )
+        live_runtime_contract = (
+            """LIVE SESSION CONTRACT:
+You do NOT receive periodic [CONTEXT] messages, [NAV_EVENT] messages,
+or hidden mid-session mode/state injections on this runtime.
+Treat this as a reactive live conversation driven by:
+- the user's live speech
+- live camera/microphone input
+- explicit tool results
+- direct prompts sent to you in-band
+Routine turn-by-turn navigation speech is handled locally by the device.
+Do NOT announce mode changes or session state unless the user explicitly asks.
+If you need current route progress or navigation state during an active session,
+call `get_navigation_state` or another relevant tool instead of waiting for
+background updates."""
+            if is_gemini_live_31 else
+            """SENSOR CONTEXT:
+You receive periodic [CONTEXT] messages with sensor data. These are background updates —
+do NOT respond to them. Silently absorb the information and use it when you speak next.
+NEVER announce, acknowledge, or comment on mode changes or session state updates.
+Do NOT say things like "I'm now in idle mode" or "Switching to navigation mode" or
+"Session resumed". Mode changes are internal system events — the user does not need to
+hear about them. Just silently adjust your behavior to match the new mode.
+
+SCENE CHANGE NOTIFICATIONS:
+You receive [SCENE_CHANGE] messages when the environment changes meaningfully.
+In OUTDOOR_NAV or INDOOR_NAV: respond briefly if navigation-relevant.
+In IDLE: only respond if there's a safety hazard.
+In EXPLORE: always respond with a description.
+
+NAVIGATION EVENTS:
+You receive [NAV_EVENT] messages for important navigation changes:
+- "navigating_to: X" → Navigation started. Be ready to guide.
+- "waypoint_reached" → Acknowledge only if something interesting is visible
+- "approaching_turn" → Describe what you see at the upcoming turn
+- "approaching_destination" → Describe the destination as you see it
+- "arrived" → Confirm what you see matches the destination
+- "indoor_mode_activated" → Switch to Indoor Guide Mode (give voice directions)
+- "outdoor_mode_activated" → Switch back to outdoor GPS guidance
+- "navigation_stopped" → Return to IDLE (go quiet)
+- "road_crossing" → Describe the crossing (traffic lights, zebra crossing, traffic)"""
+        )
+        return f"""You are the eyes of a visually impaired person wearing you as smart glasses.
 You see through their camera. You hear through their microphone.
 You are their trusted companion — not a chatbot waiting for questions.
 
@@ -170,7 +228,7 @@ Focus on what the cane CANNOT detect:
 - Visual information: text, signs, bus numbers, shop names, people's faces
 
 === MODE-DRIVEN BEHAVIOR ===
-You receive a [MODE] tag in every context update. Your proactivity level depends on it:
+{mode_context_contract}
 
 [MODE] IDLE — DEFAULT, QUIET MODE
   - Do NOT speak unless spoken to, EXCEPT for overhead/approaching hazards
@@ -206,7 +264,7 @@ When the user asks to go somewhere outdoors, you own the orchestration:
   4. Call `start_navigation_with_route(destination_name, waypoints,
      metadata)` using the waypoints + metadata returned by get_directions
      VERBATIM. Do not modify or truncate the waypoint list.
-  5. After the handoff, narrate turn events as they arrive via [NAV_EVENT].
+{route_handoff_contract}
 
 Do NOT call `start_outdoor_navigation` unless the tool chain above fails.
 That older tool is a compatibility fallback only.
@@ -261,31 +319,7 @@ SPEAKING RULES (all modes):
 - Prioritize: safety > navigation > useful info
 - Do NOT spam — the user needs to concentrate
 
-SENSOR CONTEXT:
-You receive periodic [CONTEXT] messages with sensor data. These are background updates —
-do NOT respond to them. Silently absorb the information and use it when you speak next.
-NEVER announce, acknowledge, or comment on mode changes or session state updates.
-Do NOT say things like "I'm now in idle mode" or "Switching to navigation mode" or
-"Session resumed". Mode changes are internal system events — the user does not need to
-hear about them. Just silently adjust your behavior to match the new mode.
-
-SCENE CHANGE NOTIFICATIONS:
-You receive [SCENE_CHANGE] messages when the environment changes meaningfully.
-In OUTDOOR_NAV or INDOOR_NAV: respond briefly if navigation-relevant.
-In IDLE: only respond if there's a safety hazard.
-In EXPLORE: always respond with a description.
-
-NAVIGATION EVENTS:
-You receive [NAV_EVENT] messages for important navigation changes:
-- "navigating_to: X" → Navigation started. Be ready to guide.
-- "waypoint_reached" → Acknowledge only if something interesting is visible
-- "approaching_turn" → Describe what you see at the upcoming turn
-- "approaching_destination" → Describe the destination as you see it
-- "arrived" → Confirm what you see matches the destination
-- "indoor_mode_activated" → Switch to Indoor Guide Mode (give voice directions)
-- "outdoor_mode_activated" → Switch back to outdoor GPS guidance
-- "navigation_stopped" → Return to IDLE (go quiet)
-- "road_crossing" → Describe the crossing (traffic lights, zebra crossing, traffic)
+{live_runtime_contract}
 
 Remember: in IDLE mode, silence is correct. Only speak when it genuinely helps.
 Safety always comes first. Overhead hazards are your highest priority."""
@@ -474,9 +508,15 @@ Safety always comes first. Overhead hazards are your highest priority."""
                             "description": (
                                 "Hand a pre-fetched route to the on-device navigation engine. "
                                 "Call this AFTER get_directions. The engine will start tracking "
-                                "the user's GPS position against these waypoints and fire "
-                                "nav events back to you (approaching_turn, arrived, etc.) so "
-                                "you can narrate. Pass the waypoints and metadata returned by "
+                                "the user's GPS position against these waypoints and "
+                                + (
+                                    "handle routine turn-by-turn guidance locally. Use "
+                                    "get_navigation_state if you need progress after the handoff. "
+                                    if self._is_gemini_live_31 else
+                                    "fire nav events back to you (approaching_turn, arrived, etc.) so "
+                                    "you can narrate. "
+                                )
+                                + "Pass the waypoints and metadata returned by "
                                 "get_directions verbatim — do not modify or truncate them."
                             ),
                             "parameters": {
@@ -837,7 +877,10 @@ Safety always comes first. Overhead hazards are your highest priority."""
                     if sru:
                         if getattr(sru, 'resumable', False) and getattr(sru, 'new_handle', None):
                             self.session_handle = sru.new_handle
-                            logger.info("📝 Session resumption handle updated")
+                            now = time.time()
+                            if now - self._last_session_handle_log_time >= 30.0:
+                                logger.debug("📝 Session resumption handle refreshed")
+                                self._last_session_handle_log_time = now
 
                     # Handle function calls from Gemini
                     tc = getattr(response, 'tool_call', None)
@@ -1210,17 +1253,15 @@ Safety always comes first. Overhead hazards are your highest priority."""
                 )
             self._audio_chunks_sent += 1
             self._audio_bytes_total += len(audio_bytes)
-            # Log first 5 chunks, then every 100th
-            if self._audio_chunks_sent <= 5 or self._audio_chunks_sent % 100 == 0:
+            # Keep chunk logging at DEBUG only; INFO spam makes the TUI lag.
+            if self._audio_chunks_sent == 1 or self._audio_chunks_sent % 500 == 0:
                 elapsed = time.time() - self._connect_time if self._connect_time else 0
-                logger.info(
+                logger.debug(
                     f"📤 Audio chunk #{self._audio_chunks_sent}: "
                     f"{len(audio_bytes)}B, rate={sample_rate}, "
                     f"total={self._audio_bytes_total}B, "
                     f"elapsed={elapsed:.1f}s"
                 )
-            else:
-                logger.debug(f"📤 Sent {len(audio_bytes)} bytes of audio")
 
             # Track query for memory logging
             if not self._query_start_time:
@@ -1268,12 +1309,13 @@ Safety always comes first. Overhead hazards are your highest priority."""
                     video=types.Blob(data=jpeg_bytes, mime_type='image/jpeg')
                 )
             self._video_frames_sent += 1
-            elapsed = time.time() - self._connect_time if self._connect_time else 0
-            logger.info(
-                f"📤 Video frame #{self._video_frames_sent}: "
-                f"{frame.width}x{frame.height}, {len(jpeg_bytes)}B JPEG, "
-                f"elapsed={elapsed:.1f}s"
-            )
+            if self._video_frames_sent == 1 or self._video_frames_sent % 30 == 0:
+                elapsed = time.time() - self._connect_time if self._connect_time else 0
+                logger.debug(
+                    f"📤 Video frame #{self._video_frames_sent}: "
+                    f"{frame.width}x{frame.height}, {len(jpeg_bytes)}B JPEG, "
+                    f"elapsed={elapsed:.1f}s"
+                )
             return True
             
         except Exception as e:
@@ -1479,6 +1521,7 @@ class GeminiLiveManager:
         self._pending_video_frame: Optional[Image.Image] = None  # Latest-wins video buffer
         self._video_send_pending = False  # Guard for dedup
         self._drop_audio_until = 0.0  # Short pause around text turns on live audio stream
+        self._context_queue_disabled_logged = False
         
         logger.info("✅ GeminiLiveManager initialized")
 
@@ -1715,13 +1758,18 @@ class GeminiLiveManager:
 
     def send_context(self, text: str):
         """
-        Send silent context (thread-safe). Does NOT trigger a model response.
-        Use for periodic [CONTEXT] injections.
+        Send silent context (thread-safe) on runtimes that support it.
         
         Args:
             text: Context text
         """
         if not self.is_running or not self.loop:
+            return
+
+        if self.handler._is_gemini_live_31:
+            if not self._context_queue_disabled_logged:
+                logger.info("📝 Manager skipped context queueing on Gemini 3.1 Live")
+                self._context_queue_disabled_logged = True
             return
 
         self.loop.call_soon_threadsafe(self._queue_outbound, ("context", text))

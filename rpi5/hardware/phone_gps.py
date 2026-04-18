@@ -341,6 +341,7 @@ class PhoneGPSReceiver:
                 heading=heading,
                 fix_quality=fix_quality,
                 satellites=0,  # Browser doesn't report sat count
+                accuracy=accuracy,
             )
             self._last_update = time.monotonic()
             self._update_count += 1

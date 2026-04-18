@@ -4,7 +4,7 @@ import time
 
 c = paramiko.SSHClient()
 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect('10.245.247.31', username='cortex', password='Haziqshah21')
+c.connect('10.131.52.31', username='cortex', password='Haziqshah21')
 
 # Set AlwaysPairable = true in BlueZ config
 sed_cmd = 'echo Haziqshah21 | sudo -S sed -i "s/^#AlwaysPairable = false/AlwaysPairable = true/" /etc/bluetooth/main.conf'

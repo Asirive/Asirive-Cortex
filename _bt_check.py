@@ -1,7 +1,7 @@
 import paramiko, time
 c=paramiko.SSHClient()
 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect('10.245.247.31', username='cortex', password='Haziqshah21')
+c.connect('10.131.52.31', username='cortex', password='Haziqshah21')
 
 # Kill the running cortex process
 stdin,stdout,stderr=c.exec_command('pkill -f "python -m rpi5"')

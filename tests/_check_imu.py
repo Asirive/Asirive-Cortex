@@ -3,7 +3,7 @@ import paramiko
 
 ssh = paramiko.SSHClient()
 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect('10.245.247.31', username='cortex', password='Haziqshah21', timeout=10)
+ssh.connect('10.131.52.31', username='cortex', password='Haziqshah21', timeout=10)
 
 cmds = [
     "fuser /dev/i2c-1 2>&1 || echo 'no process using i2c-1'",

@@ -4,7 +4,7 @@ Temporary script - delete after use.
 """
 import paramiko, time
 
-HOST = "10.245.247.31"
+HOST = "10.131.52.31"
 USER = "cortex"
 PASS = "Haziqshah21"
 BT_MAC = "2C:BE:EE:2D:9E:E6"
