@@ -5,7 +5,7 @@
 <img src="https://img.shields.io/badge/Platform-Raspberry%20Pi%205-E36D47?style=for-the-badge&logo=raspberrypifoundation&logoColor=white" />
 <img src="https://img.shields.io/badge/AI-Gemini%203.1%20Flash-4285F4?style=for-the-badge&logo=google&logoColor=white" />
 <img src="https://img.shields.io/badge/Detection-YOLO%20v11-00FFFF?style=for-the-badge&logo=yolo&logoColor=black" />
-<img src="https://img.shields.io/badge/Audio-3D%20HRTF%20Beam-FF6B6B?style=for-the-badge&logo=headphones&logoColor=white" />
+<img src="https://img.shields.io/badge/Safety-Silent%20Dangers%20Only-FF6B6B?style=for-the-badge&logo=shield&logoColor=white" />
 
 <br/>
 
@@ -13,7 +13,7 @@
 
 ### AI Wearable for the Visually Impaired
 
-**Real-time scene understanding · 3D audio beam navigation · Safety-first obstacle detection · Natural conversation**
+**Context-aware AI companion · Silent-danger-first safety · GPS navigation with transit · Natural conversation**
 
 *Turn on → it works. Say where → it navigates. Say nothing → it keeps you safe.*
 
@@ -40,31 +40,30 @@ ProjectCortex is a **<$150 chest-mounted wearable** powered by a Raspberry Pi 5 
 
 | Feature | How |
 |:---|:---|
-| **3D Audio Beam Navigation** | HRTF spatial audio guides you to your destination — just follow the sound. No "turn left" voice commands. The beam **is** the direction. |
-| **Safety Alerts (offline, <100ms)** | YOLO detects cars, stairs, curbs, overhead obstacles locally. Haptic vibration + distance-injected voice alerts. Works without internet. |
+| **6-Mode Contextual AI** | Gemini switches between 6 behavioral profiles (IDLE → EXPLORE) based on what you're doing. Silent when walking, proactive when lost, laser-focused at bus stops. Not a chatbot — a context-adaptive companion. |
+| **Silent-Dangers-Only Safety** | Fuses YOLO + depth + velocity to warn ONLY about what you can't hear. Walls, poles, overhead obstacles, approaching cars. Never alerts about things you can already hear. Progressive: voice → haptic as distance closes. Works offline, <100ms. |
+| **GPS Navigation + Transit** | Multi-leg routing: walk → bus → MRT → walk. Voice navigation, stop counting, arrival detection. LTA DataMall real-time bus arrivals. |
 | **Natural Conversation** | Ask anything: *"What do you see?"*, *"Read that sign"*, *"Where did I leave my keys?"* — Gemini 3.1 Flash answers in <1 second. |
-| **Bus Detection & Boarding** | LTA DataMall real-time arrivals + YOLO visual detection. Voice announces bus numbers. Beam guides to bus stop pole — never to a moving bus. |
-| **Transit Routing** | Multi-leg journeys: walk → bus → MRT → walk. Google Maps Directions API with live GPS tracking and stop counting. |
 | **Object Memory** | *"Remember where I put my wallet"* — SQLite + Supabase cloud sync. Ask later: *"Where's my wallet?"* |
+| **Autonomous Narration** | System decides when to speak unprompted — new objects appearing, depth changes, navigation events. Navigation-aware cooldowns prevent spam. |
 
 ### How It Works
 
 ```
-  User speaks ──> Silero VAD ──> Whisper STT ──> Intent Router (97.7%)
-                                                      │
-                                         ┌────────────┼──────────────┐
-                                         │            │               │
-                                    L0/L1 Safety   L2 Gemini    L3 Navigation
-                                    (YOLO, <100ms)  (Vision/QA)  (GPS+Beam+Bus)
-                                         │            │               │
-                                         └────────────┼──────────────┘
-                                                      │
-                                    ┌─────────────────┴─────────────────┐
-                                    │                                   │
-                              3D Audio Beam                          Voice
-                          (direction + proximity)               (warnings + status)
-                                    │                                   │
-                                    └───── Bluetooth Earbuds ──────────┘
+  User speaks ──> Silero VAD ──> Whisper/Cartesia STT ──> Intent Router (97.7%)
+                                                              │
+                                                 ┌────────────┼──────────────┐
+                                                 │            │               │
+                                            L0/L1 Safety   L2 Gemini    L3 Navigation
+                                            (YOLO, <100ms)  (Vision/QA)  (GPS+Transit+Bus)
+                                                 │            │               │
+                                    ┌────────────┤            │               │
+                                    │            │            │               │
+                              Haptic Pulse   Voice Alert   Conversation   Voice Guidance
+                              (imminent)     (approaching) (Q&A/narrate)  (turns, stops)
+                                    │            │            │               │
+                                    └────────────┴────────────┴───────────────┘
+                                                      Bluetooth Earbuds
 ```
 
 ---
@@ -78,7 +77,7 @@ ProjectCortex is a **<$150 chest-mounted wearable** powered by a Raspberry Pi 5 
 | **L0** | Guardian | Safety-critical detection + haptic alerts | YOLO v11 NCNN + GPIO vibration motor | <100ms | RPi5 (offline) |
 | **L1** | Learner | Adaptive open-vocabulary detection | YOLOE (text/visual prompts) | ~200ms | RPi5 |
 | **L2** | Thinker | Scene understanding, reading, Q&A, conversation | Gemini 3.1 Flash via Live API + function calling | ~500ms | Cloud |
-| **L3** | Guide | Intent routing + 3D spatial audio + GPS navigation | Fuzzy router + PyOpenAL HRTF + GPS/IMU | <5ms | RPi5 |
+| **L3** | Guide | Intent routing + GPS navigation + transit | Fuzzy router + Google Maps + LTA DataMall | <5ms | RPi5 |
 | **L4** | Memory | Object recall, conversation history, cloud sync | SQLite (local) + Supabase (cloud) | ~1ms | RPi5 + Cloud |
 
 ### Hybrid Edge-Server Topology
@@ -96,7 +95,7 @@ ProjectCortex is a **<$150 chest-mounted wearable** powered by a Raspberry Pi 5 
                  │   └──────┬──────┘                        │
                  │     ┌────┼────┐                          │
                  │    L0   L1   L3 ─── GPS Navigation       │
-                 │    │    │    │     3D Audio Beam         │
+                 │    │    │    │     Transit Routing        │
                  │    │    │    │     Bus Handler            │
                  │    │    │    │     Safety Monitor         │
                  │   L2 ──┘    │                             │
@@ -120,35 +119,149 @@ ProjectCortex is a **<$150 chest-mounted wearable** powered by a Raspberry Pi 5 
 
 ---
 
+## 6-Mode Contextual AI Companion
+
+The core innovation: **Gemini doesn't have one personality — it has six.** The same model switches behavior completely depending on what the user is doing, controlled by a context-adaptive system prompt and 9 function-calling tools.
+
+### The Six Modes
+
+| Mode | Trigger | AI Behavior |
+|:---|:---|:---|
+| **IDLE** | No active route | *"Silence is correct behavior."* Only speaks for overhead hazards or direct questions. Max 2 sentences unprompted. |
+| **OUTDOOR_NAV** | GPS fix available, route active | Turn-by-turn companion. Reads street signs. Announces waypoints and arrivals. Concise directions. |
+| **INDOOR_NAV** | No GPS / GPS accuracy >10m | *"YOU are the primary navigator."* Full proactive guidance via camera — obstacles, direction, "look around slowly" prompts when lost. |
+| **BUS_WATCH** | Within 50m of bus stop | Single-minded focus: read bus numbers, call LTA arrival API, guide to correct bus. |
+| **TRANSIT** | GPS speed >15 km/h | Mostly quiet. Announces stops through windows. Counts remaining stops. |
+| **EXPLORE** | User toggles explore mode | Describes everything. Maximum proactivity. Scene narration. |
+
+### Function Calling (9 Tools)
+
+Gemini doesn't just talk — it **acts**. Through function calling, it can query real-time data:
+
+```python
+# 9 function-calling tools exposed to Gemini:
+tools = [
+    get_navigation_state,       # Current waypoint, bearing, distance
+    report_obstacle,            # Gemini reports what it sees → SafetyMonitor
+    get_gps_accuracy,           # Current GPS fix quality
+    get_bus_arrival,            # LTA DataMall bus arrival times
+    start_outdoor_navigation,   # Activate GPS turn-by-turn
+    guide_indoor,               # Switch to indoor camera-guidance
+    stop_navigation,            # Cancel active navigation
+    search_memory,              # Search saved items/locations
+    set_system_mode,            # Switch PRODUCTION / DEV mode
+]
+
+# + Google Search grounding for real-time information
+```
+
+### Scene Change Detection (Autonomous Narration)
+
+The system decides **when** Gemini should speak unprompted — not on a timer, but based on what actually changed:
+
+| Trigger | Priority | Example |
+|:---|:---:|:---|
+| **Navigation event** | Highest | Waypoint reached, mode switched, road crossing |
+| **New object classes** | High | *"A bench and a fire hydrant appeared nearby"* |
+| **Depth change >30%** | Medium | Entering a room, reaching a wall |
+| **Silence timeout** | Low | 60s idle / 120s navigating — check-in |
+
+Boring classes like "person" and "bird" are filtered — they're transient and noisy indoors. Navigation-aware cooldowns: 5s between narrations when idle, 15s when navigating.
+
+### Echo Detection & Barrier Suppression
+
+| Problem | Solution |
+|:---|:---|
+| STT picks up device's own speaker output | 15-second buffer of Gemini transcripts checked against STT via word overlap |
+| False barge-in after text/tool send | 2-3s cooldown after tool calls prevents Gemini's VAD from interpreting trailing noise as speech |
+| Audio stream dropout during speaker output | Send zero-filled PCM frames instead of muting — maintains stream continuity |
+| Context overflow in long sessions | Sliding window compression: trigger at ~105k tokens, compress older turns to bullet points |
+
+---
+
+## Silent-Dangers-Only Safety System
+
+> **Most assistive devices alert about everything. ProjectCortex only alerts about what you CAN'T hear.**
+
+The user wears transparency-mode earbuds — they can hear cars, people, and dogs naturally. The system focuses exclusively on **silent dangers**: walls, poles, overhead obstacles, and vehicles approaching from blind spots.
+
+### 4-Tier Threat Classification
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  TIER 1 — Environmental Hazards (Depth Map)              │
+│  Walls, stairs_down, stairs_up, curbs, dropoffs           │
+│  → 2x score multiplier for critical severity               │
+│  → Progressive: voice-only >1.5m → +voice <1.5m         │
+│     → +haptic vibration <1.0m                              │
+│  → Indoor walls at 0.5-0.8m SUPPRESSED (normal room)     │
+├──────────────────────────────────────────────────────────┤
+│  TIER 2 — Silent Static Obstacles (YOLO + Depth <2m)     │
+│  Fire hydrant, bench, chair, pole, suitcase, bollard...    │
+│  → Score = 5 / distance_m                                 │
+│  → Only if depth <2m (filters distant objects)            │
+│  → Distance-injected voice: "Pole, 1.2m ahead"           │
+├──────────────────────────────────────────────────────────┤
+│  TIER 3 — Approaching Vehicles (YOLO + Velocity Tracking) │
+│  Car, truck, bus, motorcycle, bicycle                      │
+│  → Score = 10 / TTC (time-to-contact)                    │
+│  → Only if approach velocity >1 m/s AND distance <4m     │
+│  → Velocity computed from rolling (timestamp, dist) deque│
+├──────────────────────────────────────────────────────────┤
+│  TIER 4 — Safe (No Alert)                                 │
+│  People, dogs, cats, distant objects                       │
+│  → User can hear these naturally through open-ear earbuds  │
+│  → Explicitly filtered OUT to reduce alert fatigue        │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Progressive Alerting
+
+The system never startles — it escalates:
+
+| Distance | Alert Type | Example |
+|:---|:---|:---|
+| >3.5m | None | Too far, no alert |
+| 2-3.5m | "Notice" | Low-priority awareness |
+| 1.2-2m | "Warning" | *"Wall, 1.5m ahead"* |
+| 0.7-1.2m | "Danger" + TTS | *"Pole, 0.8m ahead"* |
+| <0.7m | "Critical" + TTS + Haptic | Vibration motor pulses |
+| <0.3m | "Emergency" + TTS + Haptic | Sustained vibration |
+
+### Environment-Aware Cooldowns
+
+Alerting indoors is different from outdoors:
+
+| Alert Type | Outdoor Cooldown | Indoor Cooldown | Why |
+|:---|:---:|:---:|:---|
+| General alert | 3s | 8s | Hallways have walls everywhere — spam prevents useful alerts |
+| TTS voice | 8s | 20s | Don't repeat "wall ahead" every 2 seconds in a corridor |
+| Haptic pulse | 2s | 5s | Vibration fatigue is real |
+
+### Safety Guard Rules (Hard-Coded, Non-Negotiable)
+
+| # | Rule | Rationale |
+|:---:|:---|:---|
+| 1 | **Never guide toward moving objects** | Navigation locks on fixed references (bus stop pole), never shifts to a moving bus |
+| 2 | **No in-ear tips** | Blind users' ears = primary survival sensor. Bone conduction or open-ear only |
+| 3 | **Physical privacy shutter** | 3D-printed sliding shutter + GPIO reed switch = no frames when closed |
+| 4 | **Escalator = voice + cane** | Single vibration motor can't encode step timing. Too risky. |
+| 5 | **Safety never depends on cloud** | YOLO + depth run 100% on-device. No network needed. |
+| 6 | **Multi-source verification** | Never cross road / change direction / board transport from ONE source |
+
+---
+
 ## Navigation System
 
-### 3D Audio Beam — The Core Innovation
-
-The beam guides direction **silently**. Voice warns and affirms.
-
-| Distance | Beam Feedback | Voice |
-|:---|:---|:---|
-| >20m | Low pitch, slow pulse (2s interval) | — |
-| 5-20m | Medium pitch, pulse every 1s | — |
-| 2-5m | Higher pitch, pulse every 500ms | — |
-| <2m | High pitch, rapid pulse | *"Almost there"* |
-| Arrival | Arrival chime + beam off | *"You've arrived"* |
-| Obstacle detected | Beam adjusts around obstacle (Phase 2) | *"Table on your left"* |
-| Road crossing | Beam pauses, resumes after crossing | *"Road ahead. Crossing now."* |
-
-**Two channels only. Ever.**
-- **Channel 1 — Beam**: 3D HRTF spatialized sound. Direction = walk there. Pitch/rate = proximity.
-- **Channel 2 — Voice**: All warnings, status, and conversation. Centered, natural speech.
-
-### Navigation Modes (Auto-Switching)
+### Auto-Switching Navigation Modes
 
 | Mode | Trigger | Behavior |
 |:---|:---|:---|
-| **OUTDOOR** | GPS fix available (accuracy <10m) | GPS waypoint tracking + 3D beam toward destination |
-| **INDOOR** | No GPS / GPS accuracy >10m / depth sensor walls <1m | Gemini camera guidance + beam direction via function call |
-| **BUS_STOP** | Within 50m of a bus stop | LTA DataMall arrivals + YOLO bus detection + beam to pole |
+| **OUTDOOR** | GPS fix available (accuracy <10m) | GPS waypoint tracking, voice turn guidance, distance announcements |
+| **INDOOR** | No GPS / GPS accuracy >10m / depth sensor detects walls <1m | Gemini camera guidance via function calling — "look around slowly" when lost |
+| **BUS_STOP** | Within 50m of a bus stop | LTA DataMall arrivals + YOLO bus detection, voice announces bus numbers |
 | **TRANSIT** | GPS speed >15 km/h | Pause navigation, announce stops, auto-detect arrival |
-| **IDLE** | No active route | Safety alerts only. No navigation beam. |
+| **IDLE** | No active route | Safety alerts only. No navigation guidance. |
 
 ### Transit Routing (Multi-Leg Journeys)
 
@@ -162,9 +275,9 @@ Route: Walk → Bus 23 (8 stops) → Walk → Arrived
 │ 350m   │     │ 8 stops      │     │ 120m     │
 │ 4 min  │     │ 12 min       │     │ 1 min    │
 └────────┘     └──────────────┘     └──────────┘
-   beam            beam stops          beam
-   guides          counting            guides
-   to pole         announces           to door
+   voice           voice +              voice
+   guides          stop count           guides
+   to stop         announces            to door
 ```
 
 - Google Maps Directions API (walking + transit modes)
@@ -184,113 +297,37 @@ Route: Walk → Bus 23 (8 stops) → Walk → Arrived
 
 ---
 
-## Safety System
-
-### Tiered Threat Classification
-
-```
-┌─────────────────────────────────────────────────────┐
-│  TIER 1 — Environmental (Hailo Depth)              │
-│  Walls, stairs, curbs, dropoffs                      │
-│  → 2x score multiplier for critical severity         │
-│  → Progressive: spatial-only >1.5m → +TTS <1.5m    │
-│     → +haptic <1.0m                                 │
-├─────────────────────────────────────────────────────┤
-│  TIER 2 — Silent Static Obstacles (YOLO + Depth)    │
-│  Fire hydrant, bench, chair, pole, suitcase...       │
-│  → Score = 5/distance                                │
-│  → Only if depth <2m                                │
-├─────────────────────────────────────────────────────┤
-│  TIER 3 — Vehicles (YOLO + Velocity Tracking)      │
-│  Car, truck, bus, motorcycle, bicycle                 │
-│  → Score = 10/TTC (time-to-contact)                 │
-│  → Only if approach velocity >1 m/s AND <4m away    │
-├─────────────────────────────────────────────────────┤
-│  TIER 4 — Safe (No Alert)                           │
-│  People, dogs, cats, distant objects                 │
-│  → User can hear these naturally                     │
-└─────────────────────────────────────────────────────┘
-```
-
-**Only silent dangers get alerts.** Transparency-mode earbuds let users hear cars naturally — the system focuses on what they can't hear (walls, poles, overhead obstacles).
-
-### Safety Guard Rules (Hard-Coded)
-
-| # | Rule | Rationale |
-|:---:|:---|:---|
-| 1 | **Never guide toward moving objects** | Beam locks on fixed reference (bus stop pole), never shifts to moving bus |
-| 2 | **No in-ear tips** | Blind users' ears = primary survival sensor. Bone conduction or open-ear only |
-| 3 | **Physical privacy shutter** | 3D-printed sliding shutter + GPIO reed switch = no frames when closed |
-| 4 | **Escalator = voice + cane** | Single vibration motor can't encode step timing. Too risky. |
-| 5 | **Safety never depends on cloud** | YOLO + depth run 100% on-device. No network needed. |
-| 6 | **Gyro-primary indoors** | BNO055 magnetometer distorted by metal indoors. Switch to gyro-only mode. |
-| 7 | **Multi-source verification** | Never cross road / change direction / board transport from ONE source. |
-
----
-
 ## Gemini Integration
 
-### Three Capabilities via `google-genai` SDK
+### Live API (Bidirectional Streaming)
 
-#### 1. Gemini 3.1 Flash — Live Audio-Video Streaming
+Real-time WebSocket session with Gemini 3.1 Flash. Streams microphone audio + camera frames, receives native 24kHz PCM audio back. No HTTP round-trips.
 
-Real-time bidirectional WebSocket session with the Live API. Streams microphone audio and camera frames, receives native 24kHz PCM audio back.
-
-```python
-# 9 function-calling tools exposed to Gemini:
-tools = [
-    get_navigation_state,   # Current waypoint, bearing, distance
-    report_obstacle,        # Gemini reports what it sees → SafetyMonitor
-    get_gps_accuracy,       # Current GPS fix quality
-    get_bus_arrival,        # LTA DataMall bus arrival times
-    start_outdoor_navigation,  # Activate GPS turn-by-turn
-    guide_indoor,           # Switch to indoor camera-guidance
-    stop_navigation,        # Cancel active navigation
-    search_memory,          # Search saved items/locations
-    set_system_mode,        # Switch PRODUCTION / DEV mode
-]
-
-# + Google Search grounding for real-time information
-```
-
-**Modes (Gemini behavior changes per mode):**
-
-| Mode | Gemini Behavior |
+| Capability | Implementation |
 |:---|:---|
-| **IDLE** | Quiet unless hazard detected. Max 2 sentences. |
-| **OUTDOOR_NAV** | Turn-by-turn context injection. Announces turns, arrivals. |
-| **INDOOR_NAV** | Camera-guided. Reports obstacles, routes beam direction. |
-| **BUS_WATCH** | Reads bus numbers, announces arrivals. Beam to pole. |
-| **TRANSIT** | Quiet. Announces stops. Counts remaining stops. |
-| **EXPLORE** | Describes everything proactively. Scene narration. |
+| **Model** | `gemini-3.1-flash-live-preview` via v1beta API |
+| **Voice** | "Zephyr" — clear, natural, accessibility-optimized |
+| **Latency** | <500ms round-trip (83% improvement over HTTP API's 2-3s) |
+| **Context Management** | Sliding window compression: compress older turns to bullet points at ~105k tokens |
+| **Thinking** | `thinking_budget=0` for ~200ms latency savings on simple queries |
+| **Echo Detection** | 15s buffer of Gemini transcripts compared against STT to prevent self-hearing |
+| **Reconnection** | 5 attempts with exponential backoff, session handle resumption |
 
-#### 2. Gemini 2.5 Flash TTS — Natural Speech
-
-```python
-response = client.models.generate_content(
-    model='gemini-2.5-flash-preview-tts',
-    contents=text,
-    config=types.GenerateContentConfig(
-        response_modalities=["AUDIO"],
-        speech_config=types.SpeechConfig(
-            voice_config=types.VoiceConfig(
-                prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                    voice_name="Kore"
-                )
-            )
-        )
-    )
-)
-# 24kHz 16-bit mono PCM output
-```
-
-#### 3. Smart TTS Routing
+### TTS Routing (Smart Engine Selection)
 
 | Response Length | Engine | Why |
 |:---|:---|:---|
-| < 300 chars | **Gemini 2.5 Flash TTS** | Natural voice, low latency |
-| >= 300 chars | **Kokoro-82M** (local ONNX) | Faster for long text, no API cost |
-| All keys exhausted | **Kokoro-82M** (automatic) | Graceful offline degradation |
+| < 300 chars | **Gemini 2.5 Flash TTS** | Natural voice, low latency for short phrases |
+| >= 300 chars | **Kokoro-82M** (local ONNX) | Faster for long text, zero API cost |
+| All keys exhausted | **Kokoro-82M** (automatic fallback) | Graceful offline degradation |
+
+### Intent Router (97.7% Accuracy)
+
+Pure keyword/stem/phrase matching — no ML model:
+- **Layer 3**: Navigation, bus, memory queries → GPS engine, bus handler, memory search
+- **Layer 2**: Describe, read, explain, analyze → Gemini vision
+- **Layer 1**: Detect, count, identify → YOLOE
+- **Filler**: Greetings, hallucinations, acknowledgments → ignore
 
 ---
 
@@ -303,7 +340,7 @@ response = client.models.generate_content(
 | **SBC** | Raspberry Pi 5 (4GB) | — | Compute core | $60 |
 | **Camera** | Camera Module 3 Wide (IMX708) | CSI-2 | Scene capture 1920×1080 @ 30fps | $35 |
 | **GPS** | NEO-6M / GT-U7 | UART (/dev/ttyAMA0) | Positioning, navigation | $8 |
-| **IMU** | BNO055 9-axis | I2C | Heading, orientation, gyro-only indoors | $12 |
+| **IMU** | BNO055 9-axis | I2C | Heading, orientation, indoor gyro mode | $12 |
 | **Vibration Motor** | 3V coin ERM | GPIO 18 PWM | Haptic proximity alerts | $2 |
 | **Push Button** | Momentary | GPIO 16 | Short=listen, Long=mute, 5s=shutdown | $1 |
 | **Microphone** | USB Lavalier | USB-A | Voice input (16kHz) | $8 |
@@ -317,11 +354,11 @@ response = client.models.generate_content(
 
 ```
 Camera Module 3 Wide ──► Picamera2 ──► 1920x1080@30fps ──► YOLO / Gemini
-NEO-6M GPS ───────────► UART NMEA ──► 1Hz position ──► Navigation Engine
-BNO055 IMU ───────────► I2C ─────────► Euler angles ──► 3D Audio Beam + Head Tracking
-Push Button ──────────► GPIO 16 ─────► Interrupt ─────► Voice Commands / Mute / Shutdown
-Vibration Motor ─────► GPIO 18 PWM ─► Haptic Alerts ─► Safety Monitor
-USB Lavalier Mic ─────► USB-A ───────► 16kHz input ──► Silero VAD → Whisper STT
+NEO-6M GPS ───────────► UART NMEA ──► 1Hz position ───► Navigation Engine
+BNO055 IMU ───────────► I2C ─────────► Euler angles ───► Heading + Indoor Gyro Mode
+Push Button ──────────► GPIO 16 ─────► Interrupt ──────► Voice / Mute / Shutdown
+Vibration Motor ─────► GPIO 18 PWM ─► Haptic Alerts ──► Safety Monitor
+USB Lavalier Mic ─────► USB-A ───────► 16kHz input ────► VAD → STT
 ```
 
 ---
@@ -333,7 +370,7 @@ ProjectCortex/
 ├── rpi5/                              # ▶ Wearable device code (RPi5)
 │   ├── main.py                        # Main orchestrator (CortexSystem, 3991 lines)
 │   ├── conversation_manager.py        # Multi-turn Gemini history + object recall
-│   ├── voice_coordinator.py           # VAD + Whisper STT coordination
+│   ├── voice_coordinator.py           # VAD + Whisper/Cartesia STT + echo detection
 │   ├── tts_router.py                  # Smart Gemini/Kokoro TTS routing
 │   ├── safety_monitor.py             # Fusion threat classifier (4 tiers)
 │   ├── audio_alerts.py               # Distance-injected voice alerts
@@ -358,11 +395,11 @@ ProjectCortex/
 │   ├── layer2_thinker/               # L2: Gemini integration
 │   │   ├── gemini_live_handler.py    # Live API (WS), function calling, echo detect
 │   │   ├── gemini_tts_handler.py     # Vision + TTS generation
-│   │   ├── scene_change_detector.py  # Should-narrate logic + nav-aware cooldowns
+│   │   ├── scene_change_detector.py  # Proactive narration triggers + nav-aware cooldowns
 │   │   ├── streaming_audio_player.py  # 24kHz PCM playback
 │   │   └── lta_datamall.py           # Singapore bus arrival API
 │   │
-│   ├── layer3_guide/                 # L3: Navigation + Intent + Audio
+│   ├── layer3_guide/                 # L3: Navigation + Intent
 │   │   ├── router.py                 # Intent classification (97.7% accuracy)
 │   │   ├── navigation_engine.py      # GPS waypoint nav + transit routing (1799 lines)
 │   │   ├── bus_handler.py            # LTA DataMall + YOLO bus detection (578 lines)
@@ -370,8 +407,8 @@ ProjectCortex/
 │   │   ├── detection_router.py       # Route detections to alert systems
 │   │   ├── connectivity_monitor.py   # Network health monitoring
 │   │   ├── saved_locations.py        # Named location bookmarks
-│   │   └── spatial_audio/            # 3D HRTF audio engine
-│   │       ├── manager.py            # OpenAL HRTF + beacon + proximity alerts
+│   │   └── spatial_audio/            # Audio engine (beacon, alerts, proximity)
+│   │       ├── manager.py            # OpenAL + beacon + proximity alerts
 │   │       ├── audio_beacon.py       # Navigation beacon generator
 │   │       ├── binaural_engine.py    # Fallback binaural (sounddevice)
 │   │       ├── object_tracker.py    # Multi-object tracking with velocity
@@ -434,20 +471,33 @@ ProjectCortex/
 | **Context** | Compression at 52k tokens, trigger at 104k | Prevents context overflow in long sessions |
 | **Voice** | "Zephyr" | Clear, natural, suitable for accessibility |
 
+### Why Silent-Dangers-Only (Not All-Objects)?
+
+Traditional assistive devices alert about every detected object — cars, people, dogs, chairs. This creates alert fatigue and distracts from what matters. ProjectCortex uses transparency-mode earbuds (the user can already hear cars and people), so the system filters out audible threats and focuses exclusively on **silent dangers** that the user cannot perceive:
+
+| What you CAN hear | What you CAN'T hear |
+|:---|:---|
+| Cars, motorcycles (engine noise) | Walls, poles, signboards |
+| People talking, footsteps | Overhead obstacles, low branches |
+| Dogs barking | Stairs, curbs, drop-offs |
+| Bicycle bells | Approaching vehicles from blind spots |
+
+The 4-tier classification + velocity tracking + environment-aware cooldowns means the system speaks only when it has something important to say.
+
 ### Why Local YOLO + Cloud Gemini?
 
-- **Safety-critical detection** (cars, stairs, walls) must work **offline with <100ms latency**
+- **Safety-critical detection** must work **offline with <100ms latency** — no network dependency
 - Gemini adds ~500ms network latency — too slow for "a car is approaching"
 - **YOLO handles reflexes, Gemini handles thinking**
 
-### Why 3D Audio Beam (not voice directions)?
+### Why 6-Mode Contextual AI?
 
-Traditional assistive devices say *"turn left in 20 meters"* — requiring the blind user to:
-1. Remember the instruction
-2. Estimate 20 meters
-3. Determine what "left" means from their current orientation
+A single-voice assistant that describes everything becomes noise. A navigation-only system can't answer "what's that sign?" The mode-driven system adapts:
+- **IDLE mode**: Silence is correct. Speak only for safety.
+- **INDOOR_NAV mode**: Full proactive guidance — the user has no GPS, so Gemini IS the navigator.
+- **BUS_WATCH mode**: Laser focus on bus numbers. No scene narration.
 
-The 3D beam **encodes direction in sound itself**. The user just follows the sound. No cognitive load. No memorization. Like a metal detector that guides you to your destination.
+Each mode has different proactivity levels, detail requirements, and communication styles — all from the same Gemini model via dynamic system prompts.
 
 ### Why Hybrid Edge-Server?
 
@@ -456,7 +506,7 @@ The 3D beam **encodes direction in sound itself**. The user just follows the sou
 | YOLO detection | RPi5 | Safety = must be local and fast |
 | Voice pipeline | RPi5 | Latency-critical, works offline |
 | Navigation + GPS | RPi5 | Real-time, 10Hz loop |
-| 3D Audio beam | RPi5 | IMU head-tracking needs <50ms latency |
+| Safety monitor | RPi5 | Must work without internet |
 | Gemini Vision | Cloud | Needs GPU, 4GB RPi can't run it |
 | Dashboard | Laptop | PyQt6 + VIO/SLAM too heavy for RPi |
 
@@ -471,9 +521,9 @@ Measured on Raspberry Pi 5 (4GB RAM), Bluetooth audio, production code:
 | **End-to-end latency** (speak → hear answer) | ~800ms - 1.2s |
 | **YOLO safety detection (L0)** | 60-80ms |
 | **Intent routing** | <5ms |
-| **3D beam direction update** | 10Hz (every 100ms) |
 | **GPS position refresh** | 1Hz (NEO-6M) |
 | **Gemini function calling** | ~300-500ms |
+| **Safety alert latency** (detection → haptic) | <100ms |
 | **RAM usage** | ~3.6GB / 4GB |
 | **Battery life** | ~4 hours active |
 | **Total hardware cost** | <\$150 |
@@ -556,9 +606,9 @@ Four stations designed with Singapore Association for the Visually Handicapped:
 
 | # | Station | What It Tests | Key Feature |
 |:---:|:---|:---|:---|
-| 1 | **Indoor Safety** | Obstacle avoidance in a room | YOLO + depth + haptic + 3D audio alerts |
-| 2 | **Ask AI** | Natural conversation about the scene | Gemini Live multimodal Q&A |
-| 3 | **Outdoor Navigation Beam** | Walk to a destination following 3D audio | GPS + IMU + HRTF beam guidance |
+| 1 | **Indoor Safety** | Obstacle avoidance in a room | Tiered safety: voice alerts → haptic pulses, distance-injected |
+| 2 | **Ask AI** | Natural conversation about the scene | Gemini Live multimodal Q&A with function calling |
+| 3 | **Outdoor Navigation** | Walk to a destination with voice guidance | GPS waypoint tracking + turn announcements |
 | 4 | **Bus Arrival** | Detect and read bus numbers, announce arrival times | LTA DataMall + YOLO bus detection |
 
 ---
@@ -588,8 +638,8 @@ PYTHONPATH=rpi5 pytest tests/ -v
 
 | Phase | Features | Status |
 |:---|:---|:---|
-| **V1.0** | Core 5-layer pipeline, YOLO safety, Gemini vision, 3D audio, GPS nav | ✅ Complete |
-| **V2.0** | Transit routing (bus/MRT), bus detection, safety tier system, Live API | ✅ Complete |
+| **V1.0** | Core 5-layer pipeline, YOLO safety, Gemini vision, GPS navigation | ✅ Complete |
+| **V2.0** | Transit routing (bus/MRT), bus detection, safety tiers, Live API, 6-mode AI | ✅ Complete |
 | **V2.5** | SAVH demo polish, hazard cooldown fixes, IMU reliability | 🔄 In Progress |
 | **V3.0** | Custom PCB, integrated audio, 57% lighter, waterproof enclosure | 📋 Planned |
 
