@@ -6,7 +6,17 @@
       "Bash(git worktree:*)",
       "Bash(git commit:*)",
       "Bash(ls:*)",
-      "Bash(git clone:*)"
+      "Bash(git clone:*)",
+      "Bash(python -m py_compile rpi5/layer3_guide/gmaps_directions.py rpi5/layer3_guide/gmaps_places.py rpi5/layer3_guide/navigation_engine.py)",
+      "Bash(python -m py_compile rpi5/layer2_thinker/lta_datamall.py)",
+      "Bash(python -m py_compile rpi5/layer3_guide/navigation_engine.py)",
+      "Bash(python -m py_compile rpi5/layer2_thinker/gemini_live_handler.py)",
+      "Bash(python -m py_compile rpi5/main.py)",
+      "Bash(python -m py_compile rpi5/main.py rpi5/layer3_guide/navigation_engine.py rpi5/layer3_guide/gmaps_directions.py rpi5/layer3_guide/gmaps_places.py rpi5/layer2_thinker/lta_datamall.py rpi5/layer2_thinker/gemini_live_handler.py)",
+      "Bash(python -m pytest tests/ -x --timeout=60)",
+      "Bash(python -m pytest tests/ -x)",
+      "Bash(python *)",
+      "Bash(set PYTHONIOENCODING=utf-8)"
     ]
   }
 }

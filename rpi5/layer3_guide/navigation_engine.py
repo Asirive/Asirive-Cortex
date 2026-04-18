@@ -1,9 +1,10 @@
 """
-Navigation Engine — GPS Waypoint Following with 3D Audio Beam
+Navigation Engine — GPS Waypoint Following (voice-first; Gemini narrates)
 
-Integrates Google Maps Directions API, GPS waypoint tracking,
-IMU heading, and the existing spatial audio system to provide
-turn-by-turn 3D audio navigation for visually impaired users.
+Integrates Google Maps Directions API, GPS waypoint tracking, and IMU
+heading. Turn-by-turn narration is delegated to Gemini Live via nav
+events; this engine is a silent executor when Gemini is online and
+falls back to local TTS only when Gemini is unreachable.
 
 Author: Haziq (@IRSPlays)
 Date: March 11, 2026
@@ -40,7 +41,7 @@ logger = logging.getLogger(__name__)
 class NavMode(Enum):
     """Navigation mode — auto-detected from GPS quality."""
     IDLE = "idle"
-    OUTDOOR = "outdoor"         # GPS fix available — beam active
+    OUTDOOR = "outdoor"         # GPS fix available
     INDOOR = "indoor"           # No GPS fix — Gemini Guide Mode
     BUS_STOP = "bus_stop"       # Near a bus stop — LTA mode
     TRANSIT = "transit"         # On bus/MRT — stop counting mode
@@ -231,19 +232,22 @@ def angle_to_hrtf_position(angle_deg: float, distance_m: float) -> Tuple[float, 
 
 class NavigationEngine:
     """
-    GPS waypoint navigation with 3D audio beam guidance.
-    
+    GPS waypoint navigation.
+
+    Narration is handled externally by Gemini Live via nav events —
+    this engine advances waypoints, detects arrival/off-route/GPS-loss,
+    and emits events that Gemini uses to speak to the user.
+
     Integrates:
-    - Google Maps Directions API for route fetching
+    - Google Maps Directions API for route fetching (via gmaps_directions)
     - GPSHandler for position
     - IMUHandler for heading
-    - SpatialAudioManager for 3D audio beam
-    - TTSRouter for voice announcements
-    
+    - TTSRouter for voice announcements (only used as fallback when Gemini is offline)
+
     Usage:
         engine = NavigationEngine(api_key="...", gps=gps_handler, imu=imu_handler)
         await engine.start_navigation("1.3521,103.8198", "Orchard Road, Singapore")
-        # Engine runs its own async loop, updating beam position
+        # Engine runs its own async loop, advancing waypoints and emitting nav events
         await engine.stop_navigation()
     """
 
@@ -305,6 +309,12 @@ class NavigationEngine:
         self._nav_task: Optional[asyncio.Task] = None
         self._running = False
         self._last_voice_time = 0.0
+        # When True, engine suppresses its own voice announcements because
+        # Gemini Live is narrating via nav events. Source of truth is either
+        # a callable installed by main.py via set_gemini_online_callback(),
+        # or the _gemini_online_override flag for unit tests / dashboard.
+        self._gemini_online_callback: Optional[Callable[[], bool]] = None
+        self._gemini_online_override: Optional[bool] = None
         self._turn_announced = set()  # waypoint indices where turn was announced
         self._road_crossing_active = False
         self._road_crossing_pos = None  # GPS pos when crossing detected
@@ -480,128 +490,31 @@ class NavigationEngine:
     def fetch_route(self, origin: str, destination: str) -> Optional[NavRoute]:
         """
         Fetch walking directions from Google Maps Directions API.
-        
-        Args:
-            origin: "lat,lng" or address string
-            destination: "lat,lng" or address string
-            
-        Returns:
-            NavRoute with interpolated waypoints, or None on failure
+
+        Thin wrapper around gmaps_directions.fetch_walking_route_sync that
+        adds engine-level state transitions and SQLite cache fallback.
         """
+        from rpi5.layer3_guide import gmaps_directions
+
         if not self.api_key:
             logger.error("No Google Maps API key configured")
             return None
 
         self.state = NavState.LOADING_ROUTE
 
-        # Sanitize destination: strip trailing punctuation from STT,
-        # and append ", Singapore" if no country/region is specified
-        # (prevents Google Maps from resolving to wrong country, e.g. HK)
-        destination = self._sanitize_location(destination)
-        origin = self._sanitize_location(origin)
+        origin_key = gmaps_directions.sanitize_location(origin)
+        destination_key = gmaps_directions.sanitize_location(destination)
 
-        params = urllib.parse.urlencode({
-            "origin": origin,
-            "destination": destination,
-            "mode": "walking",
-            "region": "sg",  # Bias results toward Singapore
-            "key": self.api_key,
-        })
-        url = f"https://maps.googleapis.com/maps/api/directions/json?{params}"
-        logger.info(f"🧭 [NAV] Google Maps API request: origin='{origin}', destination='{destination}', mode=walking, region=sg")
-
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "ProjectCortex/2.0"})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read().decode())
-        except Exception as e:
-            logger.error(f"🧭 [NAV] Google Maps API request FAILED: {e}")
-            # Try cached route
-            cached = self._load_cached_route(origin, destination)
+        route = gmaps_directions.fetch_walking_route_sync(self.api_key, origin, destination)
+        if route is None:
+            cached = self._load_cached_route(origin_key, destination_key)
             if cached:
                 logger.info("🧭 [NAV] Using cached route as fallback")
                 return cached
             self.state = NavState.ERROR
             return None
 
-        logger.info(f"🧭 [NAV] Google Maps API response status: {data.get('status')}")
-        if data.get("status") != "OK" or not data.get("routes"):
-            logger.error(f"🧭 [NAV] Google Maps API error: {data.get('status')}, geocoded_waypoints={data.get('geocoded_waypoints', 'N/A')}")
-            cached = self._load_cached_route(origin, destination)
-            if cached:
-                logger.info("Using cached route as fallback")
-                return cached
-            self.state = NavState.ERROR
-            return None
-
-        route_data = data["routes"][0]
-        legs = route_data.get("legs", [])
-        if not legs:
-            self.state = NavState.ERROR
-            return None
-
-        leg = legs[0]
-        waypoints: List[Waypoint] = []
-
-        # Extract waypoints from steps
-        for step in leg.get("steps", []):
-            start = step.get("start_location", {})
-            end = step.get("end_location", {})
-            instruction = step.get("html_instructions", "")
-            # Strip HTML tags from instruction
-            instruction = re.sub(r"<[^>]+>", "", instruction)
-            maneuver = step.get("maneuver", "")
-            distance_m = step.get("distance", {}).get("value", 0)
-
-            is_turn = maneuver in (
-                "turn-left", "turn-right", "turn-slight-left", "turn-slight-right",
-                "turn-sharp-left", "turn-sharp-right", "uturn-left", "uturn-right",
-            )
-
-            # Decode step polyline for dense waypoints
-            step_polyline = step.get("polyline", {}).get("points", "")
-            if step_polyline:
-                points = decode_polyline(step_polyline)
-                for i, (plat, plng) in enumerate(points):
-                    wp = Waypoint(
-                        lat=plat,
-                        lng=plng,
-                        instruction=instruction if i == 0 else "",
-                        distance_m=distance_m / max(len(points), 1) if i == 0 else 0,
-                        maneuver=maneuver if i == 0 else "",
-                        is_turn=is_turn if i == 0 else False,
-                    )
-                    waypoints.append(wp)
-            else:
-                # Fallback: use start/end locations
-                waypoints.append(Waypoint(
-                    lat=start.get("lat", 0),
-                    lng=start.get("lng", 0),
-                    instruction=instruction,
-                    distance_m=distance_m,
-                    maneuver=maneuver,
-                    is_turn=is_turn,
-                ))
-
-        # Interpolate waypoints that are too far apart
-        waypoints = self._interpolate_waypoints(waypoints)
-
-        route = NavRoute(
-            origin=origin,
-            destination=destination,
-            waypoints=waypoints,
-            total_distance_m=leg.get("distance", {}).get("value", 0),
-            total_duration_s=leg.get("duration", {}).get("value", 0),
-            polyline=route_data.get("overview_polyline", {}).get("points", ""),
-            fetched_at=time.time(),
-        )
-
-        # Cache for offline use
         self._cache_route(route)
-        logger.info(
-            f"Route fetched: {len(waypoints)} waypoints, "
-            f"{route.total_distance_m:.0f}m, ~{route.total_duration_s / 60:.0f}min"
-        )
         return route
 
     def _interpolate_waypoints(self, waypoints: List[Waypoint]) -> List[Waypoint]:
@@ -627,199 +540,31 @@ class NavigationEngine:
     def fetch_transit_route(self, origin: str, destination: str) -> Optional[NavRoute]:
         """
         Fetch transit directions from Google Maps Directions API.
-        Returns a multi-leg route (WALKING + BUS/MRT legs).
-        
-        Falls back to walking-only if transit mode returns no results.
+
+        Thin wrapper around gmaps_directions.fetch_transit_route_sync.
+        Falls back internally to walking when transit is unavailable.
         """
+        from rpi5.layer3_guide import gmaps_directions
+
         if not self.api_key:
             logger.error("No Google Maps API key configured")
             return None
 
         self.state = NavState.LOADING_ROUTE
-        destination = self._sanitize_location(destination)
-        origin = self._sanitize_location(origin)
+        route = gmaps_directions.fetch_transit_route_sync(self.api_key, origin, destination)
+        if route is None:
+            origin_key = gmaps_directions.sanitize_location(origin)
+            destination_key = gmaps_directions.sanitize_location(destination)
+            cached = self._load_cached_route(origin_key, destination_key)
+            if cached:
+                logger.info("🧭 [NAV] Using cached route as fallback")
+                return cached
+            self.state = NavState.ERROR
+            return None
 
-        params = urllib.parse.urlencode({
-            "origin": origin,
-            "destination": destination,
-            "mode": "transit",
-            "transit_mode": "bus|rail",
-            "region": "sg",
-            "key": self.api_key,
-        })
-        url = f"https://maps.googleapis.com/maps/api/directions/json?{params}"
-        logger.info(f"🧭 [NAV] Google Maps transit request: origin='{origin}', dest='{destination}'")
-
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "ProjectCortex/2.0"})
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                data = json.loads(resp.read().decode())
-        except Exception as e:
-            logger.error(f"🧭 [NAV] Google Maps transit request FAILED: {e}")
-            return self.fetch_route(origin, destination)  # Fall back to walking
-
-        if data.get("status") != "OK" or not data.get("routes"):
-            logger.warning(f"🧭 [NAV] Transit API returned {data.get('status')} — falling back to walking")
-            return self.fetch_route(origin, destination)
-
-        route_data = data["routes"][0]
-        api_legs = route_data.get("legs", [])
-        if not api_legs:
-            return self.fetch_route(origin, destination)
-
-        # Google returns one "leg" for origin→destination, with "steps" that
-        # have travel_mode = WALKING or TRANSIT
-        api_leg = api_legs[0]
-        route_legs: List[RouteLeg] = []
-        all_waypoints: List[Waypoint] = []  # flat list for backward compat
-
-        has_transit = False
-        for step in api_leg.get("steps", []):
-            travel_mode = step.get("travel_mode", "WALKING")
-            step_start = step.get("start_location", {})
-            step_end = step.get("end_location", {})
-            step_dist = step.get("distance", {}).get("value", 0)
-            step_dur = step.get("duration", {}).get("value", 0)
-            instruction = re.sub(r"<[^>]+>", "", step.get("html_instructions", ""))
-
-            if travel_mode == "TRANSIT":
-                has_transit = True
-                td = step.get("transit_details", {})
-                line = td.get("line", {})
-                dep_stop = td.get("departure_stop", {})
-                arr_stop = td.get("arrival_stop", {})
-                vehicle = line.get("vehicle", {})
-                vehicle_type = vehicle.get("type", "BUS")
-
-                leg_type = LegType.MRT if vehicle_type in ("SUBWAY", "HEAVY_RAIL", "METRO_RAIL", "RAIL") else LegType.BUS
-
-                transit_info = TransitInfo(
-                    service_no=line.get("short_name", line.get("name", "")),
-                    departure_stop=dep_stop.get("name", ""),
-                    arrival_stop=arr_stop.get("name", ""),
-                    departure_stop_code="",  # LTA code set later via bus_handler lookup
-                    arrival_stop_code="",
-                    num_stops=td.get("num_stops", 0),
-                    headsign=td.get("headsign", ""),
-                    line_name=line.get("name", ""),
-                    line_color=line.get("color", ""),
-                    departure_lat=dep_stop.get("location", {}).get("lat", 0),
-                    departure_lng=dep_stop.get("location", {}).get("lng", 0),
-                    arrival_lat=arr_stop.get("location", {}).get("lat", 0),
-                    arrival_lng=arr_stop.get("location", {}).get("lng", 0),
-                )
-
-                leg = RouteLeg(
-                    leg_type=leg_type,
-                    transit_info=transit_info,
-                    distance_m=step_dist,
-                    duration_s=step_dur,
-                    start_lat=step_start.get("lat", 0),
-                    start_lng=step_start.get("lng", 0),
-                    end_lat=step_end.get("lat", 0),
-                    end_lng=step_end.get("lng", 0),
-                    instruction=instruction,
-                )
-                route_legs.append(leg)
-
-                # Add transit endpoint as a waypoint for flat list
-                all_waypoints.append(Waypoint(
-                    lat=transit_info.arrival_lat,
-                    lng=transit_info.arrival_lng,
-                    instruction=f"Alight at {transit_info.arrival_stop}",
-                ))
-
-            else:
-                # WALKING step — may contain sub-steps
-                leg_waypoints: List[Waypoint] = []
-                sub_steps = step.get("steps", [])
-                if sub_steps:
-                    for sub in sub_steps:
-                        sub_instr = re.sub(r"<[^>]+>", "", sub.get("html_instructions", ""))
-                        sub_maneuver = sub.get("maneuver", "")
-                        sub_dist = sub.get("distance", {}).get("value", 0)
-                        is_turn = sub_maneuver in (
-                            "turn-left", "turn-right", "turn-slight-left", "turn-slight-right",
-                            "turn-sharp-left", "turn-sharp-right",
-                        )
-                        poly = sub.get("polyline", {}).get("points", "")
-                        if poly:
-                            points = decode_polyline(poly)
-                            for i, (plat, plng) in enumerate(points):
-                                leg_waypoints.append(Waypoint(
-                                    lat=plat, lng=plng,
-                                    instruction=sub_instr if i == 0 else "",
-                                    distance_m=sub_dist / max(len(points), 1) if i == 0 else 0,
-                                    maneuver=sub_maneuver if i == 0 else "",
-                                    is_turn=is_turn if i == 0 else False,
-                                ))
-                        else:
-                            s_start = sub.get("start_location", {})
-                            leg_waypoints.append(Waypoint(
-                                lat=s_start.get("lat", 0), lng=s_start.get("lng", 0),
-                                instruction=sub_instr, distance_m=sub_dist,
-                                maneuver=sub_maneuver, is_turn=is_turn,
-                            ))
-                else:
-                    # No sub-steps — decode the step polyline
-                    poly = step.get("polyline", {}).get("points", "")
-                    if poly:
-                        points = decode_polyline(poly)
-                        for i, (plat, plng) in enumerate(points):
-                            leg_waypoints.append(Waypoint(
-                                lat=plat, lng=plng,
-                                instruction=instruction if i == 0 else "",
-                                distance_m=step_dist / max(len(points), 1) if i == 0 else 0,
-                            ))
-                    else:
-                        leg_waypoints.append(Waypoint(
-                            lat=step_start.get("lat", 0), lng=step_start.get("lng", 0),
-                            instruction=instruction, distance_m=step_dist,
-                        ))
-
-                leg_waypoints = self._interpolate_waypoints(leg_waypoints)
-
-                leg = RouteLeg(
-                    leg_type=LegType.WALKING,
-                    waypoints=leg_waypoints,
-                    distance_m=step_dist,
-                    duration_s=step_dur,
-                    start_lat=step_start.get("lat", 0),
-                    start_lng=step_start.get("lng", 0),
-                    end_lat=step_end.get("lat", 0),
-                    end_lng=step_end.get("lng", 0),
-                    instruction=instruction,
-                )
-                route_legs.append(leg)
-                all_waypoints.extend(leg_waypoints)
-
-        if not has_transit:
-            # Google returned an all-walking transit route — use walking fetch instead
-            logger.info("🧭 [NAV] Transit route is all-walking — using walking mode")
-            return self.fetch_route(origin, destination)
-
-        route = NavRoute(
-            origin=origin,
-            destination=destination,
-            waypoints=all_waypoints,
-            legs=route_legs,
-            total_distance_m=api_leg.get("distance", {}).get("value", 0),
-            total_duration_s=api_leg.get("duration", {}).get("value", 0),
-            polyline=route_data.get("overview_polyline", {}).get("points", ""),
-            fetched_at=time.time(),
-            is_transit=True,
-        )
-
-        leg_summary = []
-        for lg in route_legs:
-            if lg.leg_type == LegType.WALKING:
-                leg_summary.append(f"Walk {lg.distance_m:.0f}m")
-            elif lg.transit_info:
-                leg_summary.append(f"{lg.leg_type.value.upper()} {lg.transit_info.service_no} ({lg.transit_info.num_stops} stops)")
-        logger.info(
-            f"🧭 [NAV] Transit route: {' → '.join(leg_summary)}, "
-            f"{route.total_distance_m:.0f}m total, ~{route.total_duration_s / 60:.0f}min"
-        )
+        # Walking fallback returned from transit function — cache like fetch_route does
+        if not route.is_transit:
+            self._cache_route(route)
         return route
 
     # -------------------------------------------------
@@ -829,15 +574,15 @@ class NavigationEngine:
     async def start_navigation(self, origin: str, destination: str, prefer_transit: bool = True) -> bool:
         """
         Start navigating from origin to destination.
-        
+
         Tries transit routing first (bus/MRT + walking). Falls back to
         walking-only if transit is unavailable or returns a walking route.
-        
+
         Args:
             origin: "lat,lng" or address (use "current" for GPS position)
             destination: "lat,lng" or address
             prefer_transit: If True, try transit routing first
-            
+
         Returns:
             True if navigation started successfully
         """
@@ -871,6 +616,165 @@ class NavigationEngine:
             logger.warning(f"🧭 [NAV] Route fetch FAILED: origin='{origin}', destination='{destination}'")
             return False
 
+        return self._activate_route(route, destination_label=destination)
+
+    async def start_navigation_with_route(
+        self,
+        destination_name: str,
+        waypoints: List[Tuple[float, float]],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """
+        Start navigating using a pre-fetched route.
+
+        Called by the Gemini tool `start_navigation_with_route` after Gemini
+        has already resolved the destination and fetched directions itself.
+        Bypasses the engine's own route-fetching path.
+
+        Args:
+            destination_name: Human-readable destination (for logs/events).
+            waypoints: Flat list of (lat, lng) pairs, in order.
+            metadata: Optional dict with keys:
+                - total_distance_m (float)
+                - total_duration_s (float)
+                - is_transit (bool)
+                - legs (list of leg dicts — see gmaps_directions._nav_route_to_dict)
+                - steps (list of step dicts with instruction/maneuver/is_turn)
+                - polyline (str, encoded polyline)
+
+        Returns:
+            True if navigation started successfully.
+        """
+        from rpi5.layer3_guide import gmaps_directions
+
+        if not waypoints or len(waypoints) < 2:
+            logger.warning(
+                f"🧭 [NAV] start_navigation_with_route: waypoint list too short ({len(waypoints) if waypoints else 0})"
+            )
+            return False
+
+        # Stop any existing session before starting a new one
+        if self.state != NavState.INACTIVE:
+            logger.info("🧭 [NAV] start_navigation_with_route: stopping existing session first")
+            try:
+                await self.stop_navigation()
+            except Exception as e:
+                logger.warning(f"🧭 [NAV] stop during handoff failed: {e}")
+
+        meta = metadata or {}
+        steps = meta.get("steps") or []
+
+        # Build Waypoint objects from the (lat, lng) pairs.
+        # If Gemini passed structured steps with instructions, align them
+        # best-effort to the first waypoint of each step (indices are not
+        # guaranteed to match, so only the first waypoint carries instruction).
+        wp_objs: List[Waypoint] = []
+        for i, pt in enumerate(waypoints):
+            try:
+                lat, lng = float(pt[0]), float(pt[1])
+            except (TypeError, ValueError, IndexError):
+                logger.warning(f"🧭 [NAV] bad waypoint at idx {i}: {pt}")
+                continue
+            wp_objs.append(Waypoint(lat=lat, lng=lng))
+
+        if len(wp_objs) < 2:
+            logger.warning("🧭 [NAV] start_navigation_with_route: < 2 usable waypoints after parsing")
+            return False
+
+        # Attach step metadata to the nearest waypoints (first N waypoints get
+        # the first N step instructions; only used for logging/UX, not control flow)
+        for i, step in enumerate(steps):
+            if i >= len(wp_objs):
+                break
+            wp_objs[i].instruction = step.get("instruction", "") or wp_objs[i].instruction
+            wp_objs[i].maneuver = step.get("maneuver", "") or wp_objs[i].maneuver
+            wp_objs[i].is_turn = bool(step.get("is_turn", wp_objs[i].is_turn))
+
+        # Interpolate to ensure dense waypoints for the nav loop
+        wp_objs = gmaps_directions.interpolate_waypoints(wp_objs, max_spacing_m=self.MAX_WAYPOINT_SPACING)
+
+        # Resolve origin label from first waypoint
+        origin_label = f"{wp_objs[0].lat:.6f},{wp_objs[0].lng:.6f}"
+
+        # Build route legs from metadata if present
+        route_legs: List[RouteLeg] = []
+        is_transit = bool(meta.get("is_transit", False))
+        for leg_meta in meta.get("legs") or []:
+            try:
+                lt_str = leg_meta.get("leg_type", "walking")
+                lt = LegType(lt_str) if lt_str in {"walking", "bus", "mrt"} else LegType.WALKING
+            except ValueError:
+                lt = LegType.WALKING
+
+            leg_wps: List[Waypoint] = []
+            for pt in leg_meta.get("waypoints") or []:
+                try:
+                    leg_wps.append(Waypoint(lat=float(pt[0]), lng=float(pt[1])))
+                except (TypeError, ValueError, IndexError):
+                    continue
+            if leg_wps:
+                leg_wps = gmaps_directions.interpolate_waypoints(leg_wps, max_spacing_m=self.MAX_WAYPOINT_SPACING)
+
+            ti = None
+            tr = leg_meta.get("transit")
+            if tr:
+                ti = TransitInfo(
+                    service_no=tr.get("service_no", ""),
+                    departure_stop=tr.get("departure_stop", ""),
+                    arrival_stop=tr.get("arrival_stop", ""),
+                    departure_stop_code=tr.get("departure_stop_code", ""),
+                    arrival_stop_code=tr.get("arrival_stop_code", ""),
+                    num_stops=int(tr.get("num_stops", 0) or 0),
+                    headsign=tr.get("headsign", ""),
+                    line_name=tr.get("line_name", ""),
+                    line_color=tr.get("line_color", ""),
+                    departure_lat=float(tr.get("departure_lat", 0) or 0),
+                    departure_lng=float(tr.get("departure_lng", 0) or 0),
+                    arrival_lat=float(tr.get("arrival_lat", 0) or 0),
+                    arrival_lng=float(tr.get("arrival_lng", 0) or 0),
+                )
+
+            route_legs.append(RouteLeg(
+                leg_type=lt,
+                waypoints=leg_wps,
+                transit_info=ti,
+                distance_m=float(leg_meta.get("distance_m", 0) or 0),
+                duration_s=float(leg_meta.get("duration_s", 0) or 0),
+                start_lat=float(leg_meta.get("start_lat", 0) or 0),
+                start_lng=float(leg_meta.get("start_lng", 0) or 0),
+                end_lat=float(leg_meta.get("end_lat", 0) or 0),
+                end_lng=float(leg_meta.get("end_lng", 0) or 0),
+                instruction=leg_meta.get("instruction", ""),
+            ))
+
+        if route_legs and not is_transit:
+            is_transit = any(lg.leg_type != LegType.WALKING for lg in route_legs)
+
+        route = NavRoute(
+            origin=origin_label,
+            destination=destination_name,
+            waypoints=wp_objs,
+            legs=route_legs,
+            total_distance_m=float(meta.get("total_distance_m", 0) or 0),
+            total_duration_s=float(meta.get("total_duration_s", 0) or 0),
+            polyline=meta.get("polyline", ""),
+            fetched_at=time.time(),
+            is_transit=is_transit,
+        )
+
+        logger.info(
+            f"🧭 [NAV] start_navigation_with_route: dest='{destination_name}', "
+            f"{len(wp_objs)} waypoints, transit={is_transit}, legs={len(route_legs)}"
+        )
+        return self._activate_route(route, destination_label=destination_name)
+
+    def _activate_route(self, route: NavRoute, destination_label: str) -> bool:
+        """
+        Shared session-setup path for start_navigation and
+        start_navigation_with_route. Installs the Route on the engine,
+        resets progress state, fires navigating_to, and kicks off the
+        persistent nav loop.
+        """
         self.route = route
         self.current_waypoint_idx = 0
         self._turn_announced.clear()
@@ -887,10 +791,8 @@ class NavigationEngine:
             self._current_leg = route.legs[0]
             self._on_vehicle_announced = False
             self._alight_announced = False
-            # Set walking waypoints to first walking leg's waypoints
             if self._current_leg.leg_type == LegType.WALKING and self._current_leg.waypoints:
                 self.current_waypoint_idx = 0
-                # Replace flat waypoints with first leg's waypoints for the nav loop
                 self._leg_waypoints = self._current_leg.waypoints
             else:
                 self._leg_waypoints = None
@@ -906,7 +808,7 @@ class NavigationEngine:
 
         if route.is_transit and route.legs:
             leg_summary = []
-            for i, leg in enumerate(route.legs):
+            for leg in route.legs:
                 if leg.leg_type == LegType.WALKING:
                     leg_summary.append(f"Walk {leg.distance_m:.0f}m")
                 elif leg.leg_type == LegType.BUS:
@@ -927,14 +829,8 @@ class NavigationEngine:
                 f"{len(route.waypoints)} waypoints"
             )
 
-        # Start beacon for first walking leg (SCRAPPED)
-        first_leg = self._current_leg
-        if not first_leg or first_leg.leg_type == LegType.WALKING:
-            pass  # was: self.spatial_audio.start_beacon("navigation_target")
-
-        # Build nav event payload
         nav_event_data = {
-            "destination": destination,
+            "destination": destination_label,
             "distance_m": route.total_distance_m,
             "duration_min": round(route.total_duration_s / 60, 1),
             "waypoints": len(route.waypoints),
@@ -944,16 +840,14 @@ class NavigationEngine:
             nav_event_data["legs"] = len(route.legs)
             nav_event_data["leg_types"] = [l.leg_type.value for l in route.legs]
 
-        # Notify Gemini: navigation starting
         self._fire_nav_event("navigating_to", nav_event_data)
 
-        # Start the navigation loop on the persistent event loop
         self._ensure_event_loop()
         future = asyncio.run_coroutine_threadsafe(
             self._navigation_loop(), self._event_loop
         )
         self._nav_future = future
-        logger.info(f"Navigation started: {origin} → {destination}")
+        logger.info(f"Navigation started: {route.origin} → {destination_label}")
         return True
 
     async def stop_navigation(self):
@@ -1089,9 +983,8 @@ class NavigationEngine:
         2. Get IMU heading
         3. Calculate bearing to next waypoint
         4. Calculate relative angle
-        5. Update audio beam position
-        6. Check waypoint arrival
-        7. Announce upcoming turns
+        5. Check waypoint arrival
+        6. Announce upcoming turns (via nav events)
         """
         interval = 1.0 / self.NAV_LOOP_HZ
         logger.info(f"Navigation loop started at {self.NAV_LOOP_HZ}Hz")
@@ -1269,7 +1162,7 @@ class NavigationEngine:
                 # 5. Relative angle from user heading
                 rel_angle = relative_angle(target_bearing, user_heading)
 
-                # 6. Audio beam position update SCRAPPED
+                # Audio beam position update SCRAPPED — Gemini narrates via events
                 # Legacy spatial audio code in rpi5/layer3_guide/spatial_audio/
 
                 # 7. Check for upcoming turn announcement
@@ -1440,8 +1333,42 @@ class NavigationEngine:
     # VOICE ANNOUNCEMENTS
     # -------------------------------------------------
 
+    def set_gemini_online_callback(self, fn: Optional[Callable[[], bool]]) -> None:
+        """
+        Install a callable that returns True while Gemini Live is connected.
+
+        When the callable returns True, the engine suppresses its own voice
+        announcements — Gemini narrates everything via nav events and its
+        own Live audio output. When it returns False (or is unset), the
+        engine falls back to speaking critical status changes via local TTS.
+        """
+        self._gemini_online_callback = fn
+
+    def set_gemini_online(self, online: bool) -> None:
+        """Override for tests / dashboard — forces the online flag."""
+        self._gemini_online_override = bool(online) if online is not None else None
+
+    def _is_gemini_online(self) -> bool:
+        if self._gemini_online_override is not None:
+            return self._gemini_online_override
+        if self._gemini_online_callback is not None:
+            try:
+                return bool(self._gemini_online_callback())
+            except Exception:
+                return False
+        return False
+
     async def _speak(self, text: str):
-        """Speak text via TTS with cooldown."""
+        """Speak text via TTS with cooldown.
+
+        Suppressed when Gemini Live is online — Gemini narrates via
+        nav events instead, avoiding double-voice and keeping the
+        user-facing narrator single-sourced.
+        """
+        if self._is_gemini_online():
+            logger.debug(f"NAV VOICE (suppressed, Gemini online): {text}")
+            return
+
         now = time.time()
         if now - self._last_voice_time < self.VOICE_COOLDOWN:
             # Queue instead of dropping — but respect cooldown
@@ -1458,10 +1385,9 @@ class NavigationEngine:
 
     async def _speak_turn(self, wp: Waypoint):
         """Handle a turn waypoint.
-        
-        Voice is intentionally silent — the 3D audio beam direction
-        change IS the guidance. Gemini receives the turn event via
-        context injection and can provide voice context if needed.
+
+        Voice is intentionally silent — turn narration is emitted as a
+        nav event and delivered to the user by Gemini Live via send_text.
         """
         maneuver = wp.maneuver
         if "left" in maneuver:
@@ -1474,12 +1400,11 @@ class NavigationEngine:
             direction = ""
 
         if direction:
-            # Beam direction change IS the guidance — no voice needed
             self._fire_nav_event("turn_executed", {
                 "direction": direction,
                 "instruction": wp.instruction,
             })
-            logger.debug(f"Turn {direction} — beam redirected (silent)")
+            logger.debug(f"Turn {direction} — nav event emitted (engine silent)")
 
     async def _check_turn_announcement(
         self, current_pos: Tuple[float, float], dist_to_current: float
@@ -1502,14 +1427,13 @@ class NavigationEngine:
                 self._turn_announced.add(i)
                 maneuver = wp.maneuver
                 direction = "left" if "left" in maneuver else "right" if "right" in maneuver else maneuver
-                # No voice — beam direction change IS the guidance.
-                # Fire event so Gemini receives context and can speak if needed.
+                # No voice — Gemini narrates via the approaching_turn nav event.
                 self._fire_nav_event("approaching_turn", {
                     "direction": direction,
                     "distance_m": round(dist, 0),
                     "instruction": wp.instruction,
                 })
-                logger.debug(f"Approaching turn: {direction} in {dist:.0f}m (beam guides)")
+                logger.debug(f"Approaching turn: {direction} in {dist:.0f}m (event emitted)")
                 break  # One announcement at a time
 
     async def _check_road_crossing(self, wp: Waypoint):
