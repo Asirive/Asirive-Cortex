@@ -32,7 +32,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 import datetime
 
 import cv2
@@ -1444,6 +1444,12 @@ class CortexSystem:
                     on_mode_change=self._on_nav_mode_change,
                     on_nav_event=self._on_nav_event_gemini,
                 )
+                # Let the engine know when to stay silent — Gemini narrates
+                # while its Live session is connected.
+                try:
+                    self.nav_engine.set_gemini_online_callback(self._is_gemini_live_online)
+                except Exception as e:
+                    logger.warning(f"nav_engine.set_gemini_online_callback failed: {e}")
                 logger.info("✅ NavigationEngine initialized")
             except Exception as e:
                 logger.error(f"❌ Failed to init NavigationEngine: {e}")
@@ -2078,6 +2084,22 @@ class CortexSystem:
         except Exception as e:
             logger.debug(f"Nav event Gemini forward error: {e}")
 
+    def _is_gemini_live_online(self) -> bool:
+        """Return True when the Gemini Live session is connected.
+
+        Used by NavigationEngine to decide whether to suppress its own
+        voice output (Gemini narrates while online).
+        """
+        try:
+            return bool(
+                self.layer2
+                and getattr(self.layer2, "is_running", False)
+                and getattr(self.layer2, "handler", None)
+                and getattr(self.layer2.handler, "is_connected", False)
+            )
+        except Exception:
+            return False
+
     def _on_gemini_reconnected(self):
         """Called after each Gemini Live API (re)connection.
 
@@ -2165,7 +2187,7 @@ class CortexSystem:
 
     def _recent_query_supports_tool_call(self, name: str, args: Dict[str, Any], max_age_s: float = 8.0) -> bool:
         """Allow high-impact Gemini tools only when recent STT confirms user intent."""
-        if name not in {"start_outdoor_navigation", "guide_indoor"}:
+        if name not in {"start_outdoor_navigation", "guide_indoor", "start_navigation_with_route"}:
             return True
 
         query = self._last_confirmed_voice_query
@@ -2182,14 +2204,23 @@ class CortexSystem:
             "guide me to", "lead me to", "help me get to", "take me to",
             "bring me to", "find the", "where is the", "show me the"
         )
-        required_phrases = outdoor_phrases if name == "start_outdoor_navigation" else indoor_phrases
+        if name == "guide_indoor":
+            required_phrases = indoor_phrases
+        else:
+            # Both start_outdoor_navigation and start_navigation_with_route
+            # require an outdoor-nav intent phrase in recent STT
+            required_phrases = outdoor_phrases
         if not any(phrase in query for phrase in required_phrases):
             logger.warning(
                 f"⚠️ Blocking {name}: recent STT '{query[:80]}' does not confirm the required user intent"
             )
             return False
 
-        destination = str(args.get("destination", "") or "").strip().lower()
+        # Pick the destination field — new tool uses destination_name
+        if name == "start_navigation_with_route":
+            destination = str(args.get("destination_name", "") or "").strip().lower()
+        else:
+            destination = str(args.get("destination", "") or "").strip().lower()
         destination_tokens = [
             token for token in self._tokenize_intent_text(destination)
             if token not in {"the", "a", "an", "my", "me", "to", "please"}
@@ -2267,6 +2298,175 @@ class CortexSystem:
             except Exception as e:
                 logger.error(f"Bus arrival query failed: {e}")
                 return {"error": f"Bus arrival lookup failed: {e}"}
+
+        elif name == "get_nearby_bus_stops":
+            try:
+                lat = args.get("lat")
+                lon = args.get("lon")
+                if lat is None or lon is None:
+                    # Auto-fill from engine GPS when possible
+                    if self.nav_engine:
+                        pos = self.nav_engine._get_current_position()
+                        if pos:
+                            lat, lon = pos[0], pos[1]
+                if lat is None or lon is None:
+                    return {"error": "lat and lon required and no GPS fix available"}
+                radius = float(args.get("radius_m", 500) or 500)
+                from rpi5.layer2_thinker.lta_datamall import get_nearby_bus_stops
+                self._update_ai_routing("get_nearby_bus_stops", {"lat": lat, "lon": lon, "radius_m": radius})
+                result = run_async_safe(
+                    get_nearby_bus_stops(float(lat), float(lon), radius),
+                    blocking=True,
+                )
+                return result if result is not None else {"error": "get_nearby_bus_stops returned no result"}
+            except Exception as e:
+                logger.error(f"get_nearby_bus_stops failed: {e}")
+                return {"error": f"Lookup failed: {e}"}
+
+        elif name == "get_all_services_at_stop":
+            bus_stop_code = args.get("bus_stop_code", "")
+            if not bus_stop_code:
+                return {"error": "bus_stop_code is required"}
+            try:
+                from rpi5.layer2_thinker.lta_datamall import get_all_services_at_stop
+                self._update_ai_routing("get_all_services_at_stop", args)
+                result = run_async_safe(
+                    get_all_services_at_stop(bus_stop_code),
+                    blocking=True,
+                )
+                return result if result is not None else {"error": "get_all_services_at_stop returned no result"}
+            except Exception as e:
+                logger.error(f"get_all_services_at_stop failed: {e}")
+                return {"error": f"Lookup failed: {e}"}
+
+        elif name == "search_places":
+            query_str = args.get("query", "")
+            if not query_str:
+                return {"error": "query is required"}
+            try:
+                near_lat = args.get("near_lat")
+                near_lon = args.get("near_lon")
+                if (near_lat is None or near_lon is None) and self.nav_engine:
+                    pos = self.nav_engine._get_current_position()
+                    if pos:
+                        near_lat, near_lon = pos[0], pos[1]
+                radius = int(args.get("radius_m", 1000) or 1000)
+                maps_key = ""
+                if self.nav_engine and getattr(self.nav_engine, "api_key", ""):
+                    maps_key = self.nav_engine.api_key
+                else:
+                    maps_key = os.environ.get("GOOGLE_MAPS_API_KEY", "")
+                if not maps_key:
+                    return {"error": "GOOGLE_MAPS_API_KEY not configured"}
+                from rpi5.layer3_guide.gmaps_places import search_places
+                self._update_ai_routing("search_places", {"query": query_str})
+                result = run_async_safe(
+                    search_places(
+                        maps_key,
+                        query_str,
+                        float(near_lat) if near_lat is not None else None,
+                        float(near_lon) if near_lon is not None else None,
+                        radius,
+                    ),
+                    blocking=True,
+                )
+                return result if result is not None else {"error": "search_places returned no result"}
+            except Exception as e:
+                logger.error(f"search_places failed: {e}")
+                return {"error": f"Places search failed: {e}"}
+
+        elif name == "get_directions":
+            origin = args.get("origin", "")
+            destination = args.get("destination", "")
+            mode = (args.get("mode", "walking") or "walking").lower()
+            if not origin or not destination:
+                return {"error": "origin and destination are required"}
+            try:
+                # Resolve "current" to GPS lat,lng
+                if origin.strip().lower() == "current":
+                    if self.nav_engine:
+                        pos = self.nav_engine._get_current_position()
+                        if pos:
+                            origin = f"{pos[0]},{pos[1]}"
+                        else:
+                            return {"error": "NO_GPS_FIX: cannot resolve 'current'"}
+                    else:
+                        return {"error": "Navigation engine not available"}
+
+                maps_key = ""
+                if self.nav_engine and getattr(self.nav_engine, "api_key", ""):
+                    maps_key = self.nav_engine.api_key
+                else:
+                    maps_key = os.environ.get("GOOGLE_MAPS_API_KEY", "")
+                if not maps_key:
+                    return {"error": "GOOGLE_MAPS_API_KEY not configured"}
+
+                from rpi5.layer3_guide.gmaps_directions import get_directions
+                self._update_ai_routing(
+                    "get_directions",
+                    {"origin": origin, "destination": destination, "mode": mode},
+                )
+                result = run_async_safe(
+                    get_directions(maps_key, origin, destination, mode),
+                    blocking=True,
+                )
+                return result if result is not None else {"error": "get_directions returned no result"}
+            except Exception as e:
+                logger.error(f"get_directions failed: {e}")
+                return {"error": f"Directions lookup failed: {e}"}
+
+        elif name == "start_navigation_with_route":
+            destination_name = args.get("destination_name", "")
+            waypoints = args.get("waypoints", [])
+            metadata = args.get("metadata", {}) or {}
+            if not destination_name:
+                return {"error": "destination_name is required"}
+            if not isinstance(waypoints, list) or len(waypoints) < 2:
+                return {"error": "waypoints must be a list with at least 2 [lat, lng] points"}
+            if not self._recent_query_supports_tool_call(name, args):
+                return {
+                    "success": False,
+                    "blocked": True,
+                    "message": (
+                        "Navigation tool call blocked because recent confirmed STT did not "
+                        "match this destination. Ask the user to restate the destination clearly."
+                    ),
+                }
+            self._update_ai_routing("start_navigation_with_route", {"destination_name": destination_name})
+            if not self.nav_engine:
+                return {"error": "Navigation engine not available"}
+            logger.info(
+                f"🧭 Gemini→start_navigation_with_route('{destination_name}', {len(waypoints)} waypoints)"
+            )
+            try:
+                # Coerce waypoints to list of (lat, lng) tuples
+                parsed: List[Tuple[float, float]] = []
+                for pt in waypoints:
+                    try:
+                        parsed.append((float(pt[0]), float(pt[1])))
+                    except (TypeError, ValueError, IndexError):
+                        continue
+                if len(parsed) < 2:
+                    return {"error": "waypoints did not parse to at least 2 valid [lat, lng] points"}
+
+                result = run_async_safe(
+                    self.nav_engine.start_navigation_with_route(destination_name, parsed, metadata),
+                    blocking=True,
+                )
+                if result:
+                    route = self.nav_engine.route
+                    dist = f"{route.total_distance_m:.0f}m" if route else ""
+                    dur = f"{route.total_duration_s / 60:.0f} min" if (route and route.total_duration_s) else ""
+                    return {
+                        "success": True,
+                        "distance": dist,
+                        "duration": dur,
+                        "message": f"Navigation started to {destination_name}.",
+                    }
+                return {"success": False, "message": "Could not activate route on device."}
+            except Exception as e:
+                logger.error(f"start_navigation_with_route failed: {e}")
+                return {"error": f"Navigation handoff failed: {e}"}
 
         # ── Routing functions — Gemini decides actions ──
 
@@ -3379,9 +3579,9 @@ class CortexSystem:
                         if route:
                             dist_str = f"{route.total_distance_m:.0f} meters"
                             dur_str = f"{route.total_duration_s / 60:.0f} minutes" if route.total_duration_s else ""
-                            response = f"You're at {origin_name}. Route to {destination}: {dist_str}, {dur_str}. Head outside and follow the audio beam."
+                            response = f"You're at {origin_name}. Route to {destination}: {dist_str}, {dur_str}. Navigation started."
                         else:
-                            response = f"Navigation started from {origin_name} to {destination}. Head outside and follow the audio beam."
+                            response = f"Navigation started from {origin_name} to {destination}."
                         logger.info(f"🧭 [NAV] Follow-up route SUCCESS: {response}")
                     else:
                         response = f"Sorry, I couldn't find a walking route from {origin_name} to {destination}."
@@ -3408,9 +3608,9 @@ class CortexSystem:
                         if route:
                             dist_str = f"{route.total_distance_m:.0f} meters"
                             dur_str = f"{route.total_duration_s / 60:.0f} minutes" if route.total_duration_s else ""
-                            response = f"Route to {destination}: {dist_str}, {dur_str}. Head outside and follow the audio beam."
+                            response = f"Route to {destination}: {dist_str}, {dur_str}. Navigation started."
                         else:
-                            response = f"Navigation started to {destination}. Head outside and follow the audio beam."
+                            response = f"Navigation started to {destination}."
                         logger.info(f"🧭 [NAV] Raw-address route SUCCESS: {response}")
                     else:
                         response = "Sorry, I couldn't find a walking route to your destination."
@@ -3675,9 +3875,9 @@ class CortexSystem:
                                 if route:
                                     dist_str = f"{route.total_distance_m:.0f} meters"
                                     dur_str = f"{route.total_duration_s / 60:.0f} minutes" if route.total_duration_s else ""
-                                    response = f"Getting directions to {destination}. Route found. {dist_str}. {dur_str}. Follow the audio beam."
+                                    response = f"Getting directions to {destination}. Route found. {dist_str}. {dur_str}. Navigation started."
                                 else:
-                                    response = f"Getting directions to {destination}. Navigation started. Follow the audio beam."
+                                    response = f"Getting directions to {destination}. Navigation started."
                                 logger.info(f"🧭 [NAV] Route SUCCESS: {response}")
                                 _nav_just_started = True
                             else:
@@ -3701,9 +3901,9 @@ class CortexSystem:
                                     if route:
                                         dist_str = f"{route.total_distance_m:.0f} meters"
                                         dur_str = f"{route.total_duration_s / 60:.0f} minutes" if route.total_duration_s else ""
-                                        response = f"Using {origin_name} as starting point. Route to {destination}: {dist_str}, {dur_str}. Head outside and follow the audio beam."
+                                        response = f"Using {origin_name} as starting point. Route to {destination}: {dist_str}, {dur_str}. Navigation started."
                                     else:
-                                        response = f"Navigation started from {origin_name} to {destination}. Head outside and follow the audio beam."
+                                        response = f"Navigation started from {origin_name} to {destination}."
                                     logger.info(f"🧭 [NAV] Saved-location route SUCCESS: {response}")
                                     _nav_just_started = True
                                 else:
@@ -3758,7 +3958,7 @@ class CortexSystem:
 
                     success = await self.nav_engine.retrace_steps()
                     if success:
-                        response = "I'm guiding you back the way you came. Follow the audio beam."
+                        response = "I'm guiding you back the way you came."
                     else:
                         response = "I don't have enough trail history. Try saying navigate to, followed by your destination."
                 else:
@@ -3790,7 +3990,7 @@ class CortexSystem:
             elif self.nav_engine and any(kw in query_lower for kw in ["resume nav", "resume route", "continue nav", "continue route", "keep going", "keep navigating"]):
                 if self.nav_engine.route and self.nav_engine.state != NavState.NAVIGATING:
                     await self.nav_engine.resume_navigation()
-                    response = "Resuming navigation. Follow the audio beam."
+                    response = "Resuming navigation."
                 elif self.nav_engine.state == NavState.NAVIGATING:
                     response = "Navigation is already active."
                 else:

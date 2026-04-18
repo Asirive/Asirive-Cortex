@@ -192,6 +192,25 @@ You receive a [MODE] tag in every context update. Your proactivity level depends
   - OVERHEAD HAZARDS remain your top priority
   - Maximum 2 sentences when speaking unprompted
 
+STARTING OUTDOOR NAVIGATION — USE TOOL CHAIN (preferred flow):
+When the user asks to go somewhere outdoors, you own the orchestration:
+  1. If the destination is ambiguous (e.g. "the library", "nearest café"),
+     call `search_places(query, near_lat, near_lon)` first — use the user's
+     current GPS from `get_navigation_state` or `get_gps_accuracy` if needed.
+     If the top result is obviously correct, proceed. Otherwise ask the user
+     one quick clarifying question and name 1–2 candidates.
+  2. Call `get_directions(origin="current", destination=<resolved>,
+     mode="walking" | "transit")`. Use "transit" when the user mentions bus
+     or MRT, or when the walking distance would be long.
+  3. Briefly summarize the route to the user (distance, duration, any legs).
+  4. Call `start_navigation_with_route(destination_name, waypoints,
+     metadata)` using the waypoints + metadata returned by get_directions
+     VERBATIM. Do not modify or truncate the waypoint list.
+  5. After the handoff, narrate turn events as they arrive via [NAV_EVENT].
+
+Do NOT call `start_outdoor_navigation` unless the tool chain above fails.
+That older tool is a compatibility fallback only.
+
 [MODE] INDOOR_NAV — YOU ARE THE PRIMARY NAVIGATOR
   - GPS is unavailable. YOU guide the user using the camera feed.
   - Give short voice commands: "Turn left", "Go straight", "Door on your right"
@@ -207,7 +226,13 @@ You receive a [MODE] tag in every context update. Your proactivity level depends
 [MODE] BUS_WATCH — WAITING AT BUS STOP
   - The user's #1 question: "Which bus is coming?"
   - Read bus numbers from approaching buses
-  - Call get_bus_arrival(bus_stop_code) for real-time ETAs
+  - Call get_bus_arrival(bus_stop_code) for real-time ETAs when you already
+    know the stop code
+  - If you do NOT know the stop code yet, call `get_nearby_bus_stops(lat, lon)`
+    first with the user's GPS to find it, then use get_bus_arrival
+  - Use `get_all_services_at_stop(bus_stop_code)` when the user asks
+    "what buses stop here" — it returns services and their next arrivals
+    together
   - Describe the bus stop (shelter, queue, seating, bay)
   - When a bus arrives: "Bus 21 is pulling up now"
   - Help find the correct door / boarding point
@@ -391,10 +416,11 @@ Safety always comes first. Overhead hazards are your highest priority."""
                         {
                             "name": "start_outdoor_navigation",
                             "description": (
-                                "Start GPS turn-by-turn navigation to an OUTDOOR destination "
-                                "(street address, MRT station, bus stop, shop, building). "
-                                "Only call this for real outdoor places reachable by walking/transit. "
-                                "Do NOT call this for rooms inside the user's home or indoor locations."
+                                "COMPATIBILITY FALLBACK — prefer the get_directions + "
+                                "start_navigation_with_route chain instead. Only call this "
+                                "if the preferred chain fails (e.g. get_directions returned "
+                                "an error). Starts GPS turn-by-turn navigation to an OUTDOOR "
+                                "destination and lets the device fetch the route itself."
                             ),
                             "parameters": {
                                 "type": "object",
@@ -405,6 +431,153 @@ Safety always comes first. Overhead hazards are your highest priority."""
                                     },
                                 },
                                 "required": ["destination"],
+                            },
+                        },
+                        {
+                            "name": "get_directions",
+                            "description": (
+                                "Fetch a Google Maps route from origin to destination. "
+                                "Use this BEFORE start_navigation_with_route when the user "
+                                "asks you to navigate outdoors. Returns waypoints, step "
+                                "instructions, total distance and duration, and transit legs "
+                                "when mode=transit. Pass the returned waypoints + metadata "
+                                "directly to start_navigation_with_route."
+                            ),
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "origin": {
+                                        "type": "string",
+                                        "description": (
+                                            "Start location. Use 'current' to use the user's "
+                                            "GPS position. Otherwise an address or 'lat,lng'."
+                                        ),
+                                    },
+                                    "destination": {
+                                        "type": "string",
+                                        "description": "Destination address, place name, or 'lat,lng'",
+                                    },
+                                    "mode": {
+                                        "type": "string",
+                                        "enum": ["walking", "transit", "driving"],
+                                        "description": (
+                                            "Routing mode. 'walking' by default. Use 'transit' "
+                                            "when the user mentions bus, MRT, or a long trip."
+                                        ),
+                                    },
+                                },
+                                "required": ["origin", "destination"],
+                            },
+                        },
+                        {
+                            "name": "start_navigation_with_route",
+                            "description": (
+                                "Hand a pre-fetched route to the on-device navigation engine. "
+                                "Call this AFTER get_directions. The engine will start tracking "
+                                "the user's GPS position against these waypoints and fire "
+                                "nav events back to you (approaching_turn, arrived, etc.) so "
+                                "you can narrate. Pass the waypoints and metadata returned by "
+                                "get_directions verbatim — do not modify or truncate them."
+                            ),
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "destination_name": {
+                                        "type": "string",
+                                        "description": "Human-readable destination for logs/narration",
+                                    },
+                                    "waypoints": {
+                                        "type": "array",
+                                        "description": (
+                                            "Ordered list of [lat, lng] pairs from get_directions. "
+                                            "Must contain at least 2 points."
+                                        ),
+                                        "items": {
+                                            "type": "array",
+                                            "items": {"type": "number"},
+                                        },
+                                    },
+                                    "metadata": {
+                                        "type": "object",
+                                        "description": (
+                                            "Route metadata from get_directions. May include "
+                                            "total_distance_m, total_duration_s, is_transit, "
+                                            "legs, steps, polyline."
+                                        ),
+                                    },
+                                },
+                                "required": ["destination_name", "waypoints"],
+                            },
+                        },
+                        {
+                            "name": "search_places",
+                            "description": (
+                                "Search Google Places for a destination name. Use this to "
+                                "disambiguate vague user requests (e.g. 'the library', "
+                                "'nearest café') BEFORE calling get_directions. If near_lat "
+                                "and near_lon are omitted, the handler will auto-fill them "
+                                "from the user's current GPS."
+                            ),
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "query": {
+                                        "type": "string",
+                                        "description": "Search query, e.g. 'Tampines library'",
+                                    },
+                                    "near_lat": {
+                                        "type": "number",
+                                        "description": "Optional center latitude",
+                                    },
+                                    "near_lon": {
+                                        "type": "number",
+                                        "description": "Optional center longitude",
+                                    },
+                                    "radius_m": {
+                                        "type": "number",
+                                        "description": "Search radius in meters (default 1000)",
+                                    },
+                                },
+                                "required": ["query"],
+                            },
+                        },
+                        {
+                            "name": "get_nearby_bus_stops",
+                            "description": (
+                                "List Singapore bus stops within a radius of a GPS point. "
+                                "Use this when the user asks about buses but you don't yet "
+                                "know the stop code. Returns stops sorted by distance with "
+                                "code, description, road, and meters away."
+                            ),
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "lat": {"type": "number", "description": "Latitude"},
+                                    "lon": {"type": "number", "description": "Longitude"},
+                                    "radius_m": {
+                                        "type": "number",
+                                        "description": "Search radius in meters (default 500)",
+                                    },
+                                },
+                                "required": ["lat", "lon"],
+                            },
+                        },
+                        {
+                            "name": "get_all_services_at_stop",
+                            "description": (
+                                "Return all bus services at a given Singapore bus stop along "
+                                "with their next-arrival ETAs. Use this when the user asks "
+                                "'what buses stop here' or needs to see every option at once."
+                            ),
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "bus_stop_code": {
+                                        "type": "string",
+                                        "description": "5-digit bus stop code (e.g. '75009')",
+                                    },
+                                },
+                                "required": ["bus_stop_code"],
                             },
                         },
                         {
