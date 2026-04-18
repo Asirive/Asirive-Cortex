@@ -25,6 +25,7 @@ Thumbs.db
 temp_*.wav
 temp_*.mp3
 *.log
+logs.md
 
 # Model weights (too large for git)
 # models/*.pt  # Uncomment if models are >100MB

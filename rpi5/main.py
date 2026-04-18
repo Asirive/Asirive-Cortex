@@ -13,7 +13,7 @@ This is the MAIN entry point that runs all 4 AI layers and manages:
 Integrations:
 - Camera capture (Picamera2/OpenCV)
 - Supabase cloud storage (batch sync)
-- Laptop dashboard (WebSocket)
+- Laptop dashboard (WebSocket, optional) 
 - Voice commands (VAD + Whisper)
 
 Author: Haziq (@IRSPlays)
