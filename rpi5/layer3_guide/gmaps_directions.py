@@ -388,6 +388,20 @@ def fetch_transit_route_sync(api_key: str, origin: str, destination: str):
 
 def _nav_route_to_dict(route) -> Dict[str, Any]:
     """Convert NavRoute to a JSON-serializable dict suitable for a Gemini tool response."""
+    steps: List[Dict[str, Any]] = []
+    for waypoint_index, waypoint in enumerate(route.waypoints):
+        if not waypoint.instruction:
+            continue
+        steps.append({
+            "instruction": waypoint.instruction,
+            "distance_m": waypoint.distance_m,
+            "maneuver": waypoint.maneuver,
+            "is_turn": waypoint.is_turn,
+            "waypoint_index": waypoint_index,
+            "lat": waypoint.lat,
+            "lng": waypoint.lng,
+        })
+
     result: Dict[str, Any] = {
         "success": True,
         "origin": route.origin,
@@ -396,15 +410,7 @@ def _nav_route_to_dict(route) -> Dict[str, Any]:
         "total_duration_s": route.total_duration_s,
         "is_transit": route.is_transit,
         "waypoints": [[w.lat, w.lng] for w in route.waypoints],
-        "steps": [
-            {
-                "instruction": w.instruction,
-                "distance_m": w.distance_m,
-                "maneuver": w.maneuver,
-                "is_turn": w.is_turn,
-            }
-            for w in route.waypoints if w.instruction
-        ],
+        "steps": steps,
     }
     if route.is_transit and route.legs:
         result["legs"] = []
@@ -420,7 +426,17 @@ def _nav_route_to_dict(route) -> Dict[str, Any]:
                 "end_lng": lg.end_lng,
             }
             if lg.waypoints:
-                leg_dict["waypoints"] = [[w.lat, w.lng] for w in lg.waypoints]
+                leg_dict["waypoints"] = [
+                    {
+                        "lat": w.lat,
+                        "lng": w.lng,
+                        "instruction": w.instruction,
+                        "distance_m": w.distance_m,
+                        "maneuver": w.maneuver,
+                        "is_turn": w.is_turn,
+                    }
+                    for w in lg.waypoints
+                ]
             if lg.transit_info:
                 ti = lg.transit_info
                 leg_dict["transit"] = {
@@ -428,8 +444,11 @@ def _nav_route_to_dict(route) -> Dict[str, Any]:
                     "line_name": ti.line_name,
                     "departure_stop": ti.departure_stop,
                     "arrival_stop": ti.arrival_stop,
+                    "departure_stop_code": ti.departure_stop_code,
+                    "arrival_stop_code": ti.arrival_stop_code,
                     "num_stops": ti.num_stops,
                     "headsign": ti.headsign,
+                    "line_color": ti.line_color,
                     "departure_lat": ti.departure_lat,
                     "departure_lng": ti.departure_lng,
                     "arrival_lat": ti.arrival_lat,

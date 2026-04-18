@@ -338,6 +338,7 @@ class NavigationEngine:
         self._nav_start_time = 0.0  # When navigation started (for GPS grace period)
         self._gps_grace_seconds = 30.0  # Don't switch to indoor mode for this long after start
         self._started_without_gps = False  # True if nav started with saved location (no GPS)
+        self._indoor_guidance_active = False  # Indoor guide mode ignores GPS waypoint logic
 
         # GPS accuracy tracking (set by _get_current_position)
         self._gps_accuracy: float = 999.0
@@ -616,7 +617,59 @@ class NavigationEngine:
             logger.warning(f"🧭 [NAV] Route fetch FAILED: origin='{origin}', destination='{destination}'")
             return False
 
-        return self._activate_route(route, destination_label=destination)
+        return await self._activate_route(route, destination_label=destination)
+
+    async def start_indoor_guidance(self, destination: str) -> bool:
+        """
+        Start an indoor-guidance session without relying on GPS waypoints.
+
+        This keeps navigation state active so the rest of the system can treat
+        indoor guidance as a real session rather than a mode flag.
+        """
+        if not destination:
+            return False
+
+        if self.state != NavState.INACTIVE:
+            await self.stop_navigation()
+
+        self.route = NavRoute(
+            origin="indoor",
+            destination=destination,
+            waypoints=[Waypoint(lat=0.0, lng=0.0, instruction=f"Indoor guidance to {destination}")],
+            fetched_at=time.time(),
+        )
+        self.current_waypoint_idx = 0
+        self._turn_announced.clear()
+        self._road_crossing_active = False
+        self._road_crossing_pos = None
+        self._approaching_dest_announced = False
+        self._nav_start_time = time.time()
+        self._started_without_gps = True
+        self._indoor_guidance_active = True
+        self._running = True
+        self.current_leg_idx = 0
+        self._current_leg = None
+        self._leg_waypoints = None
+        self.state = NavState.NAVIGATING
+        self._set_mode(NavMode.INDOOR)
+
+        self._fire_nav_event("navigating_to", {
+            "destination": destination,
+            "distance_m": 0.0,
+            "duration_min": 0.0,
+            "waypoints": 0,
+            "is_transit": False,
+            "indoor": True,
+        })
+
+        self._ensure_event_loop()
+        future = asyncio.run_coroutine_threadsafe(
+            self._navigation_loop(), self._event_loop
+        )
+        self._nav_future = future
+        await self._speak(f"Indoor guidance started for {destination}.")
+        logger.info(f"Indoor guidance started: {destination}")
+        return True
 
     async def start_navigation_with_route(
         self,
@@ -666,8 +719,8 @@ class NavigationEngine:
 
         # Build Waypoint objects from the (lat, lng) pairs.
         # If Gemini passed structured steps with instructions, align them
-        # best-effort to the first waypoint of each step (indices are not
-        # guaranteed to match, so only the first waypoint carries instruction).
+        # using waypoint_index when present so instructions stay on the
+        # correct polyline points.
         wp_objs: List[Waypoint] = []
         for i, pt in enumerate(waypoints):
             try:
@@ -681,14 +734,19 @@ class NavigationEngine:
             logger.warning("🧭 [NAV] start_navigation_with_route: < 2 usable waypoints after parsing")
             return False
 
-        # Attach step metadata to the nearest waypoints (first N waypoints get
-        # the first N step instructions; only used for logging/UX, not control flow)
-        for i, step in enumerate(steps):
-            if i >= len(wp_objs):
-                break
-            wp_objs[i].instruction = step.get("instruction", "") or wp_objs[i].instruction
-            wp_objs[i].maneuver = step.get("maneuver", "") or wp_objs[i].maneuver
-            wp_objs[i].is_turn = bool(step.get("is_turn", wp_objs[i].is_turn))
+        for fallback_idx, step in enumerate(steps):
+            target_idx = step.get("waypoint_index")
+            try:
+                target_idx = int(target_idx)
+            except (TypeError, ValueError):
+                target_idx = fallback_idx
+
+            if not 0 <= target_idx < len(wp_objs):
+                continue
+
+            wp_objs[target_idx].instruction = step.get("instruction", "") or wp_objs[target_idx].instruction
+            wp_objs[target_idx].maneuver = step.get("maneuver", "") or wp_objs[target_idx].maneuver
+            wp_objs[target_idx].is_turn = bool(step.get("is_turn", wp_objs[target_idx].is_turn))
 
         # Interpolate to ensure dense waypoints for the nav loop
         wp_objs = gmaps_directions.interpolate_waypoints(wp_objs, max_spacing_m=self.MAX_WAYPOINT_SPACING)
@@ -709,7 +767,17 @@ class NavigationEngine:
             leg_wps: List[Waypoint] = []
             for pt in leg_meta.get("waypoints") or []:
                 try:
-                    leg_wps.append(Waypoint(lat=float(pt[0]), lng=float(pt[1])))
+                    if isinstance(pt, dict):
+                        leg_wps.append(Waypoint(
+                            lat=float(pt.get("lat", 0) or 0),
+                            lng=float(pt.get("lng", 0) or 0),
+                            instruction=pt.get("instruction", "") or "",
+                            distance_m=float(pt.get("distance_m", 0) or 0),
+                            maneuver=pt.get("maneuver", "") or "",
+                            is_turn=bool(pt.get("is_turn", False)),
+                        ))
+                    else:
+                        leg_wps.append(Waypoint(lat=float(pt[0]), lng=float(pt[1])))
                 except (TypeError, ValueError, IndexError):
                     continue
             if leg_wps:
@@ -766,9 +834,9 @@ class NavigationEngine:
             f"🧭 [NAV] start_navigation_with_route: dest='{destination_name}', "
             f"{len(wp_objs)} waypoints, transit={is_transit}, legs={len(route_legs)}"
         )
-        return self._activate_route(route, destination_label=destination_name)
+        return await self._activate_route(route, destination_label=destination_name)
 
-    def _activate_route(self, route: NavRoute, destination_label: str) -> bool:
+    async def _activate_route(self, route: NavRoute, destination_label: str) -> bool:
         """
         Shared session-setup path for start_navigation and
         start_navigation_with_route. Installs the Route on the engine,
@@ -783,25 +851,22 @@ class NavigationEngine:
         self._approaching_dest_announced = False
         self._nav_start_time = time.time()
         self._started_without_gps = (self.gps is None or self.gps.get_fix() is None)
+        self._indoor_guidance_active = False
         self._running = True
 
         # Multi-leg setup
         if route.is_transit and route.legs:
-            self.current_leg_idx = 0
-            self._current_leg = route.legs[0]
+            self.current_leg_idx = -1
+            self._current_leg = None
             self._on_vehicle_announced = False
             self._alight_announced = False
-            if self._current_leg.leg_type == LegType.WALKING and self._current_leg.waypoints:
-                self.current_waypoint_idx = 0
-                self._leg_waypoints = self._current_leg.waypoints
-            else:
-                self._leg_waypoints = None
+            self._leg_waypoints = None
         else:
             self.current_leg_idx = 0
             self._current_leg = None
             self._leg_waypoints = None
-
-        self.state = NavState.NAVIGATING
+            self.state = NavState.NAVIGATING
+            self._set_mode(NavMode.OUTDOOR)
 
         total_min = route.total_duration_s / 60
         total_m = route.total_distance_m
@@ -842,6 +907,13 @@ class NavigationEngine:
 
         self._fire_nav_event("navigating_to", nav_event_data)
 
+        if route.is_transit and route.legs:
+            if not await self._advance_to_next_leg():
+                logger.warning("🧭 [NAV] Failed to activate first transit leg")
+                self.state = NavState.ERROR
+                self._running = False
+                return False
+
         self._ensure_event_loop()
         future = asyncio.run_coroutine_threadsafe(
             self._navigation_loop(), self._event_loop
@@ -853,6 +925,7 @@ class NavigationEngine:
     async def stop_navigation(self):
         """Stop the current navigation session."""
         self._running = False
+        self._indoor_guidance_active = False
         if hasattr(self, '_nav_future') and self._nav_future:
             self._nav_future.cancel()
             self._nav_future = None
@@ -902,6 +975,7 @@ class NavigationEngine:
 
         self.current_leg_idx = next_idx
         self._current_leg = self.route.legs[next_idx]
+        self._indoor_guidance_active = False
         self._on_vehicle_announced = False
         self._alight_announced = False
         self._transit_arrival_pos = None
@@ -995,6 +1069,12 @@ class NavigationEngine:
         ):
             try:
                 loop_start = time.monotonic()
+
+                if self._indoor_guidance_active:
+                    if self.mode != NavMode.INDOOR:
+                        self._set_mode(NavMode.INDOOR)
+                    await asyncio.sleep(interval)
+                    continue
 
                 if not self.route or not self.route.waypoints:
                     break
@@ -1203,8 +1283,13 @@ class NavigationEngine:
                 # Gate waypoint advancement on GPS quality: if accuracy is worse
                 # than the distance to the waypoint, GPS jitter is likely faking movement.
                 # Still allow final-destination arrival (user might genuinely be there).
+                # Accuracy >= 900 is treated as "unknown" (no HDOP, no browser accuracy)
+                # and does NOT gate advancement — otherwise UART GPS without HDOP would
+                # never advance waypoints.
+                accuracy_unknown = self._gps_accuracy >= 900.0
+                accuracy_gate_ok = accuracy_unknown or self._gps_accuracy < dist_to_wp * 1.5
                 if (dist_to_wp < threshold
-                        and (is_route_final or self._gps_accuracy < dist_to_wp * 1.5)):
+                        and (is_route_final or accuracy_gate_ok)):
                     if is_leg_final:
                         if is_route_final:
                             # Arrived at final destination
@@ -1335,12 +1420,11 @@ class NavigationEngine:
 
     def set_gemini_online_callback(self, fn: Optional[Callable[[], bool]]) -> None:
         """
-        Install a callable that returns True while Gemini Live is connected.
+        Install a callable that returns True when Gemini should own
+        navigation narration and local nav voice should stay silent.
 
-        When the callable returns True, the engine suppresses its own voice
-        announcements — Gemini narrates everything via nav events and its
-        own Live audio output. When it returns False (or is unset), the
-        engine falls back to speaking critical status changes via local TTS.
+        When the callable returns False (or is unset), the engine falls back
+        to speaking critical status changes via local TTS.
         """
         self._gemini_online_callback = fn
 
@@ -1386,8 +1470,8 @@ class NavigationEngine:
     async def _speak_turn(self, wp: Waypoint):
         """Handle a turn waypoint.
 
-        Voice is intentionally silent — turn narration is emitted as a
-        nav event and delivered to the user by Gemini Live via send_text.
+        Turn narration is emitted as a nav event. When Gemini is not owning
+        navigation narration, fall back to local TTS for the turn cue.
         """
         maneuver = wp.maneuver
         if "left" in maneuver:
@@ -1400,6 +1484,7 @@ class NavigationEngine:
             direction = ""
 
         if direction:
+            await self._speak(f"Turn {direction} now.")
             self._fire_nav_event("turn_executed", {
                 "direction": direction,
                 "instruction": wp.instruction,
@@ -1427,7 +1512,8 @@ class NavigationEngine:
                 self._turn_announced.add(i)
                 maneuver = wp.maneuver
                 direction = "left" if "left" in maneuver else "right" if "right" in maneuver else maneuver
-                # No voice — Gemini narrates via the approaching_turn nav event.
+                if direction:
+                    await self._speak(f"Turn {direction} in {dist:.0f} meters.")
                 self._fire_nav_event("approaching_turn", {
                     "direction": direction,
                     "distance_m": round(dist, 0),
@@ -1561,11 +1647,22 @@ class NavigationEngine:
 
     def get_status(self) -> Dict[str, Any]:
         """Get current navigation status for dashboard/context injection."""
+        if self._indoor_guidance_active and self.route:
+            return {
+                "state": self.state.value,
+                "mode": self.mode.value,
+                "destination": self.route.destination,
+                "next_instruction": f"Indoor guidance active for {self.route.destination}",
+            }
+
         if not self.route or self.state == NavState.INACTIVE:
             return {"state": self.state.value, "mode": self.mode.value}
 
         current_pos = self._get_current_position()
-        wp = self.route.waypoints[self.current_waypoint_idx] if self.route.waypoints else None
+        active_waypoints = self._leg_waypoints if self._leg_waypoints else self.route.waypoints
+        wp = None
+        if active_waypoints and 0 <= self.current_waypoint_idx < len(active_waypoints):
+            wp = active_waypoints[self.current_waypoint_idx]
 
         dist_to_wp = 0.0
         bearing = 0.0
@@ -1585,7 +1682,7 @@ class NavigationEngine:
             "state": self.state.value,
             "mode": self.mode.value,
             "waypoint_index": self.current_waypoint_idx,
-            "total_waypoints": len(self.route.waypoints),
+            "total_waypoints": len(active_waypoints),
             "distance_to_waypoint_m": round(dist_to_wp, 1),
             "bearing_to_waypoint": round(bearing, 1),
             "distance_to_destination_m": round(dist_to_dest, 1),
@@ -1667,6 +1764,17 @@ class NavigationEngine:
         Returns a single-line string like:
         "[NAV] Outdoor | 45m to waypoint, bearing 035° | Next: turn right in 20m | Dest: 230m"
         """
+        if self._indoor_guidance_active and self.route:
+            parts = [
+                "[NAV] Indoor",
+                f"Dest: {self.route.destination}",
+                "Camera-guided indoor navigation active",
+            ]
+            vision = self.get_vision_summary()
+            if vision:
+                parts.append(vision)
+            return " | ".join(parts)
+
         status = self.get_status()
         if status["state"] == "inactive":
             return "[NAV] Inactive"

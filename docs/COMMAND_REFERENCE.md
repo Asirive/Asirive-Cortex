@@ -1,4 +1,4 @@
-# ProjectCortex v2.0 — Command Reference
+# ProjectCortex v2.0 ï¿½ Command Reference
 
 > All commands run from the project root: `cd ~/ProjectCortex` (RPi5) or `cd C:\Users\Haziq\Documents\ProjectCortex` (Laptop)
 
@@ -16,14 +16,14 @@ python -m laptop all --fastapi
 python -m rpi5 all
 ```
 
-### RPi5 Wearable — `python -m rpi5`
+### RPi5 Wearable ï¿½ `python -m rpi5`
 
 | Command | Description |
 |---------|-------------|
 | `python -m rpi5 all` | Start all layers + camera + sensors |
 | `python -m rpi5 all --offline` | Start without cloud/network |
 | `python -m rpi5 all --no-haptic` | Start without vibration motor |
-| `python -m rpi5 all --laptop 10.245.247.101` | Specify laptop IP |
+| `python -m rpi5 all --laptop 10.131.52.101` | Specify laptop IP |
 | `python -m rpi5 layer0` | Layer 0: Guardian (YOLO safety detection) |
 | `python -m rpi5 layer1` | Layer 1: Learner (adaptive YOLOE) |
 | `python -m rpi5 layer2` | Layer 2: Thinker (Gemini Live API) |
@@ -40,7 +40,7 @@ python -m rpi5 all
 | `python rpi5/main.py` | Direct start (all layers) |
 | `python rpi5/main.py --debug` | Start with debug logging |
 
-### Laptop Dashboard — `python -m laptop`
+### Laptop Dashboard ï¿½ `python -m laptop`
 
 | Command | Description |
 |---------|-------------|
@@ -80,7 +80,7 @@ python sync_rpi5.py <command>
 | `python sync_rpi5.py install` | Install Python dependencies on RPi5 |
 | `python sync_rpi5.py full` | Sync to RPi5 AND install deps |
 
-**Network:** RPi5 `10.245.247.31` ? Laptop `10.245.247.101`
+**Network:** RPi5 `10.<REDACTED-RPI-IP>` ? Laptop `10.131.52.101`
 
 ---
 
@@ -114,7 +114,7 @@ python "Conversion Scripts/convert_yoloe_to_ncnn.py" --imgsz 256          # Imag
 ### Other Exports
 
 ```bash
-python "Conversion Scripts/convert_to_ncnn.py"    # YOLO/YOLOE ? NCNN at 192×192 FP16
+python "Conversion Scripts/convert_to_ncnn.py"    # YOLO/YOLOE ? NCNN at 192ï¿½192 FP16
 python export_pf_models.py                        # YOLOE PF ? ONNX
 python export_pf_torchscript.py                   # YOLOE PF ? TorchScript
 python rpi5/export_to_onnx.py                     # Models ? ONNX at 192px
@@ -173,14 +173,14 @@ python -m py_compile laptop/gui/cortex_ui.py
 
 ## 5. Component Testing (Direct Execution)
 
-### Layer 0 — Guardian (YOLO + Haptics)
+### Layer 0 ï¿½ Guardian (YOLO + Haptics)
 
 ```bash
 python rpi5/layer0_guardian/__init__.py              # Test YOLO detection
 python rpi5/layer0_guardian/haptic_controller.py     # Test vibration patterns
 ```
 
-### Layer 1 — Learner (Adaptive YOLOE)
+### Layer 1 ï¿½ Learner (Adaptive YOLOE)
 
 ```bash
 python rpi5/layer1_learner/__init__.py               # Test YOLOE detection
@@ -188,7 +188,7 @@ python rpi5/layer1_learner/adaptive_prompt_manager.py # Test prompt learning
 python rpi5/layer1_learner/visual_prompt_manager.py   # Test visual prompts
 ```
 
-### Layer 1 — Reflex (Voice Pipeline)
+### Layer 1 ï¿½ Reflex (Voice Pipeline)
 
 ```bash
 python rpi5/layer1_reflex/whisper_handler.py     # Test Whisper STT
@@ -196,7 +196,7 @@ python rpi5/layer1_reflex/vad_handler.py         # Test VAD (live mic)
 python rpi5/layer1_reflex/kokoro_handler.py      # Test Kokoro TTS
 ```
 
-### Layer 2 — Thinker (Gemini / LLM)
+### Layer 2 ï¿½ Thinker (Gemini / LLM)
 
 ```bash
 python rpi5/layer2_thinker/gemini_live_handler.py      # Test Gemini Live API
@@ -204,7 +204,7 @@ python rpi5/layer2_thinker/glm4v_handler.py            # Test GLM-4V fallback
 python rpi5/layer2_thinker/streaming_audio_player.py   # Test audio streaming
 ```
 
-### Layer 3 — Guide (Router + Spatial Audio)
+### Layer 3 ï¿½ Guide (Router + Spatial Audio)
 
 ```bash
 python rpi5/layer3_guide/detection_aggregator.py                  # Test detection formatting
@@ -218,7 +218,7 @@ python rpi5/layer3_guide/spatial_audio/proximity_alert.py         # Test proximi
 python rpi5/layer3_guide/spatial_audio/sound_generator.py         # Test sound generation
 ```
 
-### Layer 4 — Memory
+### Layer 4 ï¿½ Memory
 
 ```bash
 python rpi5/layer4_memory/__init__.py                  # Test memory manager
@@ -284,7 +284,7 @@ git push origin main                     # Push to Gemini-Cortex remote
 
 ---
 
-## 10. Quick Reference — Most Used
+## 10. Quick Reference ï¿½ Most Used
 
 ```bash
 # -- FULL SYSTEM --

@@ -46,6 +46,10 @@ class GPSFix(NamedTuple):
     heading: float       # True heading in degrees (0–360)
     fix_quality: int     # 0=no fix, 1=GPS, 2=DGPS
     satellites: int      # Number of satellites used
+    # Horizontal accuracy in meters. 999.0 = unknown (consumers should treat as
+    # "do not gate on accuracy"). UART GPS derives this from HDOP; phone GPS
+    # reads it directly from the browser Geolocation API.
+    accuracy: float = 999.0
 
 
 class GPSHandler:
@@ -243,6 +247,7 @@ class GPSHandler:
                 heading=heading,
                 fix_quality=old.fix_quality if old else 1,
                 satellites=old.satellites if old else 0,
+                accuracy=old.accuracy if old else 999.0,
             )
         logger.debug(f"📍 GPS RMC: lat={lat:.6f}, lon={lon:.6f}, spd={speed_knots:.1f}kn")
 
@@ -253,6 +258,14 @@ class GPSHandler:
         """
         fix_quality = int(parts[6]) if parts[6] else 0
         satellites = int(parts[7]) if parts[7] else 0
+        # HDOP (field 8) = horizontal dilution of precision. Consumer GPS
+        # modules typically have ~5m CEP at HDOP=1.0, so HDOP*5 gives a rough
+        # accuracy estimate in meters. Fall back to 999 (unknown) if missing.
+        try:
+            hdop = float(parts[8]) if parts[8] else 0.0
+        except ValueError:
+            hdop = 0.0
+        accuracy = hdop * 5.0 if hdop > 0 else 999.0
         altitude = float(parts[9]) if parts[9] else -1.0
 
         if fix_quality == 0:
@@ -278,6 +291,7 @@ class GPSHandler:
                 heading=old.heading if old else 0.0,
                 fix_quality=fix_quality,
                 satellites=satellites,
+                accuracy=accuracy,
             )
         logger.debug(
             f"📍 GPS GGA: lat={lat:.6f}, lon={lon:.6f}, alt={altitude:.1f}m, "

@@ -3,7 +3,7 @@ import paramiko
 
 ssh = paramiko.SSHClient()
 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect('10.245.247.31', username='cortex', password='REDACTED-RPI-PASSWORD', timeout=10)
+ssh.connect('10.<REDACTED-RPI-IP>', username='cortex', password='REDACTED-RPI-PASSWORD', timeout=10)
 
 commands = [
     'bluetoothctl show',

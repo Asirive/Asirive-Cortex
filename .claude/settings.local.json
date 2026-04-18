@@ -16,7 +16,12 @@
       "Bash(python -m pytest tests/ -x --timeout=60)",
       "Bash(python -m pytest tests/ -x)",
       "Bash(python *)",
-      "Bash(set PYTHONIOENCODING=utf-8)"
+      "Bash(set PYTHONIOENCODING=utf-8)",
+      "WebFetch(domain:ai.google.dev)",
+      "WebSearch",
+      "Bash(gemini --help)",
+      "Bash(where gemini *)",
+      "Bash(gemini *)"
     ]
   }
 }

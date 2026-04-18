@@ -173,7 +173,7 @@ class StreamingAudioPlayer:
         Auto-starts the player if not already playing.
         """
         if not self.is_playing:
-            logger.info("🔊 Auto-starting audio player for incoming Gemini chunk")
+            logger.debug("🔊 Auto-starting audio player for incoming Gemini chunk")
             self.start()
         
         try:
@@ -218,7 +218,7 @@ class StreamingAudioPlayer:
                 # Periodic status log (only when chunk count changes)
                 if self._chunks_played > 0 and self._chunks_played % 50 == 0 and self._chunks_played != self._last_logged_chunks:
                     self._last_logged_chunks = self._chunks_played
-                    logger.info(f"🔊 Audio player: {self._chunks_played} chunks played, qsize={qsize}")
+                    logger.debug(f"🔊 Audio player: {self._chunks_played} chunks played, qsize={qsize}")
                 
                 # Auto-stop after silence timeout (queue drained, no new audio)
                 # Also handles startup case where player was started but no audio ever arrived

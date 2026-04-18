@@ -113,7 +113,7 @@ class VideoStreamer:
             
             # Log every 5 seconds
             if now - self.last_log_time > 5:
-                logger.info(f"[ZMQ-TX] Frame #{self.frame_count} sent, size={len(frame_bytes)} bytes")
+                logger.debug(f"[ZMQ-TX] Frame #{self.frame_count} sent, size={len(frame_bytes)} bytes")
                 self.last_log_time = now
                 
             return True

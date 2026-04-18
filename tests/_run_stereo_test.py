@@ -6,7 +6,7 @@ Temporary script - delete after use.
 """
 import paramiko
 
-HOST = "10.245.247.31"
+HOST = "10.<REDACTED-RPI-IP>"
 USER = "cortex"
 PASS = "REDACTED-RPI-PASSWORD"
 

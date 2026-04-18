@@ -16,7 +16,7 @@ except ImportError:
     sys.exit(1)
 
 # RPi5 connection details
-RPI_HOST = "10.245.247.31"
+RPI_HOST = "10.<REDACTED-RPI-IP>"
 RPI_USER = "cortex"
 RPI_PASS = "REDACTED-RPI-PASSWORD"
 PROJECT_DIR = "/home/cortex/ProjectCortex"
