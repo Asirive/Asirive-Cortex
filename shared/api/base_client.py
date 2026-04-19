@@ -339,9 +339,16 @@ class AsyncWebSocketClient(ABC):
 
     # ==================== Connection Management ====================
 
-    async def _reconnect(self, reason: str = "reconnect", attempt: int = 1):
+    async def _reconnect(self, reason: str = "reconnect", attempt: int = 1) -> bool:
         """Attempt to reconnect with exponential backoff."""
         logger.info(f"Reconnecting (attempt {attempt}): {reason}")
+
+        with self._lock:
+            was_connected = self._connected
+            self._connected = False
+
+        if was_connected and self.on_disconnect:
+            self.on_disconnect(reason)
 
         # Disconnect first
         try:
@@ -364,6 +371,7 @@ class AsyncWebSocketClient(ABC):
             try:
                 await self._connect_impl()
                 self._connected = True
+                self._queue_full_warned = False
                 logger.info("Reconnected successfully")
 
                 # Notify callback
@@ -376,7 +384,7 @@ class AsyncWebSocketClient(ABC):
                 # Start heartbeat
                 asyncio.create_task(self._heartbeat_loop())
 
-                return
+                return True
 
             except Exception as e:
                 logger.error(f"Reconnect attempt {i+1} failed: {e}")
@@ -385,6 +393,7 @@ class AsyncWebSocketClient(ABC):
         # All attempts failed
         logger.error("Reconnect failed, will retry later")
         self._connected = False
+        return False
 
     async def _ensure_connected(self):
         """Ensure we're connected, reconnect if needed."""
@@ -409,42 +418,58 @@ class AsyncWebSocketClient(ABC):
         """Run the main event loop."""
         if loop is None:
             loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._async_loop = loop
 
         async def _main():
             """Main async task."""
-            try:
-                await self._connect_impl()
-                self._connected = True
-
-                if self.on_connect:
-                    self.on_connect()
-
-                # Send initial PING (One-time check)
+            reconnect_attempt = 1
+            while self._running and not self._closing:
                 try:
-                    from .protocol import create_ping
-                    ping_id = f"{self.device_id}_init_{int(time.time())}"
-                    ping_msg = create_ping(self.device_id, ping_id)
-                    await self._send_impl(ping_msg)
-                    logger.info(f"Sent INITIAL PING: {ping_id}")
+                    if not self._connected:
+                        await self._connect_impl()
+                        self._connected = True
+                        self._queue_full_warned = False
+
+                        if self.on_connect:
+                            self.on_connect()
+
+                        await self._flush_queue()
+
+                        # Send initial PING (One-time check per connection)
+                        try:
+                            from .protocol import create_ping
+                            ping_id = f"{self.device_id}_init_{int(time.time())}"
+                            ping_msg = create_ping(self.device_id, ping_id)
+                            await self._send_impl(ping_msg)
+                            logger.info(f"Sent INITIAL PING: {ping_id}")
+                        except Exception as e:
+                            logger.error(f"Failed to send initial PING: {e}")
+
+                        asyncio.create_task(self._heartbeat_loop())
+                        reconnect_attempt = 1
+
+                    await self._receive_loop()
                 except Exception as e:
-                    logger.error(f"Failed to send initial PING: {e}")
+                    logger.error(f"Connection error: {e}")
+                    if self.on_error:
+                        self.on_error(e)
 
-                # Start heartbeat
-                asyncio.create_task(self._heartbeat_loop())
+                if self._closing or not self._running:
+                    break
 
-                # Main receive loop
-                await self._receive_loop()
+                if await self._reconnect("connection_lost", reconnect_attempt):
+                    reconnect_attempt = 1
+                else:
+                    reconnect_attempt += 1
 
-            except Exception as e:
-                logger.error(f"Connection error: {e}")
-                if self.on_error:
-                    self.on_error(e)
-
-            finally:
-                if not self._closing:
-                    await self._reconnect("connection_lost")
-
-        loop.run_until_complete(_main())
+        try:
+            loop.run_until_complete(_main())
+        finally:
+            with self._lock:
+                self._connected = False
+            if self._async_loop is loop:
+                self._async_loop = None
 
     async def _receive_loop(self):
         """Main message receive loop."""

@@ -1,5 +1,5 @@
 """
-FastAPI + PyQt6 Integration for ProjectCortex Dashboard
+FastAPI + PyQt6 Integration for Asirive Cortex Dashboard
 
 Provides:
 - Bridge between FastAPI WebSocket server and PyQt6 dashboard
@@ -410,7 +410,7 @@ def run_server_sync(host: str = "0.0.0.0", port: int = 8765):
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="ProjectCortex FastAPI Server")
+    parser = argparse.ArgumentParser(description="Asirive Cortex FastAPI Server")
     parser.add_argument("--host", default="0.0.0.0", help="Server host")
     parser.add_argument("--port", type=int, default=8765, help="Server port")
     args = parser.parse_args()

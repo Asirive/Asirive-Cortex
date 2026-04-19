@@ -1,5 +1,5 @@
 """
-ProjectCortex Dashboard v2.0 - Glassmorphic Production UI
+Asirive Cortex Dashboard v2.0 - Glassmorphic Production UI
 =========================================================
 
 A complete redesign of the Cortex Dashboard featuring:
@@ -594,7 +594,7 @@ class TopNavBar(GlassCard):
         layout.setContentsMargins(10, 5, 10, 5)
         
         # Branding
-        title = QLabel("PROJECT CORTEX")
+        title = QLabel("ASIRIVE CORTEX")
         title.setObjectName("Title")
         title.setStyleSheet("font-size: 16px; margin-right: 20px;")
         layout.addWidget(title)
@@ -1094,7 +1094,7 @@ class CortexDashboard(QMainWindow):
     def __init__(self, config: DashboardConfig = None):
         super().__init__()
         self.config = config
-        self.setWindowTitle("ProjectCortex v2.0 // Dashboard")
+        self.setWindowTitle("Asirive Cortex v2.0 // Dashboard")
         self.resize(1400, 900)
         self.setStyleSheet(STYLE_SHEET)
         

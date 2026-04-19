@@ -1,5 +1,5 @@
 """
-ProjectCortex RPi5 AI Wearable System
+Asirive Cortex RPi5 AI Wearable System
 
 This package contains all 4 AI layers:
 - Layer 0: Guardian (Safety-Critical YOLO Detection)

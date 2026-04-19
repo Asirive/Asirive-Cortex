@@ -1,5 +1,5 @@
 """
-CLI Command Implementations for ProjectCortex RPi5
+CLI Command Implementations for Asirive Cortex RPi5
 
 This module contains the command handlers for the RPi5 CLI.
 
@@ -181,7 +181,7 @@ def test_audio() -> int:
 
 def run_self_test() -> int:
     """Run self-test diagnostics"""
-    print("Running ProjectCortex self-test diagnostics...")
+    print("Running Asirive Cortex self-test diagnostics...")
     print("=" * 50)
 
     tests_passed = 0
@@ -309,7 +309,7 @@ def connect_to_laptop(host: str = "10.131.52.101", port: int = 8765) -> int:
 
 def check_status() -> int:
     """Check system status"""
-    print("ProjectCortex RPi5 System Status")
+    print("Asirive Cortex RPi5 System Status")
     print("=" * 40)
 
     # Check Python

@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=timeGradient&height=250&section=header&text=ProjectCortex&fontSize=80&fontColor=ffffff&animation=fadeIn&fontAlignY=35&desc=AI%20Wearable%20for%20the%20Visually%20Impaired&descAlignY=55&descSize=20" width="100%" />
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=timeGradient&height=250&section=header&text=Asirive%20Cortex&fontSize=80&fontColor=ffffff&animation=fadeIn&fontAlignY=35&desc=AI%20Wearable%20for%20the%20Visually%20Impaired&descAlignY=55&descSize=20" width="100%" />
 
   <br/>
 
@@ -23,7 +23,7 @@
 > **"The biggest daily challenge is taking the bus."** — *SAVH Advocate*
 
 1.3 billion people live with vision impairment. Existing AI glasses describe scenes — but they don't **navigate**. They can't guide a blind person to a bus stop, tell them which bus is arriving, or help them board the right one. 
-**ProjectCortex** solves this by providing true independent mobility through a highly advanced, <$150 chest-mounted wearable.
+**Asirive Cortex** solves this by providing true independent mobility through a highly advanced, <$150 chest-mounted wearable.
 
 ---
 
@@ -39,7 +39,7 @@ Powered by **Gemini 3.1 Flash Live**, Cortex doesn't just have one personality. 
 * **EXPLORE:** Detailed scene narration on demand.
 
 ### 🛡️ Silent-Dangers-Only Safety System
-Traditional assistive devices spam the user with alerts about everything (people, dogs, cars). **ProjectCortex filters out what you can naturally hear.** 
+Traditional assistive devices spam the user with alerts about everything (people, dogs, cars). **Asirive Cortex filters out what you can naturally hear.** 
 Using local **YOLO + Depth sensing**, it warns **ONLY** about silent dangers:
 * 🧱 Walls, poles, and overhead obstacles
 * 🕳️ Stairs, curbs, and drop-offs
@@ -56,7 +56,7 @@ Ask anything: *"What do you see?"*, *"Read that sign"*, *"Where did I leave my k
 
 ## 🤝 The SAVH Demo
 
-ProjectCortex has been practically designed and tested with the **Singapore Association for the Visually Handicapped (SAVH)**. Our live demonstration features four core stations proving real-world viability:
+Asirive Cortex has been practically designed and tested with the **Singapore Association for the Visually Handicapped (SAVH)**. Our live demonstration features four core stations proving real-world viability:
 
 | Station | Focus | What It Tests |
 |:---:|:---|:---|
@@ -169,9 +169,13 @@ python laptop/gui/cortex_ui.py
 **Current Status:** V2.5 (SAVH demo polish, hazard cooldown fixes). 
 **Next Up (V3.0):** Custom PCB, integrated audio, 57% lighter waterproof enclosure.
 
+## License
+
+Asirive Cortex is licensed under the GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
+
 ---
 <div align="center">
   <p><b>Built for independence. Powered by Gemini. Designed with SAVH.</b></p>
-  <p><i>ProjectCortex by <a href="https://github.com/IRSPlays">Haziq</a></i></p>
-  <p><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="MIT License" /></p>
+  <p><i>&copy; 2026 Asirive. Built by <a href="https://github.com/IRSPlays">Haziq</a>, founder of Asirive.</i></p>
+  <p><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="GNU GPL v3 License" /></p>
 </div>

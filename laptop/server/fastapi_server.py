@@ -1,5 +1,5 @@
 """
-FastAPI Server for ProjectCortex Laptop Dashboard
+FastAPI Server for Asirive Cortex Laptop Dashboard
 
 Uses shared API for protocol and base server classes.
 Provides WebSocket endpoint for RPi5 real-time data and REST API for control.
@@ -55,8 +55,8 @@ logger = logging.getLogger(__name__)
 # ============================================================================
 
 app = FastAPI(
-    title="Project Cortex Dashboard API",
-    description="API for Project Cortex wearable device dashboard",
+    title="Asirive Cortex Dashboard API",
+    description="API for the Asirive Cortex wearable device dashboard",
     version="2.0.0",
 )
 
@@ -696,7 +696,7 @@ FastAPIServer = LaptopWebSocketServer
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Project Cortex Dashboard Server")
+    parser = argparse.ArgumentParser(description="Asirive Cortex Dashboard Server")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind")
     parser.add_argument("--port", type=int, default=8765, help="Port to listen")
     args = parser.parse_args()

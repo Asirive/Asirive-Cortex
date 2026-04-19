@@ -1,1 +1,1 @@
-# CLI entry points for ProjectCortex Dashboard
+# CLI entry points for Asirive Cortex Dashboard

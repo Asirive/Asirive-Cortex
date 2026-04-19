@@ -1,8 +1,8 @@
 #!/bin/bash
 ################################################################################
-# Project Cortex v2.0 - Hardware Validation Script
+# Asirive Cortex v2.0 - Hardware Validation Script
 # 
-# This script validates all hardware components before running Project Cortex:
+# This script validates all hardware components before running Asirive Cortex:
 #   - Raspberry Pi 5 detection
 #   - Camera Module 3 connectivity
 #   - Active cooler / temperature monitoring
@@ -95,7 +95,7 @@ test_memory() {
     log_info "Total RAM: ${total_ram_gb}GB (${total_ram_mb}MB)"
     
     if [ "$total_ram_mb" -gt 3500 ]; then
-        log_pass "RAM capacity sufficient for Project Cortex (need ~3.8GB)"
+        log_pass "RAM capacity sufficient for Asirive Cortex (need ~3.8GB)"
     elif [ "$total_ram_mb" -gt 3000 ]; then
         log_warn "RAM is at minimum threshold (${total_ram_gb}GB)"
     else
@@ -373,7 +373,7 @@ generate_report() {
         echo -e "${GREEN}✅ ALL TESTS PASSED - HARDWARE READY!${NC}"
         echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo ""
-        echo "Your Raspberry Pi 5 is ready for Project Cortex v2.0!"
+        echo "Your Raspberry Pi 5 is ready for Asirive Cortex v2.0!"
         echo "Next step: Run setup script (./setup_rpi5.sh)"
         return 0
     elif [ "$FAILED" -eq 0 ]; then
@@ -389,7 +389,7 @@ generate_report() {
         echo -e "${RED}❌ TESTS FAILED - HARDWARE ISSUES DETECTED${NC}"
         echo -e "${RED}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo ""
-        echo "CRITICAL: Fix failed tests before running Project Cortex."
+        echo "CRITICAL: Fix failed tests before running Asirive Cortex."
         echo "Refer to docs/implementation/RPI5-COMPLETE-SETUP-GUIDE.md"
         return 1
     fi
@@ -399,11 +399,11 @@ generate_report() {
 main() {
     echo ""
     echo "================================================"
-    echo "  PROJECT CORTEX V2.0 - HARDWARE VALIDATION"
+    echo "  ASIRIVE CORTEX V2.0 - HARDWARE VALIDATION"
     echo "================================================"
     echo ""
     echo "This script will validate your Raspberry Pi 5"
-    echo "hardware configuration for Project Cortex."
+    echo "hardware configuration for Asirive Cortex."
     echo ""
     
     # Run all tests

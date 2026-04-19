@@ -889,44 +889,7 @@ Safety always comes first. Overhead hazards are your highest priority."""
                         logger.info(
                             f"🔧 Gemini tool_call: {[fc.name for fc in function_calls]}"
                         )
-                        function_responses = []
-                        for fc in function_calls:
-                            result = {"error": "No tool callback registered"}
-                            if self._tool_callback:
-                                try:
-                                    if asyncio.iscoroutinefunction(self._tool_callback):
-                                        result = await self._tool_callback(
-                                            fc.name, getattr(fc, 'args', {}) or {}
-                                        )
-                                    else:
-                                        result = await asyncio.to_thread(
-                                            self._tool_callback,
-                                            fc.name,
-                                            getattr(fc, 'args', {}) or {},
-                                        )
-                                except Exception as e:
-                                    logger.error(f"Tool callback error for {fc.name}: {e}")
-                                    result = {"error": str(e)}
-                            function_responses.append(
-                                types.FunctionResponse(
-                                    id=fc.id,
-                                    name=fc.name,
-                                    response={"result": result},
-                                )
-                            )
-                        if function_responses and self.session:
-                            if self._send_lock:
-                                async with self._send_lock:
-                                    await self.session.send_tool_response(
-                                        function_responses=function_responses
-                                    )
-                            else:
-                                await self.session.send_tool_response(
-                                    function_responses=function_responses
-                                )
-                            logger.info(f"🔧 Sent {len(function_responses)} tool response(s)")
-                            # Suppress false barge-in for 3s after tool response.
-                            self._barge_in_cooldown_until = time.time() + 3.0
+                        asyncio.create_task(self._handle_tool_calls_async(function_calls))
                         continue
 
                     # Handle tool call cancellation
@@ -1219,6 +1182,47 @@ Safety always comes first. Overhead hazards are your highest priority."""
         except Exception as e:
             logger.debug(f"Activity end signal error: {e}")
             return False
+
+    async def _handle_tool_calls_async(self, function_calls) -> None:
+        """Resolve Gemini tool calls without stalling the receive loop."""
+        function_responses = []
+        for fc in function_calls:
+            result = {"error": "No tool callback registered"}
+            if self._tool_callback:
+                try:
+                    if asyncio.iscoroutinefunction(self._tool_callback):
+                        result = await self._tool_callback(
+                            fc.name, getattr(fc, 'args', {}) or {}
+                        )
+                    else:
+                        result = await asyncio.to_thread(
+                            self._tool_callback,
+                            fc.name,
+                            getattr(fc, 'args', {}) or {},
+                        )
+                except Exception as e:
+                    logger.error(f"Tool callback error for {fc.name}: {e}")
+                    result = {"error": str(e)}
+            function_responses.append(
+                types.FunctionResponse(
+                    id=fc.id,
+                    name=fc.name,
+                    response={"result": result},
+                )
+            )
+
+        if function_responses and self.session:
+            if self._send_lock:
+                async with self._send_lock:
+                    await self.session.send_tool_response(
+                        function_responses=function_responses
+                    )
+            else:
+                await self.session.send_tool_response(
+                    function_responses=function_responses
+                )
+            logger.info(f"🔧 Sent {len(function_responses)} tool response(s)")
+            self._barge_in_cooldown_until = time.time() + 3.0
 
     async def send_audio_chunk(self, audio_bytes: bytes, sample_rate: int = 16000) -> bool:
         """
@@ -1657,7 +1661,18 @@ class GeminiLiveManager:
         try:
             self._outbound_queue.put_nowait(item)
         except asyncio.QueueFull:
-            logger.debug(f"🗑️ Dropping outbound {item[0]} — queue full")
+            kind = item[0]
+            if kind in {"activity_start", "activity_end", "text"}:
+                try:
+                    dropped = self._outbound_queue.get_nowait()
+                    logger.debug(f"🗑️ Dropped outbound {dropped[0]} to prioritize {kind}")
+                    self._outbound_queue.put_nowait(item)
+                    return
+                except asyncio.QueueEmpty:
+                    pass
+                except asyncio.QueueFull:
+                    pass
+            logger.debug(f"🗑️ Dropping outbound {kind} — queue full")
 
     def _schedule_video_flush(self):
         if self._video_send_pending:

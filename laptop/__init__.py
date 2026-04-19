@@ -1,5 +1,5 @@
 """
-Laptop Dashboard for ProjectCortex v2.0
+Laptop Dashboard for Asirive Cortex v2.0
 
 PyQt6-based real-time monitoring dashboard for RPi5 AI wearable system.
 Receives data via WebSocket/FastAPI from RPi5 and displays:

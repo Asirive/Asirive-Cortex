@@ -1,5 +1,5 @@
 """
-Configuration module for ProjectCortex RPi5
+Configuration module for Asirive Cortex RPi5
 
 Author: Haziq (@IRSPlays)
 Date: January 8, 2026

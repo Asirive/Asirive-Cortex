@@ -1,5 +1,5 @@
 """
-Configuration module for ProjectCortex RPi5
+Configuration module for Asirive Cortex RPi5
 
 Loads configuration from config.yaml and provides get_config() function.
 

@@ -1,5 +1,5 @@
 """
-Layer 3: Intent Router - The "Brain" of Project Cortex
+Layer 3: Intent Router - The "Brain" of Asirive Cortex
 
 Word-level intent classification. Routes voice commands to the correct AI layer.
 

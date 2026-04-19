@@ -1,5 +1,5 @@
 """
-WebSocket Message Protocol for ProjectCortex
+WebSocket Message Protocol for Asirive Cortex
 
 Defines message types and structures for communication between:
 - RPi5 (Cortex) → Laptop (Dashboard)
