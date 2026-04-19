@@ -1,1 +1,1 @@
-# GUI Components for ProjectCortex Dashboard
+# GUI Components for Asirive Cortex Dashboard

@@ -130,6 +130,23 @@ class RPi5Client(AsyncWebSocketClient):
 
         logger.info(f"RPi5 client initialized: {host}:{port} ({device_id})")
 
+    def _schedule_send(self, msg: BaseMessage, description: str) -> bool:
+        """Schedule a send onto the client's async loop only when it is alive."""
+        if not self._async_loop or not self._async_loop.is_running() or not self.is_running:
+            logger.debug(f"Skipping {description}: async loop not running")
+            return False
+
+        future = asyncio.run_coroutine_threadsafe(self.send(msg), self._async_loop)
+
+        def _log_send_result(done_future):
+            try:
+                done_future.result()
+            except Exception as e:
+                logger.debug(f"Failed to send {description}: {e}")
+
+        future.add_done_callback(_log_send_result)
+        return True
+
     # =========================================================================
     # Abstract Method Implementations (WebSockets)
     # =========================================================================
@@ -377,11 +394,7 @@ class RPi5Client(AsyncWebSocketClient):
             quality=self.video_quality,
         )
 
-        if self._async_loop:
-            import asyncio
-            asyncio.run_coroutine_threadsafe(self.send(msg), self._async_loop)
-        else:
-            logger.warning("Async loop not active, cannot send video frame")
+        self._schedule_send(msg, "video frame")
 
     def send_metrics(
         self,
@@ -420,11 +433,7 @@ class RPi5Client(AsyncWebSocketClient):
 
         msg = create_metrics(self.device_id, metrics)
         
-        if self._async_loop:
-            import asyncio
-            asyncio.run_coroutine_threadsafe(self.send(msg), self._async_loop)
-        else:
-            logger.warning("Async loop not active, cannot send metrics")
+        self._schedule_send(msg, "metrics")
 
     def send_detection(
         self,
@@ -464,11 +473,7 @@ class RPi5Client(AsyncWebSocketClient):
 
         msg = create_detections(self.device_id, [detection])
         
-        if self._async_loop:
-            import asyncio
-            asyncio.run_coroutine_threadsafe(self.send(msg), self._async_loop)
-        else:
-            logger.warning("Async loop not active, cannot send detection")
+        self._schedule_send(msg, "detection")
 
     def set_video_streaming(self, enabled: bool):
         """Enable/disable video streaming (local control)."""
@@ -543,9 +548,7 @@ class RPi5Client(AsyncWebSocketClient):
             if environment is not None:
                 msg.data['environment'] = environment
 
-        if self._async_loop:
-            import asyncio
-            asyncio.run_coroutine_threadsafe(self.send(msg), self._async_loop)
+        self._schedule_send(msg, "gps/imu")
 
     def send_status(self, status: str, message: str):
         """Send status update to laptop."""
@@ -558,11 +561,7 @@ class RPi5Client(AsyncWebSocketClient):
             }
         )
         
-        if self._async_loop:
-            import asyncio
-            asyncio.run_coroutine_threadsafe(self.send(msg), self._async_loop)
-        else:
-            logger.warning("Async loop not active, cannot send status")
+        self._schedule_send(msg, "status")
 
     def send_safety_alert(
         self,
@@ -585,11 +584,7 @@ class RPi5Client(AsyncWebSocketClient):
             }
         )
 
-        if self._async_loop:
-            import asyncio
-            asyncio.run_coroutine_threadsafe(self.send(msg), self._async_loop)
-        else:
-            logger.warning("Async loop not active, cannot send safety alert")
+        self._schedule_send(msg, "safety alert")
 
 
 # Backwards compatibility alias

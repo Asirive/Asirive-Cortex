@@ -1,6 +1,6 @@
-# Laptop Dashboard - ProjectCortex v2.0
+# Laptop Dashboard - Asirive Cortex v2.0
 
-PyQt6-based real-time monitoring dashboard for ProjectCortex AI wearable system.
+PyQt6-based real-time monitoring dashboard for the Asirive Cortex AI wearable system.
 
 ## Features
 

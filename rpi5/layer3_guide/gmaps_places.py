@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-USER_AGENT = "ProjectCortex/2.0"
+USER_AGENT = "AsiriveCortex/2.0"
 TEXT_SEARCH_URL = "https://maps.googleapis.com/maps/api/place/textsearch/json"
 PLACE_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
 HTTP_TIMEOUT_S = 8

@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import sqlite3
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -84,10 +85,14 @@ class HybridMemoryManager:
 
         # Upload queue (for offline mode)
         self.upload_queue = []
+        self._queue_lock = threading.Lock()
+        self._heartbeat_inflight = threading.Lock()
 
         # Background sync worker
         self.sync_running = False
         self.sync_task = None
+        self._sync_loop = None
+        self._sync_thread = None
 
         logger.info("✅ Hybrid Memory Manager initialized")
         logger.info(f"   Local DB: {local_db_path}")
@@ -299,20 +304,18 @@ class HybridMemoryManager:
 
         # 2. Queue for cloud upload (non-blocking, capped to prevent OOM)
         row_id = cursor.lastrowid
-        if len(self.upload_queue) < self.local_cache_size * 2:
-            self.upload_queue.append({
-                'table': 'detections',
-                'row_id': row_id,
-                'data': {**detection, 'device_id': self.device_id}
-            })
-        else:
-            logger.warning(f"Upload queue full ({len(self.upload_queue)} items), dropping oldest")
-            self.upload_queue.pop(0)
-            self.upload_queue.append({
-                'table': 'detections',
-                'row_id': row_id,
-                'data': {**detection, 'device_id': self.device_id}
-            })
+        queue_item = {
+            'table': 'detections',
+            'row_id': row_id,
+            'data': {**detection, 'device_id': self.device_id}
+        }
+        with self._queue_lock:
+            if len(self.upload_queue) < self.local_cache_size * 2:
+                self.upload_queue.append(queue_item)
+            else:
+                logger.warning(f"Upload queue full ({len(self.upload_queue)} items), dropping oldest")
+                self.upload_queue.pop(0)
+                self.upload_queue.append(queue_item)
 
         # 3. Cleanup old local rows (keep last 1000)
         self._cleanup_old_rows()
@@ -346,7 +349,13 @@ class HybridMemoryManager:
             try:
                 await asyncio.sleep(self.sync_interval)
 
-                if not self.upload_queue:
+                with self._queue_lock:
+                    if not self.upload_queue:
+                        batch = []
+                    else:
+                        batch = list(self.upload_queue[:self.batch_size])
+
+                if not batch:
                     logger.debug("✓ Upload queue empty, skipping sync")
                     continue
 
@@ -357,9 +366,6 @@ class HybridMemoryManager:
                 # Initialize Supabase if needed
                 await self.init_supabase()
 
-                # Batch upload (max batch_size rows at once)
-                batch = self.upload_queue[:self.batch_size]
-
                 try:
                     await self._upload_batch(batch)
 
@@ -369,11 +375,19 @@ class HybridMemoryManager:
                     except Exception as mark_err:
                         logger.error(f"Failed to mark batch as synced: {mark_err}. Rows may re-upload.")
 
-                    # Remove from queue
-                    self.upload_queue = self.upload_queue[len(batch):]
+                    # Remove synced rows from queue without disturbing newer appends.
+                    synced_row_ids = {
+                        item.get('row_id') for item in batch if item.get('row_id') is not None
+                    }
+                    with self._queue_lock:
+                        self.upload_queue = [
+                            item for item in self.upload_queue
+                            if item.get('row_id') not in synced_row_ids
+                        ]
+                        queue_size = len(self.upload_queue)
 
                     logger.info(f"✅ Synced {len(batch)} detections to Supabase")
-                    logger.info(f"⏳ Queue size: {len(self.upload_queue)} rows remaining")
+                    logger.info(f"⏳ Queue size: {queue_size} rows remaining")
 
                 except Exception as e:
                     logger.error(f"❌ Batch upload failed: {e}, backoff {self._supabase_backoff}s")
@@ -428,18 +442,18 @@ class HybridMemoryManager:
         Args:
             batch: List of detection dicts with row_id
         """
-        cursor = self.local_db.cursor()
-
         row_ids = [item.get('row_id') for item in batch if item.get('row_id') is not None]
-        if row_ids:
+        if not row_ids:
+            return
+
+        with sqlite3.connect(self.local_db_path, check_same_thread=False, timeout=5.0) as conn:
             placeholders = ','.join('?' * len(row_ids))
-            cursor.execute(f"""
+            conn.execute(f"""
                 UPDATE detections_local
                 SET synced = 1
                 WHERE id IN ({placeholders})
             """, row_ids)
-
-        self.local_db.commit()
+            conn.commit()
 
     def _is_wifi_connected(self) -> bool:
         """
@@ -606,31 +620,43 @@ class HybridMemoryManager:
         if not self.supabase_available:
             logger.debug("⏭️ Heartbeat skipped: Supabase disabled")
             return
-            
-        # Ensure client is initialized
-        if not self.supabase_client:
-             await self.init_supabase()
-              
-        # Guard clause: If still not available (failed init), exit
-        if not self.supabase_client:
+        if not self._is_wifi_connected():
+            logger.debug("⏭️ Heartbeat skipped: no network")
+            return
+        if not self._heartbeat_inflight.acquire(blocking=False):
+            logger.debug("⏭️ Heartbeat skipped: previous heartbeat still running")
             return
 
         try:
+            # Ensure client is initialized
+            if not self.supabase_client:
+                await asyncio.wait_for(self.init_supabase(), timeout=5.0)
+
+            # Guard clause: If still not available (failed init), exit
+            if not self.supabase_client:
+                return
+
             # Call Supabase RPC function
-            await self.supabase_client.rpc('update_device_heartbeat', {
-                'p_device_id': self.device_id,
-                'p_device_name': device_name,
-                'p_battery': battery_percent,
-                'p_cpu': cpu_percent,
-                'p_memory': memory_mb,
-                'p_temp': temperature,
-                'p_active_layers': active_layers,
-                'p_current_mode': current_mode,
-                'p_lat': latitude,
-                'p_lon': longitude
-            }).execute()
+            await asyncio.wait_for(
+                self.supabase_client.rpc('update_device_heartbeat', {
+                    'p_device_id': self.device_id,
+                    'p_device_name': device_name,
+                    'p_battery': battery_percent,
+                    'p_cpu': cpu_percent,
+                    'p_memory': memory_mb,
+                    'p_temp': temperature,
+                    'p_active_layers': active_layers,
+                    'p_current_mode': current_mode,
+                    'p_lat': latitude,
+                    'p_lon': longitude
+                }).execute(),
+                timeout=5.0,
+            )
 
             logger.debug(f"💓 Heartbeat updated: {device_name}")
+        except asyncio.TimeoutError:
+            logger.warning("⚠️ Heartbeat skipped: timed out")
+            self._handle_supabase_failure()
         except Exception as e:
             error_msg = str(e)
             # Check for known non-critical errors (function overload ambiguity)
@@ -644,29 +670,55 @@ class HybridMemoryManager:
             else:
                 logger.warning(f"⚠️ Heartbeat skipped: {e}")
                 self._handle_supabase_failure()
+        finally:
+            self._heartbeat_inflight.release()
 
     def start_sync_worker(self):
         """Start background sync worker"""
         if not self.sync_running:
             self.sync_running = True
-            # Handle both async and sync contexts
-            try:
-                # We're in an async context with running loop
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                # We're in a sync context, create a new loop
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            self.sync_task = loop.create_task(self._sync_worker())
+            self._sync_thread = threading.Thread(
+                target=self._sync_worker_thread,
+                name="memory-sync-worker",
+                daemon=True,
+            )
+            self._sync_thread.start()
             logger.info("✅ Sync worker started")
 
     def stop_sync_worker(self):
         """Stop background sync worker"""
         if self.sync_running:
             self.sync_running = False
-            if self.sync_task:
-                self.sync_task.cancel()
+            if self._sync_loop and self.sync_task:
+                def _cancel_sync_task():
+                    if self.sync_task and not self.sync_task.done():
+                        self.sync_task.cancel()
+
+                self._sync_loop.call_soon_threadsafe(_cancel_sync_task)
+            if self._sync_thread and self._sync_thread.is_alive():
+                self._sync_thread.join(timeout=2.0)
+            self._sync_thread = None
             logger.info("⏹️ Sync worker stopped")
+
+    def _sync_worker_thread(self):
+        """Own the background event loop that drives periodic Supabase sync."""
+        loop = asyncio.new_event_loop()
+        self._sync_loop = loop
+        asyncio.set_event_loop(loop)
+        self.sync_task = loop.create_task(self._sync_worker())
+        try:
+            loop.run_until_complete(self.sync_task)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            self.sync_task = None
+            self._sync_loop = None
+            loop.close()
 
     # =================================================================
     # CONVERSATION MEMORY METHODS

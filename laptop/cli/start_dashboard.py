@@ -1,5 +1,5 @@
 """
-Main Launcher for ProjectCortex Laptop Dashboard
+Main Launcher for Asirive Cortex Laptop Dashboard
 
 Integrates:
 - WebSocket server (legacy mode)
@@ -63,7 +63,7 @@ class DashboardApplication:
         )
 
         logger.info("="*70)
-        logger.info(f"ProjectCortex v2.0 - Laptop Dashboard ({'FastAPI' if use_fastapi else 'WebSocket'})")
+        logger.info(f"Asirive Cortex v2.0 - Laptop Dashboard ({'FastAPI' if use_fastapi else 'WebSocket'})")
         logger.info("="*70)
 
         # Qt application (created in main thread)
@@ -434,7 +434,7 @@ class DashboardApplication:
         try:
             # Create Qt application
             self.app = QApplication(sys.argv)
-            self.app.setApplicationName("ProjectCortex Dashboard")
+            self.app.setApplicationName("Asirive Cortex Dashboard")
 
             # Create dashboard GUI
             self.dashboard = CortexDashboardUI(self.config)
@@ -724,7 +724,7 @@ def main():
     """Main entry point"""
     import argparse
 
-    parser = argparse.ArgumentParser(description="ProjectCortex Laptop Dashboard")
+    parser = argparse.ArgumentParser(description="Asirive Cortex Laptop Dashboard")
     parser.add_argument(
         "--host",
         default=None,

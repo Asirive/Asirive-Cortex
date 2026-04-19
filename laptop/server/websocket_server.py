@@ -1,5 +1,5 @@
 """
-WebSocket Server for ProjectCortex Laptop Dashboard
+WebSocket Server for Asirive Cortex Laptop Dashboard
 
 Receives real-time data from RPi5 devices:
 - Video frames
@@ -109,7 +109,7 @@ class CortexWebSocketServer:
                 "timestamp": datetime.utcnow().isoformat() + "Z",
                 "data": {
                     "status": "connected",
-                    "message": f"Connected to ProjectCortex Dashboard v2.0",
+                    "message": f"Connected to Asirive Cortex Dashboard v2.0",
                     "server_time": datetime.utcnow().isoformat() + "Z"
                 }
             }

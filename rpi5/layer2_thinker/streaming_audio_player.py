@@ -67,6 +67,8 @@ class StreamingAudioPlayer:
         self.is_interrupted = False
         self.stream: Optional[sd.OutputStream] = None
         self.playback_thread: Optional[threading.Thread] = None
+        self._stop_lock = threading.Lock()
+        self._stop_in_progress = False
         self._silence_count = 0  # Track consecutive silence callbacks
         self._chunks_played = 0  # Track total chunks played
         self._last_logged_chunks = -1  # Prevent log spam at same chunk count
@@ -128,44 +130,67 @@ class StreamingAudioPlayer:
         Args:
             interrupted: True if stopped by interruption (VAD trigger)
         """
+        with self._stop_lock:
+            if self._stop_in_progress:
+                return
+            self._stop_in_progress = True
+
+        try:
+            if not self.is_playing:
+                return
+
+            # Set stop time BEFORE is_playing=False to prevent race condition
+            # where another thread sees is_playing=False + stale _last_stop_time
+            self._last_stop_time = time.time()
+            self.is_playing = False
+            self.is_interrupted = interrupted
+
+            # Clear audio queue and leftover buffer
+            self._leftover = None
+            while not self.audio_queue.empty():
+                try:
+                    self.audio_queue.get_nowait()
+                except queue.Empty:
+                    break
+
+            # Close audio stream
+            stream = self.stream
+            self.stream = None
+            if stream:
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception as e:
+                    logger.debug(f"Stream cleanup in stop(): {e}")
+
+            # Wait for playback thread unless we're already on it
+            if self.playback_thread and self.playback_thread is not threading.current_thread():
+                self.playback_thread.join(timeout=2.0)
+                self.playback_thread = None
+
+            if interrupted and self.on_interrupt_callback:
+                self.on_interrupt_callback()
+            elif self.on_stop_callback:
+                self.on_stop_callback()
+
+            logger.info(f"🛑 Audio playback stopped (interrupted={interrupted})")
+        finally:
+            with self._stop_lock:
+                self._stop_in_progress = False
+
+    def request_stop(self, interrupted: bool = False):
+        """Stop playback on a helper thread so callers do not block."""
         if not self.is_playing:
             return
-        
-        # Set stop time BEFORE is_playing=False to prevent race condition
-        # where another thread sees is_playing=False + stale _last_stop_time
-        self._last_stop_time = time.time()
-        self.is_playing = False
-        self.is_interrupted = interrupted
-        
-        # Clear audio queue and leftover buffer
-        self._leftover = None
-        while not self.audio_queue.empty():
-            try:
-                self.audio_queue.get_nowait()
-            except queue.Empty:
-                break
-        
-        # Close audio stream
-        stream = self.stream
-        self.stream = None
-        if stream:
-            try:
-                stream.stop()
-                stream.close()
-            except Exception as e:
-                logger.debug(f"Stream cleanup in stop(): {e}")
-        
-        # Wait for playback thread
-        if self.playback_thread:
-            self.playback_thread.join(timeout=2.0)
-            self.playback_thread = None
-        
-        if interrupted and self.on_interrupt_callback:
-            self.on_interrupt_callback()
-        elif self.on_stop_callback:
-            self.on_stop_callback()
-        
-        logger.info(f"🛑 Audio playback stopped (interrupted={interrupted})")
+        with self._stop_lock:
+            if self._stop_in_progress:
+                return
+        threading.Thread(
+            target=self.stop,
+            args=(interrupted,),
+            name="gemini-audio-stop",
+            daemon=True,
+        ).start()
     
     def add_audio_chunk(self, audio_bytes: bytes):
         """

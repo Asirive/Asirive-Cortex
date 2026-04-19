@@ -1,5 +1,5 @@
 """
-ProjectCortex RPi5 CLI - Main Entry Point
+Asirive Cortex RPi5 CLI - Main Entry Point
 
 Usage:
     python -m rpi5                      # Show help
@@ -34,7 +34,7 @@ import os
 def create_parser() -> argparse.ArgumentParser:
     """Create the argument parser"""
     parser = argparse.ArgumentParser(
-        description="ProjectCortex RPi5 AI Wearable",
+        description="Asirive Cortex RPi5 AI Wearable",
         prog="python -m rpi5",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -171,7 +171,7 @@ def run_command(args: argparse.Namespace) -> int:
         from rpi5.main import CortexSystem
         from rpi5.config.config import get_config
 
-        print(f"Starting ProjectCortex v2.0 (all layers)...")
+        print(f"Starting Asirive Cortex v2.0 (all layers)...")
 
         config = get_config()
         config['laptop_server']['host'] = getattr(args, "laptop", "10.131.52.101")

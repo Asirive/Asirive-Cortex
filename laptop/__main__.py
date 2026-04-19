@@ -1,5 +1,5 @@
 """
-ProjectCortex Laptop Dashboard CLI
+Asirive Cortex Laptop Dashboard CLI
 
 Usage:
     python -m laptop                    # Show help
@@ -27,7 +27,7 @@ import argparse
 def create_parser() -> argparse.ArgumentParser:
     """Create the argument parser"""
     parser = argparse.ArgumentParser(
-        description="ProjectCortex Laptop Dashboard",
+        description="Asirive Cortex Laptop Dashboard",
         prog="python -m laptop",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
@@ -132,7 +132,7 @@ def run_command(args: argparse.Namespace) -> int:
 
         print("Launching GUI dashboard...")
         app = QApplication(sys.argv)
-        app.setApplicationName("ProjectCortex Dashboard")
+        app.setApplicationName("Asirive Cortex Dashboard")
 
         dashboard = CortexDashboard(default_config)
         dashboard.show()
@@ -181,7 +181,7 @@ def run_command(args: argparse.Namespace) -> int:
         return app.start()
 
     elif command == "status":
-        print("ProjectCortex Laptop Dashboard Status")
+        print("Asirive Cortex Laptop Dashboard Status")
         print("=" * 40)
         # TODO: Add actual status check
         print("Server: Not running (run 'python -m laptop server')")

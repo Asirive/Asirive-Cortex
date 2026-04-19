@@ -63,7 +63,7 @@ def benchmark_ultralytics(model_path, input_size=(640, 640), iterations=10):
 
 if __name__ == "__main__":
     print("====================================")
-    print("   Project Cortex Model Benchmark   ")
+    print("   Asirive Cortex Model Benchmark   ")
     print("====================================")
     
     # Base directory

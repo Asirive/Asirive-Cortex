@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # Keep in sync with NavigationEngine.MAX_WAYPOINT_SPACING
 MAX_WAYPOINT_SPACING = 25.0  # meters
-USER_AGENT = "ProjectCortex/2.0"
+USER_AGENT = "AsiriveCortex/2.0"
 DIRECTIONS_URL = "https://maps.googleapis.com/maps/api/directions/json"
 HTTP_TIMEOUT_S = 10
 

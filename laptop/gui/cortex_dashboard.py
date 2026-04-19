@@ -1,5 +1,5 @@
 """
-PyQt6 Dashboard for ProjectCortex
+PyQt6 Dashboard for Asirive Cortex
 
 Real-time monitoring dashboard with:
 - Live video feed from RPi5 camera
@@ -533,7 +533,7 @@ def main():
 
     # Create application
     app = QApplication(sys.argv)
-    app.setApplicationName("ProjectCortex Dashboard")
+    app.setApplicationName("Asirive Cortex Dashboard")
 
     # Create dashboard
     dashboard = CortexDashboard(default_config)

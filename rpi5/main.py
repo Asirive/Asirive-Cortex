@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-ProjectCortex v2.0 - Main System Orchestrator
+Asirive Cortex v2.0 - Main System Orchestrator
 ================================================
 
 This is the MAIN entry point that runs all 4 AI layers and manages:
@@ -341,6 +341,48 @@ except ImportError as e:
 # =====================================================
 # ASYNC HELPER FUNCTION
 # =====================================================
+_async_bridge_loop = None
+_async_bridge_thread = None
+_async_bridge_lock = threading.Lock()
+
+
+def _async_bridge_worker(loop: asyncio.AbstractEventLoop, ready_event: threading.Event):
+    """Run a dedicated event loop for async work launched from sync code."""
+    asyncio.set_event_loop(loop)
+    ready_event.set()
+    try:
+        loop.run_forever()
+    finally:
+        pending = asyncio.all_tasks(loop)
+        for task in pending:
+            task.cancel()
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        loop.close()
+
+
+def _ensure_async_bridge_loop() -> asyncio.AbstractEventLoop:
+    """Create the background async bridge loop on first use."""
+    global _async_bridge_loop, _async_bridge_thread
+    with _async_bridge_lock:
+        if _async_bridge_loop and _async_bridge_thread and _async_bridge_thread.is_alive():
+            return _async_bridge_loop
+
+        loop = asyncio.new_event_loop()
+        ready_event = threading.Event()
+        thread = threading.Thread(
+            target=_async_bridge_worker,
+            args=(loop, ready_event),
+            name="async-bridge",
+            daemon=True,
+        )
+        thread.start()
+        ready_event.wait(timeout=2.0)
+        _async_bridge_loop = loop
+        _async_bridge_thread = thread
+        return loop
+
+
 def run_async_safe(coro, blocking=True):
     """
     Safely run an async coroutine from sync code.
@@ -351,33 +393,24 @@ def run_async_safe(coro, blocking=True):
     """
     try:
         # Check if there's already a running event loop
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
-        # No running loop, safe to use asyncio.run()
-        return asyncio.run(coro)
+        target_loop = _ensure_async_bridge_loop()
     else:
         if not blocking:
             return asyncio.create_task(coro)
+        target_loop = _ensure_async_bridge_loop()
 
-        result_holder = {}
-        done_event = threading.Event()
+    future = asyncio.run_coroutine_threadsafe(coro, target_loop)
+    if not blocking:
+        return future
 
-        def _worker():
-            try:
-                result_holder["result"] = asyncio.run(coro)
-            except Exception as worker_error:
-                result_holder["error"] = worker_error
-            finally:
-                done_event.set()
-
-        threading.Thread(target=_worker, daemon=True).start()
-        if not done_event.wait(timeout=30):
-            logger.error("Async execution failed: timed out waiting for worker coroutine")
-            return None
-        if "error" in result_holder:
-            logger.error(f"Async execution failed: {result_holder['error']}")
-            return None
-        return result_holder.get("result")
+    try:
+        return future.result(timeout=30)
+    except Exception as error:
+        future.cancel()
+        logger.error(f"Async execution failed: {error}")
+        return None
 
 
 # =====================================================
@@ -659,7 +692,7 @@ class StatusDisplay:
                 
                 return Panel(
                     table,
-                    title="[bold white]ProjectCortex Status[/bold white]",
+                    title="[bold white]Asirive Cortex Status[/bold white]",
                     border_style="blue",
                     padding=(0, 1)
                 )
@@ -1029,9 +1062,13 @@ class CameraHandler:
                 return self.latest_frame.copy()
             return None
 
-    def get_frame_with_seq(self) -> tuple[Optional[np.ndarray], int]:
+    def get_frame_with_seq(self, last_seq: Optional[int] = None) -> tuple[Optional[np.ndarray], int]:
         """Get the latest frame and its sequence number atomically."""
         with self.frame_lock:
+            if self.latest_frame is None:
+                return None, self.latest_frame_seq
+            if last_seq is not None and self.latest_frame_seq == last_seq:
+                return None, self.latest_frame_seq
             if self.latest_frame is not None:
                 return self.latest_frame.copy(), self.latest_frame_seq
             return None, self.latest_frame_seq
@@ -1071,7 +1108,7 @@ class CortexSystem:
     """
 
     def __init__(self, config_path: str = None, standalone: bool = False):
-        logger.info("Initializing ProjectCortex v2.0...")
+        logger.info("Initializing Asirive Cortex v2.0...")
         self.standalone = standalone
 
         # Load configuration
@@ -1257,7 +1294,7 @@ class CortexSystem:
             )
             # Wire barge-in callback so interrupted events flush the hardware audio buffer
             if hasattr(self.layer2, 'handler') and self.gemini_audio_player:
-                self.layer2.handler._on_barge_in_callback = lambda: self.gemini_audio_player.stop(interrupted=True)
+                self.layer2.handler._on_barge_in_callback = lambda: self.gemini_audio_player.request_stop(interrupted=True)
             # Wire connected callback to re-send mode context after each reconnection
             if hasattr(self.layer2, 'handler'):
                 self.layer2.handler._on_connected_callback = self._on_gemini_reconnected
@@ -1348,6 +1385,16 @@ class CortexSystem:
         # System state
         self.running = False
         self.detection_count = 0
+        self._layer0_executor = None
+        self._layer1_executor = None
+        self._layer0_future = None
+        self._layer1_future = None
+        self._layer0_submit_time = 0.0
+        self._layer1_submit_time = 0.0
+        self._layer0_timeout_logged = False
+        self._layer1_timeout_logged = False
+        self._last_layer0_detections = []
+        self._last_layer1_detections = []
 
         # TTS singleton (M1 fix: avoid re-instantiation on every voice command)
         self.tts = TTSRouter() if TTSRouter else None
@@ -1657,7 +1704,7 @@ class CortexSystem:
                 logger.error(f"❌ Failed to init SafetyMonitor: {e}")
                 self.safety_monitor = None
 
-        logger.info("✅ ProjectCortex v2.0 initialized successfully")
+        logger.info("✅ Asirive Cortex v2.0 initialized successfully")
 
     # ------------------------------------------------------------------
     # Hardware peripheral callbacks
@@ -1712,7 +1759,7 @@ class CortexSystem:
             return
         if self.gemini_audio_player.is_playing:
             logger.info("🛑 User barge-in detected — stopping Gemini playback")
-            self.gemini_audio_player.stop(interrupted=True)
+            self.gemini_audio_player.request_stop(interrupted=True)
 
     def _forward_gemini_activity_start(self) -> None:
         """Forward local speech-start to Gemini 3.1 explicit VAD."""
@@ -2708,7 +2755,7 @@ class CortexSystem:
 
     def start(self):
         """Start main system loop"""
-        logger.info("🚀 Starting ProjectCortex v2.0...")
+        logger.info("🚀 Starting Asirive Cortex v2.0...")
 
         self.running = True
 
@@ -2828,11 +2875,8 @@ class CortexSystem:
                     continue
 
                 # 1. Get frame from camera
-                frame, frame_seq = self.camera.get_frame_with_seq()
+                frame, frame_seq = self.camera.get_frame_with_seq(self._last_processed_frame_seq)
                 if frame is None:
-                    time.sleep(0.1)
-                    continue
-                if frame_seq == self._last_processed_frame_seq:
                     time.sleep(0.01)
                     continue
                 self._last_processed_frame_seq = frame_seq
@@ -3372,52 +3416,78 @@ class CortexSystem:
     def _run_dual_detection(self, frame: np.ndarray) -> List[Dict[str, Any]]:
         """Run Layer 0 + Layer 1 detection in parallel"""
         detections = []
-        layer0_detections = []
-        layer1_detections = []
+        new_detection_count = 0
+        now = time.time()
 
-        # Reuse persistent executor (creating one per frame = 40 OS threads/s)
-        if not hasattr(self, '_detection_executor') or self._detection_executor is None:
-            self._detection_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="yolo")
-        executor = self._detection_executor
-        if True:  # Replaces 'with' block — executor is persistent
-            futures = []
-            start_times = {}
-
-            # Layer 0: Guardian (Safety-Critical)
-            if self.layer0:
-                start_times['layer0'] = time.time()
-                future = executor.submit(self.layer0.detect, frame)
-                futures.append(('layer0', future))
-
-            # Layer 1: Learner (Adaptive)
-            if self.layer1:
-                start_times['layer1'] = time.time()
-                future = executor.submit(self.layer1.detect, frame)
-                futures.append(('layer1', future))
-
-            # Collect results
-            for layer_name, future in futures:
-                try:
-                    layer_dets = future.result(timeout=1.0)  # 1 second timeout
-                    latency_ms = (time.time() - start_times.get(layer_name, time.time())) * 1000
-                    
-                    if layer_name == 'layer0':
-                        layer0_detections = layer_dets if layer_dets else []
-                        # Update status display for Layer 0
+        if self.layer0:
+            if self._layer0_future is not None:
+                if self._layer0_future.done():
+                    try:
+                        layer0_detections = self._layer0_future.result() or []
+                        latency_ms = (now - self._layer0_submit_time) * 1000
+                        self._last_layer0_detections = layer0_detections
+                        new_detection_count += len(layer0_detections)
                         if self.status_display:
                             self.status_display.update_layer0(layer0_detections, latency_ms)
-                    elif layer_name == 'layer1':
-                        layer1_detections = layer_dets if layer_dets else []
-                        # Update status display for Layer 1
+                    except Exception as e:
+                        import traceback
+                        logger.error(f"❌ layer0 detection failed: {e}\n{traceback.format_exc()}")
+                        self._last_layer0_detections = []
+                    finally:
+                        self._layer0_future = None
+                        self._layer0_timeout_logged = False
+                elif (now - self._layer0_submit_time) > 1.0 and not self._layer0_timeout_logged:
+                    logger.warning("⚠️ layer0 detection is still running; skipping stale frame submission")
+                    self._layer0_timeout_logged = True
+                    if self.status_display:
+                        self.status_display.update_layer0(
+                            self._last_layer0_detections,
+                            (now - self._layer0_submit_time) * 1000,
+                        )
+
+            if self._layer0_future is None:
+                if self._layer0_executor is None:
+                    self._layer0_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="layer0")
+                self._layer0_submit_time = now
+                self._layer0_future = self._layer0_executor.submit(self.layer0.detect, frame)
+
+            detections.extend(self._last_layer0_detections)
+
+        if self.layer1:
+            if self._layer1_future is not None:
+                if self._layer1_future.done():
+                    try:
+                        layer1_detections = self._layer1_future.result() or []
+                        latency_ms = (now - self._layer1_submit_time) * 1000
+                        self._last_layer1_detections = layer1_detections
+                        new_detection_count += len(layer1_detections)
                         if self.status_display:
                             self.status_display.update_layer1(layer1_detections, latency_ms)
-                    
-                    detections.extend(layer_dets if layer_dets else [])
-                except Exception as e:
-                    import traceback
-                    logger.error(f"❌ {layer_name} detection failed: {e}\n{traceback.format_exc()}")
+                    except Exception as e:
+                        import traceback
+                        logger.error(f"❌ layer1 detection failed: {e}\n{traceback.format_exc()}")
+                        self._last_layer1_detections = []
+                    finally:
+                        self._layer1_future = None
+                        self._layer1_timeout_logged = False
+                elif (now - self._layer1_submit_time) > 1.0 and not self._layer1_timeout_logged:
+                    logger.warning("⚠️ layer1 detection is still running; skipping stale frame submission")
+                    self._layer1_timeout_logged = True
+                    if self.status_display:
+                        self.status_display.update_layer1(
+                            self._last_layer1_detections,
+                            (now - self._layer1_submit_time) * 1000,
+                        )
 
-        self.detection_count += len(detections)
+            if self._layer1_future is None:
+                if self._layer1_executor is None:
+                    self._layer1_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="layer1")
+                self._layer1_submit_time = now
+                self._layer1_future = self._layer1_executor.submit(self.layer1.detect, frame)
+
+            detections.extend(self._last_layer1_detections)
+
+        self.detection_count += new_detection_count
         return detections
 
     def _send_to_laptop(self, frame: Optional[np.ndarray], detections: List[Dict[str, Any]]):
@@ -4167,7 +4237,7 @@ class CortexSystem:
         """Graceful shutdown"""
         turn_count = len(self.conversation_manager.turns) if self.conversation_manager else 0
         print(f"\n[Cortex] Shutting down... ({turn_count} turns saved to SQLite)")
-        logger.info("Stopping ProjectCortex v2.0...")
+        logger.info("Stopping Asirive Cortex v2.0...")
 
         self.running = False
 
@@ -4244,9 +4314,12 @@ class CortexSystem:
             self.layer0.cleanup()
         if self.layer1 and hasattr(self.layer1, 'cleanup'):
             self.layer1.cleanup()
-        if hasattr(self, '_detection_executor') and self._detection_executor is not None:
-            self._detection_executor.shutdown(wait=False, cancel_futures=True)
-            self._detection_executor = None
+        if self._layer0_executor is not None:
+            self._layer0_executor.shutdown(wait=False, cancel_futures=True)
+            self._layer0_executor = None
+        if self._layer1_executor is not None:
+            self._layer1_executor.shutdown(wait=False, cancel_futures=True)
+            self._layer1_executor = None
         # Release shared Hailo VDevice AFTER both modules are cleaned up
         if self._shared_hailo_vdevice:
             self._shared_hailo_vdevice = None
@@ -4264,7 +4337,7 @@ class CortexSystem:
         except Exception as e:
             logger.debug(f"Temp audio cleanup error: {e}")
 
-        logger.info("✅ ProjectCortex v2.0 stopped")
+        logger.info("✅ Asirive Cortex v2.0 stopped")
         logger.info(f"📊 Total detections: {self.detection_count}")
 
 
@@ -4276,7 +4349,7 @@ def main():
     print("""
 ╔══════════════════════════════════════════════════════════════╗
 ║                                                            ║
-║     🧠 ProjectCortex v2.0 - AI Wearable Assistant          ║
+║     🧠 Asirive Cortex v2.0 - AI Wearable Assistant         ║
 ║     Young Innovators Awards 2026                          ║
 ║                                                            ║
 ║     Author: Haziq (@IRSPlays)                            ║

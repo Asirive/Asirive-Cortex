@@ -1,5 +1,5 @@
 """
-CLI Module for ProjectCortex RPi5
+CLI Module for Asirive Cortex RPi5
 
 Author: Haziq (@IRSPlays)
 Date: January 11, 2026

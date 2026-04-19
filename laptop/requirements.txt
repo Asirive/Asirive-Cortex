@@ -1,4 +1,4 @@
-# ProjectCortex Laptop Dashboard Requirements
+# Asirive Cortex Laptop Dashboard Requirements
 # Python 3.10+
 
 # Core dependencies

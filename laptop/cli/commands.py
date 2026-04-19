@@ -1,5 +1,5 @@
 """
-CLI Command Implementations for ProjectCortex Laptop Dashboard
+CLI Command Implementations for Asirive Cortex Laptop Dashboard
 
 This module contains the command handlers for the laptop CLI.
 Commands are implemented in __main__.py for simplicity.
@@ -20,7 +20,7 @@ def run_gui(theme: str = "dark") -> int:
 
     print("Launching GUI dashboard...")
     app = QApplication(sys.argv)
-    app.setApplicationName("ProjectCortex Dashboard")
+    app.setApplicationName("Asirive Cortex Dashboard")
 
     dashboard = CortexDashboard(default_config)
     dashboard.show()
@@ -56,7 +56,7 @@ def run_all(host: str = "0.0.0.0", port: int = 8765, use_fastapi: bool = False) 
 
 def check_status() -> int:
     """Check server status"""
-    print("ProjectCortex Laptop Dashboard Status")
+    print("Asirive Cortex Laptop Dashboard Status")
     print("=" * 40)
     # TODO: Implement actual status check
     print("Server: Not running (run 'python -m laptop server')")

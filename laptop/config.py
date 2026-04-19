@@ -29,7 +29,7 @@ class DashboardConfig:
     ws_ping_timeout: int = 10  # seconds
 
     # GUI Settings
-    gui_title: str = "ProjectCortex v2.0 - Dashboard"
+    gui_title: str = "Asirive Cortex v2.0 - Dashboard"
     gui_width: int = 1400
     gui_height: int = 900
     gui_theme: str = "dark"  # dark | light
