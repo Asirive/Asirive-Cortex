@@ -210,6 +210,18 @@ camera:
   format: "RGB888"  # Picamera2 output format; main.py converts RGB frames back to OpenCV BGR
   rotation: -90  # Degrees: 0, 90, -90, 180 (for sideways-mounted camera)
 
+  tuning:
+    use_explicit_wide_tuning: false  # Prefer libcamera auto-detect unless testing a known IMX708-wide override
+    file: ""  # Optional absolute path to a libcamera tuning JSON
+
+  image_controls:
+    awb_mode: "indoor"  # Mixed indoor LED lighting looks too cool on auto; indoor biases AWB warmer (3000K-5000K)
+    brightness: 0.0
+    contrast: 1.0
+    saturation: 0.95
+    sharpness: 1.0
+    colour_gains: []  # Optional fixed [red_gain, blue_gain]; leave empty to keep AWB enabled
+
   # Auto-exposure settings
   auto_exposure:
     enabled: true
@@ -250,6 +262,7 @@ audio:
     min_speech_duration_ms: 400  # Minimum speech length to accept (filters short noise bursts)
     min_silence_duration_ms: 500  # Silence gap before speech end (longer = more tolerant)
     padding_duration_ms: 200  # Audio padding around speech segments
+    barge_in_enabled: false  # Ignore user speech during Gemini playback instead of interrupting it
 
   # Whisper STT (offline fallback)
   whisper:
@@ -322,9 +335,17 @@ data_recorder:
   output_format: "euroc"  # Options: 'euroc', 'cortex'
   output_path: "recordings/"
   max_file_size_mb: 500  # Split recordings every 500MB
+  start_on_init: false
+  toggle_key: "b"
+  video_fps: 10.0
+  video_codec: "MJPG"
+  video_container: "avi"
 
   # Sensors to record
   record_camera: true
+  record_mic: true
+  record_ai_audio: true
+  record_events: true
   record_imu: true
   record_gps: true
   record_detections: true
@@ -388,7 +409,7 @@ development:
 # LAPTOP SERVER CONFIGURATION
 # =====================================================
 laptop_server:
-  host: "10.131.52.101"  # Laptop IP address - UPDATE THIS for your network
+  host: "10.55.248.101"  # Laptop IP address - UPDATE THIS for your network
   port: 8765
 
 # =====================================================
@@ -403,7 +424,7 @@ zmq:
 # RPI5 DEVICE CONFIGURATION (for sync tools)
 # =====================================================
 rpi5_device:
-  host: "10.<REDACTED-RPI-IP>"  # RPi5 IP address - used by sync tools
+  host: "10.55.248.31"  # RPi5 IP address - used by sync tools
   user: "cortex"  # SSH username for sync
   path: "/home/cortex/ProjectCortex"  # Remote path for sync
 

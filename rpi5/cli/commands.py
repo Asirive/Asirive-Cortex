@@ -20,7 +20,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def run_layer(layer_num: str, laptop_host: str = "10.131.52.101") -> int:
+def run_layer(layer_num: str, laptop_host: Optional[str] = None) -> int:
     """Run a single layer for testing"""
     print(f"Starting Layer {layer_num}...")
 
@@ -271,8 +271,13 @@ def run_self_test() -> int:
     return 0 if tests_failed == 0 else 1
 
 
-def connect_to_laptop(host: str = "10.131.52.101", port: int = 8765) -> int:
+def connect_to_laptop(host: Optional[str] = None, port: int = 8765) -> int:
     """Connect to laptop dashboard"""
+    if host is None:
+        from config.config import get_config
+        config = get_config()
+        host = config.get('laptop_server', {}).get('host', 'localhost')
+
     print(f"Connecting to laptop dashboard at {host}:{port}...")
 
     try:
