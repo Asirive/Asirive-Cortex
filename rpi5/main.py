@@ -226,6 +226,13 @@ except ImportError:
 from rpi5.config.config import get_config, load_config
 from rpi5.voice_coordinator import VoiceCoordinator
 
+try:
+    from rpi5.session_av_recorder import SessionAVRecorder
+    logger.info("[DEBUG] ✅ SessionAVRecorder imported successfully")
+except ImportError as e:
+    logger.warning(f"[DEBUG] ⚠️ SessionAVRecorder import failed: {e}")
+    SessionAVRecorder = None
+
 # =====================================================
 # IMPORT NEW VOICE PIPELINE HANDLERS
 # =====================================================
@@ -751,6 +758,16 @@ def init_status_display() -> StatusDisplay:
 class CameraHandler:
     """Continuous camera frame capture with threading"""
 
+    _AWB_MODE_MAP = {
+        "auto": 0,
+        "incandescent": 1,
+        "tungsten": 2,
+        "fluorescent": 3,
+        "indoor": 4,
+        "daylight": 5,
+        "cloudy": 6,
+    }
+
     def __init__(
         self,
         camera_id: int = 0,
@@ -759,6 +776,9 @@ class CameraHandler:
         fps: int = 30,
         rotation: int = 0,
         pixel_format: str = "RGB888",
+        tuning_file: Optional[str] = None,
+        force_wide_tuning: bool = False,
+        image_controls: Optional[Dict[str, Any]] = None,
     ):
         self.camera_id = camera_id
         self.use_picamera = use_picamera
@@ -766,12 +786,92 @@ class CameraHandler:
         self.fps = fps
         self.rotation = rotation  # 0, 90, -90 (or 270), 180
         self.pixel_format = str(pixel_format or "RGB888").upper()
+        self.tuning_file = str(tuning_file).strip() if tuning_file else None
+        self.force_wide_tuning = bool(force_wide_tuning)
+        self.image_controls = dict(image_controls or {})
         self.camera = None
         self.running = False
         self.latest_frame = None
         self.latest_frame_seq = 0
         self.frame_lock = threading.Lock()
         self.capture_thread = None
+
+    def _normalize_awb_mode(self, awb_mode: Any) -> int:
+        """Convert friendly AWB mode names to libcamera enum values."""
+        if isinstance(awb_mode, str):
+            return self._AWB_MODE_MAP.get(awb_mode.strip().lower(), 0)
+
+        try:
+            return int(awb_mode)
+        except (TypeError, ValueError):
+            return 0
+
+    def _build_picamera_controls(self) -> Dict[str, Any]:
+        """Build the control set applied to Picamera2."""
+        configured_controls = dict(self.image_controls)
+        awb_mode = configured_controls.pop("awb_mode", configured_controls.pop("AwbMode", 0))
+        awb_enable = configured_controls.pop("awb_enable", configured_controls.pop("AwbEnable", True))
+        colour_gains = configured_controls.pop(
+            "colour_gains",
+            configured_controls.pop("ColourGains", None)
+        )
+
+        controls: Dict[str, Any] = {
+            "AfMode": 2,
+            "AfSpeed": 1,
+            "AeEnable": True,
+            "AwbEnable": bool(awb_enable),
+            "AwbMode": self._normalize_awb_mode(awb_mode),
+        }
+
+        for source_key, target_key in (
+            ("brightness", "Brightness"),
+            ("contrast", "Contrast"),
+            ("saturation", "Saturation"),
+            ("sharpness", "Sharpness"),
+            ("exposure_value", "ExposureValue"),
+            ("noise_reduction_mode", "NoiseReductionMode"),
+        ):
+            value = configured_controls.pop(source_key, configured_controls.pop(target_key, None))
+            if value is not None:
+                controls[target_key] = value
+
+        if colour_gains is not None:
+            if isinstance(colour_gains, (list, tuple)) and len(colour_gains) == 2:
+                controls["ColourGains"] = tuple(float(gain) for gain in colour_gains)
+                controls["AwbEnable"] = False
+            else:
+                logger.warning(
+                    "⚠️ camera.image_controls.colour_gains must contain exactly two values; ignoring %r",
+                    colour_gains,
+                )
+
+        return controls
+
+    def _resolve_picamera_tuning_file(self) -> Optional[str]:
+        """Return the explicit tuning file path if one should be used."""
+        if self.tuning_file:
+            if os.path.exists(self.tuning_file):
+                logger.info(f"✅ Using configured camera tuning file: {self.tuning_file}")
+                return self.tuning_file
+
+            logger.warning(
+                f"⚠️ Configured camera tuning file not found: {self.tuning_file}; using libcamera auto-detect"
+            )
+            return None
+
+        if not self.force_wide_tuning:
+            logger.info("📷 Using libcamera auto-detected tuning")
+            return None
+
+        for backend in ("pisp", "vc4"):
+            tuning_path = f"/usr/share/libcamera/ipa/rpi/{backend}/imx708_wide.json"
+            if os.path.exists(tuning_path):
+                logger.info(f"✅ IMX708 Wide tuning file found: {tuning_path}")
+                return tuning_path
+
+        logger.warning("⚠️ IMX708 wide tuning file not found, using libcamera auto-detect")
+        return None
 
     def start(self):
         """Start camera capture thread"""
@@ -793,18 +893,8 @@ class CameraHandler:
     def _start_picamera(self):
         """Initialize Picamera2 (RPi5)"""
         try:
-            # Optimizations for Module 3 Wide (IMX708)
-            # 1. Force Wide Tuning File for LSC/Color Correction
-            # RPi5 uses the PiSP backend; RPi4 uses vc4. Auto-detect.
-            tuning_file_path = None
-            for backend in ("pisp", "vc4"):
-                tuning_path = f"/usr/share/libcamera/ipa/rpi/{backend}/imx708_wide.json"
-                if os.path.exists(tuning_path):
-                    tuning_file_path = tuning_path
-                    logger.info(f"✅ IMX708 Wide tuning file found: {tuning_path}")
-                    break
-            else:
-                logger.warning("⚠️ IMX708 wide tuning file not found, using libcamera auto-detect")
+            tuning_file_path = self._resolve_picamera_tuning_file()
+            camera_controls = self._build_picamera_controls()
             
             logger.info(f"📷 [CAM-DEBUG] Importing Picamera2...")
             from picamera2 import Picamera2
@@ -853,20 +943,11 @@ class CameraHandler:
             self.camera.configure(config)
             logger.info(f"📷 [CAM-DEBUG] Camera configured OK")
             
-            # 3. Enable Continuous Auto-Focus, Auto-Exposure, Auto White Balance
-            # AfMode: 0=Manual, 1=Auto(Single), 2=Continuous
-            # AwbMode: 0=Auto, 1=Incandescent, 2=Tungsten, 3=Fluorescent,
-            #          4=Indoor, 5=Daylight, 6=Cloudy
+            # 3. Enable Continuous Auto-Focus/Exposure and apply image controls.
             try:
-                logger.info(f"📷 [CAM-DEBUG] Setting camera controls (AF/AE/AWB)...")
-                self.camera.set_controls({
-                    "AfMode": 2,
-                    "AfSpeed": 1,       # Fast AF
-                    "AeEnable": True,
-                    "AwbEnable": True,
-                    "AwbMode": 0,       # Auto — let ISP pick CCM from tuning file
-                })
-                logger.info("✅ Picamera2: AF + AE + AWB Enabled (IMX708 Wide)")
+                logger.info(f"📷 [CAM-DEBUG] Setting camera controls: {camera_controls}")
+                self.camera.set_controls(camera_controls)
+                logger.info("✅ Picamera2 camera controls applied")
             except Exception as e:
                 logger.warning(f"⚠️ Could not set Camera Controls: {e}")
 
@@ -928,13 +1009,7 @@ class CameraHandler:
                             buffer_count=4
                         )
                         self.camera.configure(config)
-                        self.camera.set_controls({
-                            "AfMode": 2,
-                            "AfSpeed": 1,
-                            "AeEnable": True,
-                            "AwbEnable": True,
-                            "AwbMode": 0,
-                        })
+                        self.camera.set_controls(camera_controls)
                         self.camera.start()
                         
                         # Start thread
@@ -1272,6 +1347,8 @@ class CortexSystem:
 
             def _on_gemini_audio(audio_bytes: bytes):
                 """Callback: play Gemini audio responses via StreamingAudioPlayer."""
+                if self.session_recorder:
+                    self.session_recorder.write_ai_audio(audio_bytes, sample_rate=24000)
                 if self.gemini_audio_player:
                     handler = getattr(self.layer2, 'handler', None) if self.layer2 else None
                     if handler and getattr(handler, 'interrupted', False):
@@ -1295,6 +1372,7 @@ class CortexSystem:
             # Wire barge-in callback so interrupted events flush the hardware audio buffer
             if hasattr(self.layer2, 'handler') and self.gemini_audio_player:
                 self.layer2.handler._on_barge_in_callback = lambda: self.gemini_audio_player.request_stop(interrupted=True)
+                self.layer2.handler._on_turn_complete_callback = self._on_gemini_turn_complete
             # Wire connected callback to re-send mode context after each reconnection
             if hasattr(self.layer2, 'handler'):
                 self.layer2.handler._on_connected_callback = self._on_gemini_reconnected
@@ -1331,13 +1409,17 @@ class CortexSystem:
         # Initialize Camera Handler
         logger.info("📸 Initializing Camera...")
         cam_cfg = self.config.get('camera', {})
+        cam_tuning_cfg = cam_cfg.get('tuning', {})
         self.camera = CameraHandler(
             camera_id=cam_cfg.get('device_id', 0),
             use_picamera=cam_cfg.get('use_picamera', False),
             resolution=tuple(cam_cfg.get('resolution', [640, 480])),
             fps=cam_cfg.get('fps', 30),
             rotation=cam_cfg.get('rotation', 0),
-            pixel_format=cam_cfg.get('format', 'RGB888')
+            pixel_format=cam_cfg.get('format', 'RGB888'),
+            tuning_file=cam_tuning_cfg.get('file'),
+            force_wide_tuning=cam_tuning_cfg.get('use_explicit_wide_tuning', False),
+            image_controls=cam_cfg.get('image_controls', {}),
         )
 
         # Initialize WebSocket Client (for laptop dashboard) - Use FastAPI client
@@ -1385,6 +1467,9 @@ class CortexSystem:
         # System state
         self.running = False
         self.detection_count = 0
+        self.session_recorder = None
+        self._recording_hotkey_thread = None
+        self._recording_hotkey_stop = threading.Event()
         self._layer0_executor = None
         self._layer1_executor = None
         self._layer0_future = None
@@ -1406,6 +1491,14 @@ class CortexSystem:
             config=audio_config
         )
         self.voice_coordinator.initialize()
+
+        recorder_cfg = self.config.get('data_recorder', {})
+        if SessionAVRecorder and recorder_cfg.get('enabled', False):
+            self.session_recorder = SessionAVRecorder(recorder_cfg)
+            self.voice_coordinator.on_mic_audio = self._on_mic_audio
+            logger.info(
+                f"✅ Session recorder ready (press '{self.session_recorder.toggle_key}' to toggle recording)"
+            )
 
         # Wire GeminiLiveManager into voice pipeline.
         # Raw audio is streamed continuously for ambient context.
@@ -1751,6 +1844,79 @@ class CortexSystem:
         except Exception as e:
             logger.debug(f"GeminiLive audio forward error: {e}")
 
+    def _on_mic_audio(self, pcm_bytes: bytes, sample_rate: int) -> None:
+        """Capture continuous microphone PCM for the manual recorder."""
+        if self.session_recorder:
+            self.session_recorder.write_mic_audio(pcm_bytes, sample_rate)
+
+    def _toggle_session_recording(self) -> None:
+        """Toggle session recording without stopping the Cortex runtime."""
+        if not self.session_recorder:
+            return
+
+        if self.session_recorder.is_recording:
+            self.session_recorder.stop()
+            return
+
+        frame = self.camera.get_frame() if self.camera else None
+        frame_shape = frame.shape if frame is not None else None
+        if self.session_recorder.start(frame_shape=frame_shape) and frame is not None:
+            self.session_recorder.write_video_frame(frame)
+
+    def _recording_hotkey_loop(self) -> None:
+        """Listen for a single-key terminal toggle on Linux TTY sessions."""
+        if not self.session_recorder:
+            return
+        if os.name != 'posix' or not sys.stdin or not sys.stdin.isatty():
+            logger.info("ℹ️ Session recorder hotkey disabled (interactive POSIX TTY required)")
+            return
+
+        try:
+            import select
+            import termios
+            import tty
+        except ImportError:
+            logger.info("ℹ️ Session recorder hotkey unavailable on this platform")
+            return
+
+        fd = sys.stdin.fileno()
+        old_settings = termios.tcgetattr(fd)
+        try:
+            tty.setcbreak(fd)
+            logger.info(
+                f"⌨️ Press '{self.session_recorder.toggle_key}' to start/stop session recording"
+            )
+            while self.running and not self._recording_hotkey_stop.is_set():
+                readable, _, _ = select.select([sys.stdin], [], [], 0.2)
+                if not readable:
+                    continue
+                key = sys.stdin.read(1)
+                if key and key.lower() == self.session_recorder.toggle_key:
+                    self._toggle_session_recording()
+        except Exception as e:
+            logger.warning(f"⚠️ Session recorder hotkey loop stopped: {e}")
+        finally:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+    def _start_recording_hotkey_listener(self) -> None:
+        """Start the terminal hotkey listener for manual recording."""
+        if not self.session_recorder or self._recording_hotkey_thread:
+            return
+        self._recording_hotkey_stop.clear()
+        self._recording_hotkey_thread = threading.Thread(
+            target=self._recording_hotkey_loop,
+            name="recording-hotkey",
+            daemon=True,
+        )
+        self._recording_hotkey_thread.start()
+
+    def _stop_recording_hotkey_listener(self) -> None:
+        """Stop the terminal hotkey listener."""
+        self._recording_hotkey_stop.set()
+        if self._recording_hotkey_thread and self._recording_hotkey_thread.is_alive():
+            self._recording_hotkey_thread.join(timeout=1.0)
+        self._recording_hotkey_thread = None
+
     def _handle_gemini_barge_in(self) -> None:
         """Stop Gemini playback immediately when the user starts speaking."""
         if self.layer2 and hasattr(self.layer2, 'handler'):
@@ -1760,6 +1926,12 @@ class CortexSystem:
         if self.gemini_audio_player.is_playing:
             logger.info("🛑 User barge-in detected — stopping Gemini playback")
             self.gemini_audio_player.request_stop(interrupted=True)
+
+    def _on_gemini_turn_complete(self) -> None:
+        """Let local playback stop as soon as Gemini's queued audio finishes."""
+        if not self.gemini_audio_player:
+            return
+        self.gemini_audio_player.mark_turn_complete()
 
     def _forward_gemini_activity_start(self) -> None:
         """Forward local speech-start to Gemini 3.1 explicit VAD."""
@@ -2855,6 +3027,11 @@ class CortexSystem:
             self.status_display.start()
             logger.info("📊 Interactive status display active")
 
+        if self.session_recorder:
+            if self.session_recorder.start_on_init:
+                self._toggle_session_recording()
+            self._start_recording_hotkey_listener()
+
         # Main loop
         self._main_loop()
 
@@ -2880,6 +3057,8 @@ class CortexSystem:
                     time.sleep(0.01)
                     continue
                 self._last_processed_frame_seq = frame_seq
+                if self.session_recorder:
+                    self.session_recorder.write_video_frame(frame)
 
                 # 1b. Camera blocked detection (all-dark frame for >3 seconds)
                 avg_brightness = frame.mean()
@@ -4240,6 +4419,10 @@ class CortexSystem:
         logger.info("Stopping Asirive Cortex v2.0...")
 
         self.running = False
+
+        self._stop_recording_hotkey_listener()
+        if self.session_recorder:
+            self.session_recorder.stop()
 
         # Stop camera
         self.camera.stop()

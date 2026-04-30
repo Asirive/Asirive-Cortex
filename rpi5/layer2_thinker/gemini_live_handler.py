@@ -114,6 +114,7 @@ class GeminiLiveHandler:
         self._send_error_logged = False  # Debounce send error logging
         self._on_barge_in_callback: Optional[Callable] = None  # Called on barge-in to flush audio player
         self._on_connected_callback: Optional[Callable] = None  # Called after each successful (re)connection
+        self._on_turn_complete_callback: Optional[Callable] = None  # Called when Gemini finishes a turn
         self._connect_time: Optional[float] = None  # Track connection duration
         self._msg_count = 0  # Count messages per session
         self._barge_in_cooldown_until: float = 0.0  # Suppress false barge-in after text/tool sends
@@ -985,6 +986,11 @@ Safety always comes first. Overhead hazards are your highest priority."""
                                 f"📨 [MSG #{self._msg_count}] Turn complete "
                                 f"(reason={reason})"
                             )
+                            if self._on_turn_complete_callback:
+                                try:
+                                    self._on_turn_complete_callback()
+                                except Exception as cb_err:
+                                    logger.debug(f"Turn-complete callback error: {cb_err}")
                             if self._current_model_response_parts:
                                 full_response = "".join(self._current_model_response_parts)
                                 self._add_to_history("model", full_response)

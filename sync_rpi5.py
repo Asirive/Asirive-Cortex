@@ -54,10 +54,12 @@ def load_rpi_config():
                     config = yaml.safe_load(f)
                 
                 rpi_config = config.get('rpi5_device', {})
+                laptop_config = config.get('laptop_server', {})
                 return {
                     'host': rpi_config.get('host', '10.131.52.31'),
                     'user': rpi_config.get('user', 'cortex'),
                     'path': rpi_config.get('path', '/home/cortex/ProjectCortex'),
+                    'laptop_host': laptop_config.get('host', '10.131.52.101'),
                 }
             except Exception as e:
                 print(f"Warning: Could not load config from {config_path}: {e}")
@@ -68,6 +70,7 @@ def load_rpi_config():
         'host': '10.131.52.31',
         'user': 'cortex',
         'path': '/home/cortex/ProjectCortex',
+        'laptop_host': '10.131.52.101',
     }
 
 # Load configuration from config.yaml
@@ -78,7 +81,15 @@ RPI_HOST_IP = _rpi_config['host']
 RPI_USER = _rpi_config['user']
 RPI_HOST = f"{RPI_USER}@{RPI_HOST_IP}"
 RPI_PATH = _rpi_config['path']
+LAPTOP_HOST_IP = _rpi_config['laptop_host']
 LAPTOP_PATH = os.path.dirname(os.path.abspath(__file__))
+
+DOWNLOAD_PATHS = [
+    "logs",
+    "tts_recordings",
+    "memory_images",
+    "recordings",
+]
 
 # Get password from environment or prompt
 def get_rpi_password():
@@ -411,11 +422,11 @@ def install_deps_on_rpi():
     return True
 
 def sync_from_rpi():
-    """Sync files FROM Raspberry Pi (logs, tts_recordings, memory_images)."""
+    """Sync files FROM Raspberry Pi (logs, recordings, and media artifacts)."""
     print("\n" + "="*60)
     print("SYNCING FROM RASPBERRY PI 5")
     print("="*60)
-    print("Downloading: logs/, tts_recordings/, memory_images/")
+    print(f"Downloading: {', '.join(path + '/' for path in DOWNLOAD_PATHS)}")
 
     if PARAMIKO_AVAILABLE:
         print("Using Paramiko for download...")
@@ -426,8 +437,8 @@ def sync_from_rpi():
         sftp = ssh.open_sftp()
         try:
             # Tar all data directories (2>/dev/null ignores missing dirs)
-            print("Packaging remote data (logs, tts_recordings, memory_images)...")
-            tar_cmd = f"cd {RPI_PATH} && tar -czf /tmp/rpi_data.tar.gz logs tts_recordings memory_images 2>/dev/null; true"
+            print(f"Packaging remote data ({', '.join(DOWNLOAD_PATHS)})...")
+            tar_cmd = f"cd {RPI_PATH} && tar -czf /tmp/rpi_data.tar.gz {' '.join(DOWNLOAD_PATHS)} 2>/dev/null; true"
             stdin, stdout, stderr = ssh.exec_command(tar_cmd)
             stdout.channel.recv_exit_status()  # Wait for completion
             
@@ -442,7 +453,7 @@ def sync_from_rpi():
             ssh.exec_command("rm -f /tmp/rpi_data.tar.gz")
             
             # Report what was downloaded
-            for dirname in ["logs", "tts_recordings", "memory_images"]:
+            for dirname in DOWNLOAD_PATHS:
                 local_dir = os.path.join(LAPTOP_PATH, dirname)
                 if os.path.isdir(local_dir):
                     file_count = sum(1 for f in os.listdir(local_dir) if not f.startswith('.'))
@@ -463,7 +474,7 @@ def sync_from_rpi():
     # Fallback: rsync each directory
     ssh_full_cmd = get_ssh_cmd()
     success = True
-    for dirname in ["logs", "tts_recordings", "memory_images"]:
+    for dirname in DOWNLOAD_PATHS:
         print(f"\nSyncing {dirname}/...")
         cmd = (
             f"rsync -avz --progress "
@@ -481,7 +492,7 @@ def main():
     print("Project Cortex - RPi5 Sync Tool")
     print("="*60)
     print(f"RPi5 Host: {RPI_HOST}")
-    print(f"Laptop IP: 10.131.52.101")
+    print(f"Laptop IP: {LAPTOP_HOST_IP}")
     print(f"Local Path: {LAPTOP_PATH}")
     print(f"Paramiko Available: {PARAMIKO_AVAILABLE}")
     if PARAMIKO_AVAILABLE:
@@ -502,7 +513,7 @@ def main():
         print("\nUsage: python sync_rpi5.py <command> [--with-models]")
         print("\nCommands:")
         print("  to-rpi      - Sync files TO RPi5 (default)")
-        print("  from-rpi    - Sync files FROM RPi5 (logs, tts_recordings, memory_images)")
+        print("  from-rpi    - Sync files FROM RPi5 (logs, recordings, tts_recordings, memory_images)")
         print("  install     - Install dependencies on RPi5")
         print("  full        - Sync to RPi5 AND install deps")
         print("\nFlags:")

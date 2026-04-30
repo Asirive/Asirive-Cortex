@@ -75,6 +75,8 @@ class StreamingAudioPlayer:
         self._leftover: Optional[np.ndarray] = None  # Leftover samples from previous callback
         self._queue_full_count = 0  # Debounce queue-full warnings
         self._silence_timeout = 5.0  # Auto-stop after N seconds of empty queue (was 8.0 — too long, user muted for 8+0.5s)
+        self._drain_stop_delay = 0.35  # Stop quickly once Gemini explicitly ends the turn
+        self._turn_complete = False
         
         # Timestamp when playback last stopped (for echo cooldown)
         self._last_stop_time: float = 0.0
@@ -103,6 +105,7 @@ class StreamingAudioPlayer:
         self._chunks_played = 0
         self._leftover = None
         self._queue_full_count = 0
+        self._turn_complete = False
         
         # Bump generation counter so old playback thread won't close our stream
         self._stream_generation = getattr(self, '_stream_generation', 0) + 1
@@ -144,6 +147,7 @@ class StreamingAudioPlayer:
             self._last_stop_time = time.time()
             self.is_playing = False
             self.is_interrupted = interrupted
+            self._turn_complete = False
 
             # Clear audio queue and leftover buffer
             self._leftover = None
@@ -202,6 +206,7 @@ class StreamingAudioPlayer:
             self.start()
         
         try:
+            self._turn_complete = False
             audio_array = np.frombuffer(audio_bytes, dtype=np.int16)
             self.audio_queue.put_nowait(audio_array)
             if self._chunks_played == 0 and self.audio_queue.qsize() == 1:
@@ -215,6 +220,13 @@ class StreamingAudioPlayer:
                 logger.warning(f"⚠️ Audio queue full (qsize={self.audio_queue.maxsize}) - dropping chunks")
         except Exception as e:
             logger.error(f"❌ Error adding audio chunk: {e}")
+
+    def mark_turn_complete(self):
+        """Stop playback promptly once Gemini has finished sending audio for this turn."""
+        if not self.is_playing:
+            return
+        self._turn_complete = True
+        logger.info("🔊 Gemini turn complete — draining remaining audio")
     
     def _playback_loop(self):
         """Background thread for audio playback."""
@@ -239,11 +251,26 @@ class StreamingAudioPlayer:
             while self.is_playing:
                 threading.Event().wait(0.5)
                 qsize = self.audio_queue.qsize()
+                has_leftover = self._leftover is not None and len(self._leftover) > 0
+                has_buffered_audio = qsize > 0 or has_leftover
                 
                 # Periodic status log (only when chunk count changes)
                 if self._chunks_played > 0 and self._chunks_played % 50 == 0 and self._chunks_played != self._last_logged_chunks:
                     self._last_logged_chunks = self._chunks_played
                     logger.debug(f"🔊 Audio player: {self._chunks_played} chunks played, qsize={qsize}")
+
+                if self._turn_complete:
+                    if has_buffered_audio:
+                        silence_start = None
+                    else:
+                        if silence_start is None:
+                            silence_start = _time.time()
+                        elif _time.time() - silence_start >= self._drain_stop_delay:
+                            logger.info("🔇 Audio player stopping after Gemini turn completion")
+                            self._last_stop_time = _time.time()
+                            self.is_playing = False
+                            break
+                    continue
                 
                 # Auto-stop after silence timeout (queue drained, no new audio)
                 # Also handles startup case where player was started but no audio ever arrived

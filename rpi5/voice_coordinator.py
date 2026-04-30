@@ -41,6 +41,8 @@ class VoiceCoordinator:
         # Optional raw audio callback: fn(audio_bytes: bytes, sample_rate: int) -> None
         # Set this after init to forward PCM audio to GeminiLiveHandler (audio-to-audio path)
         self.on_raw_audio: Optional[Callable] = None
+        # Optional microphone tap for recording raw 16kHz PCM chunks.
+        self.on_mic_audio: Optional[Callable] = None
         # Optional activity signal callbacks for explicit VAD
         self.on_speech_start_callback: Optional[Callable] = None
         self.on_speech_end_callback: Optional[Callable] = None
@@ -49,9 +51,11 @@ class VoiceCoordinator:
         # Callback that returns True when speaker output is active (echo suppression)
         # Set by main.py to check gemini_audio_player state
         self.is_output_playing: Optional[Callable[[], bool]] = None
+        self.barge_in_enabled = bool((self.config.get('vad') or {}).get('barge_in_enabled', True))
         # Tracks whether continuous audio hook is wired
         self._continuous_audio_wired = False
         self._speech_started_during_output = False
+        self._ignore_current_speech_segment = False
     
     @property
     def is_listening(self) -> bool:
@@ -81,7 +85,7 @@ class VoiceCoordinator:
             logger.info(
                 f"VAD config: threshold={vad_threshold}, "
                 f"min_speech={vad_min_speech}ms, min_silence={vad_min_silence}ms, "
-                f"padding={vad_padding}ms"
+                f"padding={vad_padding}ms, barge_in_enabled={self.barge_in_enabled}"
             )
             if not self.vad.load_model():
                 logger.error("Failed to load VAD model")
@@ -127,7 +131,7 @@ class VoiceCoordinator:
         logger.info("🎤 Starting Voice Coordinator (VAD Active)...")
 
         # Wire continuous audio forwarding to Gemini Live (every 32ms chunk)
-        if self.on_raw_audio and not self._continuous_audio_wired:
+        if (self.on_raw_audio or self.on_mic_audio) and not self._continuous_audio_wired:
             self.vad.on_audio_chunk = self._on_audio_chunk
             self._continuous_audio_wired = True
             logger.info("🔊 Continuous audio streaming to Gemini Live enabled")
@@ -144,6 +148,13 @@ class VoiceCoordinator:
 
     def _on_audio_chunk(self, chunk: np.ndarray):
         """Forward every VAD audio chunk to Gemini Live for continuous streaming."""
+        if self.on_mic_audio is not None:
+            try:
+                pcm_bytes = (chunk * 32767).astype(np.int16).tobytes()
+                self.on_mic_audio(pcm_bytes, 16000)
+            except Exception:
+                pass  # Don't log per-chunk errors
+
         if self.on_raw_audio is not None:
             try:
                 # During speaker playback, send silence instead of dropping audio.
@@ -161,6 +172,13 @@ class VoiceCoordinator:
     def _on_speech_start(self):
         """Callback from VAD when speech starts. Signal Gemini to listen."""
         output_active = bool(self.is_output_playing and self.is_output_playing())
+        if output_active and not self.barge_in_enabled:
+            self._speech_started_during_output = False
+            self._ignore_current_speech_segment = True
+            logger.info("🔇 Barge-in disabled — ignoring speech detected during Gemini playback")
+            return
+
+        self._ignore_current_speech_segment = False
         self._speech_started_during_output = output_active
         if output_active and self.on_barge_in_callback:
             try:
@@ -175,6 +193,8 @@ class VoiceCoordinator:
 
     def _on_valid_speech_end(self, _audio: np.ndarray):
         """Signal Gemini turn-end immediately for each valid VAD segment."""
+        if self._ignore_current_speech_segment:
+            return
         if self.on_speech_end_callback:
             try:
                 self.on_speech_end_callback()
@@ -187,6 +207,14 @@ class VoiceCoordinator:
         Pipeline: Cartesia Ink (cloud, ~66ms) → Whisper (offline fallback, ~8s)
         Gemini Live audio path runs in parallel via continuous chunk streaming.
         """        # Suppress echo: discard speech captured while speaker was playing
+        if self._ignore_current_speech_segment:
+            self._ignore_current_speech_segment = False
+            self._speech_started_during_output = False
+            logger.info(
+                f"🔇 Ignoring {len(audio)} sample speech segment during Gemini playback (barge-in disabled)"
+            )
+            return
+
         output_active = bool(self.is_output_playing and self.is_output_playing())
         speech_started_during_output = self._speech_started_during_output
         self._speech_started_during_output = False
