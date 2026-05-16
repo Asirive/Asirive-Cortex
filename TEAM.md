@@ -7,7 +7,7 @@ Admiralty Secondary School, Singapore
 
 ## Development Team
 
-### Haziq Shah
+### Haziq Shah Bin Huzaimi
 **Role:** Lead Developer & Founder  
 **GitHub:** [@IRSPlays](https://github.com/IRSPlays)  
 **Responsibilities:**
@@ -16,7 +16,7 @@ Admiralty Secondary School, Singapore
 - Gemini Live API implementation
 - Navigation engine development
 
-### Muhammad Irfan Nuafal
+### Muhammad Irfan Nuafal Bin Mohd Fauzan
 **Role:** AI/Navigation Integration  
 **Responsibilities:**
 - Navigation algorithms and GPS integration
@@ -24,7 +24,7 @@ Admiralty Secondary School, Singapore
 - YOLOE adaptive detection
 - User testing and validation
 
-### Eryna Natasha
+### Eryna Natasha Binte Said Bohari
 **Role:** User Experience & Validation  
 **Responsibilities:**
 - User interface design
@@ -45,7 +45,7 @@ Admiralty Secondary School, Singapore
 - Hardware integration guidance
 - Project timeline management
 
-### Nur Syazana Rashid
+### Nur Syazana Binte Rahsid
 **Organization:** Admiralty Secondary School  
 **Contact:** 96562625  
 **Support Area:** Project Coordination  
