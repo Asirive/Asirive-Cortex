@@ -72,15 +72,15 @@ Tested and validated directly with the **Singapore Association for the Visually 
 ### Development Team
 | Member | Role |
 |:---|:---|
-| **Haziq Shah** (@IRSPlays) | Lead Developer & Founder |
-| **Muhammad Irfan Nuafal** | AI/Navigation Integration |
-| **Eryna Natasha** | User Experience & Validation |
+| **Haziq Shah Bin Huzaimi** (@IRSPlays) | Lead Developer & Founder |
+| **Muhammad Irfan Nuafal Bin Mohd Fauzan** | AI/Navigation Integration |
+| **Eryna Natasha Binte Said Bohari** | User Experience & Validation |
 
 ### Mentors
 | Mentor | Organization | Support Area |
 |:---|:---|:---|
 | **Kenneth Phua Khiang Song** | Admiralty Secondary School | Technical Guidance |
-| **Nur Syazana Rashid** | Admiralty Secondary School | Project Coordination |
+| **Nur Syazana Binte Rahsid** | Admiralty Secondary School | Project Coordination |
 
 ### Institution
 **Admiralty Secondary School, Singapore**  
