@@ -28,7 +28,7 @@
 ### 💡 The Solution
 **Asirive Cortex** is a **$250 hybrid edge-server wearable** that keeps the white cane in hand while providing hands-free navigation independence.
 
-- **Hybrid Architecture:** Local YOLO safety layer (<100ms) + Gemini 3.1 Flash Live cloud reasoning (~500ms)
+- **Hybrid Architecture:** Local YOLO11n-NCNN safety layer (<100ms) + Gemini 3.1 Flash Live cloud reasoning (~500ms)
 - **Network Resilience:** Safety-critical detection works offline during MRT rides, underground malls, and network dead zones
 - **Multimodal Cloud:** Native Gemini Live API audio-to-audio streaming (not HTTP polling) for real-time conversation
 - **Physical Independence:** Tested and validated directly with the Singapore Association for the Visually Handicapped (SAVH)
@@ -49,9 +49,9 @@
 |:---|:---|
 | **Award** | Tan Kah Kee Young Inventors' Award (YIA 2026) |
 | **Fields of Invention** | Electrical/Electronic, Infocomm, Health Care |
-| **Team** | Haziq Shah, Muhammad Irfan Nuafal, Eryna Natasha |
+| **Team** | Haziq Shah Bin Huzaimi, Muhammad Irfan Nuafal Bin Mohd Fauzan, Eryna Natasha Binte Said Bohari |
 | **Institution** | Admiralty Secondary School, Singapore |
-| **Mentors** | Kenneth Phua Khiang Song, Nur Syazana Rashid |
+| **Mentors** | Kenneth Phua Khiang Song, Nur Syazana Binte Rahsid |
 | **Status** | Functional Prototype with Active SAVH Testing |
 | **Project Stage** | Seeking funding for Phase 1-3 Roadmap |
 
@@ -67,7 +67,7 @@ Tested and validated directly with the **Singapore Association for the Visually 
 
 ---
 
-## � Team & Mentors
+## 👥 Team & Mentors
 
 ### Development Team
 | Member | Role |
@@ -88,30 +88,38 @@ Fields: Electrical/Electronic, Infocomm, Health Care
 
 ---
 
-## �🚀 Core Features
+## 🚀 Core Features
 
-### 🧠 6-Mode Contextual AI
-Powered by **Gemini 3.1 Flash Live**, Cortex doesn't just have one personality. It dynamically switches between **6 behavioral profiles** based on context:
-* **IDLE:** Silent and observant. Only speaks for overhead hazards.
-* **OUTDOOR_NAV:** Turn-by-turn GPS companion.
-* **INDOOR_NAV:** Proactive camera guidance when GPS is lost.
-* **BUS_WATCH:** Laser-focused on reading bus numbers and LTA DataMall arrivals.
-* **TRANSIT:** Quietly announces stops and remaining journey time.
-* **EXPLORE:** Detailed scene narration on demand.
+### 🧠 5-Mode Contextual Navigation
+Powered by **Gemini 3.1 Flash Live**, Cortex dynamically switches between **5 behavioral profiles** based on GPS quality and user context:
+* **IDLE:** Silent monitoring. Alerts only for immediate hazards detected by local vision.
+* **OUTDOOR:** Turn-by-turn GPS navigation with Google Maps Directions API.
+* **INDOOR:** Camera-guided navigation when GPS is unavailable, using Gemini Live for spatial reasoning.
+* **BUS_STOP:** LTA DataMall integration for live bus arrivals and YOLO-based bus number reading.
+* **TRANSIT:** Stop-counting mode on buses and MRT, with arrival announcements.
 
-### 🛡️ Silent-Dangers-Only Safety System
-Traditional assistive devices spam the user with alerts about everything (people, dogs, cars). **Asirive Cortex filters out what you can naturally hear.** 
-Using local **YOLO + Depth sensing**, it warns **ONLY** about silent dangers:
-* 🧱 Walls, poles, and overhead obstacles
-* 🕳️ Stairs, curbs, and drop-offs
-* 🚗 Approaching vehicles from blind spots
-* *Feedback escalates from voice alerts to haptic pulses as distance closes. (<100ms latency, 100% Offline)*
+### 🛡️ Layer 0 Guardian: Offline Safety-Critical Detection
+Traditional assistive devices spam the user with alerts about everything. **Cortex filters out what you can naturally hear.** Using local **YOLO11n-NCNN + Hailo depth estimation**, it warns only about silent dangers:
+* 🧱 Walls, poles, and overhead obstacles (via Hailo monocular depth)
+* 🕳️ Stairs, curbs, and drop-offs (via depth + YOLO11n COCO classes)
+* 🚗 Approaching vehicles from blind spots (via YOLO11n COCO: person, bicycle, car, bus, truck)
+* *Feedback: voice alerts escalating to GPIO PWM haptic pulses as distance closes (<100ms, 100% offline)*
 
-### 🗺️ GPS Navigation + Transit
-Multi-leg routing made easy: `Walk → Bus → MRT → Walk`. Features voice navigation, real-time stop counting, and precise arrival detection.
+**Validated on RPi 5:** 80.7ms avg latency, 12.4 FPS, 417MB RAM @ 640px (4.8x faster than PyTorch baseline).
+
+### 🗺️ Multi-Leg GPS Navigation + Transit
+`Walk → Bus → MRT → Walk` routing via Google Maps Directions API, with:
+- Voice turn announcements at configurable distances
+- Real-time bus arrival via LTA DataMall API
+- Bus number confirmation via on-device YOLO11n detection
+- Stop counting and arrival detection on public transit
+- Road-crossing pause/resume with safety warnings
 
 ### 💬 Natural Conversation & Memory
-Ask anything: *"What do you see?"*, *"Read that sign"*, *"Where did I leave my keys?"*. Built-in local SQLite and Supabase cloud sync allows Cortex to remember objects and locations for you.
+Ask anything: *"What do you see?"*, *"Read that sign"*, *"Where did I leave my keys?"*
+- **Layer 2 (Gemini 3.1 Flash Live):** Native audio-to-audio multimodal streaming with video context
+- **Layer 4 (Memory):** Local SQLite for object/location recall + Supabase cloud sync
+- **Function Calling:** Gemini can trigger local tools (guide_indoor, query_bus_arrival, save_location) via the Live API
 
 ---
 
@@ -121,10 +129,10 @@ Asirive Cortex has been practically designed and tested with the **Singapore Ass
 
 | Station | Focus | What It Tests |
 |:---:|:---|:---|
-| **1️⃣ Indoor Safety** | Obstacle Avoidance | Tiered safety protocols: voice alerts escalating to haptic pulses for silent indoor hazards. |
-| **2️⃣ Ask AI** | Scene Understanding | Real-time multimodal Q&A with Gemini Live and function calling. |
-| **3️⃣ Outdoor Nav** | Waypoint Tracking | Turn-by-turn voice guidance and spatial awareness outdoors. |
-| **4️⃣ Bus Arrival** | Public Transit | LTA DataMall integration combined with live YOLO bus detection to identify arriving buses. |
+| **1️⃣ Indoor Safety** | Obstacle Avoidance | Layer 0 Guardian: YOLO11n + depth-based hazard detection with haptic feedback. |
+| **2️⃣ Ask AI** | Scene Understanding | Layer 2 Thinker: Gemini 3.1 Flash Live multimodal Q&A with function calling. |
+| **3️⃣ Outdoor Nav** | Waypoint Tracking | Layer 3 Guide: Turn-by-turn GPS voice guidance with spatial awareness. |
+| **4️⃣ Bus Arrival** | Public Transit | LTA DataMall API + YOLO11n bus number reading for real-time transit. |
 
 ### 🤖 SAVH Partnership & Real-World Validation
 Asirive Cortex is **actively tested with the Singapore Association for the Visually Handicapped (SAVH)**. This partnership ensures the solution is designed **by blind users, for blind users** — not by assumptions.
@@ -132,7 +140,7 @@ Asirive Cortex is **actively tested with the Singapore Association for the Visua
 **Validation Focus:**
 - ✅ Independence trials: Can users navigate unfamiliar routes alone?
 - ✅ Safety confidence: Do haptic alerts provide timely warnings?
-- ✅ User fatigue: Is 4-hour runtime adequate for daily tasks?
+- ✅ User fatigue: Is 3.5-hour runtime adequate for daily tasks?
 - ✅ Linguistic accuracy: Does Gemini Live understand context in Singapore English?
 - ✅ Transit integration: Can users reliably identify approaching buses?
 
@@ -148,11 +156,13 @@ Asirive Cortex is **actively tested with the Singapore Association for the Visua
 
 ### 🔵 Phase 0: MVP Sprint (Current — Q1 2026)
 **Foundation & Safety-Critical Features**
-- ✅ Layer 0 Guardian (YOLO) with haptic feedback
-- ✅ Layer 2 Thinker (Gemini Live) for scene understanding
-- ✅ Layer 3 Guide (GPS + LTA transit integration)
+- ✅ Layer 0 Guardian (YOLO11n-NCNN) with GPIO haptic feedback
+- ✅ Layer 1 Learner (YOLOE adaptive open-vocabulary detection)
+- ✅ Layer 2 Thinker (Gemini 3.1 Flash Live) for scene understanding
+- ✅ Layer 3 Guide (Fuzzy intent router + GPS + LTA DataMall transit)
+- ✅ Layer 4 Memory (SQLite + Supabase hybrid sync)
 - ✅ SAVH real-world validation
-- 🔄 **In Progress:** Acoustic UI (spatial audio for indoor navigation), SNAP-C1 offline survival
+- 🔄 **In Progress:** Kokoro/Cartesia TTS fallback pipeline, acoustic proximity alerts
 
 ### 🔶 Phase 1: Custom SBCs (Q2–Q3 2026)
 **Hardware Optimization & Scaling**
@@ -164,15 +174,15 @@ Asirive Cortex is **actively tested with the Singapore Association for the Visua
 
 ### 🟠 Phase 2: Edge Audio & Offline Intelligence (Q3–Q4 2026)
 **Advanced Acoustic UI & Resilience**
-- 3D spatial audio for drop-off detection (subsonic hum + directional chirp)
+- Concise verbal proximity alerts (replaced 3D spatial audio after SAVH feedback)
 - ChromaDB-based GPS breadcrumb navigation (route user to safety offline)
-- On-device ONNX action decoder (no Gemini needed for fallback navigation)
-- Multi-model fallback: Gemini → Kokoro TTS → GLM-4.6V (Chinese users)
+- On-device ONNX action decoder for fallback navigation without cloud
+- Multi-model TTS fallback: Gemini Live → Kokoro TTS → GLM-4.6V (Chinese users)
 - **Goal:** Enable solo travel in areas with unreliable cellular coverage
 
 ### 🟡 Phase 3: Assistive Ecosystem (Q1 2027+)
 **Caretaker Platform & Community Features**
-- **Caretaker App (Rokr):** Two-way voice link + fall detection SOS + stationary-zone alerts
+- **Caretaker App:** Two-way voice link + IMU fall detection SOS + stationary-zone alerts
 - **Memory Cloud:** Shared objects & locations with family/caregivers (user consent)
 - **Transit Hub:** Integration with MRT SmartBeacon, bus operator APIs
 - **Community:** User-driven object library (crowdsourced "what objects look like")
@@ -190,10 +200,10 @@ Cortex operates on a **5-Layer "Brain"** architecture, balancing lightning-fast 
 
 | Layer | Name | Role | Tech Stack | Latency | Device |
 |:---:|:---|:---|:---|:---:|:---|
-| **L0** | Guardian | Safety-critical detection + haptic alerts | YOLO v11 NCNN + GPIO | <100ms | RPi5 (Offline) |
-| **L1** | Learner | Adaptive open-vocabulary detection | YOLOE | ~200ms | RPi5 |
-| **L2** | Thinker | Scene understanding, reading, Q&A | Gemini 3.1 Flash Live | ~500ms | Cloud |
-| **L3** | Guide | Intent routing + GPS + transit | Fuzzy router + LTA DataMall| <5ms | RPi5 |
+| **L0** | Guardian | Safety-critical detection + haptic alerts | YOLO11n-NCNN + Hailo Depth + GPIO PWM | <100ms | RPi5 (Offline) |
+| **L1** | Learner | Adaptive open-vocabulary detection | YOLOE (text-prompted) | ~200ms | RPi5 |
+| **L2** | Thinker | Scene understanding, reading, Q&A | Gemini 3.1 Flash Live (WebSocket) | ~500ms | Cloud |
+| **L3** | Guide | Intent routing + GPS + transit | Fuzzy router + Google Maps + LTA DataMall | <5ms | RPi5 |
 | **L4** | Memory | Object recall, cloud sync | SQLite + Supabase | ~1ms | Hybrid |
 
 </details>
@@ -201,16 +211,18 @@ Cortex operates on a **5-Layer "Brain"** architecture, balancing lightning-fast 
 ```mermaid
 graph TD;
     User[User Audio/Video] --> VAD[Silero VAD];
-    VAD --> STT[Whisper/Cartesia STT];
+    VAD --> STT[Whisper STT / Cartesia STT];
     STT --> Router[Intent Router 97.7% Acc.];
     
-    Router --> L0[L0/L1 Guardian: YOLO <100ms];
-    Router --> L2[L2 Thinker: Gemini Vision];
-    Router --> L3[L3 Guide: Navigation & GPS];
+    Router --> L0[L0 Guardian: YOLO11n-NCNN <100ms];
+    Router --> L1[L1 Learner: YOLOE Adaptive];
+    Router --> L2[L2 Thinker: Gemini 3.1 Live];
+    Router --> L3[L3 Guide: GPS + Transit];
     
-    L0 --> Haptic[Haptic Pulse / Voice Alert];
-    L2 --> Convo[Conversation / Q&A];
-    L3 --> Nav[Voice Guidance];
+    L0 --> Haptic[GPIO PWM Haptic / Voice Alert];
+    L1 --> Alert[Context-Aware Detection];
+    L2 --> Convo[Conversation / Q&A / Function Calling];
+    L3 --> Nav[Turn-by-Turn Voice Guidance];
 ```
 *(Note: The Raspberry Pi 5 runs fully standalone. The optional Laptop Dashboard is purely for monitoring/dev).*
 
@@ -223,13 +235,16 @@ All safety-critical features rely on **open-ear or bone conduction earbuds** to 
 | Component | Purpose | Cost (Est.) |
 |:---|:---|:---|
 | **Raspberry Pi 5 (4GB)** | Core compute module | $60 |
-| **Camera Module 3 Wide** | 1080p @ 30fps scene capture | $35 |
+| **Camera Module 3 Wide** | 1080p @ 30fps scene capture (Picamera2) | $35 |
 | **NEO-6M GPS & BNO055 IMU** | Positioning & Heading | $20 |
-| **Vibration Motor & Button** | Haptic alerts & input control | $3 |
+| **Hailo-8L NPU (13 TOPS)** | Edge AI acceleration for YOLO + Depth | $30 |
+| **Vibration Motor (GPIO 18)** | Haptic alerts via PWM | $3 |
 | **USB Lavalier Mic** | 16kHz voice input | $8 |
 | **Open-Ear Bluetooth Earbuds**| Safe audio feedback | $20 |
-| **5000mAh Power Bank** | ~4 hours active runtime | $10 |
-| **TOTAL** | | **~ $156** |
+| **10,000mAh Power Bank** | ~3.5 hours active runtime | $10 |
+| **TOTAL** | | **~ $186** |
+
+*Note: Hailo-8L is optional but recommended. Without it, YOLO11n runs on CPU at ~80ms (still meeting <100ms target). BOM without Hailo: ~$156.*
 
 ---
 
@@ -280,7 +295,7 @@ python laptop/gui/cortex_ui.py
 - 🔌 **[Hardware Wiring Guide](docs/HARDWARE_WIRING_GUIDE.md)**
 - 🧭 **[Navigation Master Plan](docs/plans/NAVIGATION_MASTER_PLAN.md)**
 
-**Current Status:** V2.5 (SAVH demo polish, hazard cooldown fixes). 
+**Current Status:** V2.5 (SAVH demo polish, camera AWB tuning, Gemini Live integration fixes).  
 **Next Up (V3.0):** Custom PCB, integrated audio, 57% lighter waterproof enclosure.
 
 ## License
@@ -290,6 +305,6 @@ Asirive Cortex is licensed under the GNU General Public License v3.0 or later. S
 ---
 <div align="center">
   <p><b>Built for independence. Powered by Gemini. Designed with SAVH.</b></p>
-  <p><i>&copy; 2026 Asirive. Built by <a href="https://github.com/IRSPlays">Haziq</a>, founder of Asirive.</i></p>
+  <p><i>&copy; 2026 Asirive Cortex Team. Admiralty Secondary School, Singapore.</i></p>
   <p><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="GNU GPL v3 License" /></p>
 </div>
