@@ -111,7 +111,7 @@ layer2:
   # Live API (WebSocket)
   enable_live_api: true  # Use Gemini Live API (audio-to-audio)
   live_api_config:
-    response_modalities: ["AUDIO", "TEXT"]  # Response types
+    response_modalities: ["AUDIO"]  # Live API only supports one modality per session
     input_audio_transcription:
       enabled: true  # Transcribe input audio
 
