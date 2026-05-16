@@ -1213,7 +1213,7 @@ Safety always comes first. Overhead hazards are your highest priority."""
                 types.FunctionResponse(
                     id=fc.id,
                     name=fc.name,
-                    response={"result": result},
+                    response=result,
                 )
             )
 
@@ -1508,19 +1508,25 @@ class GeminiLiveManager:
         self,
         api_key: str,
         system_instruction: Optional[str] = None,
-        audio_callback: Optional[Callable[[bytes], None]] = None
+        audio_callback: Optional[Callable[[bytes], None]] = None,
+        model: str = "gemini-3.1-flash-live-preview",
+        response_modalities: list = None,
     ):
         """
         Initialize Live API manager.
-        
+
         Args:
             api_key: Google API key
             system_instruction: System prompt for AI
             audio_callback: Callback for streaming audio chunks (24kHz PCM)
+            model: Live API model name
+            response_modalities: Response types (e.g., ['AUDIO'])
         """
         self.handler = GeminiLiveHandler(
             api_key=api_key,
-            system_instruction=system_instruction
+            system_instruction=system_instruction,
+            model=model,
+            response_modalities=response_modalities,
         )
         
         self.audio_callback = audio_callback

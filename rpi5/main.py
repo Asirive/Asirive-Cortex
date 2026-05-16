@@ -1368,6 +1368,8 @@ class CortexSystem:
             self.layer2 = GeminiLiveManager(
                 api_key=api_key,
                 audio_callback=_on_gemini_audio,
+                model=layer2_cfg.get('model', 'gemini-3.1-flash-live-preview'),
+                response_modalities=layer2_cfg.get('live_api_config', {}).get('response_modalities', ['AUDIO']),
             )
             # Wire barge-in callback so interrupted events flush the hardware audio buffer
             if hasattr(self.layer2, 'handler') and self.gemini_audio_player:
@@ -1972,8 +1974,12 @@ class CortexSystem:
         return bool(self.layer2 and self.layer2.is_running and not self._gemini_is_live_31())
 
     def _should_suppress_local_nav_voice(self) -> bool:
-        """Only suppress local nav TTS when Gemini can safely narrate nav events."""
-        return self._is_gemini_live_online() and self._gemini_background_turns_allowed()
+        """Suppress local nav TTS when Gemini Live is connected.
+
+        Gemini narrates via tool responses (user-triggered turns). Background
+        turns are disabled on 3.1, but tool call responses still generate audio.
+        """
+        return self._is_gemini_live_online()
 
     def _log_gemini_background_turn_skipped(self, reason: str) -> None:
         """Log once that 3.1 background turns are intentionally suppressed."""
