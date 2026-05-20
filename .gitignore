@@ -35,6 +35,7 @@ recordings/
 debug_images/
 tts_recordings/
 memory_images/
+nav_cache.db
 *.pkl
 *.cache
 
