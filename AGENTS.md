@@ -4,7 +4,20 @@ This file provides instructions for AI coding agents (Claude, Copilot, Cursor, e
 
 ## Project Overview
 
-**ProjectCortex** is an AI wearable for the visually impaired using a Raspberry Pi 5 as the compute core. The system uses a 4-Layer AI Brain architecture with a hybrid edge-server topology.
+**ProjectCortex** (branded as **Asirive Cortex**) is an AI wearable for the visually impaired, currently a finalist in the **Tan Kah Kee Young Inventors' Award (YIA) 2026**. The system uses a 5-Layer AI Brain architecture with hybrid edge-server topology.
+
+### 🏆 YIA 2026 Submission Details
+| Attribute | Value |
+|:---|:---|
+| **Award** | Tan Kah Kee Young Inventors' Award 2026 |
+| **Team** | Haziq Shah, Muhammad Irfan Nuafal, Eryna Natasha |
+| **Institution** | Admiralty Secondary School, Singapore |
+| **Mentors** | Kenneth Phua Khiang Song, Nur Syazana Rashid |
+| **Fields** | Electrical/Electronic, Infocomm, Health Care |
+| **Status** | Functional Prototype with SAVH Real-World Testing |
+| **Cost** | USD 156 BOM (~SGD 250) — 90%+ reduction vs. USD 2,500–3,500 competitors |
+| **Latency** | <100ms local safety, ~500ms cloud cognition |
+| **Routing Accuracy** | 97.7% (Intent classification) |
 
 **Key constraint:** RPi5 has 4GB RAM. Avoid libraries requiring 8GB+ or x86-only dependencies.
 

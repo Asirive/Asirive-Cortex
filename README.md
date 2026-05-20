@@ -1,9 +1,8 @@
 <div align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=timeGradient&height=250&section=header&text=Asirive%20Cortex&fontSize=80&fontColor=ffffff&animation=fadeIn&fontAlignY=35&desc=$250%20Hybrid%20Navigation%20Wearable%20%7C%20YIA%202026%20Finalist&descAlignY=55&descSize=18" width="100%" />
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=timeGradient&height=250&section=header&text=Asirive%20Cortex&fontSize=80&fontColor=ffffff&animation=fadeIn&fontAlignY=35&desc=$250%20Hybrid%20Navigation%20Wearable&descAlignY=55&descSize=18" width="100%" />
 
   <br/>
 
-  <img src="https://img.shields.io/badge/YIA%202026-Finalist-FFD700?style=for-the-badge&logo=trophy&logoColor=black" />
   <img src="https://img.shields.io/badge/Cost-USD%20156%20BOM-00C853?style=for-the-badge&logo=dollar-sign&logoColor=white" />
   <img src="https://img.shields.io/badge/Safety_Latency-%3C100ms-FF6B6B?style=for-the-badge&logo=shield&logoColor=white" />
   <img src="https://img.shields.io/badge/Cloud_Latency-~500ms-4285F4?style=for-the-badge&logo=google&logoColor=white" />
@@ -18,45 +17,6 @@
 
 ---
 
-## 🏆 Tan Kah Kee Young Inventors' Award 2026 Finalist
-
-**Asirive Cortex** is a finalist in the prestigious **Tan Kah Kee Young Inventors' Award (YIA 2026)**, presented by Enterprise Singapore and the Singapore Academy of Young Talents.
-
-### 🎯 The Problem
-1.3 billion people worldwide live with vision impairment. Existing AI glasses cost **USD 2,500–3,500** but only describe scenes — they don't enable **independent navigation**. Users must choose between their white cane and a camera app, forcing them to sacrifice either safety or independence.
-
-### 💡 The Solution
-**Asirive Cortex** is a **$250 hybrid edge-server wearable** that keeps the white cane in hand while providing hands-free navigation independence.
-
-- **Hybrid Architecture:** Local YOLO11n-NCNN safety layer (<100ms) + Gemini 3.1 Flash Live cloud reasoning (~500ms)
-- **Network Resilience:** Safety-critical detection works offline during MRT rides, underground malls, and network dead zones
-- **Multimodal Cloud:** Native Gemini Live API audio-to-audio streaming (not HTTP polling) for real-time conversation
-- **Physical Independence:** Tested and validated directly with the Singapore Association for the Visually Handicapped (SAVH)
-
-### 📊 Competitive Advantage
-| Metric | Asirive Cortex | Premium Competitors |
-|:---|:---|:---|
-| **Hardware Cost** | **USD 156** | USD 2,500–3,500 |
-| **Cost Reduction** | **94-96% cheaper** | Baseline |
-| **Safety Latency** | **<100ms** (offline) | 200-500ms (cloud-dependent) |
-| **Cloud Latency** | **~500ms** (multimodal) | 2-3s (HTTP polling) |
-| **Routing Accuracy** | **97.7%** (SAVH validated) | Unreported |
-| **Offline Safety** | **Yes** | No |
-| **Hands-Free** | **Yes** | Often requires phone interaction |
-
-### 📋 Submission Details
-| Category | Details |
-|:---|:---|
-| **Award** | Tan Kah Kee Young Inventors' Award (YIA 2026) |
-| **Fields of Invention** | Electrical/Electronic, Infocomm, Health Care |
-| **Team** | Haziq Shah Bin Huzaimi, Muhammad Irfan Nuafal Bin Mohd Fauzan, Eryna Natasha Binte Said Bohari |
-| **Institution** | Admiralty Secondary School, Singapore |
-| **Mentors** | Kenneth Phua Khiang Song, Nur Syazana Binte Rahsid |
-| **Status** | Functional Prototype with Active SAVH Testing |
-| **Project Stage** | Seeking funding for Phase 1-3 Roadmap |
-
----
-
 ## 🌟 The Vision
 
 > **"The biggest daily challenge is taking the bus."** — *SAVH Advocate*
@@ -64,27 +24,6 @@
 **Asirive Cortex** solves the physical bottleneck problem: visually impaired users must choose between holding their white cane for safety and using a smartphone app for navigation. Our hands-free wearable keeps the cane in hand while providing real-time navigation guidance through open-ear audio.
 
 Tested and validated directly with the **Singapore Association for the Visually Handicapped (SAVH)**, Cortex is not a theoretical design—it's a functional prototype proven in real-world conditions.
-
----
-
-## 👥 Team & Mentors
-
-### Development Team
-| Member | Role |
-|:---|:---|
-| **Haziq Shah Bin Huzaimi** (@IRSPlays) | Lead Developer & Founder |
-| **Muhammad Irfan Nuafal Bin Mohd Fauzan** | AI/Navigation Integration |
-| **Eryna Natasha Binte Said Bohari** | User Experience & Validation |
-
-### Mentors
-| Mentor | Organization | Support Area |
-|:---|:---|:---|
-| **Kenneth Phua Khiang Song** | Admiralty Secondary School | Technical Guidance |
-| **Nur Syazana Binte Rahsid** | Admiralty Secondary School | Project Coordination |
-
-### Institution
-**Admiralty Secondary School, Singapore**  
-Fields: Electrical/Electronic, Infocomm, Health Care
 
 ---
 
@@ -305,6 +244,6 @@ Asirive Cortex is licensed under the GNU General Public License v3.0 or later. S
 ---
 <div align="center">
   <p><b>Built for independence. Powered by Gemini. Designed with SAVH.</b></p>
-  <p><i>&copy; 2026 Asirive Cortex Team. Admiralty Secondary School, Singapore.</i></p>
+  <p><i>&copy; 2026 Asirive Cortex.</i></p>
   <p><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="GNU GPL v3 License" /></p>
 </div>

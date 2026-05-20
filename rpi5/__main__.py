@@ -180,7 +180,11 @@ def run_command(args: argparse.Namespace) -> int:
         standalone = getattr(args, "standalone", False)
         if getattr(args, "offline", False):
             print("Running in offline mode (cloud APIs disabled)")
-        if standalone:
+        # Default to standalone unless --laptop is explicitly provided
+        if getattr(args, "laptop", None) is None and not standalone:
+            standalone = True
+            print("Running in standalone mode (no laptop dashboard)")
+        elif standalone:
             print("Running in standalone mode (no laptop dashboard)")
 
         # Handle --earbuds flag: map "in"->"cmf", "out"->"ugreen"

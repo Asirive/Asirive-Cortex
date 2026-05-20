@@ -1295,7 +1295,7 @@ class NavigationEngine:
                             # Arrived at final destination
                             self.state = NavState.ARRIVED
                             self._running = False
-                            await self._speak("You've arrived at your destination.")
+                            await self._speak_critical("You've arrived at your destination.")
                             self._fire_nav_event("arrived", {
                                 "destination": self.route.destination,
                             })
@@ -1311,7 +1311,7 @@ class NavigationEngine:
                                 # Shouldn't happen (is_route_final would be True), but safety net
                                 self.state = NavState.ARRIVED
                                 self._running = False
-                                await self._speak("You've arrived at your destination.")
+                                await self._speak_critical("You've arrived at your destination.")
                                 self._fire_nav_event("arrived", {"destination": self.route.destination})
                                 break
                     else:
@@ -1467,6 +1467,28 @@ class NavigationEngine:
         else:
             logger.info(f"NAV VOICE: {text}")
 
+    async def _speak_critical(self, text: str):
+        """Speak safety-critical navigation text via TTS.
+
+        ALWAYS speaks locally regardless of Gemini online status.
+        Used for turns, road crossings, and arrival — the user must
+        hear these even if Gemini narration is delayed or missed.
+        Bypasses the normal cooldown with a shorter 2-second gate
+        to prevent rapid-fire repeats while still being responsive.
+        """
+        now = time.time()
+        if now - self._last_voice_time < 2.0:
+            await asyncio.sleep(2.0 - (now - self._last_voice_time))
+
+        self._last_voice_time = time.time()
+        if self.tts:
+            try:
+                await self.tts.speak_async(text)
+            except Exception as e:
+                logger.warning(f"Critical TTS failed: {e}")
+        else:
+            logger.info(f"NAV CRITICAL: {text}")
+
     async def _speak_turn(self, wp: Waypoint):
         """Handle a turn waypoint.
 
@@ -1484,12 +1506,12 @@ class NavigationEngine:
             direction = ""
 
         if direction:
-            await self._speak(f"Turn {direction} now.")
+            await self._speak_critical(f"Turn {direction} now.")
             self._fire_nav_event("turn_executed", {
                 "direction": direction,
                 "instruction": wp.instruction,
             })
-            logger.debug(f"Turn {direction} — nav event emitted (engine silent)")
+            logger.debug(f"Turn {direction} — nav event emitted + critical TTS")
 
     async def _check_turn_announcement(
         self, current_pos: Tuple[float, float], dist_to_current: float
@@ -1513,13 +1535,13 @@ class NavigationEngine:
                 maneuver = wp.maneuver
                 direction = "left" if "left" in maneuver else "right" if "right" in maneuver else maneuver
                 if direction:
-                    await self._speak(f"Turn {direction} in {dist:.0f} meters.")
+                    await self._speak_critical(f"Turn {direction} in {dist:.0f} meters.")
                 self._fire_nav_event("approaching_turn", {
                     "direction": direction,
                     "distance_m": round(dist, 0),
                     "instruction": wp.instruction,
                 })
-                logger.debug(f"Approaching turn: {direction} in {dist:.0f}m (event emitted)")
+                logger.debug(f"Approaching turn: {direction} in {dist:.0f}m (critical TTS + event)")
                 break  # One announcement at a time
 
     async def _check_road_crossing(self, wp: Waypoint):
@@ -1545,8 +1567,8 @@ class NavigationEngine:
                 warning = f"Road crossing detected. I see: {', '.join(road_objects[:5])}. Check it's safe."
             else:
                 warning = "Road crossing detected. Check it's safe before crossing."
-            await self._speak(warning)
-            # Pause beacon during road crossing (NAVIGATION_MASTER_PLAN §10)
+            await self._speak_critical(warning)
+            # Pause navigation during road crossing
             await self.pause_navigation()
             self._fire_nav_event("road_crossing", {
                 "instruction": wp.instruction,

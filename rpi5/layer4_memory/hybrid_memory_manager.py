@@ -94,6 +94,13 @@ class HybridMemoryManager:
         self._sync_loop = None
         self._sync_thread = None
 
+        # Local write buffer (batch inserts to avoid blocking detection threads)
+        self._local_write_buffer: List[Dict[str, Any]] = []
+        self._local_buffer_lock = threading.Lock()
+        self._local_flush_interval = 5.0  # Flush every 5 seconds
+        self._local_flush_thread = None
+        self._cleanup_counter = 0
+
         logger.info("✅ Hybrid Memory Manager initialized")
         logger.info(f"   Local DB: {local_db_path}")
         logger.info(f"   Sync Interval: {sync_interval}s")
@@ -104,7 +111,9 @@ class HybridMemoryManager:
         """Initialize local SQLite database with schema"""
         conn = sqlite3.connect(self.local_db_path, check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")  # Enable WAL for better concurrency
-        conn.execute("PRAGMA synchronous=FULL")  # Safe for power-failure scenarios (wearable device)
+        # NORMAL: faster commits (~1-2ms) vs FULL (~5-20ms). Power-loss risk is acceptable
+        # for detection logs; critical data uses explicit fsync elsewhere.
+        conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
 
         # Create tables
@@ -275,50 +284,66 @@ class HybridMemoryManager:
                 - detection_mode: str (optional)
                 - source: str (optional)
         """
-        start_time = time.time()
+        # Buffer in memory — background thread flushes to SQLite.
+        # This keeps the detection ThreadPoolExecutor worker unblocked.
+        with self._local_buffer_lock:
+            self._local_write_buffer.append(detection)
+            buffer_size = len(self._local_write_buffer)
 
-        # 1. Store locally (<10ms)
-        cursor = self.local_db.cursor()
-        cursor.execute("""
-            INSERT INTO detections_local
-            (layer, class_name, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
-             bbox_area, detection_mode, source, timestamp, synced)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-        """, (
-            detection.get('layer'),
-            detection.get('class_name'),
-            detection.get('confidence'),
-            detection.get('bbox_x1'),
-            detection.get('bbox_y1'),
-            detection.get('bbox_x2'),
-            detection.get('bbox_y2'),
-            detection.get('bbox_area'),
-            detection.get('detection_mode'),
-            detection.get('source'),
-            time.time()
-        ))
-        self.local_db.commit()
+        if buffer_size >= 50:
+            self._trigger_local_flush()
 
-        write_time = (time.time() - start_time) * 1000
-        logger.debug(f"💾 Local write: {write_time:.2f}ms")
+    def _trigger_local_flush(self):
+        """Spawn a background thread to flush the local write buffer."""
+        with self._local_buffer_lock:
+            if not self._local_write_buffer:
+                return
+            batch = self._local_write_buffer[:]
+            self._local_write_buffer = []
+        threading.Thread(target=self._flush_local_buffer, args=(batch,), daemon=True).start()
 
-        # 2. Queue for cloud upload (non-blocking, capped to prevent OOM)
-        row_id = cursor.lastrowid
-        queue_item = {
-            'table': 'detections',
-            'row_id': row_id,
-            'data': {**detection, 'device_id': self.device_id}
-        }
-        with self._queue_lock:
-            if len(self.upload_queue) < self.local_cache_size * 2:
-                self.upload_queue.append(queue_item)
-            else:
-                logger.warning(f"Upload queue full ({len(self.upload_queue)} items), dropping oldest")
-                self.upload_queue.pop(0)
-                self.upload_queue.append(queue_item)
+    def _flush_local_buffer(self, batch: List[Dict[str, Any]]):
+        """Batch write detections to SQLite and queue for cloud sync."""
+        if not batch:
+            return
+        try:
+            start_time = time.time()
+            cursor = self.local_db.cursor()
+            for d in batch:
+                cursor.execute("""
+                    INSERT INTO detections_local
+                    (layer, class_name, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
+                     bbox_area, detection_mode, source, timestamp, synced)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                """, (
+                    d.get('layer'), d.get('class_name'), d.get('confidence'),
+                    d.get('bbox_x1'), d.get('bbox_y1'), d.get('bbox_x2'), d.get('bbox_y2'),
+                    d.get('bbox_area'), d.get('detection_mode'), d.get('source'),
+                    time.time()
+                ))
+                row_id = cursor.lastrowid
+                queue_item = {
+                    'table': 'detections',
+                    'row_id': row_id,
+                    'data': {**d, 'device_id': self.device_id}
+                }
+                with self._queue_lock:
+                    if len(self.upload_queue) < self.local_cache_size * 2:
+                        self.upload_queue.append(queue_item)
+                    else:
+                        self.upload_queue.pop(0)
+                        self.upload_queue.append(queue_item)
+            self.local_db.commit()
+            write_time = (time.time() - start_time) * 1000
+            logger.debug(f"💾 Local batch write: {len(batch)} rows in {write_time:.2f}ms")
 
-        # 3. Cleanup old local rows (keep last 1000)
-        self._cleanup_old_rows()
+            # Cleanup old rows periodically (~every 100 inserted rows)
+            self._cleanup_counter += len(batch)
+            if self._cleanup_counter >= 100:
+                self._cleanup_counter = 0
+                self._cleanup_old_rows()
+        except Exception as e:
+            logger.error(f"❌ Local batch flush failed: {e}")
 
     def _cleanup_old_rows(self):
         """Delete old synced rows to keep local cache size under limit.
@@ -683,12 +708,14 @@ class HybridMemoryManager:
                 daemon=True,
             )
             self._sync_thread.start()
+            self._start_local_flush_worker()
             logger.info("✅ Sync worker started")
 
     def stop_sync_worker(self):
         """Stop background sync worker"""
         if self.sync_running:
             self.sync_running = False
+            self._stop_local_flush_worker()
             if self._sync_loop and self.sync_task:
                 def _cancel_sync_task():
                     if self.sync_task and not self.sync_task.done():
@@ -699,6 +726,33 @@ class HybridMemoryManager:
                 self._sync_thread.join(timeout=2.0)
             self._sync_thread = None
             logger.info("⏹️ Sync worker stopped")
+
+    def _start_local_flush_worker(self):
+        """Start periodic background flush of local write buffer."""
+        self._local_flush_running = True
+
+        def _timer_loop():
+            while self._local_flush_running:
+                time.sleep(self._local_flush_interval)
+                self._trigger_local_flush()
+
+        self._local_flush_thread = threading.Thread(
+            target=_timer_loop,
+            name="memory-local-flush",
+            daemon=True,
+        )
+        self._local_flush_thread.start()
+        logger.info("✅ Local flush worker started")
+
+    def _stop_local_flush_worker(self):
+        """Stop the local flush worker."""
+        self._local_flush_running = False
+        if self._local_flush_thread and self._local_flush_thread.is_alive():
+            self._local_flush_thread.join(timeout=2.0)
+        self._local_flush_thread = None
+        # Final flush of any remaining buffered detections
+        self._trigger_local_flush()
+        logger.info("⏹️ Local flush worker stopped")
 
     def _sync_worker_thread(self):
         """Own the background event loop that drives periodic Supabase sync."""
@@ -886,7 +940,7 @@ class HybridMemoryManager:
         """Cleanup resources"""
         logger.info("🧹 Cleaning up Hybrid Memory Manager...")
 
-        # Stop sync worker
+        # Stop sync worker (also triggers final local flush)
         self.stop_sync_worker()
 
         # H24: Close Supabase client if initialized
@@ -897,6 +951,13 @@ class HybridMemoryManager:
                 logger.info("✅ Supabase client released")
             except Exception as e:
                 logger.warning(f"⚠️ Error releasing Supabase client: {e}")
+
+        # Final flush of any remaining buffered detections before closing DB
+        with self._local_buffer_lock:
+            if self._local_write_buffer:
+                batch = self._local_write_buffer[:]
+                self._local_write_buffer = []
+                self._flush_local_buffer(batch)
 
         # Close local DB
         if self.local_db:

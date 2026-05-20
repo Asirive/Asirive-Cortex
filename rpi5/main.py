@@ -2282,17 +2282,74 @@ class CortexSystem:
         return "IDLE"
 
     def _on_nav_arrival(self):
-        """Callback when NavigationEngine reaches the destination — play arrival chime."""
+        """Callback when NavigationEngine reaches the destination — play arrival sound."""
         try:
-            if self.spatial_audio and hasattr(self.spatial_audio, '_play_beacon_melody'):
-                self.spatial_audio._play_beacon_melody("end")
-            elif self.navigator and hasattr(self.navigator, 'spatial_audio'):
-                sa = self.navigator.spatial_audio
-                if sa and hasattr(sa, '_play_beacon_melody'):
-                    sa._play_beacon_melody("end")
-            logger.info("🎵 Arrival chime played")
+            # Spatial audio beacon SCRAPPED — use TTS arrival confirmation
+            if self.tts:
+                run_async_safe(
+                    self.tts.speak_async("You have reached your destination."),
+                    blocking=False,
+                )
+            logger.info("🎵 Arrival announcement triggered")
         except Exception as e:
-            logger.debug(f"Arrival chime error: {e}")
+            logger.debug(f"Arrival callback error: {e}")
+
+    async def _start_navigation_and_respond(
+        self,
+        origin: str,
+        destination: str,
+        source_label: str = "",
+        speak: bool = True,
+    ):
+        """
+        Unified navigation start helper.
+
+        Handles the common boilerplate across all entrypoints:
+        - call nav_engine.start_navigation()
+        - build distance/duration response string
+        - optional TTS speak
+        - log consistently
+
+        Returns (success: bool, response: str).
+        """
+        if not self.nav_engine:
+            return False, "Navigation engine is not available."
+
+        try:
+            success = await self.nav_engine.start_navigation(origin, destination)
+            if success:
+                route = self.nav_engine.route
+                if route:
+                    dist_str = f"{route.total_distance_m:.0f} meters"
+                    dur_str = f"{route.total_duration_s / 60:.0f} minutes" if route.total_duration_s else ""
+                    if source_label:
+                        response = (
+                            f"Route to {destination}: {dist_str}, {dur_str}. "
+                            f"Navigation started from {source_label}."
+                        )
+                    else:
+                        response = (
+                            f"Getting directions to {destination}. "
+                            f"Route found. {dist_str}. {dur_str}. Navigation started."
+                        )
+                else:
+                    response = f"Navigation started to {destination}."
+                logger.info(f"🧭 [NAV] SUCCESS: {response}")
+                if speak and self.tts:
+                    await self.tts.speak_async(response)
+                return True, response
+            else:
+                response = f"Sorry, I couldn't find a walking route to {destination}."
+                logger.warning(f"🧭 [NAV] FAILED: origin='{origin}', dest='{destination}'")
+                if speak and self.tts:
+                    await self.tts.speak_async(response)
+                return False, response
+        except Exception as e:
+            logger.error(f"🧭 [NAV] Error starting navigation: {e}")
+            response = "Sorry, there was an error getting directions."
+            if speak and self.tts:
+                await self.tts.speak_async(response)
+            return False, response
 
     def _on_nav_mode_change(self, new_mode):
         """Callback when NavigationEngine switches mode (OUTDOOR ↔ INDOOR ↔ TRANSIT)."""
@@ -3460,17 +3517,13 @@ class CortexSystem:
                             logger.info(f"🧭 [NAV] GPS fix acquired — starting queued navigation to {dest} from {origin}")
                             try:
                                 async def _start_deferred_nav():
-                                    success = await self.nav_engine.start_navigation(origin, dest)
-                                    if success:
-                                        route = self.nav_engine.route
-                                        if route and self.tts:
-                                            dist_str = f"{route.total_distance_m:.0f} meters"
-                                            dur_str = f"{route.total_duration_s / 60:.0f} minutes" if route.total_duration_s else ""
-                                            await self.tts.speak_async(f"GPS signal found. Route to {dest}: {dist_str}, {dur_str}.")
-                                            logger.info(f"🧭 [NAV] Deferred route SUCCESS: {dest}")
-                                    elif self.tts:
-                                        await self.tts.speak_async(f"GPS signal found, but I couldn't find a walking route to {dest}.")
-                                        logger.warning(f"🧭 [NAV] Deferred route FAILED: {dest}")
+                                    success, response = await self._start_navigation_and_respond(
+                                        origin, dest, source_label="GPS fix", speak=False
+                                    )
+                                    if success and self.tts:
+                                        await self.tts.speak_async(f"GPS signal found. {response}")
+                                    elif not success and self.tts:
+                                        await self.tts.speak_async(f"GPS signal found, but {response}")
                                 run_async_safe(_start_deferred_nav(), blocking=False)
                             except Exception as e:
                                 logger.error(f"🧭 [NAV] Deferred navigation error: {e}")
@@ -3943,23 +3996,9 @@ class CortexSystem:
                 origin_name = loc["name"]
                 logger.info(f"📍 User said '{location_input}' → matched '{origin_name}' ({origin_addr})")
                 logger.info(f"🧭 [NAV] Follow-up resolved: origin='{origin_name}' ({origin_addr}), destination='{destination}'")
-                try:
-                    success = await self.nav_engine.start_navigation(origin_addr, destination)
-                    if success:
-                        route = self.nav_engine.route
-                        if route:
-                            dist_str = f"{route.total_distance_m:.0f} meters"
-                            dur_str = f"{route.total_duration_s / 60:.0f} minutes" if route.total_duration_s else ""
-                            response = f"You're at {origin_name}. Route to {destination}: {dist_str}, {dur_str}. Navigation started."
-                        else:
-                            response = f"Navigation started from {origin_name} to {destination}."
-                        logger.info(f"🧭 [NAV] Follow-up route SUCCESS: {response}")
-                    else:
-                        response = f"Sorry, I couldn't find a walking route from {origin_name} to {destination}."
-                        logger.warning(f"🧭 [NAV] Follow-up route FAILED: {origin_name} → {destination}")
-                except Exception as e:
-                    logger.error(f"🧭 [NAV] Navigation start error (follow-up): {e}")
-                    response = "Sorry, there was an error getting directions."
+                _, response = await self._start_navigation_and_respond(
+                    origin_addr, destination, source_label=origin_name, speak=False
+                )
                 # TTS and return — skip normal layer routing
                 if response and self.tts:
                     await self.tts.speak_async(response)
@@ -3972,23 +4011,9 @@ class CortexSystem:
                 origin_addr = query  # Use the raw query as address
                 logger.info(f"📍 User gave raw address: '{origin_addr}' → navigating to {destination}")
                 logger.info(f"🧭 [NAV] Follow-up raw address: origin='{origin_addr}', destination='{destination}'")
-                try:
-                    success = await self.nav_engine.start_navigation(origin_addr, destination)
-                    if success:
-                        route = self.nav_engine.route
-                        if route:
-                            dist_str = f"{route.total_distance_m:.0f} meters"
-                            dur_str = f"{route.total_duration_s / 60:.0f} minutes" if route.total_duration_s else ""
-                            response = f"Route to {destination}: {dist_str}, {dur_str}. Navigation started."
-                        else:
-                            response = f"Navigation started to {destination}."
-                        logger.info(f"🧭 [NAV] Raw-address route SUCCESS: {response}")
-                    else:
-                        response = "Sorry, I couldn't find a walking route to your destination."
-                        logger.warning(f"🧭 [NAV] Raw-address route FAILED")
-                except Exception as e:
-                    logger.error(f"🧭 [NAV] Navigation start error (raw address): {e}")
-                    response = "Sorry, there was an error getting directions."
+                _, response = await self._start_navigation_and_respond(
+                    origin_addr, destination, speak=False
+                )
                 if response and self.tts:
                     await self.tts.speak_async(response)
                 logger.info(f"✅ Voice command processed: '{response[:50]}...'")
@@ -4239,50 +4264,21 @@ class CortexSystem:
                     if gps_fix and gps_fix.latitude != 0.0:
                         origin = f"{gps_fix.latitude},{gps_fix.longitude}"
                         logger.info(f"🧭 [NAV] GPS available — origin={origin}, destination='{destination}'")
-                        try:
-                            success = await self.nav_engine.start_navigation(origin, destination)
-                            if success:
-                                route = self.nav_engine.route
-                                if route:
-                                    dist_str = f"{route.total_distance_m:.0f} meters"
-                                    dur_str = f"{route.total_duration_s / 60:.0f} minutes" if route.total_duration_s else ""
-                                    response = f"Getting directions to {destination}. Route found. {dist_str}. {dur_str}. Navigation started."
-                                else:
-                                    response = f"Getting directions to {destination}. Navigation started."
-                                logger.info(f"🧭 [NAV] Route SUCCESS: {response}")
-                                _nav_just_started = True
-                            else:
-                                response = f"Sorry, I couldn't find a walking route to {destination}."
-                                logger.warning(f"🧭 [NAV] Route FAILED for destination='{destination}'")
-                        except Exception as e:
-                            logger.error(f"🧭 [NAV] Navigation start error: {e}")
-                            response = "Sorry, there was an error getting directions."
+                        success, response = await self._start_navigation_and_respond(
+                            origin, destination, speak=False
+                        )
+                        _nav_just_started = success
                     else:
                         # No GPS fix — use saved location as origin
                         default_loc = self.saved_locations.get_default() if self.saved_locations else None
                         if default_loc and default_loc["address"]:
-                            # Use default saved location (e.g. Home) as origin
                             origin_addr = default_loc["address"]
                             origin_name = default_loc["name"]
                             logger.info(f"🧭 [NAV] No GPS — using saved location '{origin_name}' as origin: {origin_addr}")
-                            try:
-                                success = await self.nav_engine.start_navigation(origin_addr, destination)
-                                if success:
-                                    route = self.nav_engine.route
-                                    if route:
-                                        dist_str = f"{route.total_distance_m:.0f} meters"
-                                        dur_str = f"{route.total_duration_s / 60:.0f} minutes" if route.total_duration_s else ""
-                                        response = f"Using {origin_name} as starting point. Route to {destination}: {dist_str}, {dur_str}. Navigation started."
-                                    else:
-                                        response = f"Navigation started from {origin_name} to {destination}."
-                                    logger.info(f"🧭 [NAV] Saved-location route SUCCESS: {response}")
-                                    _nav_just_started = True
-                                else:
-                                    response = f"Sorry, I couldn't find a walking route from {origin_name} to {destination}."
-                                    logger.warning(f"🧭 [NAV] Saved-location route FAILED: {origin_name} → {destination}")
-                            except Exception as e:
-                                logger.error(f"🧭 [NAV] Navigation start error (saved location): {e}")
-                                response = "Sorry, there was an error getting directions."
+                            success, response = await self._start_navigation_and_respond(
+                                origin_addr, destination, source_label=origin_name, speak=False
+                            )
+                            _nav_just_started = success
                         elif self.saved_locations and self.saved_locations.list_names():
                             # No default location — ask user to pick one
                             self._awaiting_origin = destination
