@@ -1,0 +1,31 @@
+{
+  "config": {
+    "vocab_size": 1000,
+    "d_model": 256,
+    "n_layer": 6,
+    "d_state": 64,
+    "d_conv": 4,
+    "expand": 2,
+    "num_tools": 14,
+    "max_seq_len": 48,
+    "num_scenes": 100,
+    "lr": 0.001,
+    "weight_decay": 0.0001,
+    "warmup_steps": 100
+  },
+  "args": {
+    "dummy": true,
+    "steps": 500,
+    "batch_size": 2,
+    "eval_every": 100,
+    "save_every": 500,
+    "output_dir": "outputs/validate",
+    "device": "auto"
+  },
+  "total_steps": 500,
+  "total_time_sec": 10.105129718780518,
+  "avg_step_ms": 22.75746726989746,
+  "final_loss": 0.47155047446489334,
+  "final_accuracy": 0.0,
+  "parameter_count": 2413202
+}

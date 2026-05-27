@@ -1,5 +1,7 @@
 # Python dependencies
 .env
+.env.*
+*.env
 *.pyc
 __pycache__/
 *.so
@@ -9,6 +11,15 @@ dist/
 build/
 venv/
 env/
+
+# All dotfiles/dotfolders (local config, secrets, cache)
+.*/
+.*
+!.gitignore
+!.github/
+!.agents/
+!.claude/
+!.opencode/
 
 # IDE
 .vscode/

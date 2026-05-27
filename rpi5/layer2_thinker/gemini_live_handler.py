@@ -118,6 +118,7 @@ class GeminiLiveHandler:
         self._connect_time: Optional[float] = None  # Track connection duration
         self._msg_count = 0  # Count messages per session
         self._barge_in_cooldown_until: float = 0.0  # Suppress false barge-in after text/tool sends
+        self.barge_in_enabled: bool = True  # If False, ignore server 'interrupted' events during playback
 
         # Audio output queue (thread-safe, bounded to prevent memory leak)
         # 500 chunks ≈ 20s buffer at 40ms/chunk — prevents drops during burst responses
@@ -343,14 +344,11 @@ Safety always comes first. Overhead hazards are your highest priority."""
                 
                 # Configure Live API connection
                 # Generation params (temperature etc.) are set directly on LiveConnectConfig.
-                config = types.LiveConnectConfig(
+                # Build config kwargs conditionally (gemini-3.1 doesn't support thinking_budget)
+                config_kwargs = dict(
                     response_modalities=self.response_modalities,
                     system_instruction=self.system_instruction,
                     temperature=self.temperature,
-                    # Disable thinking for faster responses — thinking adds
-                    # multi-second delays and creates long silent gaps that are
-                    # hostile to explicit turn control.
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
                     # Voice configuration — Zephyr voice
                     speech_config=types.SpeechConfig(
                         voice_config=types.VoiceConfig(
@@ -690,6 +688,14 @@ Safety always comes first. Overhead hazards are your highest priority."""
                     ])],
                 )
 
+                # Create config from kwargs
+                config = types.LiveConnectConfig(**config_kwargs)
+
+                # gemini-3.1-flash-live-preview uses thinking_level instead of thinking_budget.
+                # Only add thinking_config for older models; for 3.1, omit it (defaults to minimal).
+                if not self._is_gemini_live_31:
+                    config.thinking_config = types.ThinkingConfig(thinking_budget=0)
+
                 # Always enable session resumption so we receive handles
                 # from the server. On reconnect, supply the saved handle to
                 # preserve multi-turn conversation context.
@@ -709,12 +715,16 @@ Safety always comes first. Overhead hazards are your highest priority."""
                         _tools_summary.append('google_search')
                     if getattr(t, 'function_declarations', None):
                         _tools_summary.append(f'functions({len(t.function_declarations)})')
-                _thinking_budget = getattr(getattr(config, 'thinking_config', None), 'thinking_budget', 'N/A')
+                if self._is_gemini_live_31:
+                    _thinking_info = "thinking_level=minimal(3.1-default)"
+                else:
+                    _thinking_budget = getattr(getattr(config, 'thinking_config', None), 'thinking_budget', 'N/A')
+                    _thinking_info = f"thinking_budget={_thinking_budget}"
                 logger.info(
                     f"📋 Config: model={self.model}, "
                     f"modalities={config.response_modalities}, "
                     f"temp={config.temperature}, "
-                    f"thinking_budget={_thinking_budget}, "
+                    f"{_thinking_info}, "
                     f"voice={'Zephyr'}, "
                     f"media_res={config.media_resolution}, "
                     f"tools={_tools_summary}, "
@@ -803,10 +813,16 @@ Safety always comes first. Overhead hazards are your highest priority."""
                 elif e.code in (400, 410, 1007):
                     # Bad, expired, or invalid-argument session handle — clear it
                     # so next attempt starts fresh. 1007 = "invalid argument",
-                    # commonly caused by stale/corrupt session handles.
+                    # commonly caused by stale/corrupt session handles OR invalid API key.
+                    # NOTE: Gemini 3.1 returns 1007 (not 401) for invalid/revoked keys.
                     if self.session_handle:
                         logger.warning(f"⚠️ Clearing expired/invalid session handle (code={e.code})")
                         self.session_handle = None
+                    else:
+                        logger.error(
+                            "❌ code=1007 with no session handle — likely invalid API key. "
+                            "Check GEMINI_API_KEY / GOOGLE_API_KEY env vars and config.yaml."
+                        )
             except Exception as e:
                 logger.error(f"❌ Unexpected error on attempt {attempt + 1}: {e}")
             
@@ -923,6 +939,9 @@ Safety always comes first. Overhead hazards are your highest priority."""
                     if sc:
                         # Interrupted by user speech — flush queued audio immediately
                         if getattr(sc, 'interrupted', False):
+                            if not self.barge_in_enabled:
+                                logger.info("🛡️ Barge-in SUPPRESSED (barge_in_enabled=false — ignoring server interrupted)")
+                                continue
                             if time.time() < self._barge_in_cooldown_until:
                                 logger.info("🛡️ Barge-in SUPPRESSED (cooldown active — likely false positive from trailing audio)")
                                 continue

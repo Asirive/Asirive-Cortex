@@ -1,0 +1,51 @@
+# Stage 1: Multimodal Pretraining Config
+# Vision-language alignment on LAION-400M + WebVid-10M
+
+model:
+  vision_tower: "mobileclip_s2"
+  audio_tower:
+    channels: [1, 32, 64, 128]
+    kernels: [3, 3, 3]
+    strides: [[2,2], [2,2], [2,1]]
+  fusion:
+    type: mamba2
+    d_model: 512
+    d_state: 64
+    d_conv: 4
+    expand: 2
+    n_layer: 12
+  text_embedder:
+    vocab_size: 32000
+    proj_dim: 512
+  num_tools: 14
+  freeze_vision: true
+  freeze_audio: true
+
+training:
+  batch_size: 256
+  num_workers: 16
+  max_epochs: 5
+  learning_rate: 1.0e-3
+  weight_decay: 1.0e-4
+  warmup_steps: 5000
+  gradient_clip: 1.0
+  mixed_precision: true
+  compile: true
+  output_dir: "outputs/stage1/"
+
+data:
+  manifest_path: "data/laion400m_filtered_manifest.jsonl"
+  video_root: "data/webvid10m/"
+  num_frames: 1
+
+audio:
+  sample_rate: 16000
+  n_mels: 80
+  hop_length: 160
+  win_length: 400
+  n_fft: 512
+
+video:
+  resolution: [224, 224]
+  normalize_mean: [0.485, 0.456, 0.406]
+  normalize_std: [0.229, 0.224, 0.225]
