@@ -258,6 +258,20 @@ except ImportError as e:
     TTSRouter = None
 
 try:
+    from rpi5.sensors.vl53l5cx_handler import VL53L5CXHandler
+    logger.info("[DEBUG] ✅ VL53L5CXHandler imported successfully")
+except ImportError as e:
+    logger.warning(f"[DEBUG] ⚠️ VL53L5CXHandler import failed: {e}")
+    VL53L5CXHandler = None
+
+try:
+    from rpi5.camera.usb_camera_handler import USBCameraHandler
+    logger.info("[DEBUG] ✅ USBCameraHandler imported successfully")
+except ImportError as e:
+    logger.warning(f"[DEBUG] ⚠️ USBCameraHandler import failed: {e}")
+    USBCameraHandler = None
+
+try:
     from rpi5.layer3_guide.detection_aggregator import DetectionAggregator
     logger.info("[DEBUG] ✅ DetectionAggregator imported successfully")
 except ImportError as e:
@@ -1299,25 +1313,31 @@ class CortexSystem:
         layer1_cfg = self.config.get('layer1', {})
         self.layer1 = None
         if layer1_cfg.get('enabled', False) and YOLOELearner and YOLOEMode:
-            try:
-                logger.info("🎯 Initializing Layer 1: Learner...")
-                layer1_mode_name = str(layer1_cfg.get('mode', 'TEXT_PROMPTS')).upper()
-                layer1_mode = {
-                    'PROMPT_FREE': YOLOEMode.PROMPT_FREE,
-                    'TEXT_PROMPTS': YOLOEMode.TEXT_PROMPTS,
-                    'VISUAL_PROMPTS': YOLOEMode.VISUAL_PROMPTS,
-                }.get(layer1_mode_name, YOLOEMode.TEXT_PROMPTS)
-                self.layer1 = YOLOELearner(
-                    model_path=layer1_cfg.get('model_path', 'models/converted/yoloe_26n_seg_pf/model.onnx'),
-                    device=layer1_cfg.get('device', 'cpu'),
-                    confidence=layer1_cfg.get('confidence', 0.25),
-                    mode=layer1_mode,
-                    memory_manager=self.memory_manager,
-                )
-                logger.info("✅ Layer 1 initialized")
-            except Exception as e:
-                logger.error(f"❌ Layer 1 init failed: {e}")
+            layer1_model_path = layer1_cfg.get('model_path', 'models/converted/yoloe_26n_seg_pf/model.onnx')
+            # Gracefully skip Layer 1 if model file is missing
+            if not Path(layer1_model_path).exists():
+                logger.warning(f"⚠️ Layer 1 model not found at {layer1_model_path} — disabling Layer 1")
                 self.layer1 = None
+            else:
+                try:
+                    logger.info("🎯 Initializing Layer 1: Learner...")
+                    layer1_mode_name = str(layer1_cfg.get('mode', 'TEXT_PROMPTS')).upper()
+                    layer1_mode = {
+                        'PROMPT_FREE': YOLOEMode.PROMPT_FREE,
+                        'TEXT_PROMPTS': YOLOEMode.TEXT_PROMPTS,
+                        'VISUAL_PROMPTS': YOLOEMode.VISUAL_PROMPTS,
+                    }.get(layer1_mode_name, YOLOEMode.TEXT_PROMPTS)
+                    self.layer1 = YOLOELearner(
+                        model_path=layer1_model_path,
+                        device=layer1_cfg.get('device', 'cpu'),
+                        confidence=layer1_cfg.get('confidence', 0.25),
+                        mode=layer1_mode,
+                        memory_manager=self.memory_manager,
+                    )
+                    logger.info("✅ Layer 1 initialized")
+                except Exception as e:
+                    logger.error(f"❌ Layer 1 init failed: {e}")
+                    self.layer1 = None
         elif layer1_cfg.get('enabled', False):
             logger.warning("⚠️ Layer 1 enabled in config but YOLOELearner import is unavailable")
         else:
@@ -1329,8 +1349,17 @@ class CortexSystem:
         if GeminiLiveManager:
             logger.info("🧠 Initializing Layer 2: Thinker (GeminiLiveManager)...")
             layer2_cfg = self.config.get('layer2', {})
-            api_key = os.environ.get('GEMINI_API_KEY', layer2_cfg.get('gemini_api_key', ''))
-            logger.info(f"[DEBUG] Layer 2 config: api_key={'*' * 10} (hidden)")
+            # Prefer config file key over env var so config.yaml edits take effect
+            # without requiring shell restart. Env var still works as fallback.
+            config_key = layer2_cfg.get('gemini_api_key', '')
+            env_key = os.environ.get('GEMINI_API_KEY', '') or os.environ.get('GOOGLE_API_KEY', '')
+            api_key = config_key or env_key
+            if api_key:
+                masked = f"{api_key[:7]}...{api_key[-4:]}" if len(api_key) > 11 else "..."
+                source = "config.yaml" if config_key else "env var"
+                logger.info(f"[DEBUG] Layer 2 API key from {source}: {masked}")
+            else:
+                logger.warning("[DEBUG] Layer 2 API key not found in config.yaml or env vars")
 
             # Initialize streaming audio player for Gemini output
             if StreamingAudioPlayer:
@@ -1339,6 +1368,11 @@ class CortexSystem:
                         sample_rate=24000,  # Gemini Live API outputs 24kHz PCM
                         channels=1,
                         blocksize=4800,     # 200ms blocks
+                    )
+                    # Reset _gemini_audio_active_since when playback stops
+                    # so the echo cooldown doesn't extend past actual audio
+                    self.gemini_audio_player.on_stop_callback = (
+                        lambda: setattr(self, '_gemini_audio_active_since', 0)
                     )
                     logger.info("✅ StreamingAudioPlayer initialized for Gemini output")
                 except Exception as e:
@@ -1375,14 +1409,18 @@ class CortexSystem:
             if hasattr(self.layer2, 'handler') and self.gemini_audio_player:
                 self.layer2.handler._on_barge_in_callback = lambda: self.gemini_audio_player.request_stop(interrupted=True)
                 self.layer2.handler._on_turn_complete_callback = self._on_gemini_turn_complete
-            # Wire connected callback to re-send mode context after each reconnection
+            # Wire barge-in enabled flag from config
             if hasattr(self.layer2, 'handler'):
+                barge_in = bool((self.config.get('vad') or {}).get('barge_in_enabled', True))
+                self.layer2.handler.barge_in_enabled = barge_in
                 self.layer2.handler._on_connected_callback = self._on_gemini_reconnected
             logger.info("✅ Layer 2 initialized (GeminiLiveManager)")
         elif GeminiLiveHandler:
             logger.info("🧠 Initializing Layer 2: Thinker (GeminiLiveHandler fallback)...")
             layer2_cfg = self.config.get('layer2', {})
-            api_key = os.environ.get('GEMINI_API_KEY', layer2_cfg.get('gemini_api_key', ''))
+            config_key = layer2_cfg.get('gemini_api_key', '')
+            env_key = os.environ.get('GEMINI_API_KEY', '') or os.environ.get('GOOGLE_API_KEY', '')
+            api_key = config_key or env_key
             self.layer2 = GeminiLiveHandler(api_key=api_key)
             logger.info("✅ Layer 2 initialized (fallback)")
         else:
@@ -1409,20 +1447,39 @@ class CortexSystem:
         logger.info("[DEBUG] ===== LAYER 3 INITIALIZATION COMPLETE =====")
 
         # Initialize Camera Handler
+        # IVP: Prefer USB camera (glasses-mounted) over CSI / picamera2
         logger.info("📸 Initializing Camera...")
         cam_cfg = self.config.get('camera', {})
-        cam_tuning_cfg = cam_cfg.get('tuning', {})
-        self.camera = CameraHandler(
-            camera_id=cam_cfg.get('device_id', 0),
-            use_picamera=cam_cfg.get('use_picamera', False),
-            resolution=tuple(cam_cfg.get('resolution', [640, 480])),
-            fps=cam_cfg.get('fps', 30),
-            rotation=cam_cfg.get('rotation', 0),
-            pixel_format=cam_cfg.get('format', 'RGB888'),
-            tuning_file=cam_tuning_cfg.get('file'),
-            force_wide_tuning=cam_tuning_cfg.get('use_explicit_wide_tuning', False),
-            image_controls=cam_cfg.get('image_controls', {}),
-        )
+        self._using_usb_camera = False
+        if USBCameraHandler:
+            try:
+                usb_cam = USBCameraHandler(
+                    device_id=cam_cfg.get('usb_device_id', 0),
+                    resolution=tuple(cam_cfg.get('resolution', [640, 480])),
+                    fps=cam_cfg.get('fps', 30),
+                    rotation=cam_cfg.get('rotation', 0),
+                    fourcc=cam_cfg.get('usb_fourcc', 'MJPG'),
+                )
+                # Don't start here — start() is called in system start()
+                self.camera = usb_cam
+                self._using_usb_camera = True
+                logger.info("✅ USB camera selected (glasses-mounted)")
+            except Exception as e:
+                logger.warning(f"⚠️ USB camera init failed ({e}), falling back to CSI/picamera2")
+                self.camera = None
+        if self.camera is None:
+            cam_tuning_cfg = cam_cfg.get('tuning', {})
+            self.camera = CameraHandler(
+                camera_id=cam_cfg.get('device_id', 0),
+                use_picamera=cam_cfg.get('use_picamera', False),
+                resolution=tuple(cam_cfg.get('resolution', [640, 480])),
+                fps=cam_cfg.get('fps', 30),
+                rotation=cam_cfg.get('rotation', 0),
+                pixel_format=cam_cfg.get('format', 'RGB888'),
+                tuning_file=cam_tuning_cfg.get('file'),
+                force_wide_tuning=cam_tuning_cfg.get('use_explicit_wide_tuning', False),
+                image_controls=cam_cfg.get('image_controls', {}),
+            )
 
         # Initialize WebSocket Client (for laptop dashboard) - Use FastAPI client
         self.ws_client = None
@@ -1522,18 +1579,19 @@ class CortexSystem:
                 p = self.gemini_audio_player
                 if p.is_playing:
                     return True
-                # 0.5s cooldown after playback stops (residual echo)
-                # Was 2.0s but that + 8s silence timeout = user muted for 10s
-                if (time.time() - p._last_stop_time) < 0.5:
+                # 0.15s cooldown after playback stops (was 0.5s — too long,
+                # caused "system doesn't answer" bug where user's immediate
+                # speech after Gemini finish was silently discarded)
+                if (time.time() - p._last_stop_time) < 0.15:
                     return True
                 # Early protection: covers the gap between first Gemini audio
                 # chunk arriving and the player stream actually opening.
-                # Auto-expires after 0.5s — just enough for stream open latency.
-                if self._gemini_audio_active_since > 0 and (time.time() - self._gemini_audio_active_since) < 0.5:
+                # Auto-expires after 0.15s — just enough for stream open latency.
+                if self._gemini_audio_active_since > 0 and (time.time() - self._gemini_audio_active_since) < 0.15:
                     return True
                 return False
             self.voice_coordinator.is_output_playing = _is_output_playing
-            logger.info("✅ Echo suppression wired (VAD + mic gate)")
+            logger.info("✅ Echo suppression wired (VAD + mic gate, 0.15s cooldown)")
 
         # Initialize Bluetooth Manager (will be connected in start() if configured)
         self.bt_manager = None
@@ -1760,6 +1818,25 @@ class CortexSystem:
                     logger.error(f"❌ Failed to init audio alerts: {e}")
                     self.audio_alerts = None
 
+        # ── IVP: Initialize VL53L5CX ToF depth sensor (glasses-mounted) ──
+        self.tof_handler = None
+        if VL53L5CXHandler:
+            try:
+                self.tof_handler = VL53L5CXHandler(
+                    i2c_bus=1,
+                    i2c_address=0x52,
+                    mock=False,  # Set True for dev without hardware
+                )
+                if self.tof_handler.is_available:
+                    logger.info("✅ VL53L5CX ToF handler initialized (8×8 depth, glasses-mounted)")
+                else:
+                    logger.warning("⚠️ VL53L5CX handler not available")
+                    self.tof_handler = None
+            except Exception as e:
+                logger.error(f"❌ Failed to init VL53L5CX ToF handler: {e}")
+                self.tof_handler = None
+
+        if hailo_config.get('enabled', False):
             # Initialize OCR pipeline (lazy — detector loaded on first query)
             ocr_config = hailo_config.get('ocr', {})
             if ocr_config.get('enabled', False) and HailoOCRPipeline:
@@ -2998,10 +3075,43 @@ class CortexSystem:
         self.camera_available = False
         try:
             self.camera.start()
+            # Verify the camera can actually produce frames (not just open)
+            time.sleep(0.3)  # Give capture thread time to spin up
+            test_frame = self.camera.get_frame()
+            if test_frame is None:
+                raise RuntimeError("Camera opened but cannot read frames — lens covered, cable loose, or wrong driver")
+            logger.info(f"📷 Camera verified: {test_frame.shape[1]}x{test_frame.shape[0]} frame received")
             self.camera_available = True
         except Exception as e:
             logger.error(f"❌ Camera startup failed: {e}")
-            logger.warning("⚠️ Running in NO-CAMERA mode — detection/vision disabled, audio-only features active")
+            # If USB camera fails, try CSI/picamera2 fallback
+            if self._using_usb_camera and CameraHandler:
+                logger.info("🔄 Falling back to CSI camera (picamera2)...")
+                try:
+                    if self.camera:
+                        self.camera.stop()
+                    cam_cfg = self.config.get('camera', {})
+                    self.camera = CameraHandler(
+                        camera_id=cam_cfg.get('device_id', 0),
+                        use_picamera=True,
+                        resolution=tuple(cam_cfg.get('resolution', [640, 480])),
+                        fps=cam_cfg.get('fps', 30),
+                        rotation=cam_cfg.get('rotation', 0),
+                        pixel_format=cam_cfg.get('format', 'RGB888'),
+                    )
+                    self.camera.start()
+                    time.sleep(0.3)
+                    test_frame = self.camera.get_frame()
+                    if test_frame is not None:
+                        logger.info(f"📷 CSI camera verified: {test_frame.shape[1]}x{test_frame.shape[0]} frame received")
+                        self._using_usb_camera = False
+                        self.camera_available = True
+                    else:
+                        logger.error("❌ CSI camera also cannot read frames")
+                except Exception as e2:
+                    logger.error(f"❌ CSI camera fallback failed: {e2}")
+            if not self.camera_available:
+                logger.warning("⚠️ Running in NO-CAMERA mode — detection/vision disabled, audio-only features active")
 
         # Connect to laptop dashboard
         if self.ws_client:
@@ -3032,7 +3142,10 @@ class CortexSystem:
         gemini_enabled = os.getenv("GEMINI_LIVE_ENABLED", "true").lower() == "true"
         if self.layer2 and gemini_enabled:
             # Check if API key is valid (not placeholder)
-            api_key = os.getenv("GEMINI_API_KEY", "")
+            layer2_cfg = self.config.get('layer2', {})
+            config_key = layer2_cfg.get('gemini_api_key', '')
+            env_key = os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "")
+            api_key = config_key or env_key
             if api_key and not api_key.startswith("YOUR_"):
                 try:
                     # GeminiLiveManager.start() launches background thread (non-blocking)
@@ -3145,13 +3258,29 @@ class CortexSystem:
                 # 2. Run Layer 0 + Layer 1 in parallel
                 all_detections = self._run_dual_detection(frame)
 
-                # 2b. Run Hailo depth estimation + hazard detection
+                # 2b. Depth + hazard detection
+                # IVP priority: ToF (close-range, glasses-mounted) → Hailo (monocular, fallback)
                 depth_map = None
                 hazards = []
-                if self.depth_estimator and self.depth_estimator.is_available:
+
+                # ── Try VL53L5CX ToF first ──
+                if self.tof_handler and self.tof_handler.is_available:
+                    try:
+                        hazards = self.tof_handler.update()
+                        if hazards:
+                            logger.debug(f"[ToF] {len(hazards)} hazards: "
+                                         f"{', '.join(h.type.value for h in hazards)}")
+                        # Simple depth map reconstruction for compatibility
+                        raw_mm = self.tof_handler.get_depth_mm()
+                        if np.any(raw_mm > 0):
+                            depth_map = raw_mm.astype(np.float32) / 1000.0  # mm -> m
+                    except Exception as e:
+                        logger.debug(f"ToF update error: {e}")
+
+                # ── Fallback to Hailo monocular depth ──
+                if not hazards and self.depth_estimator and self.depth_estimator.is_available:
                     try:
                         depth_map = self.depth_estimator.estimate(frame)
-                        
                         if depth_map is not None:
                             # Enrich YOLO detections with distance estimates
                             for det in all_detections:
@@ -3162,15 +3291,11 @@ class CortexSystem:
                                     )
                                     det['distance_m'] = dist
                                     det['distance_label'] = self.depth_estimator.classify_distance(dist)
-                            
                             # Analyze depth map for environmental hazards
                             hazards = self.depth_estimator.analyze_hazards(
                                 depth_map, all_detections, frame.shape
                             )
-
                             # Classify indoor/outdoor every ~5 seconds
-                            # Vision (depth map) is the PRIMARY signal. GPS fix alone
-                            # does NOT mean outdoor — phones give GPS indoors too.
                             now_env = time.time()
                             if now_env - self._last_env_check > 5.0:
                                 self._last_env_check = now_env
@@ -3179,7 +3304,6 @@ class CortexSystem:
                                 self.depth_estimator.set_environment(is_indoor)
                                 if self.safety_monitor:
                                     self.safety_monitor.set_environment(is_indoor)
-
                                 # Notify Gemini on indoor transition during active nav
                                 is_nav_active_now = (
                                     self.nav_engine
@@ -3187,7 +3311,6 @@ class CortexSystem:
                                     and self.nav_engine.state.value == "navigating"
                                 )
                                 if is_indoor and not self._was_indoor and is_nav_active_now:
-                                    # Just entered indoor — tell Gemini to guide the user out
                                     if self.layer2 and self.layer2.is_running:
                                         self._send_gemini_video(frame)
                                         indoor_prompt = (
@@ -3198,9 +3321,7 @@ class CortexSystem:
                                             "Do NOT describe the scene — GUIDE the user out."
                                         )
                                         if self._gemini_background_turns_allowed():
-                                            self.layer2.send_text(
-                                                indoor_prompt
-                                            )
+                                            self.layer2.send_text(indoor_prompt)
                                             if self.gemini_audio_player and not self.gemini_audio_player.is_playing:
                                                 self.gemini_audio_player.start()
                                             logger.info("🏢 Indoor + navigating → Gemini indoor guide mode activated")
@@ -4488,7 +4609,9 @@ class CortexSystem:
         if self.button:
             self.button.stop()
 
-        # Cleanup Hailo depth estimator and OCR
+        # Cleanup depth sensors (ToF + Hailo) and OCR
+        if self.tof_handler:
+            self.tof_handler.stop()
         if self.depth_estimator:
             self.depth_estimator.cleanup()
         if self.audio_alerts:

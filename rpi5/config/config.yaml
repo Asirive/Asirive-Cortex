@@ -105,7 +105,7 @@ layer1:
 # =====================================================
 layer2:
   # Gemini API Configuration
-  gemini_api_key: "YOUR_GEMINI_API_KEY"  # TODO: Add your API key
+  gemini_api_key: ""  # Set via GEMINI_API_KEY or GOOGLE_API_KEY env var (DO NOT commit keys)
   model: "gemini-3.1-flash-live-preview"  # Model for Gemini Live API (native audio + Google Search grounding)
 
   # Live API (WebSocket)
@@ -264,6 +264,23 @@ audio:
     padding_duration_ms: 200  # Audio padding around speech segments
     barge_in_enabled: false  # Ignore user speech during Gemini playback instead of interrupting it
 
+    # Command queue during playback (buffer user speech, send after Gemini finishes)
+    command_queue_enabled: true
+    command_queue_max_duration_ms: 5000  # Max buffered speech during playback
+    command_queue_min_valid_ms: 400  # Min valid speech to accept after playback
+
+    # Noise gate: reject audio below this dB before VAD (prevents distant speech pickup)
+    noise_gate_db: -40  # -40dB = reject quiet/ambient sounds
+
+    # Hall mode: stricter settings for noisy environments (PA systems, crowds)
+    hall_mode:
+      enabled: false  # Auto-enabled when >5 VAD triggers in 10s
+      threshold: 0.80
+      min_speech_duration_ms: 600
+      min_silence_duration_ms: 700
+      noise_gate_db: -35
+      debounce_seconds: 3  # Max 1 STT call per 3s in hall mode
+
   # Whisper STT (offline fallback)
   whisper:
     model_size: "base"  # Options: 'tiny' (39M), 'base' (74M, recommended), 'small' (244M)
@@ -409,7 +426,7 @@ development:
 # LAPTOP SERVER CONFIGURATION
 # =====================================================
 laptop_server:
-  host: "10.55.248.101"  # Laptop IP address - UPDATE THIS for your network
+  host: "10.61.21.101"  # Laptop IP address - UPDATE THIS for your network
   port: 8765
 
 # =====================================================
@@ -424,7 +441,7 @@ zmq:
 # RPI5 DEVICE CONFIGURATION (for sync tools)
 # =====================================================
 rpi5_device:
-  host: "10.55.248.31"  # RPi5 IP address - used by sync tools
+  host: "10.61.21.31"  # RPi5 IP address - used by sync tools
   user: "cortex"  # SSH username for sync
   path: "/home/cortex/ProjectCortex"  # Remote path for sync
 

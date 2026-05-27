@@ -1,0 +1,43 @@
+# Deployment Configuration
+# Runtime knobs for RPi5 inference
+
+model:
+  hef_path: "models/cortex_local/cortex_local.hef"
+  onnx_path: "models/cortex_local/cortex_local.onnx"
+  tokenizer_path: "models/cortex_local/tokenizer/"
+  vocab_size: 32000
+  d_model: 512
+  n_layer: 12
+  d_state: 64
+  d_conv: 4
+
+inference:
+  backend: "onnx"  # "onnx" for CPU, "hailo" for NPU
+  device: "cpu"
+  providers: ["CPUExecutionProvider"]
+  max_seq_len: 256
+  temperature: 0.7
+  top_k: 50
+  top_p: 0.9
+
+audio:
+  sample_rate: 16000
+  chunk_duration: 1.0
+  n_mels: 80
+  hop_length: 160
+  win_length: 400
+  n_fft: 512
+
+video:
+  resolution: [224, 224]
+  fps: 2
+  normalize_mean: [0.485, 0.456, 0.406]
+  normalize_std: [0.229, 0.224, 0.225]
+
+local_copilot:
+  enabled: true
+  fallback_announce_text: "Switching to offline mode."
+  reconnect_announce_text: "Back online."
+  use_shared_hailo_vdevice: true
+  proactive_narration: true
+  max_response_tokens: 64

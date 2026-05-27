@@ -1,0 +1,48 @@
+# Stage 5: Quantization-Aware Training Config
+
+model:
+  vision_tower: "mobileclip_s2"
+  audio_tower:
+    channels: [1, 32, 64, 128]
+    kernels: [3, 3, 3]
+    strides: [[2,2], [2,2], [2,1]]
+  fusion:
+    type: mamba2
+    d_model: 512
+    d_state: 64
+    d_conv: 4
+    expand: 2
+    n_layer: 12
+  text_embedder:
+    vocab_size: 32000
+    proj_dim: 512
+  num_tools: 14
+  freeze_vision: false
+  freeze_audio: false
+
+training:
+  batch_size: 32
+  num_workers: 16
+  max_epochs: 2
+  learning_rate: 1.0e-5
+  weight_decay: 1.0e-4
+  warmup_steps: 500
+  gradient_clip: 1.0
+  mixed_precision: false  # disable AMP during QAT
+  compile: false
+  output_dir: "outputs/stage5/"
+
+data:
+  data_root: "data/cortex_teacher_distill/"
+
+qat:
+  enabled: true
+  observer: moving_average_minmax
+  quant_scheme: symmetric
+  backend: fbgemm
+  # Layers to NOT quantize (embedding + layer norm typically)
+  no_quant_layers:
+    - "text_embedder"
+    - "fusion_core.layers.*.norm"
+    - "fusion_core.norm_f"
+    - "heads.lm_head"  # optional: sometimes better to keep float32 head
