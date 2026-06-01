@@ -556,7 +556,7 @@ hailo:
     hazard_detection:
       wall_threshold: 1.5        # Distance (m) below which a surface is flagged as wall
       stair_gradient_threshold: 0.3  # Depth gradient magnitude for stair/curb detection
-      dropoff_threshold: 3.0     # Depth ratio for drop-off detection
+      dropoff_threshold: 5.0     # Depth ratio for drop-off detection (raised to reduce false positives)
       approach_rate_threshold: 0.1   # Per-frame depth decrease rate for approaching objects
       alert_cooldown: 3.0        # Seconds between repeated alerts of the same type
 

@@ -121,6 +121,13 @@ class StreamingAudioPlayer:
         self.playback_thread = threading.Thread(target=self._playback_loop, daemon=True)
         self.playback_thread.start()
         
+        # Notify audio queue that Gemini Live is now active
+        try:
+            from rpi5.cli.audio_queue import audio_queue, AudioSource
+            audio_queue.mark_gemini_active(True)
+        except Exception:
+            pass
+        
         if self.on_start_callback:
             self.on_start_callback()
         
@@ -177,6 +184,13 @@ class StreamingAudioPlayer:
             elif self.on_stop_callback:
                 self.on_stop_callback()
 
+            # Notify audio queue that Gemini Live is no longer active
+            try:
+                from rpi5.cli.audio_queue import audio_queue
+                audio_queue.mark_gemini_active(False)
+            except Exception:
+                pass
+
             logger.info(f"🛑 Audio playback stopped (interrupted={interrupted})")
         finally:
             with self._stop_lock:
@@ -226,6 +240,12 @@ class StreamingAudioPlayer:
         if not self.is_playing:
             return
         self._turn_complete = True
+        # Notify audio queue so queued TTS can start playing
+        try:
+            from rpi5.cli.audio_queue import audio_queue
+            audio_queue.mark_gemini_turn_complete()
+        except Exception:
+            pass
         logger.info("🔊 Gemini turn complete — draining remaining audio")
     
     def _playback_loop(self):

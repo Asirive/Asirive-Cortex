@@ -133,9 +133,20 @@ class TTSRouter:
         self._playback_lock = threading.Lock()
         self._active_playbacks = 0
         
+        # Audio queue integration — prevents TTS from playing over Gemini Live
+        try:
+            from rpi5.cli.audio_queue import audio_queue
+            self._audio_queue = audio_queue
+            self._audio_queue_active = True
+        except ImportError:
+            self._audio_queue = None
+            self._audio_queue_active = False
+        
         self._initialized = True
         logger.info(f"TTSRouter initialized (threshold: {length_threshold} chars)")
         logger.info(f"TTS recordings will be saved to: {self.recordings_dir.absolute()}")
+        if self._audio_queue_active:
+            logger.info("   Audio queue: ENABLED (TTS will wait for Gemini Live)")
 
     @property
     def is_playing(self) -> bool:
@@ -440,7 +451,19 @@ class TTSRouter:
         
         On Linux (RPi5), uses paplay (PipeWire-aware) so audio routes through
         the correct BT default sink set by BluetoothAudioManager.
+        
+        If audio queue is active, waits for Gemini Live to finish first.
         """
+        # Wait for Gemini Live to finish before playing TTS (prevents overlap)
+        if self._audio_queue_active and self._audio_queue:
+            waited = 0.0
+            max_wait = 5.0  # Don't block TTS for more than 5s
+            while self._audio_queue._gemini_active and waited < max_wait:
+                await asyncio.sleep(0.1)
+                waited += 0.1
+            if waited >= max_wait:
+                logger.debug("TTS waited 5s for Gemini, playing anyway")
+        
         import platform
         self._mark_playback_start()
         if platform.system() == "Linux":
@@ -473,7 +496,19 @@ class TTSRouter:
         
         On Linux (RPi5), writes a temp WAV and uses paplay (PipeWire-aware)
         so audio routes through the correct BT default sink.
+        
+        If audio queue is active, waits for Gemini Live to finish first.
         """
+        # Wait for Gemini Live to finish before playing TTS (prevents overlap)
+        if self._audio_queue_active and self._audio_queue:
+            waited = 0.0
+            max_wait = 5.0
+            while self._audio_queue._gemini_active and waited < max_wait:
+                await asyncio.sleep(0.1)
+                waited += 0.1
+            if waited >= max_wait:
+                logger.debug("TTS waited 5s for Gemini, playing anyway")
+        
         import platform
         self._mark_playback_start()
         if platform.system() == "Linux":
