@@ -578,6 +578,10 @@ Examples:
   cortex config                  # View configuration
   cortex config --get laptop_server.host
   cortex debug                   # Interactive debug mode
+  cortex sync check              # Test RPi5 connectivity
+  cortex sync to --models        # Sync code + models to RPi5
+  cortex sync from --paths logs  # Download logs from RPi5
+  cortex sync full               # Sync + install deps
         """
     )
     
@@ -612,11 +616,45 @@ Examples:
     # debug command
     debug_parser = subparsers.add_parser("debug", help="Interactive debug mode")
     
+    # sync command
+    sync_parser = subparsers.add_parser("sync", help="Sync with RPi5")
+    sync_sub = sync_parser.add_subparsers(dest="sync_cmd", help="Sync command")
+    
+    sync_check = sync_sub.add_parser("check", help="Test SSH connectivity")
+    sync_status = sync_sub.add_parser("status", help="Preview sync (dry-run)")
+    sync_status.add_argument("--models", action="store_true", help="Include models/")
+    
+    sync_to = sync_sub.add_parser("to", help="Sync code TO RPi5")
+    sync_to.add_argument("--models", action="store_true", help="Include models/ (~500MB)")
+    sync_to.add_argument("--dry-run", "-n", action="store_true", help="Preview without uploading")
+    
+    sync_from = sync_sub.add_parser("from", help="Sync data FROM RPi5")
+    sync_from.add_argument("--paths", type=str, help="Comma-separated paths")
+    
+    sync_install = sync_sub.add_parser("install", help="Install deps on RPi5")
+    sync_full = sync_sub.add_parser("full", help="Sync TO + install")
+    sync_full.add_argument("--models", action="store_true", help="Include models/")
+    
     args = parser.parse_args()
     
     if not args.command:
         parser.print_help()
         return 0
+    
+    # Handle sync subcommands by delegating to scripts.sync
+    if args.command == "sync":
+        if not args.sync_cmd:
+            sync_parser.print_help()
+            return 0
+        # Pass through to scripts.sync
+        import scripts.sync as sync_mod
+        sync_args = argparse.Namespace()
+        sync_args.command = args.sync_cmd
+        sync_args.models = getattr(args, "models", False)
+        sync_args.dry_run = getattr(args, "dry_run", False)
+        sync_args.paths = getattr(args, "paths", None)
+        sync_args.verify = False
+        return sync_mod.commands[args.sync_cmd](sync_args)
     
     commands = {
         "run": cmd_run,
