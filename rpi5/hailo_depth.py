@@ -1,13 +1,15 @@
 """
 Hailo 8L Depth Estimation & Hazard Detection
 
-Uses fast_depth model on Hailo-8L NPU for real-time monocular depth estimation.
+Supports multiple depth models on Hailo-8L NPU:
+- SCDepthV3: Metric depth output (meters directly), auto-detected input size
+- fast_depth: Inverse depth output (requires scale_factor conversion)
+
 Analyzes depth maps to detect hazards: walls, stairs, curbs, drop-offs, and
 approaching objects not caught by YOLO detection layers.
 
 Hardware: Hailo-8L NPU (M.2 HAT on RPi5)
-Model: fast_depth — 224x224x3 input, 1.35M params, ~299 FPS on Hailo-8L
-Output: 224x224 relative/inverse depth map
+Output: Depth map (metric or inverse depending on model)
 
 Author: Haziq (@IRSPlays)
 Project: Cortex v2.0 — YIA 2026
@@ -96,6 +98,7 @@ class HailoDepthEstimator:
     def __init__(
         self,
         hef_path: str,
+        model_type: str = "scdepthv3",
         scale_factor: float = 1.0,
         min_distance: float = 0.3,
         max_distance: float = 20.0,
@@ -110,8 +113,9 @@ class HailoDepthEstimator:
         Initialize Hailo depth estimator.
         
         Args:
-            hef_path: Path to fast_depth.hef model file
-            scale_factor: Calibration factor for relative-to-metric depth conversion
+            hef_path: Path to depth model HEF file
+            model_type: "scdepthv3" (metric depth) or "fast_depth" (inverse depth)
+            scale_factor: Calibration factor for inverse depth models (ignored for metric)
             min_distance: Minimum distance clamp (meters)
             max_distance: Maximum distance clamp (meters)
             wall_threshold: Distance (m) below which a surface is flagged as wall
@@ -123,6 +127,7 @@ class HailoDepthEstimator:
                      if other modules also need the device)
         """
         self.hef_path = hef_path
+        self.model_type = model_type
         self.scale_factor = scale_factor
         self.min_distance = min_distance
         self.max_distance = max_distance
@@ -146,10 +151,12 @@ class HailoDepthEstimator:
         self._configured_cm = None          # Context manager from configure()
         self._configured_infer_model = None  # Entered context (actual usable object)
 
-        # Model dimensions (fast_depth)
+        # Model dimensions (auto-detected from HEF)
         self.input_height = 224
         self.input_width = 224
         self.input_channels = 3
+        self.output_height = 224
+        self.output_width = 224
 
         # State
         self._prev_depth_map: Optional[np.ndarray] = None
@@ -164,7 +171,7 @@ class HailoDepthEstimator:
     def _initialize(self):
         """Load HEF and configure Hailo device using modern create_infer_model API."""
         try:
-            logger.info(f"Loading Hailo depth model: {self.hef_path}")
+            logger.info(f"Loading Hailo depth model: {self.hef_path} (type={self.model_type})")
             
             # Validate HEF file exists
             if not Path(self.hef_path).exists():
@@ -186,9 +193,35 @@ class HailoDepthEstimator:
             self._infer_model.input().set_format_type(FormatType.FLOAT32)
             self._infer_model.output().set_format_type(FormatType.FLOAT32)
             
-            # Log model info
-            logger.info(f"  Input: shape={self._infer_model.input().shape}")
-            logger.info(f"  Output: shape={self._infer_model.output().shape}")
+            # Auto-detect input/output shapes from HEF
+            input_shape = self._infer_model.input().shape
+            output_shape = self._infer_model.output().shape
+            logger.info(f"  Input shape: {input_shape}")
+            logger.info(f"  Output shape: {output_shape}")
+            
+            # Parse input shape (typically [batch, height, width, channels] or [height, width, channels])
+            if len(input_shape) == 4:
+                self.input_height = input_shape[1]
+                self.input_width = input_shape[2]
+                self.input_channels = input_shape[3]
+            elif len(input_shape) == 3:
+                self.input_height = input_shape[0]
+                self.input_width = input_shape[1]
+                self.input_channels = input_shape[2]
+            
+            # Parse output shape
+            if len(output_shape) == 4:
+                self.output_height = output_shape[1]
+                self.output_width = output_shape[2]
+            elif len(output_shape) == 3:
+                self.output_height = output_shape[0]
+                self.output_width = output_shape[1]
+            elif len(output_shape) == 2:
+                self.output_height = output_shape[0]
+                self.output_width = output_shape[1]
+            
+            logger.info(f"  Auto-detected: input={self.input_height}x{self.input_width}x{self.input_channels}, "
+                       f"output={self.output_height}x{self.output_width}")
             
             # Configure once, keep alive for all frames
             # configure() returns a context manager — must enter it
@@ -197,7 +230,7 @@ class HailoDepthEstimator:
             logger.info("  Configured InferModel (persistent, context entered)")
             
             self._is_initialized = True
-            logger.info("Hailo depth estimator initialized successfully")
+            logger.info(f"✅ Hailo depth estimator initialized ({self.model_type})")
             
         except Exception as e:
             logger.error(f"Failed to initialize Hailo depth: {e}")
@@ -241,8 +274,10 @@ class HailoDepthEstimator:
             frame: BGR image from camera (any resolution)
             
         Returns:
-            224x224 depth map (float32, higher values = closer),
-            or None if inference fails
+            Depth map (float32):
+            - SCDepthV3: metric depth in meters (higher = farther)
+            - fast_depth: inverse depth (higher = closer)
+            Returns None if inference fails.
         """
         if not self.is_available:
             return None
@@ -250,14 +285,24 @@ class HailoDepthEstimator:
         start = time.perf_counter()
 
         try:
-            # Preprocess: resize to 224x224 and normalize
+            # Preprocess: resize to model input size
             import cv2
             resized = cv2.resize(frame, (self.input_width, self.input_height),
                                  interpolation=cv2.INTER_LINEAR)
             
-            # Convert BGR to RGB, normalize to [0, 1] float32
+            # Convert BGR to RGB
             rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-            input_data = rgb.astype(np.float32) / 255.0
+            
+            # Normalize based on model type
+            if self.model_type == "scdepthv3":
+                # SCDepthV3 uses ImageNet normalization
+                input_data = rgb.astype(np.float32) / 255.0
+                mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+                std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+                input_data = (input_data - mean) / std
+            else:
+                # fast_depth uses simple [0, 1] normalization
+                input_data = rgb.astype(np.float32) / 255.0
             
             # Ensure contiguous memory layout (required by Hailo bindings)
             input_data = np.ascontiguousarray(input_data)
@@ -275,17 +320,25 @@ class HailoDepthEstimator:
             # Remove batch dimension and squeeze to 2D
             depth_map = np.squeeze(depth_map)
             
-            # fast_depth outputs inverse depth — higher = closer
-            # Ensure it's float32 and positive
+            # Ensure float32
             depth_map = depth_map.astype(np.float32)
-            depth_map = np.maximum(depth_map, 1e-6)
+            
+            # Handle model-specific output format
+            if self.model_type == "scdepthv3":
+                # SCDepthV3 outputs metric depth directly (meters)
+                # Clamp to valid range
+                depth_map = np.clip(depth_map, self.min_distance, self.max_distance)
+            else:
+                # fast_depth outputs inverse depth — higher = closer
+                # Ensure positive values
+                depth_map = np.maximum(depth_map, 1e-6)
 
             elapsed_ms = (time.perf_counter() - start) * 1000
             self._latency_history.append(elapsed_ms)
             if len(self._latency_history) > 100:
                 self._latency_history = self._latency_history[-50:]
 
-            logger.debug(f"Depth inference: {elapsed_ms:.1f}ms")
+            logger.debug(f"Depth inference: {elapsed_ms:.1f}ms ({self.model_type})")
             return depth_map
 
         except Exception as e:
@@ -302,7 +355,7 @@ class HailoDepthEstimator:
         Get approximate distance at a detection bounding box center.
         
         Args:
-            depth_map: 224x224 depth map from estimate()
+            depth_map: Depth map from estimate()
             bbox: [x1, y1, x2, y2] in pixel coordinates of original frame
             frame_shape: Shape of original frame (H, W, C)
             
@@ -334,8 +387,14 @@ class HailoDepthEstimator:
         region = depth_map[y1:y2, x1:x2]
         median_depth = float(np.median(region))
 
-        # Convert inverse depth to metric distance
-        distance = self.scale_factor / (median_depth + 1e-6)
+        # Convert to metric distance based on model type
+        if self.model_type == "scdepthv3":
+            # SCDepthV3 outputs metric depth directly (meters)
+            distance = median_depth
+        else:
+            # fast_depth outputs inverse depth — convert to meters
+            distance = self.scale_factor / (median_depth + 1e-6)
+        
         distance = max(self.min_distance, min(distance, self.max_distance))
 
         return round(distance, 2)
@@ -358,7 +417,7 @@ class HailoDepthEstimator:
         - Approaching objects: Temporal depth decrease not covered by YOLO detections
         
         Args:
-            depth_map: 224x224 depth map from estimate()
+            depth_map: Depth map from estimate()
             detections: Current YOLO detections (to exclude from approaching object check)
             frame_shape: Original frame shape for bbox mapping
             
@@ -372,9 +431,14 @@ class HailoDepthEstimator:
         now = time.time()
         dh, dw = depth_map.shape[:2]
 
-        # Convert inverse depth to distance map for analysis
-        dist_map = self.scale_factor / (depth_map + 1e-6)
-        dist_map = np.clip(dist_map, self.min_distance, self.max_distance)
+        # Convert to unified distance map (meters, higher = farther)
+        if self.model_type == "scdepthv3":
+            # SCDepthV3 already outputs metric depth
+            dist_map = np.clip(depth_map, self.min_distance, self.max_distance)
+        else:
+            # fast_depth outputs inverse depth — convert to meters
+            dist_map = self.scale_factor / (depth_map + 1e-6)
+            dist_map = np.clip(dist_map, self.min_distance, self.max_distance)
 
         # ── 1. Wall detection ────────────────────────────────────────────
         hazards.extend(self._detect_walls(dist_map, dh, dw, now))
@@ -472,12 +536,16 @@ class HailoDepthEstimator:
         Indoor: max depth < 6m AND < 15% of pixels see beyond 6m.
         
         Args:
-            depth_map: Raw 224x224 inverse-depth map from estimate().
+            depth_map: Raw depth map from estimate().
             
         Returns 'indoor' or 'outdoor'.
         """
-        dist_map = self.scale_factor / (depth_map + 1e-6)
-        dist_map = np.clip(dist_map, self.min_distance, self.max_distance)
+        # Convert to distance map (meters)
+        if self.model_type == "scdepthv3":
+            dist_map = np.clip(depth_map, self.min_distance, self.max_distance)
+        else:
+            dist_map = self.scale_factor / (depth_map + 1e-6)
+            dist_map = np.clip(dist_map, self.min_distance, self.max_distance)
 
         max_depth = float(np.max(dist_map))
         far_pixels = (dist_map > 6.0).sum()
@@ -621,9 +689,9 @@ class HailoDepthEstimator:
         center_end = int(dw * 0.75)
 
         # Mid-floor band (60-70% of frame height)
-        mid_band = depth_map[int(dh * 0.6):int(dh * 0.7), center_start:center_end]
+        mid_band = dist_map[int(dh * 0.6):int(dh * 0.7), center_start:center_end]
         # Bottom band (85-95% of frame height)
-        bottom_band = depth_map[int(dh * 0.85):int(dh * 0.95), center_start:center_end]
+        bottom_band = dist_map[int(dh * 0.85):int(dh * 0.95), center_start:center_end]
 
         if mid_band.size == 0 or bottom_band.size == 0:
             return hazards
@@ -631,17 +699,16 @@ class HailoDepthEstimator:
         mid_median = float(np.median(mid_band))
         bottom_median = float(np.median(bottom_band))
 
-        # For inverse depth: drop-off means bottom has LOWER values (farther away)
-        # Ratio: mid / bottom — high ratio means bottom is much farther
-        if bottom_median > 1e-6:
-            depth_ratio = mid_median / bottom_median
+        # For both model types, dist_map is in meters (higher = farther)
+        # Drop-off: bottom is much farther than mid (ratio > threshold)
+        if mid_median > 1e-6:
+            depth_ratio = bottom_median / mid_median
         else:
             depth_ratio = 0
 
         if depth_ratio > self.dropoff_threshold:
             # Ground falls away — drop-off detected
-            drop_distance = self.scale_factor / (mid_median + 1e-6)
-            drop_distance = max(self.min_distance, min(drop_distance, self.max_distance))
+            drop_distance = mid_median
 
             severity = HazardSeverity.CRITICAL if drop_distance < 2.0 else HazardSeverity.WARNING
 

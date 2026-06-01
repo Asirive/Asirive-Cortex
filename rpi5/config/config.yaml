@@ -537,21 +537,16 @@ conversation:
 # HAILO NPU CONFIGURATION (Hailo-8L M.2 HAT)
 # =====================================================
 hailo:
-  # DISABLED: hailo_pci DKMS 4.20.0 has hailo_vdma_buffer_map crash
-  # on kernel 6.12.75+ — all buffer DMA ops return size 0.
-  # Re-enable after upgrading Hailo packages or kernel downgrade.
-  enabled: false
+  enabled: true
   device_id: null  # Auto-detect (null = first available device)
 
-  # Depth Estimation (fast_depth model)
-  # DISABLED: hailo_pci DKMS 4.20.0 has hailo_vdma_buffer_map crash
-  # on kernel 6.12.75+ — all buffer DMA ops fail with "size 0".
-  # Re-enable after upgrading Hailo packages.
+  # Depth Estimation (SCDepthV3 model — metric depth output)
   depth:
-    enabled: false
-    model_path: "models/hailo/fast_depth.hef"
-    input_size: [224, 224]
-    scale_factor: 1.0  # Calibration factor: relative depth -> meters
+    enabled: true
+    model_path: "models/hailo/scdepthv3.hef"
+    model_type: "scdepthv3"  # "scdepthv3" (metric) or "fast_depth" (inverse)
+    input_size: null  # Auto-detect from HEF
+    scale_factor: 1.0  # Only used for fast_depth (inverse depth models)
     hazard_detection:
       wall_threshold: 1.5        # Distance (m) below which a surface is flagged as wall
       stair_gradient_threshold: 0.3  # Depth gradient magnitude for stair/curb detection

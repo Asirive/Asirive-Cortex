@@ -1790,7 +1790,8 @@ class CortexSystem:
                 try:
                     hazard_cfg = depth_config.get('hazard_detection', {})
                     self.depth_estimator = HailoDepthEstimator(
-                        hef_path=depth_config.get('model_path', 'models/hailo/fast_depth.hef'),
+                        hef_path=depth_config.get('model_path', 'models/hailo/scdepthv3.hef'),
+                        model_type=depth_config.get('model_type', 'scdepthv3'),
                         scale_factor=depth_config.get('scale_factor', 1.0),
                         wall_threshold=hazard_cfg.get('wall_threshold', 1.5),
                         stair_gradient_threshold=hazard_cfg.get('stair_gradient_threshold', 0.3),
@@ -1800,7 +1801,7 @@ class CortexSystem:
                         vdevice=self._shared_hailo_vdevice,
                     )
                     if self.depth_estimator.is_available:
-                        logger.info("✅ Hailo depth estimator initialized")
+                        logger.info(f"✅ Hailo depth estimator initialized ({depth_config.get('model_type', 'scdepthv3')})")
                     else:
                         logger.warning("⚠️ Hailo depth estimator loaded but NPU not available (will run without depth)")
                 except Exception as e:
