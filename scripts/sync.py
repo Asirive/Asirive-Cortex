@@ -655,17 +655,21 @@ Examples:
         parser.print_help()
         return 0
     
-    commands = {
-        "check": cmd_check,
-        "status": cmd_status,
-        "to": cmd_to,
-        "from": cmd_from,
-        "install": cmd_install,
-        "full": cmd_full,
-    }
-    
-    return commands[args.command](args)
+    return COMMANDS[args.command](args)
 
+
+# Module-level command registry (for external callers like cortex.py)
+COMMANDS = {
+    "check": cmd_check,
+    "status": cmd_status,
+    "to": cmd_to,
+    "from": cmd_from,
+    "install": cmd_install,
+    "full": cmd_full,
+}
+
+# Alias for external access
+commands = COMMANDS
 
 if __name__ == "__main__":
     sys.exit(main())
