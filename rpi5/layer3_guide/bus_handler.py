@@ -565,7 +565,7 @@ class BusHandler:
         """Speak text via TTS."""
         if self.tts:
             try:
-                await self.tts.speak_async(text, engine_override="kokoro")
+                await self.tts.speak_async(text, engine_override="supertonic")
             except Exception as e:
                 logger.warning(f"TTS failed: {e}")
         else:

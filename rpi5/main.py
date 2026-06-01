@@ -3186,11 +3186,11 @@ class CortexSystem:
             except Exception as e:
                 logger.warning(f"⚠️ ConnectivityMonitor start failed: {e}")
 
-        # Pre-initialize TTS engines to avoid 5.5s spike on first voice query
+        # Pre-initialize TTS engines to avoid delay on first voice query
         if self.tts:
-            logger.info("🔊 Pre-loading TTS engines (Kokoro + Gemini)...")
-            gemini_ok, kokoro_ok = self.tts.initialize()
-            logger.info(f"🔊 TTS ready — Kokoro: {'OK' if kokoro_ok else 'FAIL'}, Gemini: {'OK' if gemini_ok else 'FAIL'}")
+            logger.info("🔊 Pre-loading TTS engines (Supertonic + Gemini)...")
+            gemini_ok, supertonic_ok = self.tts.initialize()
+            logger.info(f"🔊 TTS ready — Supertonic: {'OK' if supertonic_ok else 'FAIL'}, Gemini: {'OK' if gemini_ok else 'FAIL'}")
 
         logger.info("✅ System started")
         logger.info("📸 Capturing frames...")
@@ -3942,7 +3942,7 @@ class CortexSystem:
         2. IntentRouter determines layer and flags
         3. Execute appropriate handler (VisionQueryHandler, Gemini, etc.)
         4. Aggregate detections if needed
-        5. Route to TTS (Gemini or Kokoro based on length)
+        5. Route to TTS (Gemini or Supertonic based on length)
         
         Args:
             query: User's voice command text
@@ -4200,7 +4200,7 @@ class CortexSystem:
                 except Exception as e:
                     logger.debug(f"OCR in Layer 1 failed: {e}")
             
-            # Speak via TTS (Cartesia cloud preferred — Kokoro CPU starves L0 YOLO)
+            # Speak via TTS (Cartesia cloud preferred — Supertonic local fallback)
             if self.tts and response:
                 await self.tts.speak_async(response)
             
@@ -4339,8 +4339,8 @@ class CortexSystem:
                         # Extract personal facts from user query
                         self.conversation_manager.extract_personal_facts(query)
                     
-                    # Speak via TTS — Cartesia Sonic 3 for Layer 2 (ultra-low latency cloud)
-                    # Fallback chain: Cartesia -> Kokoro -> Gemini
+                    # Speak via TTS — Cartesia Sonic 3.5 for Layer 2 (ultra-low latency cloud)
+                    # Fallback chain: Cartesia -> Supertonic -> Gemini
                     if self.tts and response:
                         await self.tts.speak_async(response, engine_override="cartesia")
                     

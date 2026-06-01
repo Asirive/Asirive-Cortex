@@ -1,13 +1,13 @@
 """
-Cartesia Sonic 3 TTS Handler - Ultra-Low Latency Cloud TTS
+Cartesia Sonic 3.5 TTS Handler - Ultra-Low Latency Cloud TTS
 
-Wrapper around the Cartesia Python SDK for Sonic 3 text-to-speech.
+Wrapper around the Cartesia Python SDK for Sonic 3.5 text-to-speech.
 Designed for Layer 2 (Gemini vision responses) where natural voice
 quality and low latency are critical for visually impaired users.
 
 Key features:
-- Industry-leading latency via Sonic 3 model
-- WAV output at 24kHz pcm_s16le (matches Kokoro pipeline)
+- Industry-leading latency via Sonic 3.5 model
+- WAV output at 24kHz pcm_s16le (matches Supertonic pipeline)
 - Emotion control (default: calm for assistive device)
 - Automatic .env key loading
 
@@ -49,12 +49,12 @@ def _get_cartesia():
 
 class CartesiaTTS:
     """
-    Cartesia Sonic 3 TTS handler for ultra-low latency speech synthesis.
+    Cartesia Sonic 3.5 TTS handler for ultra-low latency speech synthesis.
     
     Uses the Cartesia Python SDK to generate WAV audio from text.
     Singleton pattern to avoid re-initializing the client.
     
-    Output format: WAV, 24kHz, pcm_s16le (mono) — matches Kokoro pipeline
+    Output format: WAV, 24kHz, pcm_s16le (mono) — matches Supertonic pipeline
     so existing playback code works unchanged.
     """
     
@@ -70,7 +70,7 @@ class CartesiaTTS:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model_id: str = "sonic-3",
+        model_id: str = "sonic-3.5",
         voice_id: str = "f786b574-daa5-4673-aa0c-cbe3e8534c02",  # Katie
         language: str = "en",
         sample_rate: int = 24000,
@@ -82,10 +82,10 @@ class CartesiaTTS:
         
         Args:
             api_key: Cartesia API key (falls back to CARTESIA_API_KEY env var)
-            model_id: Sonic model ID (default: "sonic-3")
+            model_id: Sonic model ID (default: "sonic-3.5")
             voice_id: Voice ID (default: Katie — stable, realistic)
             language: Language code (default: "en")
-            sample_rate: Audio sample rate (default: 24000 to match Kokoro)
+            sample_rate: Audio sample rate (default: 24000 to match Supertonic)
             speed: Speech speed 0.6-1.5 (default: 1.0)
             emotion: Emotion preset (default: "calm" for assistive device)
         """
@@ -130,7 +130,7 @@ class CartesiaTTS:
         try:
             self.client = cartesia.Cartesia(api_key=self.api_key)
             self.available = True
-            logger.info(f"Cartesia Sonic 3 TTS initialized (voice: Katie, model: {self.model_id})")
+            logger.info(f"Cartesia Sonic 3.5 TTS initialized (voice: Katie, model: {self.model_id})")
             return True
         except Exception as e:
             logger.error(f"Failed to initialize Cartesia client: {e}")
@@ -139,7 +139,7 @@ class CartesiaTTS:
     
     def generate_speech(self, text: str) -> Optional[bytes]:
         """
-        Generate WAV audio bytes from text using Cartesia Sonic 3.
+        Generate WAV audio bytes from text using Cartesia Sonic 3.5.
         
         Uses the synchronous client.tts.bytes() API for simplicity.
         Returns complete WAV file bytes ready to play or save.
@@ -163,7 +163,7 @@ class CartesiaTTS:
         try:
             logger.info(f"Cartesia TTS: generating speech ({len(text)} chars)...")
             
-            # Build generation config for Sonic 3
+            # Build generation config for Sonic 3.5
             generation_config = {
                 "speed": self.speed,
                 "emotion": self.emotion,
@@ -246,7 +246,7 @@ class CartesiaTTS:
         """Get performance statistics."""
         avg_latency = (self.total_latency / self.request_count) if self.request_count > 0 else 0
         return {
-            "engine": "cartesia_sonic3",
+            "engine": "cartesia_sonic35",
             "available": self.available,
             "requests": self.request_count,
             "errors": self.error_count,

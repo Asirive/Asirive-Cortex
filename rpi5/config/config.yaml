@@ -137,9 +137,13 @@ layer2:
 
   # Text-to-Speech
   tts:
-    engine: "kokoro"  # Options: 'kokoro' (offline), 'gemini' (online)
-    kokoro_model_path: "models/kokoro-v0_19.pth"
-    sample_rate: 24000
+    engine: "supertonic"  # Options: 'supertonic' (local ONNX), 'gemini' (online)
+    supertonic:
+      voice: "M1"          # Built-in voices: M1-M5, F1-F5
+      lang: "en"           # Language code (en, ko, ja, etc.) or "na" for auto
+      speed: 1.05          # Speech speed (0.7-2.0)
+      total_steps: 8       # Quality: 5 (low) to 12 (high)
+      target_sample_rate: 24000  # Resample from 44100 to 24000 for compatibility
 
 # =====================================================
 # LTA DATAMALL (Singapore Bus Arrival API)
@@ -250,7 +254,7 @@ audio:
 
   # Output (Bluetooth A2DP Headphones)
   output_device:
-    sample_rate: 24000  # Kokoro TTS sample rate
+    sample_rate: 24000  # TTS output sample rate (Supertonic resamples to this)
     channels: 1  # Mono
     latency_ms: 40  # Target latency
 
@@ -477,11 +481,11 @@ bluetooth:
   device_name: "F-16"
 
 # =====================================================
-# CARTESIA SONIC 3 TTS (Layer 2 Primary Voice Engine)
+# CARTESIA SONIC 3.5 TTS (Layer 2 Primary Voice Engine)
 # =====================================================
 cartesia:
   enabled: true
-  model_id: "sonic-3"
+  model_id: "sonic-3.5"
   voice_id: "f786b574-daa5-4673-aa0c-cbe3e8534c02"  # Katie (stable, realistic)
   language: "en"
   sample_rate: 24000
