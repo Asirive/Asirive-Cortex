@@ -1,0 +1,3 @@
+#!/bin/sh
+# Unix wrapper for Cortex CLI
+exec python3 "$(dirname "$0")/cortex.py" "$@"
