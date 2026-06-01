@@ -109,7 +109,7 @@ class CartesiaSTT:
                     "model": self.model,
                     "language": self.language,
                 },
-                timeout=15.0,
+                timeout=30.0,  # Increased from 15s — was hitting edge under load
             )
             latency_ms = (time.time() - start) * 1000
 
@@ -121,7 +121,17 @@ class CartesiaSTT:
                 )
                 return None
 
-            data = resp.json()
+            # Handle empty body
+            if not resp.text or not resp.text.strip():
+                logger.warning("⚠️ Cartesia STT returned empty body")
+                return ""  # Successful but no transcript
+
+            try:
+                data = resp.json()
+            except ValueError as e:
+                logger.warning(f"⚠️ Cartesia STT invalid JSON: {e} (body: {resp.text[:100]})")
+                return None
+
             text = data.get("text", "").strip()
 
             self.request_count += 1

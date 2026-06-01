@@ -167,14 +167,11 @@ def cmd_run(args):
     print_banner()
     
     # Setup logging level
-    log_level = logging.DEBUG if args.debug else logging.INFO
-    logging.basicConfig(
-        level=log_level,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-        handlers=[
-            logging.StreamHandler(sys.stdout)
-        ]
-    )
+    # Setup Rich-based colored logging (matches `python -m rpi5 all` style)
+    sys.path.insert(0, str(PROJECT_ROOT))
+    from rpi5.cli.log_setup import setup_logging
+    log_level = "DEBUG" if args.debug else "INFO"
+    setup_logging(level=log_level, log_file="logs/cortex.log")
     
     # Check if running standalone or with laptop
     mode = "standalone" if args.standalone else "connected"
