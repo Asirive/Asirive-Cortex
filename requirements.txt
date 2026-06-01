@@ -30,15 +30,11 @@ google-generativeai>=0.8.6  # Legacy Gemini support
 openai>=1.60.1              # OpenAI Client
 gradio-client>=1.7.0        # Hugging Face Interface
 requests>=2.32.3            # HTTP Client
-cartesia>=1.0.0             # Cartesia Sonic 3 TTS (ultra-low latency)
+cartesia>=1.0.0             # Cartesia Sonic 3.5 TTS (ultra-low latency)
 
 # ===== Local AI Models =====
 openai-whisper>=20240930    # STT (requires system ffmpeg)
-kokoro-onnx>=0.4.9          # Local TTS (ONNX backend)
-misaki[en]>=0.5.0           # G2P for Kokoro
-# NOTE: Do NOT install 'phonemizer' — it conflicts with 'phonemizer-fork' needed by kokoro-onnx.
-# Install phonemizer-fork separately: pip install phonemizer-fork>=3.3.2
-espeakng-loader>=0.1.3      
+supertonic>=1.3.0           # Local TTS (ONNX, 99M params, 31 languages)
 
 # ===== OCR (Hailo NPU + PaddleOCR detection) =====
 paddlepaddle>=2.5.0         # PaddlePaddle CPU-only (detection backbone)

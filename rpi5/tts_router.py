@@ -4,7 +4,7 @@ TTS Router - Smart Text-to-Speech Routing
 
 Routes text to the appropriate TTS engine based on text length:
 - Short text (<300 chars): Gemini 2.5 Flash TTS (cloud, natural voice)
-- Long text (>=300 chars): Kokoro TTS (local, faster for long text)
+- Long text (>=300 chars): Supertonic TTS (local, ONNX, faster for long text)
 
 Auto-saves every TTS output as a pristine .wav file to tts_recordings/
 for video editing (mute camera audio, drag in the .wav).
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 # TTS Engine imports (lazy loaded)
 _gemini_tts = None
-_kokoro_tts = None
+_supertonic_tts = None
 
 
 def _get_gemini_tts():
@@ -42,35 +42,35 @@ def _get_gemini_tts():
     return _gemini_tts
 
 
-def _get_kokoro_tts():
-    """Lazy load Kokoro TTS handler."""
-    global _kokoro_tts
-    if _kokoro_tts is None:
+def _get_supertonic_tts():
+    """Lazy load Supertonic TTS handler."""
+    global _supertonic_tts
+    if _supertonic_tts is None:
         try:
-            from rpi5.layer1_reflex.kokoro_handler import KokoroTTS
-            _kokoro_tts = KokoroTTS()
-            if not _kokoro_tts.load_pipeline():
-                logger.warning("Kokoro TTS pipeline failed to load")
-                _kokoro_tts = None
+            from rpi5.layer1_reflex.supertonic_handler import SupertonicTTS
+            _supertonic_tts = SupertonicTTS()
+            if not _supertonic_tts.available:
+                logger.warning("Supertonic TTS not available")
+                _supertonic_tts = None
             else:
-                logger.info("Loaded Kokoro TTS")
+                logger.info("Loaded Supertonic TTS")
         except Exception as e:
-            logger.warning(f"Failed to load Kokoro TTS: {e}")
-    return _kokoro_tts
+            logger.warning(f"Failed to load Supertonic TTS: {e}")
+    return _supertonic_tts
 
 
 _cartesia_tts = None
 
 
 def _get_cartesia_tts():
-    """Lazy load Cartesia Sonic 3 TTS handler."""
+    """Lazy load Cartesia Sonic 3.5 TTS handler."""
     global _cartesia_tts
     if _cartesia_tts is None:
         try:
             from rpi5.layer2_thinker.cartesia_handler import CartesiaTTS
             _cartesia_tts = CartesiaTTS()
             if _cartesia_tts.available:
-                logger.info("Loaded Cartesia Sonic 3 TTS")
+                logger.info("Loaded Cartesia Sonic 3.5 TTS")
             else:
                 _cartesia_tts = None
         except Exception as e:
@@ -84,11 +84,11 @@ class TTSRouter:
     
     Routing logic:
     - Short text (<300 chars): Gemini 2.5 Flash TTS (natural, cloud-based)
-    - Long text (>=300 chars): Kokoro TTS (local, faster for long responses)
-    - Cartesia Sonic 3: Ultra-low latency cloud TTS for Layer 2 (via engine_override)
+    - Long text (>=300 chars): Supertonic TTS (local, ONNX, faster for long responses)
+    - Cartesia Sonic 3.5: Ultra-low latency cloud TTS for Layer 2 (via engine_override)
     - Fallback: If primary engine fails, use the other
     
-    Engine override options: "gemini", "kokoro", "cartesia"
+    Engine override options: "gemini", "supertonic", "cartesia"
     """
     
     _instance = None  # Singleton
@@ -110,8 +110,8 @@ class TTSRouter:
         Initialize TTS Router.
         
         Args:
-            length_threshold: Character count threshold for switching to Kokoro
-            prefer_local: If True, always use Kokoro (offline mode)
+            length_threshold: Character count threshold for switching to Supertonic
+            prefer_local: If True, always use Supertonic (offline mode)
             audio_output_dir: Directory for temporary audio files
         """
         if self._initialized:
@@ -128,7 +128,7 @@ class TTSRouter:
         self._recording_counter = 0  # Sequential numbering for easy sorting
         
         self._gemini_available = False
-        self._kokoro_available = False
+        self._supertonic_available = False
         self._cartesia_available = False
         self._playback_lock = threading.Lock()
         self._active_playbacks = 0
@@ -160,7 +160,7 @@ class TTSRouter:
         
         Args:
             audio_data: WAV audio bytes
-            engine: Engine name ("kokoro", "cartesia", "gemini")
+            engine: Engine name ("supertonic", "cartesia", "gemini")
             text: Full text that was spoken
         """
         try:
@@ -198,20 +198,20 @@ class TTSRouter:
         Pre-initialize all TTS engines.
         
         Returns:
-            Tuple of (gemini_available, kokoro_available)
+            Tuple of (gemini_available, supertonic_available)
         """
         gemini = _get_gemini_tts()
         self._gemini_available = gemini is not None
         
-        kokoro = _get_kokoro_tts()
-        self._kokoro_available = kokoro is not None
+        supertonic = _get_supertonic_tts()
+        self._supertonic_available = supertonic is not None
         
         cartesia = _get_cartesia_tts()
         self._cartesia_available = cartesia is not None
         
-        logger.info(f"TTS Engines: Gemini={self._gemini_available}, Kokoro={self._kokoro_available}, Cartesia={self._cartesia_available}")
+        logger.info(f"TTS Engines: Gemini={self._gemini_available}, Supertonic={self._supertonic_available}, Cartesia={self._cartesia_available}")
         
-        return self._gemini_available, self._kokoro_available
+        return self._gemini_available, self._supertonic_available
     
     def select_engine(self, text: str) -> str:
         """
@@ -221,20 +221,20 @@ class TTSRouter:
             text: Text to synthesize
             
         Returns:
-            "cartesia", "kokoro", or "gemini"
+            "cartesia", "supertonic", or "gemini"
         """
         if self.prefer_local:
-            return "kokoro"
+            return "supertonic"
         
-        # Primary: Cartesia Sonic 3 (lowest latency cloud TTS)
+        # Primary: Cartesia Sonic 3.5 (lowest latency cloud TTS)
         if self._cartesia_available:
             return "cartesia"
         
         text_length = len(text)
         
         if text_length >= self.length_threshold:
-            # Long text -> Kokoro (faster for long responses)
-            return "kokoro"
+            # Long text -> Supertonic (faster for long responses, local)
+            return "supertonic"
         else:
             # Short text -> Gemini (more natural voice)
             return "gemini"
@@ -253,7 +253,7 @@ class TTSRouter:
             text: Text to speak
             play_audio: If True, play audio immediately
             save_path: Optional path to save audio file
-            engine_override: Force a specific engine ("gemini", "kokoro", or "cartesia"),
+            engine_override: Force a specific engine ("gemini", "supertonic", or "cartesia"),
                              bypassing the automatic selection logic.
             
         Returns:
@@ -269,23 +269,23 @@ class TTSRouter:
             if engine == "cartesia":
                 success, audio_data = await self._speak_cartesia(text, play_audio, save_path)
                 if not success:
-                    logger.warning("Cartesia TTS failed, falling back to Kokoro")
-                    engine = "kokoro"
-                    success, audio_data = await self._speak_kokoro(text, play_audio, save_path)
+                    logger.warning("Cartesia TTS failed, falling back to Supertonic")
+                    engine = "supertonic"
+                    success, audio_data = await self._speak_supertonic(text, play_audio, save_path)
                     if not success:
-                        logger.warning("Kokoro TTS also failed, falling back to Gemini")
+                        logger.warning("Supertonic TTS also failed, falling back to Gemini")
                         engine = "gemini"
                         success, audio_data = await self._speak_gemini(text, play_audio, save_path)
             elif engine == "gemini":
                 success, audio_data = await self._speak_gemini(text, play_audio, save_path)
                 if not success:
-                    logger.warning("Gemini TTS failed, falling back to Kokoro")
-                    engine = "kokoro"
-                    success, audio_data = await self._speak_kokoro(text, play_audio, save_path)
+                    logger.warning("Gemini TTS failed, falling back to Supertonic")
+                    engine = "supertonic"
+                    success, audio_data = await self._speak_supertonic(text, play_audio, save_path)
             else:
-                success, audio_data = await self._speak_kokoro(text, play_audio, save_path)
+                success, audio_data = await self._speak_supertonic(text, play_audio, save_path)
                 if not success:
-                    logger.warning("Kokoro TTS failed, falling back to Gemini")
+                    logger.warning("Supertonic TTS failed, falling back to Gemini")
                     engine = "gemini"
                     success, audio_data = await self._speak_gemini(text, play_audio, save_path)
         
@@ -365,56 +365,39 @@ class TTSRouter:
             logger.error(f"Gemini TTS error: {e}")
             return False, None
     
-    async def _speak_kokoro(
+    async def _speak_supertonic(
         self,
         text: str,
         play_audio: bool,
         save_path: Optional[str]
     ) -> Tuple[bool, Optional[bytes]]:
-        """Use Kokoro TTS to synthesize speech."""
-        kokoro = _get_kokoro_tts()
-        if not kokoro:
+        """Use Supertonic TTS to synthesize speech."""
+        supertonic = _get_supertonic_tts()
+        if not supertonic:
             return False, None
         
         try:
-            # KokoroTTS.generate_speech() returns audio samples (numpy array)
-            audio_samples = kokoro.generate_speech(text)
+            # SupertonicTTS.generate_wav_bytes() returns WAV bytes at 24kHz
+            audio_bytes = await asyncio.to_thread(supertonic.generate_wav_bytes, text)
             
-            if audio_samples is not None:
-                # Convert to WAV bytes
-                import io
-                import wave
-                import numpy as np
-                
-                # Kokoro returns float32 [-1, 1] audio at 24kHz
-                sample_rate = 24000
-                
-                # Normalize to int16
-                audio_int16 = (audio_samples * 32767).astype(np.int16)
-                
-                # Create WAV in memory
-                wav_buffer = io.BytesIO()
-                with wave.open(wav_buffer, 'wb') as wav_file:
-                    wav_file.setnchannels(1)
-                    wav_file.setsampwidth(2)  # 16-bit
-                    wav_file.setframerate(sample_rate)
-                    wav_file.writeframes(audio_int16.tobytes())
-                
-                audio_data = wav_buffer.getvalue()
-                
+            if audio_bytes:
                 if save_path:
                     with open(save_path, 'wb') as f:
-                        f.write(audio_data)
+                        f.write(audio_bytes)
                 
                 if play_audio:
-                    await self._play_audio_samples(audio_samples, sample_rate)
+                    # Save to temp file and play via paplay
+                    temp_path = str(self.audio_output_dir / "supertonic_temp.wav")
+                    with open(temp_path, 'wb') as f:
+                        f.write(audio_bytes)
+                    await self._play_audio_file(temp_path)
                 
-                return True, audio_data
+                return True, audio_bytes
             
             return False, None
             
         except Exception as e:
-            logger.error(f"Kokoro TTS error: {e}")
+            logger.error(f"Supertonic TTS error: {e}")
             return False, None
     
     async def _speak_cartesia(
@@ -423,7 +406,7 @@ class TTSRouter:
         play_audio: bool,
         save_path: Optional[str]
     ) -> Tuple[bool, Optional[bytes]]:
-        """Use Cartesia Sonic 3 TTS to synthesize speech."""
+        """Use Cartesia Sonic 3.5 TTS to synthesize speech."""
         cartesia = _get_cartesia_tts()
         if not cartesia:
             return False, None

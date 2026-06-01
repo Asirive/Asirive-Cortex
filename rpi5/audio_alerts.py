@@ -4,7 +4,7 @@ Audio Alert Manager — Pre-recorded Safety Alerts
 Manages pre-recorded WAV audio clips for instant hazard alerts.
 Clips are played non-blocking via PipeWire/paplay for <50ms latency.
 
-On first run, generates all alert clips using Kokoro TTS if they don't exist.
+On first run, generates all alert clips using Supertonic TTS if they don't exist.
 
 Author: Haziq (@IRSPlays)
 Project: Cortex v2.0 — YIA 2026
@@ -42,7 +42,7 @@ class AudioAlertManager:
     Features:
     - Non-blocking playback via paplay (PipeWire/PulseAudio)
     - Per-alert cooldown to prevent spam
-    - Auto-generates clips via Kokoro TTS on first run
+    - Auto-generates clips via Supertonic TTS on first run
     """
 
     def __init__(
@@ -91,18 +91,18 @@ class AudioAlertManager:
 
     def _generate_missing_clips(self, missing_keys: list):
         """
-        Generate missing WAV clips using Kokoro TTS.
-        Falls back to pico2wave or espeak if Kokoro is unavailable.
+        Generate missing WAV clips using Supertonic TTS.
+        Falls back to pico2wave or espeak if Supertonic is unavailable.
         """
         for key in missing_keys:
             text = ALERT_TEXTS[key]
             wav_path = self.alerts_dir / f"{key}.wav"
             
             try:
-                # Try Kokoro TTS first (highest quality)
-                if self._generate_with_kokoro(text, str(wav_path)):
+                # Try Supertonic TTS first (highest quality, local ONNX)
+                if self._generate_with_supertonic(text, str(wav_path)):
                     self._clips[key] = str(wav_path)
-                    logger.info(f"Generated alert clip (Kokoro): {key}")
+                    logger.info(f"Generated alert clip (Supertonic): {key}")
                     continue
                 
                 # Fallback to espeak (always available on RPi)
@@ -116,32 +116,16 @@ class AudioAlertManager:
             except Exception as e:
                 logger.error(f"Error generating alert clip '{key}': {e}")
 
-    def _generate_with_kokoro(self, text: str, output_path: str) -> bool:
-        """Generate WAV using Kokoro TTS engine."""
+    def _generate_with_supertonic(self, text: str, output_path: str) -> bool:
+        """Generate WAV using Supertonic TTS engine (local ONNX)."""
         try:
-            from rpi5.layer1_reflex.kokoro_handler import KokoroTTS
-            kokoro = KokoroTTS()
-            kokoro.load_pipeline()
-            
-            # Generate speech
-            audio_data = kokoro.generate_speech(text)
-            if audio_data is not None:
-                import numpy as np
-                import wave
-                import struct
-                
-                # Kokoro returns float32 audio, convert to int16 WAV
-                if isinstance(audio_data, np.ndarray):
-                    audio_int16 = (audio_data * 32767).astype(np.int16)
-                    with wave.open(output_path, 'w') as wf:
-                        wf.setnchannels(1)
-                        wf.setsampwidth(2)  # 16-bit
-                        wf.setframerate(24000)  # Kokoro default sample rate
-                        wf.writeframes(audio_int16.tobytes())
-                    return True
-            return False
+            from rpi5.layer1_reflex.supertonic_handler import SupertonicTTS
+            supertonic = SupertonicTTS()
+            if not supertonic.available:
+                return False
+            return supertonic.save_to_file(text, output_path)
         except Exception as e:
-            logger.debug(f"Kokoro TTS not available for alert generation: {e}")
+            logger.debug(f"Supertonic TTS not available for alert generation: {e}")
             return False
 
     def _generate_with_espeak(self, text: str, output_path: str) -> bool:

@@ -19,7 +19,7 @@ Date: December 30, 2025
 
 HYBRID TTS ARCHITECTURE:
 - Primary: Gemini 3 Flash Preview (cloud, most intelligent model, Jan 2025)
-- Fallback: Kokoro-82M (local, unlimited, when all API keys exhausted)
+- Fallback: Supertonic (local ONNX, unlimited, when all API keys exhausted)
 """
 
 import logging
@@ -34,13 +34,13 @@ import numpy as np
 from PIL import Image
 from dotenv import load_dotenv
 
-# Import Kokoro TTS for fallback (local TTS when Gemini rate-limited)
+# Import Supertonic TTS for fallback (local TTS when Gemini rate-limited)
 try:
-    from layer1_reflex.kokoro_handler import KokoroTTS
-    KOKORO_AVAILABLE = True
+    from layer1_reflex.supertonic_handler import SupertonicTTS
+    SUPERTONIC_AVAILABLE = True
 except ImportError:
-    KOKORO_AVAILABLE = False
-    logging.info("ℹ️ Kokoro TTS not available for fallback")
+    SUPERTONIC_AVAILABLE = False
+    logging.info("ℹ️ Supertonic TTS not available for fallback")
 
 # Import NEW Google Gen AI SDK (not google.generativeai)
 try:
@@ -102,9 +102,9 @@ class GeminiTTS:
         
         logger.info("🎤 Initializing Gemini 2.5 Flash TTS Handler (Hybrid Mode)...")
         
-        # Kokoro TTS fallback (local TTS when all API keys exhausted)
-        self.kokoro_fallback: Optional[KokoroTTS] = None
-        self.kokoro_initialized = False
+        # Supertonic TTS fallback (local TTS when all API keys exhausted)
+        self.supertonic_fallback: Optional[SupertonicTTS] = None
+        self.supertonic_initialized = False
         self.using_fallback = False  # Track if currently using fallback
         
         # API Key Rotation Pool - loaded entirely from environment variables
@@ -171,10 +171,10 @@ class GeminiTTS:
         
         self._initialized = True
         
-        # M11: Pre-initialize Kokoro fallback in background to avoid delay on first failure
-        if KOKORO_AVAILABLE:
+        # M11: Pre-initialize Supertonic fallback in background to avoid delay on first failure
+        if SUPERTONIC_AVAILABLE:
             import threading
-            threading.Thread(target=self._initialize_kokoro_fallback, daemon=True).start()
+            threading.Thread(target=self._initialize_supertonic_fallback, daemon=True).start()
     
     def _parse_retry_delay(self, error_message: str) -> float:
         """
@@ -234,41 +234,41 @@ class GeminiTTS:
         logger.error("❌ All API keys exhausted or rate-limited")
         return False
     
-    def _initialize_kokoro_fallback(self) -> bool:
+    def _initialize_supertonic_fallback(self) -> bool:
         """
-        Initialize Kokoro TTS as fallback for when all Gemini API keys are exhausted.
+        Initialize Supertonic TTS as fallback for when all Gemini API keys are exhausted.
         
         Returns:
-            True if Kokoro initialized successfully, False otherwise
+            True if Supertonic initialized successfully, False otherwise
         """
-        if not KOKORO_AVAILABLE:
-            logger.warning("⚠️ Kokoro TTS not available for fallback")
+        if not SUPERTONIC_AVAILABLE:
+            logger.warning("⚠️ Supertonic TTS not available for fallback")
             return False
         
-        if self.kokoro_initialized:
+        if self.supertonic_initialized:
             return True
         
         try:
-            logger.info("🔄 Initializing Kokoro-82M as TTS fallback...")
-            self.kokoro_fallback = KokoroTTS(
-                lang_code="a",  # American English
-                default_voice="af_bella",  # Nice female voice for Layer 2
-                default_speed=1.0
+            logger.info("🔄 Initializing Supertonic as TTS fallback...")
+            self.supertonic_fallback = SupertonicTTS(
+                voice="F1",
+                lang="en",
+                speed=1.05,
             )
-            if self.kokoro_fallback.load_pipeline():
-                self.kokoro_initialized = True
-                logger.info("✅ Kokoro-82M fallback ready (unlimited local TTS)")
+            if self.supertonic_fallback.available:
+                self.supertonic_initialized = True
+                logger.info("✅ Supertonic fallback ready (unlimited local TTS)")
                 return True
             else:
-                logger.error("❌ Failed to load Kokoro pipeline")
+                logger.error("❌ Failed to initialize Supertonic")
                 return False
         except Exception as e:
-            logger.error(f"❌ Failed to initialize Kokoro fallback: {e}")
+            logger.error(f"❌ Failed to initialize Supertonic fallback: {e}")
             return False
     
-    def _generate_with_kokoro_fallback(self, text: str, filename: Optional[str] = None) -> Optional[str]:
+    def _generate_with_supertonic_fallback(self, text: str, filename: Optional[str] = None) -> Optional[str]:
         """
-        Generate speech using Kokoro-82M (local fallback).
+        Generate speech using Supertonic (local fallback).
         
         Args:
             text: Text to convert to speech
@@ -277,37 +277,28 @@ class GeminiTTS:
         Returns:
             Path to saved audio file, or None if failed
         """
-        if not self._initialize_kokoro_fallback():
+        if not self._initialize_supertonic_fallback():
             return None
         
         try:
-            logger.info(f"🔊 [FALLBACK] Generating speech with Kokoro-82M: '{text[:50]}...'")
+            logger.info(f"🔊 [FALLBACK] Generating speech with Supertonic: '{text[:50]}...'")
             self.using_fallback = True
-            
-            # Generate audio with Kokoro
-            audio_data = self.kokoro_fallback.generate_speech(text, log_latency=True)
-            
-            if audio_data is None:
-                logger.error("❌ [FALLBACK] Kokoro failed to generate audio")
-                return None
             
             # Save as WAV file
             if filename is None:
-                filename = f"kokoro_fallback_{int(time.time())}.wav"
+                filename = f"supertonic_fallback_{int(time.time())}.wav"
             
             output_path = self.output_dir / filename
             
-            # Convert float32 [-1, 1] to int16 PCM
-            audio_int16 = (audio_data * 32767).astype(np.int16)
-            pcm_data = audio_int16.tobytes()
-            
-            self._save_wav_file(str(output_path), pcm_data)
-            
-            logger.info(f"✅ [FALLBACK] Kokoro audio saved to: {output_path}")
-            return str(output_path)
+            if self.supertonic_fallback.save_to_file(text, str(output_path)):
+                logger.info(f"✅ [FALLBACK] Supertonic audio saved to: {output_path}")
+                return str(output_path)
+            else:
+                logger.error("❌ [FALLBACK] Supertonic failed to generate audio")
+                return None
             
         except Exception as e:
-            logger.error(f"❌ [FALLBACK] Kokoro generation failed: {e}")
+            logger.error(f"❌ [FALLBACK] Supertonic generation failed: {e}")
             return None
     
     def _retry_api_call(self, api_call_func, *args, **kwargs):
@@ -386,7 +377,7 @@ class GeminiTTS:
         return None
     
     def is_using_fallback(self) -> bool:
-        """Check if currently using Kokoro fallback instead of Gemini."""
+        """Check if currently using Supertonic fallback instead of Gemini."""
         return self.using_fallback
     
     def reset_fallback_status(self):
@@ -510,10 +501,10 @@ class GeminiTTS:
             error_str = str(e)
             logger.warning(f"⚠️ Gemini TTS failed: {error_str[:100]}...")
             
-            # Check if all API keys exhausted AND we have text to speak - trigger Kokoro fallback
+            # Check if all API keys exhausted AND we have text to speak - trigger Supertonic fallback
             if text_description and any(x in error_str for x in ['429', 'RESOURCE_EXHAUSTED', '503', 'exhausted', 'rate limit']):
-                logger.info("🔄 All Gemini API keys exhausted → Switching to Kokoro-82M fallback")
-                return self._generate_with_kokoro_fallback(text_description)
+                logger.info("🔄 All Gemini API keys exhausted → Switching to Supertonic fallback")
+                return self._generate_with_supertonic_fallback(text_description)
             
             logger.error(f"❌ Failed to generate speech from image: {e}")
             self.error_count += 1
@@ -767,10 +758,10 @@ class GeminiTTS:
                 error_str = str(api_error)
                 logger.warning(f"⚠️ Gemini TTS API exhausted: {error_str[:100]}...")
                 
-                # All API keys exhausted - use Kokoro fallback
+                # All API keys exhausted - use Supertonic fallback
                 if any(x in error_str for x in ['429', 'RESOURCE_EXHAUSTED', '503', 'exhausted', 'rate limit']):
-                    logger.info("🔄 Switching to Kokoro-82M fallback for TTS")
-                    return self._generate_with_kokoro_fallback(text, filename)
+                    logger.info("🔄 Switching to Supertonic fallback for TTS")
+                    return self._generate_with_supertonic_fallback(text, filename)
                 raise
             
             # Reset fallback status since Gemini worked
@@ -826,8 +817,8 @@ class GeminiTTS:
             "success_rate": (self.request_count - self.error_count) / max(self.request_count, 1) * 100,
             "current_api_key": self.current_key_index + 1,
             "total_api_keys": len(self.api_key_pool),
-            "using_kokoro_fallback": self.using_fallback,
-            "kokoro_available": KOKORO_AVAILABLE and self.kokoro_initialized
+            "using_supertonic_fallback": self.using_fallback,
+            "supertonic_available": SUPERTONIC_AVAILABLE and self.supertonic_initialized
         }
 
 
