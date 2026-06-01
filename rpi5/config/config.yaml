@@ -292,8 +292,14 @@ audio:
   # STT Pipeline (Cartesia Ink primary, Whisper fallback)
   stt:
     cartesia_enabled: true      # Use Cartesia Ink cloud STT as primary
-    cartesia_model: "ink-whisper"  # Cartesia model ID
+    cartesia_model: "ink-2"     # Cartesia model ID (ink-2 for WebSocket, ink-whisper for batch)
+    cartesia_mode: "batch"      # "batch" (HTTP POST) or "websocket" (streaming with turn detection)
     language: "en"              # ISO-639-1 language code
+    # WebSocket mode notes:
+    # - ink-2 has built-in turn detection (replaces Silero VAD for speech boundaries)
+    # - Lower latency than batch mode
+    # - Keep Silero VAD for barge-in detection and echo suppression
+    # - Test in noisy environments before enabling for production
 
 # =====================================================
 # SPATIAL AUDIO CONFIGURATION
