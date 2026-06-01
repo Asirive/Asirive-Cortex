@@ -43,7 +43,11 @@ class AudioAlertManager:
     - Non-blocking playback via paplay (PipeWire/PulseAudio)
     - Per-alert cooldown to prevent spam
     - Auto-generates clips via Supertonic TTS on first run
+    - Pre-generates common distance variants for instant playback
     """
+
+    # Common distances to pre-generate (meters)
+    PREMADE_DISTANCES = [1, 2, 3, 4, 5]
 
     def __init__(
         self,
@@ -65,7 +69,9 @@ class AudioAlertManager:
         self.cooldown = cooldown
         self._last_played: Dict[str, float] = {}
         self._clips: Dict[str, str] = {}  # alert_key -> full path to WAV
+        self._premade_clips: Dict[str, str] = {}  # "alert_key_dist" -> full path
         self._play_lock = threading.Lock()
+        self._supertonic = None
         
         # Ensure directory exists
         self.alerts_dir.mkdir(parents=True, exist_ok=True)
@@ -73,11 +79,14 @@ class AudioAlertManager:
         # Load existing clips
         self._load_clips()
         
-        # Generate missing clips
+        # Generate missing base clips
         missing = [k for k in ALERT_TEXTS if k not in self._clips]
         if missing:
             logger.info(f"Generating {len(missing)} missing alert clips: {missing}")
             self._generate_missing_clips(missing)
+        
+        # Pre-generate common distance variants
+        self._generate_premade_distance_clips()
 
     def _load_clips(self):
         """Scan alerts directory for existing WAV files."""
@@ -119,14 +128,44 @@ class AudioAlertManager:
     def _generate_with_supertonic(self, text: str, output_path: str) -> bool:
         """Generate WAV using Supertonic TTS engine (local ONNX)."""
         try:
-            from rpi5.layer1_reflex.supertonic_handler import SupertonicTTS
-            supertonic = SupertonicTTS()
-            if not supertonic.available:
+            if self._supertonic is None:
+                from rpi5.layer1_reflex.supertonic_handler import SupertonicTTS
+                self._supertonic = SupertonicTTS()
+            if not self._supertonic.available:
                 return False
-            return supertonic.save_to_file(text, output_path)
+            return self._supertonic.save_to_file(text, output_path)
         except Exception as e:
             logger.debug(f"Supertonic TTS not available for alert generation: {e}")
             return False
+
+    def _generate_premade_distance_clips(self):
+        """Pre-generate WAV clips for common distance variants."""
+        generated = 0
+        for alert_key, template in ALERT_TEXTS.items():
+            for dist in self.PREMADE_DISTANCES:
+                clip_key = f"{alert_key}_{dist}m"
+                wav_path = self.alerts_dir / f"{clip_key}.wav"
+                
+                # Skip if already exists
+                if wav_path.exists():
+                    self._premade_clips[clip_key] = str(wav_path)
+                    continue
+                
+                # Build text with distance
+                if dist == 1:
+                    dist_str = "1 meter"
+                else:
+                    dist_str = f"{dist} meters"
+                text = template.format(distance=dist_str)
+                
+                # Generate with Supertonic
+                if self._generate_with_supertonic(text, str(wav_path)):
+                    self._premade_clips[clip_key] = str(wav_path)
+                    generated += 1
+        
+        if generated > 0:
+            logger.info(f"Pre-generated {generated} distance variant clips")
+        logger.info(f"Premade clips loaded: {len(self._premade_clips)}")
 
     def _generate_with_espeak(self, text: str, output_path: str) -> bool:
         """Generate WAV using espeak-ng (fallback, lower quality)."""
@@ -143,8 +182,8 @@ class AudioAlertManager:
         """
         Speak an alert with distance info if not on cooldown.
         
-        Uses espeak-ng for real-time speech with distance, falling back to
-        pre-recorded clips if espeak is unavailable.
+        Uses pre-generated clips for common distances, Supertonic for
+        real-time generation, and espeak-ng as last-resort fallback.
         
         Args:
             alert_key: Alert type (e.g., "wall", "stairs_down", "dropoff")
@@ -170,13 +209,51 @@ class AudioAlertManager:
             if distance_m < 1.0:
                 dist_str = f"{distance_m:.1f} meters"
             else:
-                dist_str = f"{distance_m:.0f} meters"
+                dist_str = f"{int(round(distance_m))} meters"
             text = template.format(distance=dist_str)
         else:
             text = template.replace(", {distance}", "").replace("{distance} ", "").replace("{distance}", "")
 
-        # Try real-time TTS with espeak-ng (dynamic distance in speech)
+        # Try pre-generated clip first (instant playback for common distances)
+        if distance_m is not None:
+            rounded_dist = int(round(distance_m))
+            if rounded_dist in self.PREMADE_DISTANCES:
+                clip_key = f"{alert_key}_{rounded_dist}m"
+                clip_path = self._premade_clips.get(clip_key)
+                if clip_path and os.path.exists(clip_path):
+                    if blocking:
+                        return self._play_sync(clip_path)
+                    else:
+                        thread = threading.Thread(target=self._play_sync, args=(clip_path,), daemon=True)
+                        thread.start()
+                        return True
+
+        # Fall back to real-time TTS with Supertonic
         def _speak():
+            # Try Supertonic first (high quality, local)
+            if self._supertonic is None:
+                try:
+                    from rpi5.layer1_reflex.supertonic_handler import SupertonicTTS
+                    self._supertonic = SupertonicTTS()
+                except Exception:
+                    pass
+            
+            if self._supertonic and self._supertonic.available:
+                wav_bytes = self._supertonic.generate_wav_bytes(text)
+                if wav_bytes:
+                    # Save to temp file and play
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+                        temp_path = f.name
+                        f.write(wav_bytes)
+                    try:
+                        result = self._play_sync(temp_path)
+                        os.unlink(temp_path)
+                        return result
+                    except Exception:
+                        pass
+            
+            # Last resort: espeak-ng
             try:
                 result = subprocess.run(
                     ["espeak-ng", "-s", "180", "-p", "50", "-a", "200", text],
@@ -186,7 +263,8 @@ class AudioAlertManager:
                     return True
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
-            # Fallback: play pre-recorded clip (no distance info)
+            
+            # Final fallback: play pre-recorded clip (no distance info)
             clip_path = self._clips.get(alert_key)
             if clip_path and os.path.exists(clip_path):
                 return self._play_sync(clip_path)
