@@ -156,7 +156,8 @@ class YOLOGuardian:
     def detect(
         self,
         frame: np.ndarray,
-        confidence: Optional[float] = None
+        confidence: Optional[float] = None,
+        depth_map: Optional[np.ndarray] = None
     ) -> List[Dict[str, Any]]:
         """
         Run safety-critical object detection.
@@ -166,6 +167,7 @@ class YOLOGuardian:
         Args:
             frame: Input image (H, W, C) as numpy array
             confidence: Override default confidence threshold
+            depth_map: Optional depth map for metric distance (from HailoDepthEstimator)
             
         Returns:
             List of safety-critical detections:
@@ -176,7 +178,8 @@ class YOLOGuardian:
                     'bbox': [x1, y1, x2, y2],  # Normalized [0-1]
                     'bbox_area': 0.25,  # Fraction of frame
                     'proximity': 'near',  # 'immediate', 'near', 'far'
-                    'priority': 'high'  # Safety classification
+                    'priority': 'high',  # Safety classification
+                    'distance_m': 2.5,  # Metric distance if depth_map provided
                 },
                 ...
             ]
@@ -223,18 +226,41 @@ class YOLOGuardian:
                         bbox_area = (bbox_width * bbox_height) / frame_area
                         
                         # Determine proximity level
-                        if bbox_area >= self.PROXIMITY_THRESHOLDS['immediate']:
-                            proximity = 'immediate'
-                            priority = 'critical'
-                        elif bbox_area >= self.PROXIMITY_THRESHOLDS['near']:
-                            proximity = 'near'
-                            priority = 'high'
-                        elif bbox_area >= self.PROXIMITY_THRESHOLDS['far']:
-                            proximity = 'far'
-                            priority = 'medium'
-                        else:
-                            proximity = 'distant'
-                            priority = 'low'
+                        # Use metric depth if available, otherwise fall back to bbox-area heuristic
+                        distance_m = None
+                        if depth_map is not None:
+                            distance_m = self._get_depth_at_bbox(depth_map, bbox, frame.shape)
+                            if distance_m > 0:
+                                if distance_m < 1.0:
+                                    proximity = 'immediate'
+                                    priority = 'critical'
+                                elif distance_m < 2.5:
+                                    proximity = 'near'
+                                    priority = 'high'
+                                elif distance_m < 5.0:
+                                    proximity = 'far'
+                                    priority = 'medium'
+                                else:
+                                    proximity = 'distant'
+                                    priority = 'low'
+                            else:
+                                # Depth lookup failed, fall back to bbox-area
+                                distance_m = None
+                        
+                        if distance_m is None:
+                            # Fallback to bbox-area heuristic
+                            if bbox_area >= self.PROXIMITY_THRESHOLDS['immediate']:
+                                proximity = 'immediate'
+                                priority = 'critical'
+                            elif bbox_area >= self.PROXIMITY_THRESHOLDS['near']:
+                                proximity = 'near'
+                                priority = 'high'
+                            elif bbox_area >= self.PROXIMITY_THRESHOLDS['far']:
+                                proximity = 'far'
+                                priority = 'medium'
+                            else:
+                                proximity = 'distant'
+                                priority = 'low'
                         
                         # Only include safety-critical classes
                         if class_name in self.SAFETY_CLASSES:
@@ -253,6 +279,8 @@ class YOLOGuardian:
                                 'priority': priority,
                                 'layer': 'guardian'
                             }
+                            if distance_m is not None and distance_m > 0:
+                                detection['distance_m'] = distance_m
                             detections.append(detection)
                             
                             # Log detection at DEBUG level (status display shows summary)
@@ -335,6 +363,54 @@ class YOLOGuardian:
             'low': 1
         }
         return priority_map.get(priority, 0)
+    
+    def _get_depth_at_bbox(
+        self,
+        depth_map: np.ndarray,
+        bbox: np.ndarray,
+        frame_shape: tuple
+    ) -> float:
+        """
+        Get metric distance at bounding box center from depth map.
+        
+        Args:
+            depth_map: Depth map in meters (from HailoDepthEstimator)
+            bbox: [x1, y1, x2, y2] in pixel coordinates
+            frame_shape: (H, W, C) of original frame
+            
+        Returns:
+            Distance in meters, or -1.0 if lookup fails
+        """
+        try:
+            h, w = frame_shape[:2]
+            dh, dw = depth_map.shape[:2]
+            
+            # Map bbox center to depth map coordinates
+            cx = (bbox[0] + bbox[2]) / 2.0
+            cy = (bbox[1] + bbox[3]) / 2.0
+            dx = int(cx / w * dw)
+            dy = int(cy / h * dh)
+            
+            # Clamp to depth map bounds
+            dx = max(0, min(dx, dw - 1))
+            dy = max(0, min(dy, dh - 1))
+            
+            # Sample median depth in a 5x5 region (robust to noise)
+            r = 2
+            y1 = max(0, dy - r)
+            y2 = min(dh, dy + r + 1)
+            x1 = max(0, dx - r)
+            x2 = min(dw, dx + r + 1)
+            region = depth_map[y1:y2, x1:x2]
+            
+            if region.size == 0:
+                return -1.0
+            
+            return float(np.median(region))
+            
+        except Exception as e:
+            logger.debug(f"Depth lookup failed: {e}")
+            return -1.0
     
     def get_classes(self) -> List[str]:
         """
