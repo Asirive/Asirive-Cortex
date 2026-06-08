@@ -224,7 +224,7 @@ def get_default_rpi5_config() -> Dict[str, Any]:
             'name': 'Project Cortex Wearable',
         },
         'server': {
-            'host': '10.41.240.101',  # Laptop IP
+            'host': '172.26.13.101',  # Laptop IP
             'port': 8765,
         },
         'camera': {

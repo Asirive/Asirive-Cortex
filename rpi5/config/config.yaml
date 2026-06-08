@@ -35,7 +35,11 @@ layer0:
   model_path: "models/converted/yolo26n_ncnn_model"  # YOLO v26n NCNN - user requested
   framework: "ncnn"  # NCNN - ARM-optimized for RPi5
   device: "cpu"  # Options: 'cpu' (RPi), 'cuda' (laptop with GPU)
-  confidence: 0.5  # Detection confidence threshold
+  # 0.5 was too high — empty detections on most scenes. 0.35 is a
+  # better balance for the visually impaired: still rejects obvious
+  # noise, but picks up people/objects at typical room distances.
+  # YOLOE/Whisper upstream layers refine from here.
+  confidence: 0.35  # Detection confidence threshold
   enable_haptic: true  # Enable GPIO haptic feedback (RPi)
   gpio_pin: 18  # GPIO pin for vibration motor (BCM numbering)
 
@@ -436,7 +440,7 @@ development:
 # LAPTOP SERVER CONFIGURATION
 # =====================================================
 laptop_server:
-  host: "10.41.240.101"  # Laptop IP address - UPDATE THIS for your network
+  host: "172.26.13.101"  # Laptop IP address - UPDATE THIS for your network
   port: 8765
 
 # =====================================================
@@ -451,7 +455,7 @@ zmq:
 # RPI5 DEVICE CONFIGURATION (for sync tools)
 # =====================================================
 rpi5_device:
-  host: "10.41.240.31"  # RPi5 IP address - used by sync tools
+  host: "172.26.13.31"  # RPi5 IP address - used by sync tools
   user: "cortex"  # SSH username for sync
   path: "/home/cortex/ProjectCortex"  # Remote path for sync
 
@@ -559,6 +563,17 @@ hailo:
       dropoff_threshold: 5.0     # Depth ratio for drop-off detection (raised to reduce false positives)
       approach_rate_threshold: 0.1   # Per-frame depth decrease rate for approaching objects
       alert_cooldown: 3.0        # Seconds between repeated alerts of the same type
+
+      # v2.1 — Indoor-focused: cane handles ground, AI handles head-height
+      indoor:
+        overhang_max_height_m: 1.5        # anything overhead closer than this → alert
+        overhang_min_width_pct: 15.0       # min horizontal extent (% of frame)
+        stairs_up_min_riser_m: 0.3         # min step height to flag stairs-up
+        incoming_fast_velocity_mps: 0.5    # depth change per frame to flag approach
+        incoming_fast_min_frames: 3        # consecutive frames before alerting
+      outdoor:
+        # All current thresholds + indoor ones still apply (low tree branches, etc.)
+        pass
 
   # OCR Recognition (PaddleOCR on Hailo)
   ocr:

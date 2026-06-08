@@ -5,12 +5,18 @@ Voice Coordinator Module
 Orchestrates Voice Activity Detection (Silero VAD) and Speech-to-Text (Whisper).
 Part of the Production Mode pipeline for "Always On" voice commands.
 
+STT engines (selected via `stt.cartesia_mode` in config):
+- batch:     Cartesia Ink-Whisper HTTP POST (default, ~66ms)
+- websocket: Cartesia Ink 2 streaming with built-in turn detection
+
 Author: Haziq (@IRSPlays)
 Date: January 17, 2026
 """
 
 import logging
 import asyncio
+import queue as _queue
+import threading
 import time
 import numpy as np
 from typing import Callable, Optional, List
@@ -43,7 +49,13 @@ class VoiceCoordinator:
         self.config = config or {}
         self.vad = None
         self.stt = None         # Local Whisper (offline fallback)
-        self.cloud_stt = None   # Cartesia Ink (primary, cloud)
+        self.cloud_stt = None   # Cartesia Ink (primary, cloud) — batch HTTP
+        self.ws_stt = None      # Cartesia Ink 2 — WebSocket streaming
+        self._ws_mode_active = False
+        self._ws_chunk_queue: Optional[_queue.Queue] = None
+        self._ws_drain_task: Optional[asyncio.Task] = None
+        self._ws_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._ws_lock = threading.Lock()
         self.is_active = False
         # Optional raw audio callback: fn(audio_bytes: bytes, sample_rate: int) -> None
         # Set this after init to forward PCM audio to GeminiLiveHandler (audio-to-audio path)
@@ -182,15 +194,33 @@ class VoiceCoordinator:
             if not self.vad.load_model():
                 logger.error("Failed to load VAD model")
 
-            # Initialize Cartesia Ink STT (primary — cloud, ~66ms)
+            # Initialize Cartesia STT (primary — cloud).
+            # `cartesia_mode` picks the transport: "batch" (HTTP POST) or
+            # "websocket" (Ink 2 streaming with built-in turn detection).
             stt_config = self.config.get('stt', {})
+            cartesia_mode = stt_config.get('cartesia_mode', 'batch')
             if stt_config.get('cartesia_enabled', True):
+                if cartesia_mode == "websocket":
+                    from rpi5.layer1_reflex.cartesia_stt_ws import CartesiaSTTWebSocket
+                    self.ws_stt = CartesiaSTTWebSocket(
+                        sample_rate=16000,
+                        encoding=stt_config.get('encoding', 'pcm_s16le'),
+                    )
+                    if self.ws_stt.available:
+                        logger.info("🌐 Primary STT: Cartesia Ink 2 (websocket, turn detection)")
+                    else:
+                        self.ws_stt = None
+                        logger.warning("⚠️ Cartesia WebSocket STT unavailable — falling back to batch")
+                # Always also instantiate batch (used as fallback if WS disconnects)
                 self.cloud_stt = CartesiaSTT(
                     model=stt_config.get('cartesia_model', 'ink-whisper'),
                     language=stt_config.get('language', 'en'),
                 )
                 if self.cloud_stt.available:
-                    logger.info("🌐 Primary STT: Cartesia Ink (cloud, ~66ms)")
+                    if cartesia_mode == "websocket" and self.ws_stt:
+                        logger.info("🔇 Fallback STT: Cartesia Ink (batch HTTP)")
+                    else:
+                        logger.info("🌐 Primary STT: Cartesia Ink (cloud, ~66ms)")
                 else:
                     self.cloud_stt = None
 
@@ -209,11 +239,11 @@ class VoiceCoordinator:
             logger.error(f"Voice Coordinator Init Failed: {e}", exc_info=True)
 
     def start(self):
-        """Start listening loop (VAD)"""
+        """Start listening loop (VAD) and connect WebSocket STT if configured."""
         if not self.vad:
             logger.error("⚠️ VAD not initialized")
             return
-        if not self.cloud_stt and (not self.stt or not self.stt.model):
+        if not self.cloud_stt and not self.ws_stt and (not self.stt or not self.stt.model):
             logger.error("⚠️ No STT available (Cartesia disabled and Whisper model not loaded)")
             return
 
@@ -223,23 +253,130 @@ class VoiceCoordinator:
         logger.info("🎤 Starting Voice Coordinator (VAD Active)...")
 
         # Wire continuous audio forwarding to Gemini Live (every 32ms chunk)
-        if (self.on_raw_audio or self.on_mic_audio) and not self._continuous_audio_wired:
+        if (self.on_raw_audio or self.on_mic_audio or self.ws_stt) and not self._continuous_audio_wired:
             self.vad.on_audio_chunk = self._on_audio_chunk
             self._continuous_audio_wired = True
-            logger.info("🔊 Continuous audio streaming to Gemini Live enabled")
+            logger.info("🔊 Continuous audio streaming enabled (Gemini Live + WS STT)")
 
         if self.vad.start_listening():
             self.is_active = True
 
+        # WebSocket STT: open connection, register turn-end callback, and
+        # launch an async drain task that pulls chunks from the thread-safe
+        # queue and forwards them to the WS handler.
+        if self.ws_stt and self.ws_stt.available and not self._ws_mode_active:
+            try:
+                self._ws_chunk_queue = _queue.Queue(maxsize=200)
+                self.ws_stt.on_turn_end(self._on_ws_turn_end)
+                # Capture the running loop so the audio thread can schedule work
+                try:
+                    self._ws_loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    self._ws_loop = None
+                self._ws_drain_task = asyncio.ensure_future(self._ws_drain_loop())
+                self._ws_mode_active = True
+                logger.info("🌐 Cartesia WebSocket STT: drain loop armed (queue=200 chunks)")
+            except Exception as e:
+                logger.error(f"❌ Failed to arm WebSocket STT: {e}")
+                self._ws_mode_active = False
+
     def stop(self):
-        """Stop listening"""
+        """Stop listening and close WebSocket STT if active."""
         if self.vad and self.is_active:
             self.vad.stop_listening()
             self.is_active = False
             logger.info("🛑 Voice Coordinator Stopped")
 
+        if self._ws_mode_active:
+            self._ws_mode_active = False
+            # Cancel drain task
+            if self._ws_drain_task and not self._ws_drain_task.done():
+                self._ws_drain_task.cancel()
+            self._ws_drain_task = None
+            # Close WS connection
+            if self.ws_stt:
+                try:
+                    loop = self._ws_loop
+                    if loop and loop.is_running():
+                        asyncio.ensure_future(self.ws_stt.close())
+                    else:
+                        # No live loop — best effort
+                        pass
+                except Exception as e:
+                    logger.warning(f"WS STT close error: {e}")
+            self._ws_loop = None
+            logger.info("🛑 Cartesia WebSocket STT closed")
+
+    async def _ws_drain_loop(self):
+        """Async task: pull PCM chunks from the queue and send to WS.
+
+        Runs in the main asyncio loop. Bridges the audio thread
+        (which calls `_on_audio_chunk` and pushes to `_ws_chunk_queue`)
+        with the WS handler's async `send_audio_chunk`.
+        """
+        if not self.ws_stt:
+            return
+        try:
+            await self.ws_stt.connect()
+            logger.info("🌐 Cartesia WebSocket STT connected")
+        except Exception as e:
+            logger.error(f"❌ Cartesia WebSocket connect failed: {e}")
+            return
+        while self._ws_mode_active:
+            try:
+                pcm_bytes = await asyncio.to_thread(self._ws_chunk_queue.get, True, 0.1)
+            except _queue.Empty:
+                continue
+            except Exception as e:
+                logger.debug(f"WS drain queue error: {e}")
+                continue
+            try:
+                await self.ws_stt.send_audio_chunk(pcm_bytes)
+            except Exception as e:
+                logger.warning(f"WS send_audio_chunk failed: {e}")
+                break
+
+    def _on_ws_turn_end(self, transcript: str):
+        """Callback: WS STT produced a final transcript for a turn."""
+        if not transcript or not transcript.strip():
+            return
+        # Skip if the same transcript was already produced by batch STT
+        # (defensive: in WS mode we suppress batch, but keep this guard)
+        text = transcript.strip()
+        logger.info(f"🗣️ Transcribed (Cartesia WS): '{text}'")
+        if self.on_command_detected:
+            try:
+                # on_command_detected is the async dispatcher in main.py.
+                # Schedule it on the captured event loop.
+                if self._ws_loop and self._ws_loop.is_running():
+                    self._ws_loop.call_soon_threadsafe(
+                        self._dispatch_ws_async, text
+                    )
+                else:
+                    # Fallback: fire the callback directly (may not be async-safe)
+                    try:
+                        self.on_command_detected(text)
+                    except Exception as e:
+                        logger.error(f"WS dispatch error: {e}")
+            except Exception as e:
+                logger.error(f"WS dispatch error: {e}")
+
+    def _dispatch_ws_async(self, text: str):
+        """Run the async on_command_detected from the event loop thread."""
+        try:
+            cb = self.on_command_detected
+            if cb is None:
+                return
+            try:
+                loop = asyncio.get_running_loop()
+                asyncio.ensure_future(cb(text))
+            except RuntimeError:
+                pass
+        except Exception as e:
+            logger.error(f"WS async dispatch error: {e}")
+
     def _on_audio_chunk(self, chunk: np.ndarray):
-        """Forward every VAD audio chunk to Gemini Live for continuous streaming."""
+        """Forward every VAD audio chunk to Gemini Live + Cartesia WebSocket STT."""
         # Noise gate: reject very quiet audio (distant speech, ambient noise)
         if not self._passes_noise_gate(chunk):
             # Still send silence to Gemini to maintain stream continuity
@@ -248,6 +385,12 @@ class VoiceCoordinator:
                     silence = b'\x00' * (len(chunk) * 2)
                     self.on_raw_audio(silence, 16000)
                 except Exception:
+                    pass
+            # Also push silence to WS so it knows we're still connected
+            if self._ws_mode_active and self._ws_chunk_queue is not None:
+                try:
+                    self._ws_chunk_queue.put_nowait(b'\x00' * (len(chunk) * 2))
+                except _queue.Full:
                     pass
             return
 
@@ -271,6 +414,17 @@ class VoiceCoordinator:
                     self.on_raw_audio(pcm_bytes, 16000)
             except Exception:
                 pass  # Don't log per-chunk errors
+
+        # Forward to WebSocket STT (non-blocking; drop on full queue)
+        if self._ws_mode_active and self._ws_chunk_queue is not None:
+            try:
+                pcm_bytes = (chunk * 32767).astype(np.int16).tobytes()
+                self._ws_chunk_queue.put_nowait(pcm_bytes)
+            except _queue.Full:
+                # Drop — better than blocking the audio thread
+                pass
+            except Exception:
+                pass
 
     def _on_speech_start(self):
         """Callback from VAD when speech starts."""
@@ -318,6 +472,8 @@ class VoiceCoordinator:
 
         Pipeline: Cartesia Ink (cloud, ~66ms) → Whisper (offline fallback, ~8s)
         Gemini Live audio path runs in parallel via continuous chunk streaming.
+        If WebSocket STT is active, the transcript is delivered via its
+        turn-end callback and we skip the batch path to avoid double-fire.
         """
         # Track VAD triggers for hall mode auto-detection
         self._update_hall_mode()
@@ -351,6 +507,14 @@ class VoiceCoordinator:
         self._speech_started_during_output = False
         if output_active and not speech_started_during_output:
             logger.info(f"🔇 Suppressing {len(audio)} sample speech segment (speaker active)")
+            return
+
+        # WebSocket STT mode: VAD gives us the speech-boundary signal but the
+        # transcript arrives via the WS turn-end callback. Skip batch here
+        # to avoid double-dispatch (the WS queue has already received all
+        # chunks of this segment).
+        if self._ws_mode_active and self.ws_stt and self.ws_stt.is_connected:
+            logger.debug("🌐 VAD segment ended — waiting for WS turn.end callback")
             return
 
         self._transcribe_and_dispatch(audio)

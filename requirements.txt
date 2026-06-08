@@ -5,8 +5,12 @@
 python-dotenv>=1.0.1        # Env management
 
 # ===== Computer Vision =====
-# CRITICAL: Python 3.13 mandates Numpy 2.1+. Legacy Numpy 1.x will fail.
-numpy>=2.1.0                
+# CRITICAL: HailoRT 4.20 (Debian Bookworm) reads numpy arrays through
+# pybind11 and is INCOMPATIBLE with numpy 2.x. The 4.23 release on
+# Trixie added numpy 2.x support via a pybind11 update, but on
+# Bookworm we're stuck on HailoRT 4.20. Pin numpy to 1.26.x.
+# torch 2.6+ and ultralytics 8.4+ still work with numpy 1.26.
+numpy>=1.26.0,<2.0
 opencv-python-headless>=4.10.0.84  # Headless for Lite OS; supports Numpy 2.x
 
 # NOTE: Install picamera2 via apt: 'sudo apt install python3-picamera2'

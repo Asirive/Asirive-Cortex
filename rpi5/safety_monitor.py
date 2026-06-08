@@ -47,7 +47,16 @@ TIER3_VEHICLES = {
     "car", "truck", "bus", "motorcycle", "bicycle", "train",
 }
 
-# Everything else (person, dog, cat, ...) → Tier 4 (no alert)
+# Tier 3 (v2.1): non-vehicle classes that need fast-approach alerts.
+# A person running at you is just as dangerous as a bicycle.
+# User normally hears/avoids people, but a running child or panicked
+# pedestrian doesn't always yield in time.
+TIER3_FAST_APPROACH = {
+    "person",
+    "skateboard",   # fast, low, silent
+}
+
+# Everything else (dog, cat, ...) → Tier 4 (no alert)
 
 
 # ─── Data Classes ──────────────────────────────────────────────────────────
@@ -175,9 +184,20 @@ class SafetyMonitor:
                 # Only care about critical / warning severity
                 if h.severity.value == "info":
                     continue
-                # Walls are expected indoors — suppress unless dangerously close
-                # Room walls at 0.5-0.8m are normal; only alert < 0.5m (collision imminent)
-                if self._is_indoor and h.type.value == "wall" and h.distance >= 0.5:
+                # ── Indoor filter (v2.1) ──
+                # Indoors, the user has a cane. Cane handles:
+                #   - walls (hits them)
+                #   - drop-offs (foot lands wrong)
+                #   - stairs_down (foot lands wrong)
+                #   - curbs (catches edge)
+                # So skip those. Cane CANNOT detect:
+                #   - OVERHANG (signs, low ceilings, branches)
+                #   - STAIRS_UP (foot lands on riser)
+                #   - INCOMING_FAST (running person, cart)
+                # → Always fire on those, regardless of environment.
+                if self._is_indoor and h.type.value in (
+                    "wall", "dropoff", "stairs_down", "curb"
+                ):
                     continue
                 key = f"t1_{h.type.value}_{h.direction}"
                 if self._on_cooldown(key, now):
@@ -187,11 +207,25 @@ class SafetyMonitor:
                 #   > 1.5m  → spatial audio only
                 #   1.0-1.5m → spatial audio + TTS
                 #   < 1.0m  → spatial audio + TTS + haptic
-                needs_tts = h.distance < 1.5 and not self._tts_on_cooldown(key, now)
-                needs_haptic = h.distance < 1.0 and not self._haptic_on_cooldown(now)
+                # v2.1: T0 (critical) for OVERHANG, STAIRS_UP, INCOMING_FAST
+                # at < 1.0m → always haptic (these are cane-invisible traps).
+                is_critical_trap = h.type.value in (
+                    "overhang", "stairs_up", "incoming_fast"
+                )
+                needs_tts = (
+                    (h.distance < 1.5 or is_critical_trap)
+                    and not self._tts_on_cooldown(key, now)
+                )
+                needs_haptic = (
+                    (h.distance < 1.0 or is_critical_trap)
+                    and not self._haptic_on_cooldown(now)
+                )
+
+                # Tier 0 for critical trap at any distance
+                tier = 0 if (is_critical_trap and h.severity.value == "critical") else 1
 
                 candidates.append(ThreatAlert(
-                    tier=1,
+                    tier=tier,
                     score=self._tier1_score(h),
                     alert_type=h.type.value,
                     direction=h.direction,
@@ -231,8 +265,12 @@ class SafetyMonitor:
                     bbox=tuple(bbox) if bbox else None,
                 ))
 
-            # ─ Tier 3: Vehicle closing fast ─
-            elif cls in TIER3_VEHICLES and dist and dist < self.tier3_max_distance:
+            # ─ Tier 3: Anything closing fast (v2.1 extended) ─
+            # Was: only vehicles. Now: vehicles, people, bicycles, skateboards
+            # — anything that moves toward the user. Cane can't detect these
+            # when they're approaching; user has no time to react.
+            elif (cls in TIER3_VEHICLES or cls in TIER3_FAST_APPROACH
+                  ) and dist and dist < self.tier3_max_distance:
                 if vel > self.tier3_approach_velocity:
                     direction = self._bbox_to_direction(bbox)
                     key = f"t3_{cls}_{direction}"
@@ -364,18 +402,26 @@ class SafetyMonitor:
     # ── Environment awareness ──────────────────────────────────────────
 
     def set_environment(self, indoor: bool):
-        """Adjust alert cooldowns for indoor vs outdoor."""
+        """Adjust alert cooldowns for indoor vs outdoor.
+
+        v2.1: indoor mode also implicitly enables T0 (critical tier) for
+        cane-invisible hazards (OVERHANG, STAIRS_UP, INCOMING_FAST) and
+        suppresses cane-handled hazards (WALL, STAIRS_DOWN, DROPOFF, CURB).
+        """
         if indoor == self._is_indoor:
             return
         self._is_indoor = indoor
         if indoor:
-            self.alert_cooldown = 8.0
-            self.tts_cooldown = 20.0
-            self.haptic_cooldown = 5.0
+            # Indoors: less clutter. Cane handles ground; AI only speaks
+            # for the things the cane can't see.
+            self.alert_cooldown = 6.0   # was 8.0 — slightly faster repeats
+            self.tts_cooldown = 12.0    # was 20.0 — say it more often
+            self.haptic_cooldown = 3.0  # was 5.0
         else:
             self.alert_cooldown = self._outdoor_alert_cooldown
             self.tts_cooldown = self._outdoor_tts_cooldown
             self.haptic_cooldown = self._outdoor_haptic_cooldown
         label = "INDOOR" if indoor else "OUTDOOR"
         logger.info(f"SafetyMonitor → {label}: cooldowns alert={self.alert_cooldown}s, "
-                    f"tts={self.tts_cooldown}s, haptic={self.haptic_cooldown}s")
+                    f"tts={self.tts_cooldown}s, haptic={self.haptic_cooldown}s, "
+                    f"cane-handled={indoor}")

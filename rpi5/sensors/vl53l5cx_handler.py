@@ -207,6 +207,15 @@ class VL53L5CXHandler:
         """Return True if the sensor is initialized and ready."""
         return self._is_available
 
+    @property
+    def is_mock(self) -> bool:
+        """Return True if running in mock/simulation mode (no real hardware).
+
+        Callers should treat mock data as synthetic — never use it to
+        short-circuit a more authoritative source (e.g. Hailo depth).
+        """
+        return bool(self._mock)
+
     def get_context_string(self) -> str:
         """Short status string for dashboard / logging."""
         with self._lock:

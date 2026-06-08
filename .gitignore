@@ -53,6 +53,9 @@ nav_cache.db
 # Old README (archived)
 README.old.md
 
+# Local agent / handoff docs (personal notes, not for the repo)
+AGENTS.md
+
 # Windows reserved filename artifact
 nul
 .worktrees/

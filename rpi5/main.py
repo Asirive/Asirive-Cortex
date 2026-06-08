@@ -35,6 +35,38 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 import datetime
 
+
+def _ensure_utf8_stdio() -> None:
+    """Reconfigure stdout/stderr to UTF-8 (replace on bad bytes).
+
+    Windows cp1252 can't encode emoji (🚀, ⚠️, etc). Linux is UTF-8
+    native, so this is a no-op there. On Windows dev boxes it stops
+    UnicodeEncodeError from logger.info(...) at module import time.
+    """
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+        enc = (getattr(stream, "encoding", None) or "").lower()
+        if "utf" in enc:
+            continue
+        try:
+            new_stream = open(
+                stream.fileno(),
+                mode="w",
+                buffering=1,
+                encoding="utf-8",
+                errors="replace",
+                closefd=False,
+            )
+            setattr(sys, stream_name, new_stream)
+        except (AttributeError, OSError, ValueError):
+            pass
+
+
+_ensure_utf8_stdio()
+
+
 import cv2
 import numpy as np
 import yaml
@@ -57,37 +89,53 @@ except ImportError:
 logs_dir = Path('logs')
 logs_dir.mkdir(exist_ok=True)
 
-# Create shared Rich console for both logging and Live display
-# This prevents logging from interfering with the Live panel
-_rich_console = Console() if RICH_AVAILABLE else None
+# Shared Rich console. The status display uses its own dedicated console
+# (StatusDisplay._panel_console) so log output routed here can't corrupt
+# the Live panel cursor. Logging setup itself is done by setup_logging()
+# in rpi5/cli/log_setup.py — main.py is normally imported AFTER that's
+# been called, so any basicConfig here is a no-op. The fallback below
+# only fires if main.py is imported without setup_logging() running first
+# (e.g. from a unit test).
+def _utf8_stderr():
+    """Wrap stderr in UTF-8 for emoji-safe logging on Windows."""
+    enc = (getattr(sys.stderr, "encoding", None) or "").lower()
+    if "utf" in enc:
+        return sys.stderr
+    try:
+        return open(sys.stderr.fileno(), mode="w", buffering=1,
+                    encoding="utf-8", errors="replace", closefd=False)
+    except (AttributeError, OSError):
+        return sys.stderr
 
-# Configure logging with RichHandler to prevent interference with Live display
-if RICH_AVAILABLE and RichHandler:
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(message)s',  # RichHandler handles formatting
-        datefmt='[%X]',
-        handlers=[
-            logging.FileHandler('logs/cortex.log'),
-            RichHandler(
-                console=_rich_console,
-                show_time=True,
-                show_path=False,
-                rich_tracebacks=True,
-                tracebacks_show_locals=False
-            )
-        ]
-    )
-else:
-    # Fallback if Rich not available
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.FileHandler('logs/cortex.log'),
-            logging.StreamHandler()
-        ]
-    )
+_rich_console = Console(file=_utf8_stderr()) if RICH_AVAILABLE else None
+
+if not logging.getLogger().handlers:
+    if RICH_AVAILABLE and RichHandler:
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(message)s',  # RichHandler handles formatting
+            datefmt='[%X]',
+            handlers=[
+                logging.FileHandler('logs/cortex.log'),
+                RichHandler(
+                    console=_rich_console,
+                    show_time=True,
+                    show_path=False,
+                    rich_tracebacks=True,
+                    tracebacks_show_locals=False
+                )
+            ]
+        )
+    else:
+        # Fallback if Rich not available
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler('logs/cortex.log'),
+                logging.StreamHandler(sys.stderr)
+            ]
+        )
 logger = logging.getLogger(__name__)
 
 # Add rpi5 to path
@@ -437,6 +485,48 @@ def run_async_safe(coro, blocking=True):
 # =====================================================
 # INTERACTIVE STATUS DISPLAY
 # =====================================================
+class LogCapture(logging.Handler):
+    """
+    Logging handler that pushes (timestamp, level, message) to a deque.
+
+    Used by StatusDisplay to show the most recent log events inside the
+    Live status panel — so the user doesn't need a second terminal to
+    see what's happening while the panel is running.
+    """
+    def __init__(self, capacity: int = 12):
+        super().__init__(level=logging.INFO)
+        from collections import deque as _deque
+        self.records: "deque[tuple[str, str, str]]" = _deque(maxlen=capacity)
+        # Use compact format: HH:MM:SS LEVEL  message
+        self.setFormatter(logging.Formatter(
+            fmt="%(message)s",  # we just want the message
+        ))
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            ts = time.strftime("%H:%M:%S", time.localtime(record.created))
+            level = record.levelname
+            msg = record.getMessage()
+            # Strip Rich markup / ANSI for clean display
+            import re as _re
+            msg = _re.sub(r"\x1b\[[0-9;]*m", "", msg)
+            # Truncate long messages
+            if len(msg) > 120:
+                msg = msg[:117] + "..."
+            self.records.appendleft((ts, level, msg))
+        except Exception:
+            pass  # never let logging break the panel
+
+
+# Module-level singleton — set by CortexSystem.__init__
+_log_capture: Optional[LogCapture] = None
+
+
+def get_log_capture() -> Optional[LogCapture]:
+    """Return the global LogCapture (None if not initialized)."""
+    return _log_capture
+
+
 class StatusDisplay:
     """
     Interactive status panel for real-time detection display.
@@ -486,8 +576,13 @@ class StatusDisplay:
         self._ai_active = False  # True = Gemini routing, False = local IntentRouter
         self._ai_last_call = ""  # Last function call from Gemini
         
-        # Rich console and live display - use shared console to prevent logging interference
-        self._console = _rich_console  # Use the module-level shared console
+        # Rich console and live display - dedicated console so the panel
+        # doesn't tear when the shared logging console writes to the same
+        # terminal in between Live refreshes.
+        self._panel_console = Console() if RICH_AVAILABLE else None
+        # `print_above` writes to the panel console so its messages land
+        # in the same output stream as the Live display.
+        self._console = self._panel_console if self._panel_console else _rich_console
         self._live = None
         self._started = False
         self._enabled = RICH_AVAILABLE
@@ -501,11 +596,11 @@ class StatusDisplay:
         """Start the live status display."""
         if not self._enabled or self._started:
             return
-        
+
         try:
             self._live = Live(
                 self._render(),
-                console=self._console,
+                console=self._panel_console,
                 refresh_per_second=4,
                 transient=False,
                 vertical_overflow="visible"
@@ -710,7 +805,29 @@ class StatusDisplay:
                     row6.append("⚡ LOCAL ROUTING", style="bold yellow")
                 
                 table.add_row(row6)
-                
+
+                # Row 7: Recent log events (v2.1) — keeps logs visible
+                # inside the panel so they don't get eaten by panel refresh
+                capture = get_log_capture()
+                if capture and capture.records:
+                    row7 = Text()
+                    row7.append("Recent:     ", style="bold white")
+                    # Show most recent first
+                    recent = list(capture.records)[:3]
+                    for i, (ts, level, msg) in enumerate(recent):
+                        if i > 0:
+                            row7.append("\n            ", style="")
+                        level_color = {
+                            "ERROR": "bold red",
+                            "WARNING": "yellow",
+                            "INFO": "dim",
+                            "DEBUG": "dim italic",
+                        }.get(level, "dim")
+                        row7.append(f"{ts} ", style="dim")
+                        row7.append(f"{level:<7} ", style=level_color)
+                        row7.append(msg, style="white")
+                    table.add_row(row7)
+
                 return Panel(
                     table,
                     title="[bold white]Asirive Cortex Status[/bold white]",
@@ -1224,6 +1341,20 @@ class CortexSystem:
         self._last_proactive_gemini_signature = ""
         self._last_processed_frame_seq = -1
         self._last_status_fps_update = 0.0
+
+        # Per-frame routing counters — for diagnosing frame routing bugs
+        # (e.g. "why is FPS 100+ but no detections?"). These count events,
+        # not loop iterations, so they're the real source of truth.
+        self._frames_processed = 0       # new camera frames handled
+        self._layer0_calls = 0           # YOLO inferences submitted
+        self._layer1_calls = 0           # YOLOE inferences submitted
+        self._tof_calls = 0              # ToF depth reads
+        self._hailo_calls = 0            # Hailo monocular depth calls
+        self._loop_iterations = 0        # total loop spins (incl. no-frame sleep)
+        self._last_routing_log_time = 0.0  # throttle for periodic routing log
+        self._routing_log_interval = 5.0  # emit routing log every 5s
+        self._routing_last_frames_logged = 0
+        self._routing_last_time_logged = time.time()
         self._live31_proactive_guidance_enabled = (
             os.getenv("GEMINI_31_PROACTIVE_GUIDANCE", "true").lower() == "true"
         )
@@ -1602,6 +1733,15 @@ class CortexSystem:
         # Initialize interactive status display
         self.status_display = init_status_display()
         logger.info("📊 Interactive status display initialized")
+
+        # Install LogCapture so the status panel can show recent log
+        # events inside itself (v2.1 — keeps logs visible despite panel
+        # refresh eating the terminal scrollback).
+        global _log_capture
+        if _log_capture is None:
+            _log_capture = LogCapture(capacity=12)
+            root_logger = logging.getLogger()
+            root_logger.addHandler(_log_capture)
 
         # Initialize Navigator (Layer 3 — spatial audio SCRAPPED, kept for routing only)
         self.navigator = None
@@ -3222,6 +3362,7 @@ class CortexSystem:
         try:
             while self.running:
                 loop_start = time.time()
+                self._loop_iterations += 1
 
                 # Privacy mode: skip all vision, keep sensors running
                 if self.privacy_mode or not self.camera_available:
@@ -3234,6 +3375,7 @@ class CortexSystem:
                     time.sleep(0.01)
                     continue
                 self._last_processed_frame_seq = frame_seq
+                self._frames_processed += 1
                 if self.session_recorder:
                     self.session_recorder.write_video_frame(frame)
 
@@ -3264,9 +3406,19 @@ class CortexSystem:
                 depth_map = None
                 hazards = []
 
-                # ── Try VL53L5CX ToF first ──
-                if self.tof_handler and self.tof_handler.is_available:
+                # ── Try VL53L5CX ToF first (only if real hardware) ──
+                # In MOCK mode the ToF emits synthetic hazards that block
+                # the Hailo fallback. Skip it so the real depth path runs.
+                tof_skipped_mock = bool(
+                    self.tof_handler
+                    and self.tof_handler.is_available
+                    and self.tof_handler.is_mock
+                )
+                if tof_skipped_mock:
+                    logger.debug("[ToF] mock mode — skipping synthetic hazards, deferring to Hailo")
+                if self.tof_handler and self.tof_handler.is_available and not tof_skipped_mock:
                     try:
+                        self._tof_calls += 1
                         hazards = self.tof_handler.update()
                         if hazards:
                             logger.debug(f"[ToF] {len(hazards)} hazards: "
@@ -3280,6 +3432,7 @@ class CortexSystem:
 
                 # ── Fallback to Hailo monocular depth ──
                 if not hazards and self.depth_estimator and self.depth_estimator.is_available:
+                    self._hailo_calls += 1
                     try:
                         depth_map = self.depth_estimator.estimate(frame)
                         if depth_map is not None:
@@ -3695,18 +3848,41 @@ class CortexSystem:
                 # Legacy: rpi5/layer3_guide/spatial_audio/
 
                 # 7. Track FPS for Logging and Status Display
-                loop_time = time.time() - loop_start
-                fps = 1.0 / loop_time if loop_time > 0 else 0
-                fps_tracker.append(fps)
-
-                # Throttle FPS status writes to match the live panel refresh cadence.
-                if self.status_display and (time.time() - self._last_status_fps_update) >= 0.25:
-                    self._last_status_fps_update = time.time()
-                    self.status_display.update_fps(fps)
+                # Measure FPS from *processed frames*, not loop iterations.
+                # The loop spins many times per actual frame (it sleeps 10ms
+                # waiting for the next camera frame), so a loop-based FPS
+                # reads 100+ even when YOLO never runs. Use the running
+                # count of frames_processed over wall time instead.
+                fps_tracker.append(self._frames_processed)
 
                 if len(fps_tracker) >= 30:
-                    avg_fps = sum(fps_tracker) / len(fps_tracker)
-                    logger.debug(f"📊 FPS: {avg_fps:.1f}")
+                    now = time.time()
+                    frames_now = self._frames_processed
+                    # Frames processed in the last window
+                    window_frames = frames_now - self._routing_last_frames_logged
+                    window_secs = now - self._routing_last_time_logged
+                    self._routing_last_frames_logged = frames_now
+                    self._routing_last_time_logged = now
+
+                    real_fps = window_frames / window_secs if window_secs > 0 else 0.0
+
+                    # Per-frame routing log — answers "is YOLO/Hailo actually
+                    # being called?" Every ~5s.
+                    if (now - self._last_routing_log_time) >= self._routing_log_interval:
+                        loop_rate = self._loop_iterations / window_secs if window_secs > 0 else 0.0
+                        logger.info(
+                            f"📊 ROUTING: FPS={real_fps:.1f} (frames={frames_now}) "
+                            f"loop={loop_rate:.0f}/s | L0={self._layer0_calls} "
+                            f"L1={self._layer1_calls} ToF={self._tof_calls} "
+                            f"Hailo={self._hailo_calls}"
+                        )
+                        self._last_routing_log_time = now
+
+                    # Status display gets the *real* FPS, not the loop rate
+                    if self.status_display and (now - self._last_status_fps_update) >= 0.25:
+                        self._last_status_fps_update = now
+                        self.status_display.update_fps(real_fps)
+
                     fps_tracker = []
 
         except KeyboardInterrupt:
@@ -3810,6 +3986,7 @@ class CortexSystem:
                     self._layer0_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="layer0")
                 self._layer0_submit_time = now
                 self._layer0_future = self._layer0_executor.submit(self.layer0.detect, frame)
+                self._layer0_calls += 1
 
             detections.extend(self._last_layer0_detections)
 
@@ -3844,6 +4021,7 @@ class CortexSystem:
                     self._layer1_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="layer1")
                 self._layer1_submit_time = now
                 self._layer1_future = self._layer1_executor.submit(self.layer1.detect, frame)
+                self._layer1_calls += 1
 
             detections.extend(self._last_layer1_detections)
 

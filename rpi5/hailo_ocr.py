@@ -142,6 +142,11 @@ class HailoOCRPipeline:
 
             # Modern API: create_infer_model from HEF path
             self._rec_infer_model = self._rec_vdevice.create_infer_model(str(hef_path))
+            # See hailo_depth.py — set_batch_size must be called before
+            # configure() to avoid the "Input buffer size 0" error. OCR
+            # is called on demand and didn't trip the bug yet, but the
+            # same latent issue is here.
+            self._rec_infer_model.set_batch_size(1)
             self._rec_infer_model.input().set_format_type(FormatType.FLOAT32)
             self._rec_infer_model.output().set_format_type(FormatType.FLOAT32)
 
