@@ -46,6 +46,9 @@ class HazardType(Enum):
     CURB = "curb"
     DROPOFF = "dropoff"
     APPROACHING_OBJECT = "approaching_object"
+    # v2.1 additions — focus on what the cane can't detect
+    OVERHANG = "overhang"           # Sign / branch / low ceiling above
+    INCOMING_FAST = "incoming_fast"  # Frame-over-frame depth rate > threshold
 
 
 class HazardSeverity(Enum):
@@ -107,11 +110,17 @@ class HailoDepthEstimator:
         dropoff_threshold: float = 2.0,
         approach_rate_threshold: float = 0.25,
         alert_cooldown: float = 0.5,
+        # v2.1 additions — indoor-focused (cane handles ground, AI handles head-height)
+        overhang_max_height_m: float = 1.5,        # overhead closer than this → alert
+        overhang_min_width_pct: float = 15.0,      # min horizontal extent (% of frame)
+        stairs_up_min_riser_m: float = 0.3,        # min step height to flag stairs-up
+        incoming_fast_velocity_mps: float = 0.5,   # depth change threshold per frame
+        incoming_fast_min_frames: int = 3,         # consecutive frames before alert
         vdevice=None,
     ):
         """
         Initialize Hailo depth estimator.
-        
+
         Args:
             hef_path: Path to depth model HEF file
             model_type: "scdepthv3" (metric depth) or "fast_depth" (inverse depth)
@@ -123,6 +132,11 @@ class HailoDepthEstimator:
             dropoff_threshold: Depth ratio for drop-off detection
             approach_rate_threshold: Per-frame depth decrease rate for approaching objects
             alert_cooldown: Seconds between repeated alerts of the same type
+            overhang_max_height_m: Indoor — max depth (m) to flag overhead hazard
+            overhang_min_width_pct: Min width (% frame) for valid overhead region
+            stairs_up_min_riser_m: Min step height to flag stairs-up
+            incoming_fast_velocity_mps: Per-frame depth change (m) to flag approach
+            incoming_fast_min_frames: Consecutive frames of approach before alerting
             vdevice: Shared Hailo VDevice (if None, creates its own — NOT recommended
                      if other modules also need the device)
         """
@@ -136,6 +150,12 @@ class HailoDepthEstimator:
         self.dropoff_threshold = dropoff_threshold
         self.approach_rate_threshold = approach_rate_threshold
         self.alert_cooldown = alert_cooldown
+        # v2.1 — indoor-focused thresholds
+        self.overhang_max_height_m = overhang_max_height_m
+        self.overhang_min_width_pct = overhang_min_width_pct
+        self.stairs_up_min_riser_m = stairs_up_min_riser_m
+        self.incoming_fast_velocity_mps = incoming_fast_velocity_mps
+        self.incoming_fast_min_frames = incoming_fast_min_frames
 
         # Environment-aware defaults (outdoor)
         self._outdoor_wall_threshold = wall_threshold
@@ -190,6 +210,12 @@ class HailoDepthEstimator:
             
             # Modern API: create_infer_model from HEF path
             self._infer_model = self._vdevice.create_infer_model(self.hef_path)
+            # CRITICAL: set_batch_size must be called BEFORE configure().
+            # HailoRT defaults the HEF's batch size to 0 if unset, which
+            # causes "Input buffer size 0 is different than expected N"
+            # at the first inference call. The official Hailo examples
+            # (HailoInfer.__init__) call this with batch_size=1.
+            self._infer_model.set_batch_size(1)
             self._infer_model.input().set_format_type(FormatType.FLOAT32)
             self._infer_model.output().set_format_type(FormatType.FLOAT32)
             
@@ -407,20 +433,21 @@ class HailoDepthEstimator:
     ) -> List[Hazard]:
         """
         Analyze depth map for environmental hazards.
-        
-        Detects:
-        - Walls: Large uniform close-depth regions
-        - Stairs down: Horizontal depth discontinuities (depth increases going down)
-        - Stairs up: Depth decreases going down the frame
-        - Curbs/steps: Single depth discontinuity at floor level
-        - Drop-offs: Sudden depth increase in floor area
-        - Approaching objects: Temporal depth decrease not covered by YOLO detections
-        
+
+        Indoor mode (user has a cane):
+        - Cane handles walls, stairs-down, drop-offs, curbs → SKIP
+        - Cane CAN'T detect: overhangs, stairs-UP, fast-incoming → ENABLE
+        - Furniture from YOLO + depth (T2 silent static) still fires via SafetyMonitor
+
+        Outdoor mode:
+        - All current ground hazards (walls, stairs, drop-offs, curbs)
+        - Plus overhangs (low tree branches), stairs-UP, fast-incoming
+
         Args:
             depth_map: Depth map from estimate()
             detections: Current YOLO detections (to exclude from approaching object check)
             frame_shape: Original frame shape for bbox mapping
-            
+
         Returns:
             List of detected Hazard objects, sorted by severity (highest first)
         """
@@ -440,20 +467,31 @@ class HailoDepthEstimator:
             dist_map = self.scale_factor / (depth_map + 1e-6)
             dist_map = np.clip(dist_map, self.min_distance, self.max_distance)
 
-        # ── 1. Wall detection ────────────────────────────────────────────
-        hazards.extend(self._detect_walls(dist_map, dh, dw, now))
-
-        # ── 2. Stairs / curb / step detection ────────────────────────────
-        hazards.extend(self._detect_stairs_and_curbs(depth_map, dist_map, dh, dw, now))
-
-        # ── 3. Drop-off detection ────────────────────────────────────────
-        hazards.extend(self._detect_dropoff(depth_map, dist_map, dh, dw, now))
-
-        # ── 4. Approaching object detection (temporal) ───────────────────
-        if self._prev_depth_map is not None:
-            hazards.extend(
-                self._detect_approaching(depth_map, detections, frame_shape, dh, dw, now)
-            )
+        if self._is_indoor:
+            # ── INDOOR: cane handles ground; AI handles head-height ──
+            # 1. Overhead hazards (signs, low doorways, branches, low ceiling)
+            hazards.extend(self._detect_overhangs(dist_map, dh, dw, now))
+            # 2. Stairs going UP (the cane-missed trap)
+            hazards.extend(self._detect_stairs_up(depth_map, dist_map, dh, dw, now))
+            # 3. Fast incoming objects (running person, cart)
+            hazards.extend(self._detect_incoming_fast(depth_map, dh, dw, now))
+        else:
+            # ── OUTDOOR: keep all current + add new ──
+            # 1. Wall detection
+            hazards.extend(self._detect_walls(dist_map, dh, dw, now))
+            # 2. Stairs / curb / step detection (down + up)
+            hazards.extend(self._detect_stairs_and_curbs(depth_map, dist_map, dh, dw, now))
+            # 3. Drop-off detection
+            hazards.extend(self._detect_dropoff(depth_map, dist_map, dh, dw, now))
+            # 4. Overhead (low tree branches, awnings, signs)
+            hazards.extend(self._detect_overhangs(dist_map, dh, dw, now))
+            # 5. Stairs-UP (still useful outdoors — same trap)
+            hazards.extend(self._detect_stairs_up(depth_map, dist_map, dh, dw, now))
+            # 6. Fast incoming (vehicles, cyclists)
+            if self._prev_depth_map is not None:
+                hazards.extend(
+                    self._detect_approaching(depth_map, detections, frame_shape, dh, dw, now)
+                )
 
         # Store for next frame comparison
         self._prev_depth_map = depth_map.copy()
@@ -724,6 +762,299 @@ class HailoDepthEstimator:
 
         return hazards
 
+    # ── v2.1 indoor-focused detectors ──────────────────────────────────
+
+    def _detect_overhangs(
+        self, dist_map: np.ndarray, dh: int, dw: int, now: float
+    ) -> List[Hazard]:
+        """
+        Detect overhead hazards — things above head height the cane can't see.
+
+        Analyzes the TOP 40% of the frame. Looks for wide regions where
+        the median depth is significantly closer than the frame's overall
+        median (i.e. something protruding down toward the user's head).
+
+        Differentiates from a "low ceiling" vs "overhang" by checking the
+        bottom 40% — if the bottom is FAR (open space below), it's an
+        overhang. If the bottom is also close, it's just a small room.
+        """
+        if self._is_on_cooldown("overhang", now):
+            return []
+
+        hazards = []
+        # Top 40% of frame = ceiling / sky / tree canopy
+        top_start = int(dh * 0.05)  # skip very top edge (often noisy)
+        top_end = int(dh * 0.45)
+        top_strip = dist_map[top_start:top_end, :]
+
+        if top_strip.size < 16:
+            return hazards
+
+        # Find columns where the median depth in the top strip is close
+        # (column = vertical slice of the image)
+        col_medians = np.median(top_strip, axis=0)
+        close_cols = col_medians < self.overhang_max_height_m
+
+        if not np.any(close_cols):
+            return hazards
+
+        # Find the longest run of consecutive close columns
+        # (avoids triggering on single noise pixels)
+        diffs = np.diff(close_cols.astype(int))
+        starts = np.where(diffs == 1)[0] + 1
+        ends = np.where(diffs == -1)[0] + 1
+        if close_cols[0]:
+            starts = np.concatenate([[0], starts])
+        if close_cols[-1]:
+            ends = np.concatenate([ends, [len(close_cols)]])
+
+        if len(starts) == 0:
+            return hazards
+
+        run_lengths = ends - starts
+        widest_start = starts[np.argmax(run_lengths)]
+        widest_end = ends[np.argmax(run_lengths)]
+        run_width_pct = 100.0 * (widest_end - widest_start) / dw
+
+        if run_width_pct < self.overhang_min_width_pct:
+            return hazards
+
+        # Compute median depth of the overhanging region
+        overhang_depth = float(np.median(top_strip[:, widest_start:widest_end]))
+
+        # Differentiate: if bottom 40% of frame is far (open below), it's
+        # an overhang like a sign or branch. If bottom is also close, it's
+        # just a low-ceiling room (not as critical).
+        bottom_strip = dist_map[int(dh * 0.7):, :]
+        if bottom_strip.size < 16:
+            return hazards
+        bottom_median = float(np.median(bottom_strip))
+        is_protrusion = bottom_median > 2.0  # open space below
+
+        # Direction: map column range to left/center/right
+        run_center = (widest_start + widest_end) / 2
+        if run_center < dw * 0.33:
+            direction = "left"
+        elif run_center > dw * 0.67:
+            direction = "right"
+        else:
+            direction = "ahead"
+
+        # Severity: closer = worse. Critical if < 1.0m (about to hit head).
+        if overhang_depth < 1.0:
+            severity = HazardSeverity.CRITICAL
+        elif overhang_depth < 1.5:
+            severity = HazardSeverity.WARNING
+        else:
+            severity = HazardSeverity.INFO
+
+        # Only fire on WARNING or worse (INFO would be too noisy)
+        if severity == HazardSeverity.INFO:
+            return hazards
+
+        hazard_key = f"overhang_{direction}"
+        if not self._is_on_cooldown(hazard_key, now):
+            hazards.append(Hazard(
+                type=HazardType.OVERHANG,
+                severity=severity,
+                direction=direction,
+                distance=round(overhang_depth, 2),
+                confidence=round(min(1.0, run_width_pct / 30.0), 2),
+                bbox_region=(widest_start, top_start, widest_end, top_end),
+            ))
+            if severity != HazardSeverity.INFO:
+                self._mark_alerted(hazard_key, now)
+            if is_protrusion:
+                logger.debug(
+                    f"OVERHANG {direction} {overhang_depth:.2f}m "
+                    f"(width={run_width_pct:.0f}%, open_below={bottom_median:.1f}m)"
+                )
+
+        return hazards
+
+    def _detect_stairs_up(
+        self, depth_map: np.ndarray, dist_map: np.ndarray,
+        dh: int, dw: int, now: float
+    ) -> List[Hazard]:
+        """
+        Detect stairs going UP — the cane-missed trap.
+
+        Looks at the vertical depth gradient in the bottom 40% of the frame.
+        For step-UP: the floor in the foreground is CLOSER than the floor
+        just above it (negative vertical gradient). A step > 0.3m rising
+        from foreground to mid-frame means "you're about to walk up".
+
+        Mirrors the structure of _detect_stairs_and_curbs but ONLY for
+        the up direction (down is handled by the cane).
+        """
+        if self._is_on_cooldown("stairs_up", now):
+            return []
+
+        hazards = []
+        # Bottom 40% — where the floor is
+        floor_start = int(dh * 0.6)
+        floor_region = dist_map[floor_start:, :]
+
+        if floor_region.shape[0] < 5:
+            return hazards
+
+        # Vertical gradient on metric distance map
+        # Negative gradient = distance DECREASES going down = surface is
+        # CLOSER toward the bottom = step UP (riser sticking up toward
+        # the camera)
+        vertical_gradient = np.diff(floor_region, axis=0)
+
+        # Center strip (where user is walking)
+        center_start = int(dw * 0.25)
+        center_end = int(dw * 0.75)
+        center_gradient = vertical_gradient[:, center_start:center_end]
+
+        # Average gradient per row
+        row_gradients = np.mean(center_gradient, axis=1)
+
+        # For stairs UP, we're looking for a sharp NEGATIVE gradient
+        # (distance goes from large → small as we go down the image)
+        threshold = self.stairs_up_min_riser_m
+        step_rows = np.where(row_gradients < -threshold)[0]
+
+        if len(step_rows) == 0:
+            return hazards
+
+        # Cluster consecutive step rows
+        distinct_edges = []
+        last_row = -10
+        for row in step_rows:
+            if row - last_row >= 3:
+                distinct_edges.append(row)
+                last_row = row
+
+        if len(distinct_edges) == 0:
+            return hazards
+
+        # Distance to the riser (where the step is)
+        step_y = floor_start + distinct_edges[0]
+        step_dist = float(np.median(
+            dist_map[max(0, step_y - 2):min(dh, step_y + 3), center_start:center_end]
+        ))
+
+        # Severity: closer step = more critical
+        if step_dist < 1.0:
+            severity = HazardSeverity.CRITICAL
+        elif step_dist < 2.0:
+            severity = HazardSeverity.WARNING
+        else:
+            severity = HazardSeverity.INFO
+
+        if severity == HazardSeverity.INFO:
+            return hazards
+
+        hazards.append(Hazard(
+            type=HazardType.STAIRS_UP,
+            severity=severity,
+            direction="ahead",
+            distance=round(step_dist, 2),
+            confidence=round(min(1.0, abs(row_gradients[distinct_edges[0]]) / 0.5), 2),
+            bbox_region=(center_start, floor_start, center_end, dh),
+        ))
+        self._mark_alerted("stairs_up", now)
+
+        logger.debug(
+            f"STAIRS_UP ahead {step_dist:.2f}m "
+            f"(edges={len(distinct_edges)}, gradient={row_gradients[distinct_edges[0]]:.2f})"
+        )
+        return hazards
+
+    def _detect_incoming_fast(
+        self, depth_map: np.ndarray, dh: int, dw: int, now: float
+    ) -> List[Hazard]:
+        """
+        Detect anything approaching FAST (indoor primary use case).
+
+        Frame-over-frame depth rate. A region with sustained depth
+        decrease > incoming_fast_velocity_mps is "something coming at me".
+
+        Outdoor: handled by _detect_approaching (same algorithm, more
+        generous thresholds and uses YOLO for vehicle verification).
+        """
+        if self._is_on_cooldown("incoming_fast", now):
+            return []
+
+        if self._prev_depth_map is None or self._prev_depth_map.shape != depth_map.shape:
+            return []
+
+        hazards = []
+
+        # Depth DECREASE = object getting CLOSER
+        # SCDepthV3 outputs metric depth (smaller = closer)
+        depth_diff = self._prev_depth_map - depth_map
+        # For inverse depth models, the math is inverted (we'd flip signs)
+        if self.model_type != "scdepthv3":
+            depth_diff = -depth_diff
+
+        # Threshold for "approaching" this frame
+        per_frame_threshold = self.incoming_fast_velocity_mps
+        approach_mask = depth_diff > per_frame_threshold
+
+        # Require a large enough region (avoid single-pixel noise)
+        approach_ratio = approach_mask.sum() / approach_mask.size
+
+        if approach_ratio < 0.10:  # At least 10% of frame is approaching
+            return hazards
+
+        # Find the centroid of the approaching region
+        approaching_pixels = np.where(approach_mask)
+        if len(approaching_pixels[0]) == 0:
+            return hazards
+
+        cy = int(np.mean(approaching_pixels[0]))
+        cx = int(np.mean(approaching_pixels[1]))
+
+        # Direction
+        if cx < dw * 0.33:
+            direction = "left"
+        elif cx > dw * 0.67:
+            direction = "right"
+        else:
+            direction = "ahead"
+
+        # Distance to the approaching object
+        dist = float(np.median(depth_map[
+            max(0, cy - 5):min(dh, cy + 5),
+            max(0, cx - 5):min(dw, cx + 5)
+        ]))
+        dist = max(self.min_distance, min(dist, self.max_distance))
+
+        # Severity by distance
+        if dist < 1.0:
+            severity = HazardSeverity.CRITICAL
+        elif dist < 2.0:
+            severity = HazardSeverity.WARNING
+        else:
+            severity = HazardSeverity.INFO
+
+        if severity == HazardSeverity.INFO:
+            return hazards
+
+        hazards.append(Hazard(
+            type=HazardType.INCOMING_FAST,
+            severity=severity,
+            direction=direction,
+            distance=round(dist, 2),
+            confidence=round(min(1.0, approach_ratio / 0.2), 2),
+            bbox_region=(
+                int(np.min(approaching_pixels[1])),
+                int(np.min(approaching_pixels[0])),
+                int(np.max(approaching_pixels[1])),
+                int(np.max(approaching_pixels[0])),
+            ),
+        ))
+        self._mark_alerted("incoming_fast", now)
+
+        logger.debug(
+            f"INCOMING_FAST {direction} {dist:.2f}m (ratio={approach_ratio:.0%})"
+        )
+        return hazards
+
     def _detect_approaching(
         self,
         depth_map: np.ndarray,
@@ -733,28 +1064,30 @@ class HailoDepthEstimator:
         now: float
     ) -> List[Hazard]:
         """
-        Detect objects approaching the user that YOLO layers may have missed.
-        
-        Compares current depth map with previous frame's depth map.
-        Regions with significant depth increase (closer) that don't overlap
-        with existing YOLO detections are flagged.
-        """
-        # Disabled: ego-motion (user walking) causes false positives
-        # without IMU compensation. YOLO Tier 3 handles moving objects.
-        return []
+        Detect objects approaching the user (outdoor / vehicle case).
 
-        prev = self._prev_depth_map
-        if prev is None or prev.shape != depth_map.shape:
+        Compares current depth map with previous frame. Regions with
+        significant depth DECREASE (closer) that don't overlap with
+        existing YOLO detections are flagged.
+
+        Outdoor use only — indoor uses _detect_incoming_fast which has
+        stricter thresholds. This method also excludes YOLO-detected
+        regions to avoid double-alerting on tracked vehicles.
+        """
+        hazards = []
+
+        if self._prev_depth_map is None or self._prev_depth_map.shape != depth_map.shape:
             return hazards
 
-        # Compute frame-over-frame depth change
-        # For inverse depth: increase = object getting closer
-        depth_diff = depth_map - prev
+        # Depth DECREASE = object getting CLOSER
+        # SCDepthV3 outputs metric depth (smaller = closer)
+        depth_diff = self._prev_depth_map - depth_map
+        if self.model_type != "scdepthv3":
+            depth_diff = -depth_diff  # invert for inverse-depth models
 
-        # Only care about significant increases (approaching)
         approach_mask = depth_diff > self.approach_rate_threshold
 
-        # Create exclusion mask for existing YOLO detections
+        # Exclude YOLO-detected regions (those are handled by SafetyMonitor Tier 3)
         if detections and frame_shape:
             h, w = frame_shape[:2]
             exclusion = np.zeros((dh, dw), dtype=bool)
@@ -762,31 +1095,25 @@ class HailoDepthEstimator:
                 bbox = det.get('bbox', det.get('bbox_normalized', []))
                 if len(bbox) < 4:
                     continue
-                # Map bbox to depth map coordinates
                 x1 = int(bbox[0] / w * dw) if bbox[0] > 1 else int(bbox[0] * dw)
                 y1 = int(bbox[1] / h * dh) if bbox[1] > 1 else int(bbox[1] * dh)
                 x2 = int(bbox[2] / w * dw) if bbox[2] > 1 else int(bbox[2] * dw)
                 y2 = int(bbox[3] / h * dh) if bbox[3] > 1 else int(bbox[3] * dh)
                 x1, y1 = max(0, x1), max(0, y1)
                 x2, y2 = min(dw, x2), min(dh, y2)
-                # Add padding around detections
                 pad = 5
                 exclusion[max(0, y1-pad):min(dh, y2+pad), max(0, x1-pad):min(dw, x2+pad)] = True
-            
-            # Exclude already-detected regions
             approach_mask = approach_mask & ~exclusion
 
         # Check if any significant approaching region remains
         approach_ratio = approach_mask.sum() / approach_mask.size
-        
-        if approach_ratio > 0.08:  # At least 8% of frame is approaching
-            # Find the centroid of the approaching region
+
+        if approach_ratio > 0.08:
             approaching_pixels = np.where(approach_mask)
             if len(approaching_pixels[0]) > 0:
                 cy = int(np.mean(approaching_pixels[0]))
                 cx = int(np.mean(approaching_pixels[1]))
 
-                # Determine direction
                 if cx < dw * 0.33:
                     direction = "left"
                 elif cx > dw * 0.67:
@@ -794,11 +1121,17 @@ class HailoDepthEstimator:
                 else:
                     direction = "ahead"
 
-                # Get distance
-                dist = self.scale_factor / (float(depth_map[cy, cx]) + 1e-6)
+                # SCDepthV3 is metric; fast_depth is inverse
+                if self.model_type == "scdepthv3":
+                    dist = float(depth_map[cy, cx])
+                else:
+                    dist = self.scale_factor / (float(depth_map[cy, cx]) + 1e-6)
                 dist = max(self.min_distance, min(dist, self.max_distance))
 
                 severity = HazardSeverity.WARNING if dist < 3.0 else HazardSeverity.INFO
+
+                if severity == HazardSeverity.INFO:
+                    return hazards
 
                 hazards.append(Hazard(
                     type=HazardType.APPROACHING_OBJECT,
@@ -810,8 +1143,8 @@ class HailoDepthEstimator:
                         int(np.min(approaching_pixels[1])),
                         int(np.min(approaching_pixels[0])),
                         int(np.max(approaching_pixels[1])),
-                        int(np.max(approaching_pixels[0]))
-                    )
+                        int(np.max(approaching_pixels[0])),
+                    ),
                 ))
                 self._mark_alerted("approaching_object", now)
 

@@ -21,7 +21,30 @@
       "WebSearch",
       "Bash(gemini --help)",
       "Bash(where gemini *)",
-      "Bash(gemini *)"
+      "Bash(gemini *)",
+      "Bash(jq --version)",
+      "Read(//c/Program Files/**)",
+      "Read(//c/ProgramData/chocolatey/**)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:hailo.ai)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:platform.minimax.io)",
+      "Bash(claude mcp *)",
+      "Bash(powershell -ExecutionPolicy ByPass -c \"irm https://astral.sh/uv/install.ps1 | iex\")",
+      "Bash(\"C:/Users/Haziq/.local/bin/uvx.exe\" --version)",
+      "Read(//c/Users/Haziq/.local/bin/**)",
+      "Bash(powershell -Command \"[System.Environment]::GetEnvironmentVariable\\('Path', 'User'\\)\")",
+      "Bash(\"C:/Users/Haziq/.local/bin/uvx.exe\" minimax-coding-plan-mcp *)",
+      "mcp__MiniMax__web_search",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:community.hailo.ai)",
+      "Bash(curl -s \"https://raw.githubusercontent.com/hailo-ai/hailo-apps/main/hailo_apps/python/pipeline_apps/depth/depth_pipeline.py\")",
+      "Bash(curl -s \"https://api.github.com/repos/hailo-ai/hailo-apps/contents/hailo_apps/cpp/depth_estimation_mono\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/hailo-ai/hailo-apps/main/hailo_apps/cpp/depth_estimation_mono/depth_postprocess.cpp\")",
+      "Bash(curl -s \"https://raw.githubusercontent.com/hailo-ai/hailo-apps/main/hailo_apps/cpp/depth_estimation_mono/mono_depth_estimation.cpp\")",
+      "WebFetch(domain:docs.degirum.com)",
+      "Bash(git rm *)"
     ]
-  }
+  },
+  "contextWindow": 524288
 }

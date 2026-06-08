@@ -30,34 +30,53 @@ def setup_logging(
     level: str = "INFO",
     log_file: str = "logs/cortex.log",
     use_rich: bool = True,
+    rich_stream: str = "stderr",
 ) -> None:
     """
     Configure root logger with RichHandler (compact colored format).
-    
+
     Format produced:
         [15:48:59] INFO     Loaded environment variables from .env
         [15:48:59] WARNING  ⚠️ Layer 0 latency: 111.4ms (exceeds 100ms safety target!)
         [15:48:59] ERROR    ❌ Camera startup failed
-    
+
     Falls back to plain format if Rich isn't installed.
+
+    Args:
+        level: Log level (DEBUG, INFO, WARNING, ERROR).
+        log_file: Path to log file.
+        use_rich: Use RichHandler (colored) vs plain StreamHandler.
+        rich_stream: Where to send Rich output. "stderr" (default) keeps
+            the colored format visible during the live `all` command
+            without fighting the Rich Live status panel on stdout. The
+            terminal will interleave stderr lines with the panel, but
+            they're on different OS-level streams so they don't share a
+            cursor and won't corrupt each other's frames. Set to "stdout"
+            for other commands (camera, audio, test) where there's no
+            Live panel to conflict with.
     """
     # Ensure log directory exists
     log_path = Path(log_file)
     if log_path.parent and not log_path.parent.exists():
         log_path.parent.mkdir(parents=True, exist_ok=True)
-    
+
     # Reset any existing handlers
     root = logging.getLogger()
     for h in list(root.handlers):
         root.removeHandler(h)
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
-    
+
     handlers = [logging.FileHandler(log_file, encoding="utf-8")]
-    
+
     if use_rich and RICH_AVAILABLE and RichHandler:
+        if rich_stream == "stderr":
+            stream = sys.stderr
+        else:
+            stream = sys.stdout
+        console = Console(file=stream, force_terminal=True, soft_wrap=False)
         handlers.append(
             RichHandler(
-                console=_shared_console,
+                console=console,
                 show_time=True,
                 show_path=False,
                 rich_tracebacks=True,
@@ -66,7 +85,8 @@ def setup_logging(
             )
         )
     else:
-        handlers.append(logging.StreamHandler(sys.stdout))
+        stream = sys.stderr if rich_stream == "stderr" else sys.stdout
+        handlers.append(logging.StreamHandler(stream))
     
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
