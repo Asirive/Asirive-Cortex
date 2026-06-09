@@ -489,28 +489,26 @@ class LogCapture(logging.Handler):
     """
     Logging handler that pushes (timestamp, level, message) to a deque.
 
-    Used by StatusDisplay to show the most recent log events inside the
-    Live status panel — so the user doesn't need a second terminal to
-    see what's happening while the panel is running.
+    Reserved for the standalone TUI command (`python -m rpi5 tui`) which
+    tails logs from a separate console. The main `all` command does NOT
+    install this — its logs are written to stderr by RichHandler and
+    scroll naturally above the Live panel. Embedding logs inside the
+    panel caused Rich to re-render at varying heights on every refresh,
+    tearing the panel apart.
     """
     def __init__(self, capacity: int = 12):
         super().__init__(level=logging.INFO)
         from collections import deque as _deque
         self.records: "deque[tuple[str, str, str]]" = _deque(maxlen=capacity)
-        # Use compact format: HH:MM:SS LEVEL  message
-        self.setFormatter(logging.Formatter(
-            fmt="%(message)s",  # we just want the message
-        ))
+        self.setFormatter(logging.Formatter(fmt="%(message)s"))
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
             ts = time.strftime("%H:%M:%S", time.localtime(record.created))
             level = record.levelname
             msg = record.getMessage()
-            # Strip Rich markup / ANSI for clean display
             import re as _re
             msg = _re.sub(r"\x1b\[[0-9;]*m", "", msg)
-            # Truncate long messages
             if len(msg) > 120:
                 msg = msg[:117] + "..."
             self.records.appendleft((ts, level, msg))
@@ -587,7 +585,7 @@ class StatusDisplay:
         self._started = False
         self._enabled = RICH_AVAILABLE
         self._last_refresh_time = 0.0
-        self._refresh_interval_s = 0.25
+        self._refresh_interval_s = 0.5  # 2 Hz — stable panel, no tearing
         
         if not RICH_AVAILABLE:
             logger.warning("Rich library not available, using fallback status display")
@@ -601,9 +599,12 @@ class StatusDisplay:
             self._live = Live(
                 self._render(),
                 console=self._panel_console,
-                refresh_per_second=4,
+                # Lower refresh rate + crop = stable panel that doesn't tear
+                # when stderr lines scroll between renders. The panel is a
+                # fixed-shape grid (no multi-line content), so 'crop' is safe.
+                refresh_per_second=2,
                 transient=False,
-                vertical_overflow="visible"
+                vertical_overflow="crop",
             )
             self._live.start()
             self._started = True
@@ -805,28 +806,6 @@ class StatusDisplay:
                     row6.append("⚡ LOCAL ROUTING", style="bold yellow")
                 
                 table.add_row(row6)
-
-                # Row 7: Recent log events (v2.1) — keeps logs visible
-                # inside the panel so they don't get eaten by panel refresh
-                capture = get_log_capture()
-                if capture and capture.records:
-                    row7 = Text()
-                    row7.append("Recent:     ", style="bold white")
-                    # Show most recent first
-                    recent = list(capture.records)[:3]
-                    for i, (ts, level, msg) in enumerate(recent):
-                        if i > 0:
-                            row7.append("\n            ", style="")
-                        level_color = {
-                            "ERROR": "bold red",
-                            "WARNING": "yellow",
-                            "INFO": "dim",
-                            "DEBUG": "dim italic",
-                        }.get(level, "dim")
-                        row7.append(f"{ts} ", style="dim")
-                        row7.append(f"{level:<7} ", style=level_color)
-                        row7.append(msg, style="white")
-                    table.add_row(row7)
 
                 return Panel(
                     table,
@@ -1734,14 +1713,13 @@ class CortexSystem:
         self.status_display = init_status_display()
         logger.info("📊 Interactive status display initialized")
 
-        # Install LogCapture so the status panel can show recent log
-        # events inside itself (v2.1 — keeps logs visible despite panel
-        # refresh eating the terminal scrollback).
-        global _log_capture
-        if _log_capture is None:
-            _log_capture = LogCapture(capacity=12)
-            root_logger = logging.getLogger()
-            root_logger.addHandler(_log_capture)
+        # NOTE: We intentionally do NOT install LogCapture here for the
+        # main `all` command. The previous version pushed log events
+        # into the Live panel itself, which forced the panel to re-render
+        # at varying heights and tore the display apart. Logs are now
+        # handled by the stderr RichHandler in log_setup.py and scroll
+        # naturally above the fixed-height status panel. The TUI command
+        # (`python -m rpi5 tui`) installs LogCapture separately.
 
         # Initialize Navigator (Layer 3 — spatial audio SCRAPPED, kept for routing only)
         self.navigator = None

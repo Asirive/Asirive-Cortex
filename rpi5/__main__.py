@@ -152,6 +152,17 @@ Examples:
         description="Run system diagnostics to verify all components work"
     )
 
+    # test-live command - minimal Gemini Live API connectivity check
+    test_live_parser = subparsers.add_parser(
+        "test-live",
+        help="Test Gemini Live API connection (minimal, no tools)",
+        description=(
+            "Connect to the Gemini Live API with a minimal config and "
+            "exit immediately. Prints the actual close code and reason "
+            "so you can see what's blocking the production connect loop."
+        ),
+    )
+
     connect_parser = subparsers.add_parser(
         "connect",
         help="Connect to laptop dashboard",
@@ -253,6 +264,10 @@ def run_command(args: argparse.Namespace) -> int:
     elif command == "test":
         from rpi5.cli.commands import run_self_test
         return run_self_test()
+
+    elif command == "test-live":
+        from rpi5.cli.commands import test_gemini_live
+        return test_gemini_live()
 
     elif command == "connect":
         from rpi5.cli.commands import connect_to_laptop

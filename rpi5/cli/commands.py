@@ -348,3 +348,97 @@ def check_status() -> int:
     print(f"  SUPABASE_URL: {supabase_url}")
 
     return 0
+
+
+def test_gemini_live() -> int:
+    """
+    Minimal Gemini Live API connectivity check.
+
+    Connects with the smallest possible config (no tools, no transcription,
+    no system instruction) and prints the real close code/reason. This
+    isolates whether the failure is in the network/auth/model or in our
+    production config (tools, realtime_input, etc).
+    """
+    import os
+    import asyncio
+
+    api_key = os.getenv('GEMINI_API_KEY') or os.getenv('GOOGLE_API_KEY')
+    if not api_key:
+        logger.error("❌ GEMINI_API_KEY / GOOGLE_API_KEY not set in environment")
+        return 2
+
+    masked = f"{api_key[:7]}...{api_key[-4:]}"
+    print(f"🔑 Using API key: {masked}")
+    print(f"🌐 Endpoint: generativelanguage.googleapis.com (v1beta)")
+    print(f"📡 Model: gemini-3.1-flash-live-preview")
+    print(f"⚙️  Config: minimal (AUDIO only, no tools, no system instruction)")
+    print()
+
+    async def _probe() -> int:
+        try:
+            from google import genai
+            from google.genai import types
+        except ImportError as e:
+            logger.error(f"❌ google-genai not installed: {e}")
+            return 3
+
+        client = genai.Client(
+            api_key=api_key,
+            http_options={"api_version": "v1beta"},
+        )
+        config = types.LiveConnectConfig(
+            response_modalities=[types.Modality.AUDIO],
+        )
+        try:
+            print("⏳ Opening WebSocket...")
+            async with client.aio.live.connect(
+                model="gemini-3.1-flash-live-preview",
+                config=config,
+            ) as session:
+                print("✅ WebSocket OPEN. Receiving setup_complete...")
+                try:
+                    # Wait up to 5s for setup_complete (or any close)
+                    response = await asyncio.wait_for(session.receive(), timeout=5.0)
+                    print(f"📨 First message: {type(response).__name__}")
+                    sc = getattr(response, 'server_content', None)
+                    if sc is not None and getattr(sc, 'setup_complete', None) is not None:
+                        print("✅ setup_complete received — connection fully alive")
+                        return 0
+                    print(f"⚠️  Unexpected first message: {response!r}")
+                    return 4
+                except asyncio.TimeoutError:
+                    print("⚠️  No message within 5s after open — connection hung")
+                    return 5
+        except Exception as e:
+            from websockets.exceptions import ConnectionClosed
+            from google.genai import errors as genai_errors
+            print(f"❌ Connect failed: {type(e).__name__}: {e}")
+            if isinstance(e, ConnectionClosed):
+                print(f"   WebSocket close code: {e.code}")
+                print(f"   WebSocket close reason: {e.reason!r}")
+                # 1008 = Policy Violation, 1007 = Invalid Frame Payload
+                if e.code == 1008:
+                    print("   → 1008 Policy Violation: server rejected the config")
+                    print("   → Common causes: unsupported field, regional restriction,")
+                    print("     or API key without Live API access")
+                elif e.code == 1007:
+                    print("   → 1007 Invalid Frame: bad config payload")
+                elif e.code == 1006:
+                    print("   → 1006 Abnormal Closure: network/transport issue")
+                elif e.code == 1011:
+                    print("   → 1011 Server Error: server-side problem")
+                elif e.code == 1013:
+                    print("   → 1013 Try Again Later: rate limited / overload")
+            elif isinstance(e, genai_errors.APIError):
+                print(f"   API code: {getattr(e, 'code', '?')}")
+                print(f"   API message: {getattr(e, 'message', '?')}")
+            return 1
+
+    try:
+        return asyncio.run(_probe())
+    except KeyboardInterrupt:
+        print("\nInterrupted by user")
+        return 130
+    except Exception as e:
+        logger.error(f"❌ Probe crashed: {e}", exc_info=True)
+        return 1
