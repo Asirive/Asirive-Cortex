@@ -13,12 +13,12 @@ try:
 except Exception:
     pass
 
-HOST = "172.26.13.31"
+HOST = "10.<REDACTED-RPI-IP>"
 USER = "cortex"
 PASS = "REDACTED-RPI-PASSWORD"
 ENV_PATH = "/home/cortex/ProjectCortex/.env"
 SCRIPTS_DIR = "/home/cortex/ProjectCortex/scripts"
-NEW_KEY = "AIzaSyB0E75dddF_yI2_Uieh5up5uTGkOgRKJ2E"
+NEW_KEY = "REDACTED_GEMINI_KEY"
 
 def banner(t):
     print("\n" + "=" * 70)
