@@ -43,7 +43,11 @@
       "Bash(curl -s \"https://raw.githubusercontent.com/hailo-ai/hailo-apps/main/hailo_apps/cpp/depth_estimation_mono/depth_postprocess.cpp\")",
       "Bash(curl -s \"https://raw.githubusercontent.com/hailo-ai/hailo-apps/main/hailo_apps/cpp/depth_estimation_mono/mono_depth_estimation.cpp\")",
       "WebFetch(domain:docs.degirum.com)",
-      "Bash(git rm *)"
+      "Bash(git rm *)",
+      "Bash(git push *)",
+      "Bash(pip show *)",
+      "Bash(pip index *)",
+      "Bash(pip install *)"
     ]
   },
   "contextWindow": 524288
