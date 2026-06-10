@@ -107,6 +107,17 @@ Examples:
         default=None,
         help="Select earbuds: 'in'/'cmf' for CMF Buds (in-ear), 'out'/'ugreen' for UGREEN HiTune S3 (open-ear)"
     )
+    all_parser.add_argument(
+        "--2.4",
+        dest="two_point_four",
+        action="store_true",
+        help="Use the lightweight plain-print dashboard (designed for 2.4 GHz WiFi / slow SSH)"
+    )
+    all_parser.add_argument(
+        "--no-dashboard",
+        action="store_true",
+        help="Disable the on-system dashboard entirely (logs only)"
+    )
 
     # layer commands
     for layer_num, layer_name, help_text in [
@@ -240,6 +251,21 @@ def run_command(args: argparse.Namespace) -> int:
             logger.info(f"Earbuds: {label}")
 
         system = CortexSystem(standalone=standalone)
+
+        # Decide which on-system dashboard to run. --2.4 forces the
+        # plain-print 2.4 mode. --no-dashboard disables the on-system
+        # UI entirely (logs only). Default for now is the legacy
+        # StatusDisplay; Round 2b will switch the default to "full"
+        # (Textual) once it's validated.
+        if getattr(args, "no_dashboard", False):
+            dashboard_mode = "none"
+        elif getattr(args, "two_point_four", False):
+            dashboard_mode = "2.4"
+        else:
+            dashboard_mode = "old"  # legacy; will become "full" in Round 2b
+        system.dashboard_mode = dashboard_mode
+        logger.info(f"📊 Dashboard mode: {dashboard_mode}")
+
         system.start()
 
     elif command and command.startswith("layer"):

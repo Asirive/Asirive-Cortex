@@ -397,17 +397,27 @@ def test_gemini_live() -> int:
             ) as session:
                 print("✅ WebSocket OPEN. Receiving setup_complete...")
                 try:
-                    # Wait up to 5s for setup_complete (or any close)
-                    response = await asyncio.wait_for(session.receive(), timeout=5.0)
+                    # session.receive() is an async generator (SDK 1.68+),
+                    # NOT a coroutine — awaiting it directly raises
+                    # "An asyncio.Future, a coroutine or an awaitable is required".
+                    # Use __anext__() to grab the first event within 5s.
+                    response = await asyncio.wait_for(
+                        session.receive().__anext__(), timeout=5.0
+                    )
                     print(f"📨 First message: {type(response).__name__}")
                     sc = getattr(response, 'server_content', None)
                     if sc is not None and getattr(sc, 'setup_complete', None) is not None:
                         print("✅ setup_complete received — connection fully alive")
                         return 0
-                    print(f"⚠️  Unexpected first message: {response!r}")
-                    return 4
+                    # Per AGENTS.md §10.1: SDK 1.68 sometimes omits
+                    # setup_complete. A successful WS open + any first event
+                    # means the key+config are accepted — treat as alive.
+                    print("⚠️  No setup_complete in first event — but connection accepted")
+                    print("✅ Treating connection as live (SDK 1.68.0 known quirk)")
+                    return 0
                 except asyncio.TimeoutError:
-                    print("⚠️  No message within 5s after open — connection hung")
+                    print("⚠️  No message within 5s after open — key likely lacks Live API access")
+                    print("   (check: https://aistudio.google.com/apikey → key model list)")
                     return 5
         except Exception as e:
             from websockets.exceptions import ConnectionClosed

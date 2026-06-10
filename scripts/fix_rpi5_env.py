@@ -4,6 +4,7 @@ Uses SFTP to drop a small Python script on the RPi5 to avoid shell-quoting hell.
 """
 import io
 import sys
+from pathlib import Path
 import paramiko
 
 # Force UTF-8 stdout (Windows cp1252)
@@ -18,7 +19,18 @@ USER = "cortex"
 PASS = "REDACTED-RPI-PASSWORD"
 ENV_PATH = "/home/cortex/ProjectCortex/.env"
 SCRIPTS_DIR = "/home/cortex/ProjectCortex/scripts"
-NEW_KEY = "REDACTED_GEMINI_KEY"
+
+# Load new key from gitignored scripts/.rpi5_key (NEVER hardcode keys in
+# this file — it is committed to the public repo).
+_KEY_FILE = Path(__file__).parent / ".rpi5_key"
+if not _KEY_FILE.exists():
+    print(f"[ERROR] Missing {_KEY_FILE}")
+    print("        Create it with the new Gemini key on a single line, then re-run.")
+    sys.exit(1)
+NEW_KEY = _KEY_FILE.read_text(encoding="utf-8").strip()
+if not NEW_KEY:
+    print(f"[ERROR] {_KEY_FILE} is empty.")
+    sys.exit(1)
 
 def banner(t):
     print("\n" + "=" * 70)
