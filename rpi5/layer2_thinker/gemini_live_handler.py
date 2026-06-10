@@ -115,6 +115,10 @@ class GeminiLiveHandler:
         self._on_barge_in_callback: Optional[Callable] = None  # Called on barge-in to flush audio player
         self._on_connected_callback: Optional[Callable] = None  # Called after each successful (re)connection
         self._on_turn_complete_callback: Optional[Callable] = None  # Called when Gemini finishes a turn
+        # Activity-feed callback: fn(source: str, kind: str, message: str) -> None
+        # Used to surface L2 tool calls, transcripts, and turn lifecycle events
+        # in the dashboard's unified timeline.
+        self.on_event: Optional[Callable[[str, str, str], None]] = None
         self._connect_time: Optional[float] = None  # Track connection duration
         self._msg_count = 0  # Count messages per session
         self._barge_in_cooldown_until: float = 0.0  # Suppress false barge-in after text/tool sends
@@ -906,6 +910,14 @@ Safety always comes first. Overhead hazards are your highest priority."""
                         logger.info(
                             f"🔧 Gemini tool_call: {[fc.name for fc in function_calls]}"
                         )
+                        # Push to the dashboard activity feed
+                        for fc in function_calls:
+                            fc_name = getattr(fc, 'name', '?')
+                            fc_args = getattr(fc, 'args', {}) or {}
+                            args_preview = ", ".join(
+                                f"{k}={str(v)[:24]}" for k, v in list(fc_args.items())[:3]
+                            )
+                            self._emit_event("l2", "tool", f"{fc_name}({args_preview})")
                         asyncio.create_task(self._handle_tool_calls_async(function_calls))
                         continue
 
@@ -965,6 +977,10 @@ Safety always comes first. Overhead hazards are your highest priority."""
                         it = getattr(sc, 'input_transcription', None)
                         if it and getattr(it, 'text', None):
                             logger.info(f"👂 User said (Gemini heard): {it.text}")
+                            # Push to the dashboard activity feed (L2's view of
+                            # what the user said — separate from the local STT
+                            # feed because they're produced by different paths)
+                            self._emit_event("l2", "heard", f'"{it.text[:80]}"')
 
                         ot = getattr(sc, 'output_transcription', None)
                         if ot and getattr(ot, 'text', None):
@@ -976,6 +992,8 @@ Safety always comes first. Overhead hazards are your highest priority."""
                             self._recent_gemini_outputs = [
                                 (t, txt) for t, txt in self._recent_gemini_outputs if t > cutoff
                             ]
+                            # Push to the dashboard activity feed
+                            self._emit_event("l2", "said", f'"{ot.text[:80]}"')
 
                         gc = getattr(sc, 'generation_complete', None)
                         if gc is True:
@@ -1066,6 +1084,20 @@ Safety always comes first. Overhead hazards are your highest priority."""
                     logger.warning(f"⚠️ Clearing session handle after {e.code} in receive loop")
                     self.session_handle = None
             self.is_connected = False
+
+    def _emit_event(self, source: str, kind: str, message: str) -> None:
+        """Fire-and-forget emit to the dashboard activity feed.
+
+        Used to surface L2 tool calls, transcripts, and turn lifecycle
+        events in the unified timeline. Wrapped in a try/except so a
+        misbehaving callback can never break the receive loop.
+        """
+        if not self.on_event:
+            return
+        try:
+            self.on_event(source, kind, message)
+        except Exception as e:
+            logger.debug(f"on_event callback error ({source}/{kind}): {e}")
 
     def _store_response(self, response_text: str, tier: str):
         """Store query/response to memory manager (fire-and-forget)."""

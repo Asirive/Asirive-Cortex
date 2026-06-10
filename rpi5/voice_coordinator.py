@@ -39,14 +39,20 @@ class VoiceCoordinator:
     evaluated and sent to STT if it contains valid speech.
     """
 
-    def __init__(self, on_command_detected: Callable[[str], None], config: Optional[dict] = None):
+    def __init__(self, on_command_detected: Callable[[str], None], config: Optional[dict] = None, system: Optional[object] = None):
         """
         Args:
             on_command_detected: Async callback function(text: str) -> None
             config: Optional config dict (from config.yaml 'audio' section)
+            system: Optional CortexSystem reference — used to push STT
+                transcripts and event-feed entries into the live dashboard.
         """
         self.on_command_detected = on_command_detected
         self.config = config or {}
+        # Optional CortexSystem reference — used by the dashboard activity feed
+        # so STT transcripts and command dispatches show up in the unified
+        # timeline alongside safety alerts, L2 tool calls, and nav changes.
+        self.system = system
         self.vad = None
         self.stt = None         # Local Whisper (offline fallback)
         self.cloud_stt = None   # Cartesia Ink (primary, cloud) — batch HTTP
@@ -344,6 +350,13 @@ class VoiceCoordinator:
         # (defensive: in WS mode we suppress batch, but keep this guard)
         text = transcript.strip()
         logger.info(f"🗣️ Transcribed (Cartesia WS): '{text}'")
+        # Push to the live dashboard activity feed + STT history
+        if self.system is not None and hasattr(self.system, "record_stt"):
+            try:
+                # WS transcripts don't expose a confidence score; use 0.0 placeholder
+                self.system.record_stt(text, confidence=0.0)
+            except Exception as e:
+                logger.debug(f"record_stt (WS) error: {e}")
         if self.on_command_detected:
             try:
                 # on_command_detected is the async dispatcher in main.py.
@@ -570,6 +583,13 @@ class VoiceCoordinator:
                     logger.info(f"🗣️ Transcribed (Whisper): '{text}'")
 
             if text and len(text.strip()) > 1:
+                # Push to the live dashboard activity feed + STT history.
+                # Confidence isn't exposed by Cartesia/Whisper here, so use 0.0.
+                if self.system is not None and hasattr(self.system, "record_stt"):
+                    try:
+                        self.system.record_stt(text.strip(), confidence=0.0)
+                    except Exception as e:
+                        logger.debug(f"record_stt (batch) error: {e}")
                 # Send to main system (async)
                 if self.on_command_detected:
                     try:
