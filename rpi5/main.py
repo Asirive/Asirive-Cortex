@@ -2082,6 +2082,9 @@ class CortexSystem:
         existing.append({"text": text, "ts": _t.time(), "confidence": confidence})
         existing = existing[-5:]
         self.dashboard_state.update(stt_recent=existing)
+        # Activity feed: short preview, not the full transcript
+        preview = text if len(text) <= 40 else text[:37] + "…"
+        self.record_event("stt", "heard", f"\"{preview}\" ({confidence:.2f})")
 
     def record_safety_alert(self, alert_type: str, distance_m: float, tier: int) -> None:
         """Append a safety alert to the dashboard's recent-alerts history."""
@@ -2095,6 +2098,41 @@ class CortexSystem:
         })
         existing = existing[-5:]
         self.dashboard_state.update(safety_recent=existing)
+        # Also push to the unified activity feed
+        severity = "info" if tier >= 2 else "alert" if tier == 1 else "critical"
+        dist_str = f"@{distance_m:.1f}m" if distance_m > 0 else ""
+        self.record_event("safety", severity, f"{alert_type} {dist_str}".strip())
+
+    def record_event(self, source: str, kind: str, message: str) -> None:
+        """Append an event to the unified activity feed.
+
+        The activity feed is the dashboard's "what just happened?" timeline —
+        it merges safety alerts, STT transcripts, L2 tool calls, nav state
+        changes, system events, and user actions into a single ordered list
+        the operator can scroll through.
+
+        Args:
+            source: subsystem that produced the event. Common values:
+                "stt", "l2", "l0", "l1", "nav", "safety", "ai", "sys",
+                "user", "tts", "btn" (button press), "scene".
+            kind: event class — "info" | "tool" | "alert" | "route" |
+                "heard" | "said" | "intent" | "error" | "critical".
+            message: short human-readable description (≤80 chars).
+        """
+        if self.dashboard_state is None:
+            return
+        import time as _t
+        snap = self.dashboard_state.snapshot()
+        existing = list(snap.get("events", []))
+        existing.append({
+            "ts": _t.time(),
+            "source": str(source),
+            "kind": str(kind),
+            "message": str(message)[:120],
+        })
+        # Cap at 30 events — the feed is a recent-history scroll, not a log
+        existing = existing[-30:]
+        self.dashboard_state.update(events=existing)
 
     def record_button_press(self, press_type: str) -> None:
         """Append a button press to the dashboard's button history."""
@@ -2105,6 +2143,7 @@ class CortexSystem:
             "last_press_ts": _t.time(),
             "last_press_type": press_type,
         })
+        self.record_event("btn", "info", f"{press_type} press")
 
     def record_scene_change(self, change_type: str) -> None:
         """Append a scene change to the dashboard's scene history."""
@@ -2115,6 +2154,7 @@ class CortexSystem:
             "last_change_ts": _t.time(),
             "last_change_type": change_type,
         })
+        self.record_event("scene", "info", f"scene: {change_type}")
 
     def _publish_nav_state(self) -> None:
         """Pull the current navigation status from the navigator and push
