@@ -43,6 +43,9 @@ Footer {
 
 #sensors {
     border: tall green;
+    /* min-height: 12 keeps the new Power + status lines visible in
+       standard 180×70 terminals (was clipping at 5 rows in v6) */
+    min-height: 12;
 }
 
 #system {

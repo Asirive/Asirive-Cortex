@@ -534,16 +534,22 @@ if TEXTUAL_AVAILABLE:
                 content.append(f"{eb}  {bat}\n", style="green")
             else:
                 content.append("disconnected\n", style="red")
-            # Hailo — compact, 1 line
+            # Hailo + camera — combined on 1 line (was 2 in v6; combined to make
+            # room for the new Power render in v7)
             content.append(f"Hailo ", style="bold")
             content.append(self._dot(snap['hailo']['depth_fps'] > 0))
-            content.append(f" {snap['hailo']['depth_fps']:.0f}fps  ")
-            content.append(f"OCR {snap['hailo']['ocr_state']}\n", style="dim")
+            content.append(f" {snap['hailo']['depth_fps']:.0f}fps  ", style="dim")
+            content.append(f"OCR {snap['hailo']['ocr_state']}  ", style="dim")
+            cam = snap.get("camera", {})
+            cam_avail = bool(cam.get("available", False))
+            backend = (cam.get("backend", "") or "?")[:8]
+            fps_t = float(cam.get("fps_target", 0))
+            content.append(f"CAM {self._dot(cam_avail)} {backend} {fps_t:.0f}fps\n", style="dim")
 
             # Divider
             content.append("─" * 26 + "\n", style="dim")
 
-            # System metrics (psutil) — every production tool needs these
+            # System metrics + load (1 line, was 2 in v6)
             sys_m = snap.get("system", {})
             cpu = float(sys_m.get("cpu_percent", 0))
             ram_pct = float(sys_m.get("ram_percent", 0))
@@ -554,67 +560,60 @@ if TEXTUAL_AVAILABLE:
             cpu_color = "green" if cpu < 60 else "yellow" if cpu < 85 else "red"
             temp_color = "green" if temp_c < 65 else "yellow" if temp_c < 78 else "red"
             mem_color = "green" if ram_pct < 70 else "yellow" if ram_pct < 90 else "red"
-            content.append("CPU  ")
+            content.append("CPU ")
             content.append(f"{cpu:>3.0f}%", style=cpu_color)
             content.append(f"  T ", style="dim")
             content.append(f"{temp_c:>4.1f}°C", style=temp_color)
+            content.append(f"  MEM ", style="dim")
+            content.append(f"{ram_pct:>3.0f}%", style=mem_color)
             content.append(f"  L {load1:.2f}\n", style="dim")
-            content.append("MEM  ")
-            content.append(f"{ram_used/1024:.1f}G", style=mem_color)
-            content.append(f"/{ram_total/1024:.1f}G", style="dim")
-            content.append(f"  {ram_pct:>3.0f}%\n", style=mem_color)
 
-            # Camera
-            cam = snap.get("camera", {})
-            cam_avail = bool(cam.get("available", False))
-            backend = (cam.get("backend", "") or "?")[:10]
-            res = cam.get("resolution", [0, 0]) or [0, 0]
-            fps_t = float(cam.get("fps_target", 0))
-            content.append("CAM  ")
-            content.append(self._dot(cam_avail))
-            content.append(f" {backend}  ")
-            if res[0] and res[1]:
-                content.append(f"{res[0]}×{res[1]}", style="dim")
-            if fps_t:
-                content.append(f"  {fps_t:.0f}fps", style="dim")
-            content.append("\n")
-
-            # Per-service health with last-check age (NEW: fill empty space)
-            content.append("─" * 26 + "\n", style="dim")
-            content.append("Services\n", style="bold")
-            services = snap.get("services", {})
-            svc_names = [
-                ("supabase",    "supa",  "Supabase"),
-                ("gemini",      "gem",   "Gemini"),
-                ("google_maps", "maps",  "Maps"),
-                ("phone_gps",   "gps",   "PhoneGPS"),
-            ]
-            import time as _t
-            now = _t.time()
-            for key, abbr, full in svc_names:
-                svc = services.get(key, {})
-                ok = bool(svc.get("ok", False))
-                last = float(svc.get("last_check_s", 0))
-                age_str = ""
-                if last > 0:
-                    age = int(now - last)
-                    age_str = f"{age}s" if age < 60 else f"{age // 60}m"
-                content.append(f"  {self._dot(ok)} {full:<10}", style="green" if ok else "red")
-                if age_str:
-                    content.append(f" {age_str}\n", style="dim")
+            # Power / UPS state (NEW: "how long until this thing dies?")
+            # 2 lines: bar+pct+voltage+watts, then status/runtime.
+            power = snap.get("power", {})
+            if power and power.get("available", False):
+                pct = float(power.get("battery_pct", -1))
+                voltage_v = float(power.get("voltage_v", 0.0))
+                power_w = float(power.get("power_w", 0.0))
+                charging = bool(power.get("charging", False))
+                time_rem_s = int(power.get("time_remaining_s", -1))
+                low_batt = bool(power.get("low_battery", False))
+                # Color the battery pct by zone
+                if pct < 0:
+                    pct_color = "dim"
+                elif low_batt:
+                    pct_color = "bold red"
+                elif pct < 30:
+                    pct_color = "yellow"
+                elif pct < 80:
+                    pct_color = "green"
                 else:
-                    content.append(f" —\n", style="dim")
-
-            # Session stats
-            up = float(snap.get("uptime_s", 0))
-            frames = int(snap.get("frames_processed", 0))
-            loops = int(snap.get("loop_iterations", 0))
-            loop_rate = loops / max(up, 1)
-            up_str = self._fmt_duration(up)
-            content.append("─" * 26 + "\n", style="dim")
-            content.append(f"up {up_str}  ", style="cyan")
-            content.append(f"f{frames:,}  ", style="dim")
-            content.append(f"{loop_rate:.1f}Hz\n", style="dim")
+                    pct_color = "bold green"
+                # Battery bar (8 cells — fits the panel width)
+                bar_w = 8
+                if pct >= 0:
+                    filled = int((pct / 100.0) * bar_w)
+                    filled = max(0, min(bar_w, filled))
+                    bar = "█" * filled + "░" * (bar_w - filled)
+                else:
+                    bar = "?" * bar_w
+                charge_icon = "⚡" if charging else "  "
+                # Line 1: bar + pct + voltage + power (compact, 1 row)
+                content.append(f"POW {charge_icon} {bar} ", style=pct_color)
+                content.append(f"{pct:>3.0f}% ", style=pct_color)
+                content.append(f"{voltage_v:.2f}V", style="dim")
+                if power_w > 0:
+                    content.append(f" {power_w:.1f}W", style="dim")
+                content.append("\n")
+                # Line 2: status + runtime (or low-battery warning)
+                if low_batt:
+                    content.append("     ⚠ LOW BATTERY — plug in soon\n", style="bold red")
+                elif charging and time_rem_s > 0:
+                    content.append(f"     charging · full in {self._fmt_duration(time_rem_s)}\n", style="cyan")
+                elif time_rem_s > 0:
+                    content.append(f"     discharging · {self._fmt_duration(time_rem_s)} left\n", style="dim")
+                else:
+                    content.append(f"     {'charging' if charging else 'discharging'}\n", style="dim")
 
             return Panel(content, title="[bold green]SENSORS · SYSTEM[/]", border_style="green", padding=(0, 1))
 

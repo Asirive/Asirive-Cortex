@@ -58,6 +58,27 @@ def _default_state() -> Dict[str, Any]:
             "free_gb": 0.0,
         },
 
+        # Power / UPS state (battery, voltage, current, charging, runtime)
+        # Sourced from /sys/class/power_supply/* (Linux), psutil (fallback),
+        # or config.manual (demo without UPS). See rpi5/power_monitor.py.
+        "power": {
+            "available": False,
+            "source": "none",
+            "battery_pct": -1,
+            "voltage_v": 0.0,
+            "current_ma": 0.0,
+            "power_w": 0.0,
+            "charging": False,
+            "status": "unknown",
+            "time_remaining_s": -1,
+            "capacity_wh": 0.0,
+            "energy_now_wh": 0.0,
+            "power_supply_name": "",
+            "health_pct": -1,
+            "low_battery": False,
+            "last_update_ts": 0.0,
+        },
+
         # Camera
         "camera": {
             "available": False,

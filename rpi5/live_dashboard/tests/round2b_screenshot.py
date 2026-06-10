@@ -128,6 +128,24 @@ def main():
             "percent": 28.0,
             "free_gb": 46.0,
         },
+        # NEW: power / UPS state (Geekworm UPS HAT, ~3.7h runtime demo)
+        power={
+            "available": True,
+            "source": "sysfs",
+            "battery_pct": 87.0,
+            "voltage_v": 4.05,
+            "current_ma": -380.0,        # negative = discharging
+            "power_w": 1.54,
+            "charging": False,
+            "status": "discharging",
+            "time_remaining_s": 12600,   # 3h 30m
+            "capacity_wh": 18.0,         # typical 2× 18650 = ~14-20 Wh
+            "energy_now_wh": 15.7,
+            "power_supply_name": "battery",
+            "health_pct": 98,
+            "low_battery": False,
+            "last_update_ts": now,
+        },
         # NEW: camera
         camera={
             "available": True,
@@ -195,13 +213,20 @@ def main():
     app = CortexFullApp(state, MockSystem())
 
     async def run_with_screenshot():
-        # Use a larger terminal so all panel content fits. 180×70 is a typical
-        # production terminal and gives panels ~17 rows tall each.
-        async with app.run_test(size=(180, 70)) as pilot:
+        # Use a larger terminal so all panel content fits. 200×100 gives the
+        # SENSORS cell ~16 rows of body height so the new POW + status lines
+        # show without clipping (v6 was 180×70 which clipped at 5 rows).
+        async with app.run_test(size=(200, 100)) as pilot:
             # Let it render a few times
             await pilot.pause(0.05)
-            for _ in range(5):
+            for _ in range(8):
                 await pilot.pause(0.5)
+            # Force a final refresh so the panel shows the latest data
+            try:
+                app._refresh_all()
+            except Exception:
+                pass
+            await pilot.pause(0.5)
             # Save screenshot
             svg_path = "/tmp/cortex_full_screenshot.svg"
             app.save_screenshot(svg_path)
