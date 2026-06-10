@@ -1768,6 +1768,10 @@ class CortexSystem:
         # Wire Gemini function calling callback
         if self.layer2 and hasattr(self.layer2, 'set_tool_callback'):
             self.layer2.set_tool_callback(self._handle_gemini_tool_call)
+        # Wire activity-feed callback so L2 tool calls, heard/said transcripts
+        # light up the dashboard's unified timeline panel.
+        if self.layer2 is not None:
+            self.layer2.on_event = self.record_event
 
         logger.info("[DEBUG] ===== LAYER 2 INITIALIZATION COMPLETE =====")
 
@@ -1885,7 +1889,8 @@ class CortexSystem:
         audio_config = self.config.get('audio', {})
         self.voice_coordinator = VoiceCoordinator(
             on_command_detected=self.handle_voice_command,
-            config=audio_config
+            config=audio_config,
+            system=self,  # so STT transcripts flow into the dashboard activity feed
         )
         self.voice_coordinator.initialize()
 
@@ -3343,10 +3348,19 @@ class CortexSystem:
 
     def _handle_gemini_tool_call(self, name: str, args: dict) -> dict:
         """Handle function calls from Gemini Live API.
-        
+
         Called from GeminiLiveHandler's receive loop when Gemini invokes
         a declared function. Runs on Gemini's background thread — only
         access thread-safe data (get_status, _gps_accuracy are safe).
+        """
+        # The receive loop in GeminiLiveHandler already emits a "l2 / tool"
+        # event when Gemini requests a tool call, so this method only
+        # dispatches the call and returns the result.
+        return self._dispatch_tool_call(name, args) or {"error": "no result"}
+
+    def _dispatch_tool_call(self, name: str, args: dict) -> dict:
+        """Inner dispatch — branch-by-branch handler logic. Returns the
+        tool result dict (or {"error": "..."} on failure).
         """
         if name == "get_navigation_state":
             if self.nav_engine:
@@ -4096,6 +4110,18 @@ class CortexSystem:
                                     self.layer0.haptic.pulse(intensity=100, duration=0.3)
                                 except Exception as e:
                                     logger.debug(f"Haptic pulse error: {e}")
+
+                            # Push to the live dashboard activity feed + safety history.
+                            # record_safety_alert itself routes to both safety_recent
+                            # and the unified events list (with tier-aware severity).
+                            try:
+                                self.record_safety_alert(
+                                    alert.alert_type,
+                                    float(alert.distance_m or 0.0),
+                                    int(alert.tier),
+                                )
+                            except Exception as e:
+                                logger.debug(f"record_safety_alert error: {e}")
 
                             # Send alert to laptop dashboard
                             if self.ws_client:

@@ -167,17 +167,18 @@ def main():
         },
         # NEW: activity feed (last 8 events, oldest first → newest last)
         events=[
-            {"ts": now - 95, "source": "l2",      "kind": "tool",     "message": "google_search(bus 16 schedule) → every 8 min, peak 5 min"},
-            {"ts": now - 78, "source": "nav",     "kind": "route",    "message": "→ school · 1.2 km via Sembawang Way"},
+            {"ts": now - 95, "source": "l2",      "kind": "tool",     "message": "google_search(bus 16 schedule)"},
+            {"ts": now - 78, "source": "l2",      "kind": "heard",    "message": "\"is there an elevator at the station?\""},
             {"ts": now - 65, "source": "safety",  "kind": "critical", "message": "overhang @0.6m"},
+            {"ts": now - 60, "source": "l2",      "kind": "tool",     "message": "get_navigation(dest=school)"},
             {"ts": now - 45, "source": "stt",     "kind": "heard",    "message": "\"how long will it take\" (0.91)"},
-            {"ts": now - 42, "source": "l2",      "kind": "said",     "message": "ok, walking route via Sembawang Way, 1.2 km total"},
+            {"ts": now - 42, "source": "l2",      "kind": "said",     "message": "\"about 15 minutes, take bus 16\""},
             {"ts": now - 31, "source": "safety",  "kind": "alert",    "message": "wall @1.2m"},
             {"ts": now - 22, "source": "scene",   "kind": "info",     "message": "scene: indoor→outdoor"},
             {"ts": now - 18, "source": "btn",     "kind": "info",     "message": "short press"},
             {"ts": now - 12, "source": "stt",     "kind": "heard",    "message": "\"navigate to school\" (0.94)"},
             {"ts": now -  8, "source": "safety",  "kind": "alert",    "message": "incoming_fast @3.2m"},
-            {"ts": now -  3, "source": "l2",      "kind": "tool",     "message": "get_navigation(dest=school) → 1.2km via Sembawang Way"},
+            {"ts": now -  3, "source": "l2",      "kind": "tool",     "message": "get_bus_arrival(stop=Blk 123)"},
         ],
         # NEW: session stats
         uptime_s=3847.0,
