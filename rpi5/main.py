@@ -32,7 +32,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, Deque, List, Optional, Tuple
 import datetime
 
 
@@ -547,9 +547,9 @@ class StatusDisplay:
         if self._initialized:
             return
         self._initialized = True
-        
+
         self._lock = threading.Lock()
-        
+
         # Detection state
         self._l0_count = 0
         self._l0_classes = []
@@ -559,7 +559,7 @@ class StatusDisplay:
         self._l1_latency = 0.0
         self._fps = 0.0
         self._mode = "DEV"
-        
+
         # GPS/IMU state
         self._gps_fix_quality = -1  # -1 = no module, 0 = no fix, 1+ = fix
         self._gps_satellites = 0
@@ -569,11 +569,11 @@ class StatusDisplay:
         self._imu_heading = 0.0
         self._imu_calibration = [0, 0, 0, 0]  # sys, gyro, accel, mag
         self._environment = "unknown"
-        
+
         # AI routing state
         self._ai_active = False  # True = Gemini routing, False = local IntentRouter
         self._ai_last_call = ""  # Last function call from Gemini
-        
+
         # Rich console and live display - dedicated console so the panel
         # doesn't tear when the shared logging console writes to the same
         # terminal in between Live refreshes.
@@ -586,41 +586,131 @@ class StatusDisplay:
         self._enabled = RICH_AVAILABLE
         self._last_refresh_time = 0.0
         self._refresh_interval_s = 0.5  # 2 Hz — stable panel, no tearing
-        
+
+        # Dashboard layout (status top, log viewer bottom). v2.1: replaced
+        # the bare-Panel Live with a two-pane Layout so the panel re-render
+        # no longer erases log lines that were written to stderr — both
+        # panes are owned by the same Live and Rich manages the screen.
+        self._layout = None
+        self._log_deque: Optional[Deque[str]] = None
+        self._log_lock: Optional[threading.Lock] = None
+        self._log_handler: Optional[logging.Handler] = None
+        self._removed_rich_handler = None  # saved so stop() can restore it
+
         if not RICH_AVAILABLE:
             logger.warning("Rich library not available, using fallback status display")
-    
+
     def start(self):
-        """Start the live status display."""
+        """Start the live status display (status panel + log viewer)."""
         if not self._enabled or self._started:
             return
 
         try:
+            from rich.layout import Layout
+
+            # Custom log pane: a deque + a handler that pushes to it.
+            # (We don't use rich.log.Log because RPi5's Rich 14.3.3 doesn't
+            # have that module — we ship our own minimal equivalent so
+            # the dashboard works on the installed version.)
+            #
+            # Keep the deque small and the lines PLAIN (no Rich markup) so
+            # rendering stays cheap — on the RPi5's CPU, a 200-line Text
+            # with markup takes ~50ms per refresh, which competes with the
+            # main detection loop and can starve log records out of the pane.
+            from collections import deque as _deque
+            self._log_deque = _deque(maxlen=50)
+            self._log_lock = threading.Lock()
+            self._log_handler = _LogPaneHandler(self._log_deque, self._log_lock)
+            self._log_handler.setLevel(logging.INFO)
+            self._log_handler.setFormatter(logging.Formatter(fmt="%(message)s"))
+
+            # Build the two-pane layout. Size 12 covers the 6 status rows
+            # + panel padding + borders; the logs pane takes the rest.
+            self._layout = Layout()
+            self._layout.split_column(
+                Layout(name="status", size=12),
+                Layout(name="logs", ratio=1),
+            )
+            self._layout["status"].update(self._render_status_panel())
+            self._layout["logs"].update(self._render_log_panel())
+
+            # Remove the stderr RichHandler so logs go ONLY to:
+            #   - the file (logs/cortex.log) via FileHandler
+            #   - the dashboard's log pane via _LogPaneHandler
+            # Nothing else shares the terminal → no clobbering.
+            root_logger = logging.getLogger()
+            for h in list(root_logger.handlers):
+                if RICH_AVAILABLE and RichHandler is not None and isinstance(h, RichHandler):
+                    root_logger.removeHandler(h)
+                    self._removed_rich_handler = h
+                    break
+
+            # Brute-force wire the LogPaneHandler to every existing logger
+            # so records from rpi5.* / __main__ / etc. can't be lost to a
+            # misconfigured propagate=False on a child logger. The handler
+            # dedupes by record id so a propagated record isn't appended
+            # twice (once at the child, once at the root).
+            self._log_handler = _DedupedLogPaneHandler(self._log_deque, self._log_lock)
+            self._log_handler.setLevel(logging.INFO)
+            self._log_handler.setFormatter(logging.Formatter(fmt="%(message)s"))
+            self._log_handler._seen = set()  # type: ignore[attr-defined]
+            self._log_handler._seen_lock = threading.Lock()  # type: ignore[attr-defined]
+
+            root_logger.addHandler(self._log_handler)
+            for name in list(logging.root.manager.loggerDict.keys()):
+                if name == "root":
+                    continue
+                logging.getLogger(name).addHandler(self._log_handler)
+                # Also force propagate=True in case any child logger has it
+                # set to False (would otherwise break our root-based capture).
+                logging.getLogger(name).propagate = True
+
+            if os.environ.get("CORTEX_DEBUG_LOG") == "1":
+                try:
+                    attached = [n for n in logging.root.manager.loggerDict.keys() if n != "root"] + ["root"]
+                    with open("/tmp/cortex_loghandler_debug.log", "a", encoding="utf-8") as _f:
+                        _f.write(f"--- LogPaneHandler installed at {time.strftime('%H:%M:%S')}; attached to {len(attached)} loggers ---\n")
+                except Exception:
+                    pass
+
             self._live = Live(
-                self._render(),
+                self._layout,
                 console=self._panel_console,
-                # Lower refresh rate + crop = stable panel that doesn't tear
-                # when stderr lines scroll between renders. The panel is a
-                # fixed-shape grid (no multi-line content), so 'crop' is safe.
                 refresh_per_second=2,
                 transient=False,
                 vertical_overflow="crop",
             )
             self._live.start()
             self._started = True
-            logger.info("Interactive status display started")
+            logger.info("Interactive dashboard started (status + log viewer)")
         except Exception as e:
-            logger.warning(f"Failed to start Rich live display: {e}")
+            logger.warning(f"Failed to start Rich dashboard: {e}")
             self._enabled = False
-    
+
     def stop(self):
         """Stop the live status display."""
         if self._live and self._started:
             try:
                 self._live.stop()
-                self._started = False
             except Exception as e:
                 logger.debug(f"Rich live stop error: {e}")
+
+        # Detach the LogHandler and restore the stderr RichHandler so
+        # logs continue to work after the dashboard exits.
+        if self._log_handler is not None:
+            try:
+                logging.getLogger().removeHandler(self._log_handler)
+            except Exception:
+                pass
+        if self._removed_rich_handler is not None:
+            try:
+                logging.getLogger().addHandler(self._removed_rich_handler)
+            except Exception:
+                pass
+        self._live = None
+        self._log_handler = None
+        self._removed_rich_handler = None
+        self._started = False
     
     def update_layer0(self, detections: List[Dict], latency_ms: float = 0.0):
         """Update Layer 0 detection info (thread-safe)."""
@@ -711,33 +801,33 @@ class StatusDisplay:
         
         return ", ".join(items)
     
-    def _render(self):
-        """Render the multi-line status panel."""
+    def _render_status_panel(self):
+        """Render the multi-line status panel (top pane of the dashboard)."""
         with self._lock:
             # Format classes with more items shown
             l0_str = self._format_classes(self._l0_classes, max_show=5)
             l1_str = self._format_classes(self._l1_classes, max_show=8)
-            
+
             # Build status text with colors
             if RICH_AVAILABLE:
                 from rich.table import Table
-                
+
                 # Create a compact table for the status
                 table = Table.grid(padding=(0, 2))
                 table.add_column(justify="left")
                 table.add_column(justify="left")
                 table.add_column(justify="left")
-                
+
                 # Row 1: Mode and FPS
                 mode_color = "green" if self._mode == "PRODUCTION" else "yellow"
                 fps_color = "green" if self._fps >= 10 else "yellow" if self._fps >= 5 else "red"
-                
+
                 row1 = Text()
                 row1.append(f"[{self._mode}]", style=f"bold {mode_color}")
                 row1.append("  FPS: ", style="bold")
                 row1.append(f"{self._fps:.1f}", style=f"bold {fps_color}")
                 row1.append(f"  |  L0: {self._l0_latency:.0f}ms  L1: {self._l1_latency:.0f}ms", style="dim")
-                
+
                 # Row 2: Layer 0 detections
                 row2 = Text()
                 row2.append("L0 Guardian: ", style="bold cyan")
@@ -746,7 +836,7 @@ class StatusDisplay:
                     row2.append(f" ({l0_str})", style="cyan")
                 else:
                     row2.append(" (none)", style="dim")
-                
+
                 # Row 3: Layer 1 detections
                 row3 = Text()
                 row3.append("L1 Learner:  ", style="bold magenta")
@@ -755,11 +845,11 @@ class StatusDisplay:
                     row3.append(f" ({l1_str})", style="magenta")
                 else:
                     row3.append(" (none)", style="dim")
-                
+
                 table.add_row(row1)
                 table.add_row(row2)
                 table.add_row(row3)
-                
+
                 # Row 4: GPS status
                 row4 = Text()
                 row4.append("GPS:         ", style="bold green")
@@ -778,7 +868,7 @@ class StatusDisplay:
                 if self._gps_source:
                     src_color = "green" if self._gps_source == "m8u" else "yellow"
                     row4.append(f"  src:{self._gps_source}", style=src_color)
-                
+
                 # Row 5: IMU status
                 row5 = Text()
                 row5.append("IMU:         ", style="bold blue")
@@ -789,10 +879,10 @@ class StatusDisplay:
                     row5.append(f"  cal: S{cal[0]} G{cal[1]} A{cal[2]} M{cal[3]}", style=cal_color)
                 else:
                     row5.append("NO DATA", style="dim")
-                
+
                 table.add_row(row4)
                 table.add_row(row5)
-                
+
                 # Row 6: AI routing status
                 row6 = Text()
                 row6.append("AI:          ", style="bold yellow")
@@ -804,46 +894,169 @@ class StatusDisplay:
                         row6.append(f"  |  Last: {call_display}", style="dim")
                 else:
                     row6.append("⚡ LOCAL ROUTING", style="bold yellow")
-                
+
                 table.add_row(row6)
 
                 return Panel(
                     table,
                     title="[bold white]Asirive Cortex Status[/bold white]",
+                    subtitle="[dim]v2.1 layout · logs scroll below · Ctrl+C to stop[/dim]",
                     border_style="blue",
-                    padding=(0, 1)
+                    padding=(0, 1),
                 )
             else:
                 # Fallback plain text
                 return f"[{self._mode}] L0: {self._l0_count} ({l0_str}) | L1: {self._l1_count} ({l1_str}) | FPS: {self._fps:.1f}"
-    
+
+    # Backward-compat alias — some external code may import this name.
+    _render = _render_status_panel
+
     def _refresh(self):
-        """Refresh the status display."""
-        if not self._enabled or not self._started or not self._live:
+        """Refresh both panes of the dashboard (status + logs)."""
+        if not self._enabled or not self._started or not self._live or not self._layout:
             return
-        
+
         try:
             now = time.monotonic()
             if now - self._last_refresh_time < self._refresh_interval_s:
                 return
             self._last_refresh_time = now
-            self._live.update(self._render())
+            self._layout["status"].update(self._render_status_panel())
+            self._layout["logs"].update(self._render_log_panel())
+            self._live.refresh()
         except Exception as e:
-            logger.debug(f"Rich live refresh error: {e}")
-    
+            logger.debug(f"Rich dashboard refresh error: {e}")
+
+    def _render_log_panel(self):
+        """Render the bottom pane as a scrollable list of recent log lines.
+
+        Uses plain text (no Rich markup) and a small deque to keep the
+        render cheap on the RPi5 — the 200-line marked-up version was
+        50ms+ per refresh and could starve the detection loop.
+
+        CRITICAL: copy the deque under the lock, RELEASE the lock,
+        then build the Text/Panel. The Text/Text.append + Panel()
+        construction is the slow part — if we held the lock during it,
+        emit() would block trying to append a new record.
+        """
+        with self._log_lock:
+            if self._log_deque is not None:
+                lines = list(self._log_deque)
+                count = len(self._log_deque)
+            else:
+                lines = []
+                count = 0
+        # Lock released. Now do the slow render work.
+        text = Text()
+        for line in lines:
+            text.append(line + "\n")
+        return Panel(
+            text,
+            title=f"[bold white]Logs[/bold white]  [dim]({count}/50 · last refresh: {time.strftime('%H:%M:%S')})[/dim]",
+            border_style="green",
+            padding=(0, 1),
+        )
+
     def print_above(self, message: str, style: str = None):
-        """Print a message above the status line (for important logs)."""
-        if self._console and self._started:
+        """Write a message into the dashboard's log pane (no markup — plain text)."""
+        if self._log_deque is not None and self._log_lock is not None and self._started:
             try:
-                if style:
-                    self._console.print(message, style=style)
-                else:
-                    self._console.print(message)
+                ts = time.strftime("%H:%M:%S", time.localtime())
+                line = f"{ts} INFO     {message}"
+                with self._log_lock:
+                    self._log_deque.append(line)
+                if self._live is not None:
+                    self._live.refresh()
+                return
             except Exception as e:
-                print(message)
-                logger.debug(f"Console print error: {e}")
-        else:
-            print(message)
+                logger.debug(f"Log pane push error: {e}")
+        # Fallback: print to the original console
+        if self._console:
+            try:
+                self._console.print(message, style=style) if style else self._console.print(message)
+                return
+            except Exception:
+                pass
+        print(message)
+
+
+class _LogPaneHandler(logging.Handler):
+    """Push formatted log lines into the dashboard's log pane (a deque).
+
+    Replaces rich.log.Log + rich.logging.LogHandler for Rich versions that
+    don't ship `rich.log` (RPi5's Rich 14.3.3).
+    """
+
+    _LEVEL_STYLES = {
+        "DEBUG":    "dim",
+        "INFO":     "bright_blue",
+        "WARNING":  "yellow",
+        "ERROR":    "bold red",
+        "CRITICAL": "bold red reverse",
+    }
+
+    def __init__(self, sink: "deque[str]", lock: threading.Lock):
+        super().__init__(level=logging.INFO)
+        self.sink = sink
+        self.lock = lock
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            ts = time.strftime("%H:%M:%S", time.localtime(record.created))
+            level = record.levelname
+            msg = self.format(record)
+            # Strip any ANSI escapes the upstream logger inserted
+            import re as _re
+            msg = _re.sub(r"\x1b\[[0-9;]*m", "", msg)
+            # Plain text — NO Rich markup tags — so the Text render is
+            # essentially a memcpy. Color the level via Text style.
+            line = f"{ts} {level:<7}  {msg}"
+            # BLOCKING acquire here. The previous non-blocking version
+            # silently dropped records whenever the render thread held
+            # the lock — the debug file showed hits but the deque stayed
+            # empty. The render now copies the deque under the lock and
+            # RELEASES it before doing the (potentially slow) Text build,
+            # so emits only block for a few microseconds.
+            with self.lock:
+                self.sink.append(line)
+            # Debug marker file (opt-in via env var)
+            if os.environ.get("CORTEX_DEBUG_LOG") == "1":
+                try:
+                    with open("/tmp/cortex_loghandler_debug.log", "a", encoding="utf-8") as _f:
+                        _f.write(line + "\n")
+                except Exception:
+                    pass
+        except Exception as e:
+            # Surface failures to stderr (the file handler captures it) so
+            # the dashboard doesn't silently swallow errors.
+            import sys as _sys, traceback as _tb
+            _sys.stderr.write(f"[LogPaneHandler] emit failed: {type(e).__name__}: {e}\n{_tb.format_exc()}\n")
+
+
+class _DedupedLogPaneHandler(_LogPaneHandler):
+    """Same as _LogPaneHandler but dedupes by record id so a record that
+    propagates from a child logger to the root isn't appended twice (once
+    at the child, once at the root). Only used when we attach the handler
+    to every logger — for the root-only case, _LogPaneHandler is enough.
+    """
+
+    def __init__(self, sink, lock):
+        super().__init__(sink, lock)
+        self._seen = set()
+        self._seen_lock = threading.Lock()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        # Record id is unique per record creation. If a propagated copy
+        # arrives, it has the same id. Cheap dedup via a bounded set.
+        rid = id(record)
+        with self._seen_lock:
+            if rid in self._seen:
+                return
+            # Keep the set from growing forever: clear every 10k entries
+            if len(self._seen) > 10000:
+                self._seen.clear()
+            self._seen.add(rid)
+        super().emit(record)
 
 
 # Global status display instance
@@ -1292,9 +1505,24 @@ class CortexSystem:
     7. Manage graceful shutdown
     """
 
-    def __init__(self, config_path: str = None, standalone: bool = False):
+    def __init__(self, config_path: str = None, standalone: bool = False, dashboard_mode: str = "old"):
+        """Initialize the CortexSystem.
+
+        Args:
+            config_path: optional path to a config.yaml (else uses default).
+            standalone: True to skip laptop-dashboard WebSocket/ZMQ.
+            dashboard_mode: which on-system UI to run. One of:
+                - "old": legacy StatusDisplay (Rich Live panel)
+                - "2.4": plain-print UI for slow SSH (rpi5.live_dashboard)
+                - "full": Textual FULL UI (Round 2b; falls back to "old" if Textual not installed)
+                - "none": no on-system dashboard
+        """
         logger.info("Initializing Asirive Cortex v2.0...")
         self.standalone = standalone
+        if dashboard_mode not in ("old", "2.4", "full", "none"):
+            logger.warning(f"Unknown dashboard_mode={dashboard_mode!r}, falling back to 'old'")
+            dashboard_mode = "old"
+        self.dashboard_mode = dashboard_mode
 
         # Load configuration
         if config_path:
@@ -1713,6 +1941,277 @@ class CortexSystem:
         self.status_display = init_status_display()
         logger.info("📊 Interactive status display initialized")
 
+        # Initialize the new dashboard state holder (Round 1 of the
+        # live_dashboard rewrite). The OLD StatusDisplay above is kept
+        # so legacy callers still work; both are updated in parallel
+        # via _publish_state(). Once the FULL Textual mode is in place
+        # (Round 2b), the OLD StatusDisplay can be retired.
+        try:
+            from rpi5.live_dashboard.state import DashboardState
+            self.dashboard_state: Optional[DashboardState] = DashboardState()
+            logger.info("📊 DashboardState (live_dashboard) initialized")
+        except Exception as e:
+            logger.warning(f"⚠️ DashboardState init failed: {e} — live_dashboard will be unavailable")
+            self.dashboard_state = None
+
+        # Container for the new on-system dashboard (ConsoleApp / TextualApp).
+        # Started in start() based on self.dashboard_mode.
+        self._console_app = None
+        self._console_thread = None
+        self._textual_app = None
+        self._textual_thread = None
+
+    # ------------------------------------------------------------------
+    # Dashboard state accessors (for the new live_dashboard UIs)
+    # ------------------------------------------------------------------
+
+    def get_state(self) -> Dict[str, Any]:
+        """Return a thread-safe snapshot of the dashboard state.
+
+        Returns an empty dict if the new DashboardState is unavailable
+        (e.g. the live_dashboard package failed to import). The OLD
+        StatusDisplay is not consulted here — it's a separate code path
+        and the new UIs read from this snapshot only.
+        """
+        if self.dashboard_state is None:
+            return {}
+        return self.dashboard_state.snapshot()
+
+    def get_history(self) -> Dict[str, List[float]]:
+        """Return a thread-safe copy of the dashboard's history deques."""
+        if self.dashboard_state is None:
+            return {}
+        return self.dashboard_state.history()
+
+    def _publish_state(self, **kwargs: Any) -> None:
+        """Update the new DashboardState with the given kwargs.
+
+        Used by call sites that previously only called
+        self.status_display.update_*(...). Now both are called:
+        the OLD StatusDisplay keeps working (for the "old" dashboard
+        mode and as a sanity check), and the new DashboardState feeds
+        the 2.4 and FULL modes.
+
+        Unknown keys are silently ignored by DashboardState.update.
+        """
+        if self.dashboard_state is not None:
+            self.dashboard_state.update(**kwargs)
+
+    def _publish_system_metrics(self) -> None:
+        """Gather CPU, RAM, temperature, load, and camera state from psutil
+        and push them to DashboardState.
+
+        Called at ~1Hz from the main loop. Best-effort — any error
+        is caught and logged at debug level so a flaky sensor never
+        kills the dashboard.
+        """
+        if self.dashboard_state is None:
+            return
+        try:
+            import psutil
+            cpu = float(psutil.cpu_percent(interval=None))
+            mem = psutil.virtual_memory()
+            try:
+                temp = float(self._get_cpu_temp() or 0.0)
+            except Exception:
+                temp = 0.0
+            try:
+                load1 = float(psutil.getloadavg()[0]) if hasattr(psutil, "getloadavg") else 0.0
+            except Exception:
+                load1 = 0.0
+
+            # Camera state
+            cam_avail = bool(getattr(self, "camera_available", False))
+            cam_resolution = list(getattr(getattr(self, "camera", None), "resolution", (0, 0)) or (0, 0))
+            cam_fps_target = float(getattr(getattr(self, "camera", None), "fps", 0) or 0)
+            cam_backend = ""
+            cam = getattr(self, "camera", None)
+            if cam is not None:
+                # picamera2 has 'camera'; OpenCV has 'isOpened'. We just mark
+                # the backend string by checking the class name.
+                cam_backend = type(cam).__name__
+
+            # System metrics push
+            disk_used_gb = 0.0
+            disk_total_gb = 0.0
+            disk_pct = 0.0
+            try:
+                dsk = psutil.disk_usage("/")
+                disk_used_gb = float(dsk.used) / (1024 ** 3)
+                disk_total_gb = float(dsk.total) / (1024 ** 3)
+                disk_pct = float(dsk.percent)
+            except Exception:
+                pass
+
+            # System metrics push
+            self.dashboard_state.update(
+                system={
+                    "cpu_percent": cpu,
+                    "cpu_temp_c": temp,
+                    "ram_used_mb": int(mem.used / (1024 * 1024)),
+                    "ram_total_mb": int(mem.total / (1024 * 1024)),
+                    "ram_percent": float(mem.percent),
+                    "load_avg_1m": load1,
+                },
+                disk={
+                    "used_gb": round(disk_used_gb, 1),
+                    "total_gb": round(disk_total_gb, 1),
+                    "percent": round(disk_pct, 1),
+                    "free_gb": round(disk_total_gb - disk_used_gb, 1),
+                },
+                camera={
+                    "available": cam_avail,
+                    "backend": cam_backend,
+                    "resolution": cam_resolution,
+                    "fps_target": cam_fps_target,
+                },
+            )
+        except Exception as e:
+            logger.debug(f"_publish_system_metrics: {e}")
+
+    def record_stt(self, text: str, confidence: float = 0.0) -> None:
+        """Append a transcribed utterance to the dashboard's STT history.
+
+        Called by the voice coordinator / Whisper / Cartesia STT paths
+        whenever a final transcript comes in. Keeps the last 5.
+        """
+        if self.dashboard_state is None or not text:
+            return
+        import time as _t
+        existing = list(self.dashboard_state.snapshot().get("stt_recent", []))
+        existing.append({"text": text, "ts": _t.time(), "confidence": confidence})
+        existing = existing[-5:]
+        self.dashboard_state.update(stt_recent=existing)
+
+    def record_safety_alert(self, alert_type: str, distance_m: float, tier: int) -> None:
+        """Append a safety alert to the dashboard's recent-alerts history."""
+        if self.dashboard_state is None:
+            return
+        import time as _t
+        existing = list(self.dashboard_state.snapshot().get("safety_recent", []))
+        existing.append({
+            "type": alert_type, "distance_m": float(distance_m),
+            "tier": int(tier), "ts": _t.time(),
+        })
+        existing = existing[-5:]
+        self.dashboard_state.update(safety_recent=existing)
+
+    def record_button_press(self, press_type: str) -> None:
+        """Append a button press to the dashboard's button history."""
+        if self.dashboard_state is None:
+            return
+        import time as _t
+        self.dashboard_state.update(button={
+            "last_press_ts": _t.time(),
+            "last_press_type": press_type,
+        })
+
+    def record_scene_change(self, change_type: str) -> None:
+        """Append a scene change to the dashboard's scene history."""
+        if self.dashboard_state is None:
+            return
+        import time as _t
+        self.dashboard_state.update(scene={
+            "last_change_ts": _t.time(),
+            "last_change_type": change_type,
+        })
+
+    def _publish_nav_state(self) -> None:
+        """Pull the current navigation status from the navigator and push
+        it to DashboardState.nav.
+
+        Called at ~1Hz from the main loop, plus from the nav mode /
+        event callbacks so the dashboard reflects changes immediately.
+
+        Builds a rich nav dict covering: NavMode (physical context),
+        NavState (session state), destination, next_instruction, waypoint
+        progress, distances, bearing, current leg type, and transit info
+        (service no, line, stops, headsign) when the active leg is a
+        bus/MRT.
+        """
+        if self.dashboard_state is None:
+            return
+        engine = getattr(self, "nav_engine", None)
+        if engine is None:
+            return
+        try:
+            status = engine.get_status() or {}
+
+            leg = getattr(engine, "_current_leg", None)
+            leg_type_val = ""
+            leg_distance = 0.0
+            leg_duration = 0.0
+            leg_instruction = ""
+            transit = None
+            if leg is not None:
+                lt = leg.leg_type
+                leg_type_val = lt.value if hasattr(lt, "value") else str(lt)
+                leg_distance = float(getattr(leg, "distance_m", 0.0) or 0.0)
+                leg_duration = float(getattr(leg, "duration_s", 0.0) or 0.0)
+                leg_instruction = str(getattr(leg, "instruction", "") or "")
+                transit = getattr(leg, "transit_info", None)
+
+            t_service = t_line = t_color = t_dep = t_arr = t_head = ""
+            t_stops = 0
+            if transit is not None:
+                t_service = str(getattr(transit, "service_no", "") or "")
+                t_line = str(getattr(transit, "line_name", "") or "")
+                t_color = str(getattr(transit, "line_color", "") or "")
+                t_dep = str(getattr(transit, "departure_stop", "") or "")
+                t_arr = str(getattr(transit, "arrival_stop", "") or "")
+                t_head = str(getattr(transit, "headsign", "") or "")
+                t_stops = int(getattr(transit, "num_stops", 0) or 0)
+
+            saved_locs = []
+            try:
+                sl = getattr(self, "saved_locations", None)
+                if sl and hasattr(sl, "list_locations"):
+                    for loc in sl.list_locations() or []:
+                        saved_locs.append({
+                            "name": getattr(loc, "name", ""),
+                            "address": getattr(loc, "address", ""),
+                            "default": bool(getattr(loc, "default", False)),
+                        })
+            except Exception:
+                pass
+
+            last_dest = ""
+            try:
+                bh = getattr(self, "bus_handler", None)
+                if bh and getattr(bh, "last_query", None):
+                    last_dest = str(bh.last_query)
+            except Exception:
+                pass
+
+            self.dashboard_state.update(nav={
+                "mode": str(status.get("mode", "idle")),
+                "state": str(status.get("state", "inactive")),
+                "destination": str(status.get("destination", "") or ""),
+                "next_instruction": str(status.get("next_instruction", "") or ""),
+                "waypoint_index": int(status.get("waypoint_index", 0) or 0),
+                "total_waypoints": int(status.get("total_waypoints", 0) or 0),
+                "distance_to_waypoint_m": float(status.get("distance_to_waypoint_m", 0.0) or 0.0),
+                "distance_to_destination_m": float(status.get("distance_to_destination_m", 0.0) or 0.0),
+                "bearing_to_waypoint": float(status.get("bearing_to_waypoint", 0.0) or 0.0),
+                "current_leg_type": leg_type_val,
+                "current_leg_distance_m": leg_distance,
+                "current_leg_duration_s": leg_duration,
+                "current_leg_instruction": leg_instruction,
+                "transit_service_no": t_service,
+                "transit_line_name": t_line,
+                "transit_line_color": t_color,
+                "transit_departure_stop": t_dep,
+                "transit_arrival_stop": t_arr,
+                "transit_num_stops": t_stops,
+                "transit_headsign": t_head,
+                "saved_locations": saved_locs,
+                "last_nav_destination": last_dest,
+                "bus_state": "idle",
+                "lta_ok": bool(getattr(self, "_lta_ok", False)),
+            })
+        except Exception as e:
+            logger.debug(f"_publish_nav_state: {e}")
+
         # NOTE: We intentionally do NOT install LogCapture here for the
         # main `all` command. The previous version pushed log events
         # into the Live panel itself, which forced the panel to re-render
@@ -2006,10 +2505,12 @@ class CortexSystem:
         logger.info("🔘 Button short press → triggering voice command listen")
         if self.voice_coordinator:
             self.voice_coordinator.start()  # Re-activates VAD listening
+        self.record_button_press("short")
 
     def _on_button_long_press(self) -> None:
         """Long button press (3–5s): graceful application stop."""
         logger.info("🔘 Button long press → stopping system (graceful)")
+        self.record_button_press("long")
         self.stop()
 
     def _on_fall_detected(self) -> None:
@@ -3317,10 +3818,57 @@ class CortexSystem:
         logger.info("💾 Syncing to Supabase...")
         logger.info("🌐 Sending to laptop dashboard...")
 
-        # Start interactive status display
-        if self.status_display:
-            self.status_display.start()
-            logger.info("📊 Interactive status display active")
+        # Start the on-system dashboard based on self.dashboard_mode
+        # ("old" = Rich Live, "2.4" = plain-print, "full" = Textual, "none" = nothing).
+        # Only one dashboard runs at a time; the new modes run in a background
+        # thread so the main loop can continue below.
+        if self.dashboard_mode == "2.4":
+            try:
+                from rpi5.live_dashboard.app_console import ConsoleApp
+                if self.dashboard_state is None:
+                    logger.warning("⚠️ 2.4 mode requested but DashboardState is unavailable")
+                else:
+                    self._console_app = ConsoleApp(self.dashboard_state, self)
+                    self._console_thread = threading.Thread(
+                        target=self._console_app.run,
+                        daemon=True,
+                        name="console-app",
+                    )
+                    self._console_thread.start()
+                    logger.info("📊 2.4 mode dashboard started in background thread")
+            except Exception as e:
+                logger.error(f"❌ 2.4 mode dashboard failed to start: {e}")
+                # Fall back to legacy if 2.4 fails
+                if self.status_display:
+                    self.status_display.start()
+                    logger.info("📊 Fell back to legacy StatusDisplay")
+        elif self.dashboard_mode == "full":
+            try:
+                from rpi5.live_dashboard.app_textual import TextualApp
+                if self.dashboard_state is None:
+                    logger.warning("⚠️ FULL mode requested but DashboardState is unavailable")
+                else:
+                    self._textual_app = TextualApp(self.dashboard_state, self)
+                    self._textual_thread = threading.Thread(
+                        target=self._textual_app.run,
+                        daemon=True,
+                        name="textual-app",
+                    )
+                    self._textual_thread.start()
+                    logger.info("📊 FULL mode dashboard (Textual) started in background thread")
+            except ImportError:
+                logger.warning("⚠️ Textual not installed — falling back to legacy StatusDisplay")
+                if self.status_display:
+                    self.status_display.start()
+            except Exception as e:
+                logger.error(f"❌ FULL mode dashboard failed to start: {e}")
+        elif self.dashboard_mode == "old":
+            # Legacy: Rich Live status panel
+            if self.status_display:
+                self.status_display.start()
+                logger.info("📊 Legacy status display (StatusDisplay) active")
+        else:  # "none"
+            logger.info("📊 No on-system dashboard (dashboard_mode='none')")
 
         if self.session_recorder:
             if self.session_recorder.start_on_init:
@@ -3753,6 +4301,12 @@ class CortexSystem:
                             self.status_display.update_gps(gps_fix, environment=env_label, source=gps_source)
                             self.status_display.update_imu(imu_reading)
 
+                        # Push nav state to the new DashboardState so the
+                        # 2.4 and FULL mode dashboards can render it.
+                        self._publish_nav_state()
+                        # Push system metrics (CPU/RAM/temp/load) + camera
+                        # state to the new DashboardState. ~1Hz cadence.
+                        self._publish_system_metrics()
                         # Bus proximity check (piggyback on GPS poll)
                         if gps_fix and self.bus_handler:
                             try:
@@ -4736,6 +5290,22 @@ class CortexSystem:
         # Stop interactive status display
         if self.status_display:
             self.status_display.stop()
+
+        # Stop the new on-system dashboards if they were started
+        if self._console_app is not None:
+            try:
+                self._console_app.cleanup()
+            except Exception as e:
+                logger.debug(f"Console app cleanup error: {e}")
+        if self._console_thread is not None and self._console_thread.is_alive():
+            self._console_thread.join(timeout=2.0)
+        if self._textual_app is not None:
+            try:
+                self._textual_app.cleanup()
+            except Exception as e:
+                logger.debug(f"Textual app cleanup error: {e}")
+        if self._textual_thread is not None and self._textual_thread.is_alive():
+            self._textual_thread.join(timeout=2.0)
 
         # Stop Navigator (spatial audio)
         if self.navigator:

@@ -47,7 +47,10 @@
       "Bash(git push *)",
       "Bash(pip show *)",
       "Bash(pip index *)",
-      "Bash(pip install *)"
+      "Bash(pip install *)",
+      "Bash(git remote *)",
+      "Bash(grep -iE \"AIza[A-Za-z0-9_-]{30,}|sk_car_|sb_publishable|Haziqshah21|172\\\\.26\\\\.13\\\\.[0-9]+|10\\\\.41\\\\.[0-9]+\\\\.[0-9]+\" AGENTS.md)",
+      "Bash(grep -E \"AIza[A-Za-z0-9_-]{30,}|sk_car_[A-Za-z0-9]+|sk-cp-[A-Za-z0-9]+|sk-[A-Za-z0-9]{20,}|sb_publishable_[A-Za-z0-9_]+|Haziqshah21\" AGENTS.md)"
     ]
   },
   "contextWindow": 524288
