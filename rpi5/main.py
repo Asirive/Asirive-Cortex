@@ -2003,7 +2003,7 @@ class CortexSystem:
             self.dashboard_state.update(**kwargs)
 
     def _publish_system_metrics(self) -> None:
-        """Gather CPU, RAM, temperature, load, and camera state from psutil
+        """Gather CPU, RAM, temperature, load, disk, power, and camera state
         and push them to DashboardState.
 
         Called at ~1Hz from the main loop. Best-effort — any error
@@ -2036,6 +2036,17 @@ class CortexSystem:
                 # the backend string by checking the class name.
                 cam_backend = type(cam).__name__
 
+            # Power / UPS state (battery, voltage, current, charging)
+            power_snap = None
+            pm = getattr(self, "power_monitor", None)
+            if pm is not None:
+                try:
+                    pm.publish(self.dashboard_state)
+                    # Snapshot for the conditional update below
+                    power_snap = self.dashboard_state.snapshot().get("power", {})
+                except Exception as e:
+                    logger.debug(f"power_monitor.publish error: {e}")
+
             # System metrics push
             disk_used_gb = 0.0
             disk_total_gb = 0.0
@@ -2048,8 +2059,10 @@ class CortexSystem:
             except Exception:
                 pass
 
-            # System metrics push
-            self.dashboard_state.update(
+            # Build the update kwargs. Power may have been pushed separately
+            # by power_monitor.publish() above, but we re-include the same
+            # snapshot so a single dashboard_state.update() covers everything.
+            update_kwargs = dict(
                 system={
                     "cpu_percent": cpu,
                     "cpu_temp_c": temp,
@@ -2071,6 +2084,11 @@ class CortexSystem:
                     "fps_target": cam_fps_target,
                 },
             )
+            if power_snap is not None:
+                update_kwargs["power"] = power_snap
+
+            # System metrics push
+            self.dashboard_state.update(**update_kwargs)
         except Exception as e:
             logger.debug(f"_publish_system_metrics: {e}")
 
@@ -2538,6 +2556,21 @@ class CortexSystem:
             except Exception as e:
                 logger.error(f"❌ Failed to init SafetyMonitor: {e}")
                 self.safety_monitor = None
+
+        # Initialize PowerMonitor (battery / UPS state for the dashboard)
+        # Reads from /sys/class/power_supply/* on Linux, psutil as a
+        # cross-platform fallback, or config.manual for demos.
+        self.power_monitor = None
+        try:
+            from rpi5.power_monitor import PowerMonitor
+            power_cfg = self.config.get('power', {})
+            self.power_monitor = PowerMonitor(power_cfg)
+            logger.info(
+                f"✅ PowerMonitor initialized (platform={self.power_monitor._platform})"
+            )
+        except Exception as e:
+            logger.error(f"❌ Failed to init PowerMonitor: {e}")
+            self.power_monitor = None
 
         logger.info("✅ Asirive Cortex v2.0 initialized successfully")
 
