@@ -72,6 +72,12 @@ def _default_state() -> Dict[str, Any]:
         # Recent safety alerts (last 5)
         "safety_recent": [],                # [{"type": str, "distance_m": float, "ts": float, "tier": int}]
 
+        # Activity feed (unified timeline from all subsystems, last 30)
+        # Each event: {"ts": float, "source": str, "kind": str, "message": str}
+        #   source: "stt" | "l2" | "l0" | "l1" | "nav" | "safety" | "ai" | "sys" | "user" | "tts"
+        #   kind:   "info" | "tool" | "alert" | "route" | "heard" | "said" | "intent" | "error"
+        "events": [],
+
         # Scene change detector
         "scene": {
             "last_change_ts": 0.0,

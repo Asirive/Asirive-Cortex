@@ -64,16 +64,16 @@ Footer {
     border: tall green;
     padding: 0 1;
     background: #0a0a0a;
-}
-
-/* Gemini "speaking" indicator on the L2 panel — pulses to show audio activity */
-.speaking {
-    background: $boost;
-    color: #00ff88;
-    text-style: bold;
-}
-
-#log {
     scrollbar-background: #0a0a0a;
     scrollbar-color: #444;
+}
+
+/* Activity feed — full-width timeline above the logs */
+#activity {
+    height: 9;
+    min-height: 9;
+    margin: 1 1 0 1;
+    border: tall yellow;
+    padding: 0 1;
+    background: #0a0a0a;
 }

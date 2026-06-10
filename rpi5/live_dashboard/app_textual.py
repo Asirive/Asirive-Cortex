@@ -147,6 +147,8 @@ if TEXTUAL_AVAILABLE:
                 yield Static(id="system")      # row 3, col 1
                 yield Static(id="tts")         # row 3, col 2
                 yield Static(id="memory")      # row 3, col 3
+            # Unified activity feed (full-width timeline above logs)
+            yield Static(id="activity")
             yield RichLog(id="log", highlight=True, markup=True, wrap=False)
             yield Footer()
 
@@ -197,7 +199,7 @@ if TEXTUAL_AVAILABLE:
             PULSE.tick()
             snap = self.dashboard_state.snapshot()
             hist = self.dashboard_state.history()
-            for panel_id in ("detection", "layer2", "sensors", "system", "tts", "memory"):
+            for panel_id in ("detection", "layer2", "sensors", "system", "tts", "memory", "activity"):
                 try:
                     panel = self.query_one(f"#{panel_id}", Static)
                     panel.update(self._render_panel(panel_id, snap, hist))
@@ -215,6 +217,7 @@ if TEXTUAL_AVAILABLE:
                 "system": self._render_system,
                 "tts": self._render_tts,
                 "memory": self._render_memory,
+                "activity": self._render_activity,
             }
             try:
                 return renderers[panel_id](snap, hist)
@@ -413,8 +416,8 @@ if TEXTUAL_AVAILABLE:
             content.append("─" * 70 + "\n", style="dim")
             content.append("Conversation\n", style="bold")
             transcript = l2.get("transcript", [])
-            # 5 turns keeps the panel tight while still showing context
-            last_turns = transcript[-5:] if transcript else []
+            # 4 turns keeps the panel tight while still showing context
+            last_turns = transcript[-4:] if transcript else []
             for line in last_turns:
                 if line.startswith("YOU:"):
                     content.append("  YOU    →  ", style="bold cyan")
@@ -427,22 +430,17 @@ if TEXTUAL_AVAILABLE:
             if not transcript:
                 content.append("  (no conversation yet)\n", style="dim")
 
-            # --- Tool call history (last 2, compact) ---
+            # --- Tool call history (last 1, super compact) ---
             tool_log = l2.get("tool_call_log", [])
             if tool_log:
                 content.append("─" * 70 + "\n", style="dim")
-                content.append("Tools\n", style="bold")
-                for entry in tool_log[-2:]:
-                    name = entry.get("name", "?")
-                    args = entry.get("args_preview", "")
-                    result = entry.get("result_preview", "")
-                    content.append(f"  ⚙ ", style="magenta")
-                    content.append(f"{name}", style="bold magenta")
-                    if args:
-                        content.append(f"({self._truncate(args, 22)})", style="dim")
-                    content.append(f" → {self._truncate(result, 42)}\n", style="white")
+                entry = tool_log[-1]
+                name = entry.get("name", "?")
+                result = entry.get("result_preview", "")
+                content.append(f"  ⚙ {name}", style="bold magenta")
+                content.append(f" → {self._truncate(result, 60)}\n", style="white")
 
-            # --- L2 latency stats (one line + sparkline) ---
+            # --- L2 latency stats (one line, no sparkline — saves space) ---
             l2_lat = l2.get("latency_ms", {})
             avg = float(l2_lat.get("avg", 0))
             p95 = float(l2_lat.get("p95", 0))
@@ -452,12 +450,6 @@ if TEXTUAL_AVAILABLE:
             content.append(f"avg {avg:.0f}ms  ", style="green" if avg < 600 else "yellow" if avg < 1000 else "red")
             content.append(f"p95 {p95:.0f}ms  ", style="green" if p95 < 1000 else "yellow" if p95 < 1500 else "red")
             content.append(f"ttfb {ttfb:.0f}ms\n", style="green" if ttfb < 300 else "yellow" if ttfb < 600 else "red")
-            # L2 latency sparkline
-            l2_hist = hist.get("l2_latency_ms", [])
-            if len(l2_hist) >= 3:
-                content.append("L2 (60s) ")
-                content.append(render_sparkline(l2_hist, width=55, color="magenta"))
-                content.append("\n")
 
             return Panel(content, title="[bold magenta]CLOUD AI · Gemini Live[/]", border_style="magenta", padding=(0, 1))
 
@@ -832,6 +824,87 @@ if TEXTUAL_AVAILABLE:
             else:
                 content.append("disk    · (no data)\n", style="dim")
             return Panel(content, title="[bold magenta]MEMORY · L4[/]", border_style="magenta", padding=(0, 1))
+
+        # Source → (color, prefix). Compact 4-char source tag, e.g. "stt" or "l2  ".
+        _EVENT_SOURCE_STYLE = {
+            "stt":     ("cyan",    "stt "),
+            "l2":      ("magenta", "l2  "),
+            "l0":      ("blue",    "l0  "),
+            "l1":      ("magenta", "l1  "),
+            "nav":     ("yellow",  "nav "),
+            "safety":  ("red",     "sft "),
+            "ai":      ("magenta", "ai  "),
+            "sys":     ("dim",     "sys "),
+            "user":    ("cyan",    "user"),
+            "tts":     ("green",   "tts "),
+            "btn":     ("yellow",  "btn "),
+            "scene":   ("cyan",    "scn "),
+        }
+
+        # Kind → icon
+        _EVENT_KIND_ICON = {
+            "info":     "·",
+            "tool":     "⚙",
+            "alert":    "⚠",
+            "route":    "→",
+            "heard":    "▸",
+            "said":     "◂",
+            "intent":   "★",
+            "error":    "✗",
+            "critical": "⛔",
+        }
+
+        def _render_activity(self, snap: dict, hist: dict) -> Panel:
+            """Unified timeline — last 6 events from any subsystem."""
+            content = Text()
+            events = list(snap.get("events", []))
+            if not events:
+                content.append("  (no events yet — feed lights up as soon as the system produces output)\n", style="dim")
+                return Panel(content, title="[bold yellow]ACTIVITY · timeline[/]", border_style="yellow", padding=(0, 1))
+
+            # Show most recent first (newest at top) — operator scans top-down
+            recent = events[-8:][::-1]
+            import time as _t
+            now = _t.time()
+            for ev in recent:
+                ts = float(ev.get("ts", 0))
+                source = str(ev.get("source", "?"))
+                kind = str(ev.get("kind", "info"))
+                message = str(ev.get("message", ""))
+                # Age
+                if ts > 0:
+                    age = int(now - ts)
+                    if age < 60:
+                        age_str = f"{age:>3}s"
+                    elif age < 3600:
+                        age_str = f"{age // 60:>3}m"
+                    else:
+                        age_str = f"{age // 3600:>3}h"
+                else:
+                    age_str = "  ·"
+                # Source tag
+                src_color, src_prefix = self._EVENT_SOURCE_STYLE.get(
+                    source, ("white", source[:3].ljust(3) + " ")
+                )
+                icon = self._EVENT_KIND_ICON.get(kind, "·")
+                # Compose line
+                content.append(f"  {age_str}  ", style="dim")
+                content.append(f"{src_prefix}", style=f"bold {src_color}")
+                content.append(f" {icon} ", style=src_color)
+                content.append(f"{self._truncate(message, 80)}\n", style="white")
+
+            # Footer line: event count + last-update age
+            count = len(events)
+            latest = events[-1] if events else {}
+            latest_ts = float(latest.get("ts", 0))
+            latest_age = int(now - latest_ts) if latest_ts > 0 else 0
+            content.append("─" * 100 + "\n", style="dim")
+            content.append(f"  {count} events captured", style="dim")
+            if latest_age > 0:
+                content.append(f"  · latest {latest_age}s ago", style="dim")
+            content.append("\n")
+
+            return Panel(content, title="[bold yellow]ACTIVITY · timeline[/]", border_style="yellow", padding=(0, 1))
 
         # --- key bindings ---
 
