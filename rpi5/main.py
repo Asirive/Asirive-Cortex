@@ -1524,6 +1524,23 @@ class CortexSystem:
             dashboard_mode = "old"
         self.dashboard_mode = dashboard_mode
 
+        # Hardware peripheral defaults — populated properly later in
+        # _publish_nav_state (which currently mixes init + publish work,
+        # see TODO). Defaulting to None here means start() can safely
+        # check `if self.gps:` without crashing on the very first tick
+        # before the nav publisher has had a chance to construct the
+        # FusedGPSHandler. (Fixes the 'no attribute gps' crash on boot.)
+        self.gps: Optional["FusedGPSHandler"] = None
+        self.imu: Optional["IMUHandler"] = None
+        self.button = None
+        self.bus_handler = None
+        self.nav_engine = None
+        self.saved_locations = None
+        self.scene_detector = None
+        self.connectivity_monitor = None
+        self._textual_app = None
+        self._textual_thread = None
+
         # Load configuration
         if config_path:
             self.config = load_config(config_path)
@@ -3872,6 +3889,15 @@ class CortexSystem:
         # Set default mode to PRODUCTION
         # This handles: Bluetooth init, voice coordinator start, layer thresholds
         self.set_mode("PRODUCTION")
+
+        # Force the lazy-init path in _publish_nav_state to run NOW so
+        # self.gps / self.imu / self.nav_engine / self.bus_handler etc.
+        # exist before we try to start() the peripherals. (TODO: move
+        # the init work out of _publish_nav_state into __init__.)
+        try:
+            self._publish_nav_state()
+        except Exception as e:
+            logger.debug(f"start: pre-warm _publish_nav_state failed: {e}")
 
         # Start hardware peripherals
         if self.gps:
