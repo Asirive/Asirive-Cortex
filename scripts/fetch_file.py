@@ -3,7 +3,7 @@ import paramiko
 import sys
 from pathlib import Path
 
-HOST = "172.26.13.31"
+HOST = "10.202.14.31"
 USER = "cortex"
 PASS = "REDACTED-RPI-PASSWORD"
 REMOTE = sys.argv[1]

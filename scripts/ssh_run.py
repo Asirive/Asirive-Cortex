@@ -2,7 +2,7 @@
 import paramiko
 import sys
 
-HOST = "172.26.13.31"
+HOST = "10.202.14.31"
 USER = "cortex"
 PASS = "REDACTED-RPI-PASSWORD"
 CMD = sys.argv[1] if len(sys.argv) > 1 else "ls -la"

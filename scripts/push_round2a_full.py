@@ -9,7 +9,7 @@ except Exception:
 
 c = paramiko.SSHClient()
 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect("172.26.13.31", 22, "cortex", "REDACTED-RPI-PASSWORD", timeout=10, allow_agent=False, look_for_keys=False)
+c.connect("10.202.14.31", 22, "cortex", "REDACTED-RPI-PASSWORD", timeout=10, allow_agent=False, look_for_keys=False)
 
 sftp = c.open_sftp()
 

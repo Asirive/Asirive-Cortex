@@ -14,7 +14,7 @@ try:
 except Exception:
     pass
 
-HOST = "10.<REDACTED-RPI-IP>"
+HOST = "10.202.14.31"
 USER = "cortex"
 PASS = "REDACTED-RPI-PASSWORD"
 ENV_PATH = "/home/cortex/ProjectCortex/.env"
