@@ -22,7 +22,7 @@ try:
 except Exception:
     pass
 
-HOST = "172.26.13.31"
+HOST = "10.202.14.31"
 PORT = 22
 USER = "cortex"
 PASS = "Haziqshah21"

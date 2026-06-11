@@ -9,7 +9,7 @@ except Exception:
 
 c = paramiko.SSHClient()
 c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect("172.26.13.31", 22, "cortex", "Haziqshah21", timeout=10, allow_agent=False, look_for_keys=False)
+c.connect("10.202.14.31", 22, "cortex", "Haziqshah21", timeout=10, allow_agent=False, look_for_keys=False)
 si, so, se = c.exec_command(
     "bash -lc 'cd ~/ProjectCortex && source venv/bin/activate && pip install --quiet textual 2>&1 && python -c \"import textual; print(\\\"textual version:\\\", textual.__version__)\"'",
     timeout=120,
