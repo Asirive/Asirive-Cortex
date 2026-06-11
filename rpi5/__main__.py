@@ -118,6 +118,11 @@ Examples:
         action="store_true",
         help="Disable the on-system dashboard entirely (logs only)"
     )
+    all_parser.add_argument(
+        "--old-dashboard",
+        action="store_true",
+        help="Use the legacy single-panel Rich Live StatusDisplay instead of the Textual TUI"
+    )
 
     # layer commands
     for layer_num, layer_name, help_text in [
@@ -253,16 +258,18 @@ def run_command(args: argparse.Namespace) -> int:
         system = CortexSystem(standalone=standalone)
 
         # Decide which on-system dashboard to run. --2.4 forces the
-        # plain-print 2.4 mode. --no-dashboard disables the on-system
-        # UI entirely (logs only). Default for now is the legacy
-        # StatusDisplay; Round 2b will switch the default to "full"
-        # (Textual) once it's validated.
+        # plain-print 2.4 mode. --old-dashboard keeps the legacy
+        # StatusDisplay (Rich Live, single panel, no Textual). --no-dashboard
+        # disables the on-system UI entirely (logs only).
+        # Default is the FULL Textual TUI (validated in Round 2b: 0efee15).
         if getattr(args, "no_dashboard", False):
             dashboard_mode = "none"
         elif getattr(args, "two_point_four", False):
             dashboard_mode = "2.4"
+        elif getattr(args, "old_dashboard", False):
+            dashboard_mode = "old"
         else:
-            dashboard_mode = "old"  # legacy; will become "full" in Round 2b
+            dashboard_mode = "full"  # Textual — the new default
         system.dashboard_mode = dashboard_mode
         logger.info(f"📊 Dashboard mode: {dashboard_mode}")
 
