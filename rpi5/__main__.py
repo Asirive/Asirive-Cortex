@@ -343,15 +343,43 @@ def main() -> int:
     # stream don't share a cursor (and tear each other's frames). Other
     # commands (camera, audio, test, tui, connect) have no Live panel
     # and can use stdout directly.
-    rich_stream = "stderr" if getattr(args, "command", None) == "all" else "stdout"
+    #
+    # v3 (tui-layout-overflow fix): for the FULL Textual TUI, the TUI's own
+    # RichLog already shows the log content (tail of logs/cortex.log). If we
+    # also write RichHandler to stderr, those lines "leak" onto the terminal
+    # in the gap above the TUI's blue header (Textual uses the alternate
+    # screen buffer for stdout, but stderr still hits the underlying
+    # terminal). So in FULL mode we suppress the RichHandler entirely.
+    is_all = getattr(args, "command", None) == "all"
+    # Resolve the dashboard mode from args — mirrors the logic in run_command().
+    if is_all:
+        if getattr(args, "no_dashboard", False):
+            dashboard_mode = "none"
+        elif getattr(args, "two_point_four", False):
+            dashboard_mode = "2.4"
+        elif getattr(args, "old_dashboard", False):
+            dashboard_mode = "old"
+        else:
+            dashboard_mode = "full"
+    else:
+        dashboard_mode = "none"
+    use_rich = dashboard_mode != "full"
+    rich_stream = "stderr" if is_all else "stdout"
     setup_logging(
         level=log_level,
         log_file="logs/cortex.log",
-        use_rich=True,
+        use_rich=use_rich,
         rich_stream=rich_stream,
     )
 
-    if rich_stream == "stderr":
+    if is_all and dashboard_mode == "full":
+        # In FULL mode logs are shown in the TUI's log panel; quiet the
+        # terminal so we don't get stray log lines above the header.
+        logger.info(
+            "📊 FULL Textual TUI active — log lines appear in the bottom panel, "
+            "not the terminal. The full log is still saved to logs/cortex.log."
+        )
+    elif is_all:
         logger.info(
             "📋 Logs are being written to logs/cortex.log (and stderr). "
             "Run `python -m rpi5 tui` in another shell for a structured view."

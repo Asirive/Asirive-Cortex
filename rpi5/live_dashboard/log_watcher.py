@@ -51,6 +51,7 @@ class LogFileWatcher:
         self._inode: Optional[int] = None
         self._lines_seen = 0
         self._errors = 0
+        self._paused = False
 
     # --- public ---
 
@@ -80,6 +81,27 @@ class LogFileWatcher:
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+    def pause(self) -> None:
+        """Stop calling on_line() until resume() is called.
+
+        Used by the TUI's pause keybind: while paused, the log viewer
+        freezes so the user can select / copy text with the mouse.
+        Lines that arrive during the pause are still read from the file
+        (so we don't lose our seek position) but are dropped on the
+        floor instead of being forwarded to the callback.
+        """
+        self._paused = True
+
+    def resume(self) -> None:
+        """Resume calling on_line() for new lines arriving from the file.
+
+        Any lines that came in while paused have been read off the file
+        and dropped — by design, we don't want a backlog flood when the
+        user un-pauses. If the user needs to see what was missed they
+        can `cat logs/cortex.log` directly.
+        """
+        self._paused = False
 
     # --- internals ---
 
@@ -143,6 +165,13 @@ class LogFileWatcher:
 
                 line = self._file.readline()
                 if line:
+                    self._lines_seen += 1
+                    if self._paused:
+                        # While paused, read the line off the file (so we
+                        # keep our seek position) but drop it. The user is
+                        # likely reading/copying; a flood on resume would
+                        # be annoying.
+                        continue
                     # Strip trailing newline (callback gets a clean line)
                     s = line.rstrip("\r\n")
                     try:
@@ -150,7 +179,6 @@ class LogFileWatcher:
                     except Exception:
                         # Never let a callback bug kill the watcher
                         self._errors += 1
-                    self._lines_seen += 1
                 else:
                     # No new data; wait a bit before polling again
                     self._stop.wait(self.poll_interval_s)

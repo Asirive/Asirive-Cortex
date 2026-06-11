@@ -1,23 +1,32 @@
 /* Asirive Cortex FULL mode — dark theme
    v2 layout: 3x3 grid, Layer 2 (Gemini Live) takes a 2x2 block (top-right 4 cells).
-   The other 5 panels fill the remaining 5 cells. */
+   The other 5 panels fill the remaining 5 cells.
+   v3 (tui-layout-overflow fix): body uses `1fr` to claim the dominant share of
+   vertical space, log uses a fixed min-height that won't crowd the panels out
+   on small terminals. Activity panel is shorter (6 rows) to give the body room. */
 
 Screen {
     background: $surface;
     color: $text;
+    layout: vertical;
 }
 
 Header {
     background: #001f3f;
     color: #ffffff;
     text-style: bold;
+    height: 1;
 }
 
 Footer {
     background: #001f3f;
     color: #cccccc;
+    height: 1;
 }
 
+/* The body grid is the dominant area: it claims all remaining vertical space
+   after header (1), activity (6), log (~30%), and footer (1) are accounted
+   for. On a 40-row terminal, body gets ~14 rows; on a 60-row, ~38 rows. */
 #body {
     layout: grid;
     grid-size: 3 3;
@@ -25,58 +34,84 @@ Footer {
     grid-rows: 1fr 1fr 1fr;
     grid-gutter: 1 1;
     margin: 0 1;
+    height: 1fr;
+    min-height: 10;
 }
+
+/* v4 (tui-single-border fix):
+   The "boxes have two outer lines" bug was because the CSS gave each
+   Static widget a `border: tall` AND each renderer wrapped the content
+   in a rich.panel.Panel (which has its own box). Two borders.
+   Fix: Static widgets are borderless. The rich.panel.Panel is the single
+   visible border, with its own border_style color (set per-renderer). */
 
 /* Layer 2 spans 2 cols × 2 rows = the dominant panel */
 #layer2 {
     column-span: 2;
     row-span: 2;
-    border: tall magenta;
-    padding: 0 1;
+    padding: 0 0;
 }
 
-/* Other panels: 1 cell each */
+/* Other panels: 1 cell each. min-height: 6 means we always see at least 6
+   rows of content in each cell — enough for the title + 4-5 lines of data. */
 #detection, #sensors, #system, #tts, #memory {
-    border: tall blue;
-    padding: 0 1;
+    padding: 0 0;
+    min-height: 6;
 }
 
-#sensors {
-    border: tall green;
-    /* min-height: 12 keeps the new Power + status lines visible in
-       standard 180×70 terminals (was clipping at 5 rows in v6) */
-    min-height: 12;
+#detection {
+    /* Border color is provided by rich.panel.Panel border_style="blue" */
 }
 
-#system {
-    border: tall yellow;
-}
-
-#tts {
-    border: tall cyan;
-}
-
-#memory {
-    border: tall magenta;
-}
-
+/* Log: fixed-ish share (28% with min-height 6) so on small terminals the
+   panels don't get crushed, but on big terminals the log still has room.
+   The Static border is gone — the LogHeader Static above and the green
+   background of the panel provide visual separation. */
 #log {
-    height: 40%;
-    min-height: 14;
+    height: 28%;
+    min-height: 6;
     margin: 1 1 0 1;
-    border: tall green;
-    padding: 0 1;
     background: #0a0a0a;
     scrollbar-background: #0a0a0a;
     scrollbar-color: #444;
+    border: none;
 }
 
-/* Activity feed — full-width timeline above the logs */
+/* Activity feed — full-width timeline above the logs. 6 rows shows the
+   latest 3-4 events with their icons and message. Was 4 — too cramped
+   on small screens (just title bar showed). */
 #activity {
-    height: 9;
-    min-height: 9;
+    height: 6;
+    min-height: 6;
     margin: 1 1 0 1;
-    border: tall yellow;
-    padding: 0 1;
     background: #0a0a0a;
+    border: none;
+}
+
+/* The big "PAUSED" banner that appears centered over the body when you
+   press p. We use `position: absolute` + `align: center middle` so it
+   floats over the layout (the Screen is `layout: vertical` so a normal
+   child would just stack at the top). `layer: overlay` puts it above
+   all other layers. */
+#paused_banner {
+    layer: overlay;
+    position: absolute;
+    align_horizontal: center;
+    align_vertical: middle;
+    width: 60;
+    height: 9;
+    background: #4a0000;
+    border: heavy red;
+    color: #ffffff;
+    text-style: bold;
+    padding: 0 2;
+    content-align: center middle;
+}
+
+#paused_banner Static {
+    width: 100%;
+    height: 100%;
+    content-align: center middle;
+    text-style: bold;
+    background: transparent;
 }

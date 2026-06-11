@@ -213,24 +213,44 @@ def main():
     app = CortexFullApp(state, MockSystem())
 
     async def run_with_screenshot():
-        # Use a larger terminal so all panel content fits. 200×100 gives the
-        # SENSORS cell ~16 rows of body height so the new POW + status lines
-        # show without clipping (v6 was 180×70 which clipped at 5 rows).
-        async with app.run_test(size=(200, 100)) as pilot:
+        # Test on a small RPi5 SSH terminal (120x35) — the worst case the
+        # user hits. Body should still get ~14 rows so all 6 panels show data.
+        async with app.run_test(size=(120, 35)) as pilot:
             # Let it render a few times
             await pilot.pause(0.05)
-            for _ in range(8):
+            for _ in range(15):
                 await pilot.pause(0.5)
             # Force a final refresh so the panel shows the latest data
             try:
                 app._refresh_all()
             except Exception:
                 pass
-            await pilot.pause(0.5)
+            await pilot.pause(1.0)
             # Save screenshot
             svg_path = "/tmp/cortex_full_screenshot.svg"
             app.save_screenshot(svg_path)
             print(f"SCREENSHOT_SAVED={svg_path}")
+            await pilot.pause(0.2)
+
+            # --- PAUSE OVERLAY TEST ---
+            # Press 'p' to freeze the dashboard, then screenshot it again
+            # so we can verify the "PAUSED" banner shows up.
+            try:
+                app.action_toggle_pause()
+            except Exception as e:
+                print(f"PAUSE_FAIL: {e}")
+            await pilot.pause(0.5)
+            try:
+                paused_svg = "/tmp/cortex_full_screenshot_paused.svg"
+                app.save_screenshot(paused_svg)
+                print(f"SCREENSHOT_SAVED={paused_svg}")
+            except Exception as e:
+                print(f"PAUSE_SCREENSHOT_FAIL: {e}")
+            # Resume so the test exits cleanly
+            try:
+                app.action_toggle_pause()
+            except Exception:
+                pass
             await pilot.pause(0.2)
 
     asyncio.run(run_with_screenshot())

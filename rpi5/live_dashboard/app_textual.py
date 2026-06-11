@@ -125,6 +125,7 @@ if TEXTUAL_AVAILABLE:
             ("s", "save_log", "Save log"),
             ("?", "show_help", "Help"),
             ("p", "toggle_pause", "Pause"),
+            ("space", "toggle_pause", "Pause"),
         ]
 
         def __init__(self, state: DashboardState, system: Any):
@@ -854,15 +855,35 @@ if TEXTUAL_AVAILABLE:
         }
 
         def _render_activity(self, snap: dict, hist: dict) -> Panel:
-            """Unified timeline — last 6 events from any subsystem."""
+            """Unified timeline — last N events from any subsystem.
+
+            Adapts to the available panel height so on small terminals (4-6
+            rows) we show only the most recent 2-3 events, and on big
+            terminals (10+ rows) we show up to 8 plus a footer count.
+            """
             content = Text()
             events = list(snap.get("events", []))
             if not events:
                 content.append("  (no events yet — feed lights up as soon as the system produces output)\n", style="dim")
                 return Panel(content, title="[bold yellow]ACTIVITY · timeline[/]", border_style="yellow", padding=(0, 1))
 
-            # Show most recent first (newest at top) — operator scans top-down
-            recent = events[-8:][::-1]
+            # Figure out how many event lines we can fit. We can't trust
+            # `panel.size` at this point (it can be 0 before the first
+            # layout pass). Use the screen height to decide how much to
+            # show: on small screens (≤40 rows) show 2 events, on bigger
+            # screens show more.
+            try:
+                screen_h = self.size.height
+            except Exception:
+                screen_h = 35
+            if screen_h <= 35:
+                n_events = 2
+            elif screen_h <= 50:
+                n_events = 4
+            else:
+                n_events = 6
+            n_events = min(len(events), n_events)
+            recent = events[-n_events:][::-1]
             import time as _t
             now = _t.time()
             for ev in recent:
@@ -892,16 +913,17 @@ if TEXTUAL_AVAILABLE:
                 content.append(f" {icon} ", style=src_color)
                 content.append(f"{self._truncate(message, 80)}\n", style="white")
 
-            # Footer line: event count + last-update age
-            count = len(events)
-            latest = events[-1] if events else {}
-            latest_ts = float(latest.get("ts", 0))
-            latest_age = int(now - latest_ts) if latest_ts > 0 else 0
-            content.append("─" * 100 + "\n", style="dim")
-            content.append(f"  {count} events captured", style="dim")
-            if latest_age > 0:
-                content.append(f"  · latest {latest_age}s ago", style="dim")
-            content.append("\n")
+            # Footer line: event count + last-update age (only if room)
+            if screen_h > 35:
+                count = len(events)
+                latest = events[-1] if events else {}
+                latest_ts = float(latest.get("ts", 0))
+                latest_age = int(now - latest_ts) if latest_ts > 0 else 0
+                content.append("─" * 100 + "\n", style="dim")
+                content.append(f"  {count} events captured", style="dim")
+                if latest_age > 0:
+                    content.append(f"  · latest {latest_age}s ago", style="dim")
+                content.append("\n")
 
             return Panel(content, title="[bold yellow]ACTIVITY · timeline[/]", border_style="yellow", padding=(0, 1))
 
@@ -939,6 +961,61 @@ if TEXTUAL_AVAILABLE:
 
         def action_toggle_pause(self) -> None:
             self._paused = not self._paused
+            if self._paused:
+                # Freeze the log watcher too, so new lines don't scroll
+                # the buffer while the user is reading/copying.
+                if self._log_watcher is not None:
+                    try:
+                        self._log_watcher.pause()
+                    except Exception:
+                        pass
+                self._show_paused_banner()
+            else:
+                if self._log_watcher is not None:
+                    try:
+                        self._log_watcher.resume()
+                    except Exception:
+                        pass
+                self._hide_paused_banner()
+
+        def _show_paused_banner(self) -> None:
+            """Mount a full-screen overlay so the user knows the TUI is
+            frozen, with a hint on how to copy log text out."""
+            from textual.widgets import Static as _Static
+            from textual.containers import Container as _Container
+            msg = _Static(
+                "[bold bright_white on red]   PAUSED   [/]\n\n"
+                "Dashboard frozen, log capture stopped.\n"
+                "Drag-select with the mouse to copy log text,\n"
+                "or press [b]p[/b] / [b]space[/b] to resume.",
+                id="paused_msg",
+            )
+            self._paused_overlay = _Container(msg, id="paused_banner")
+            self.mount(self._paused_overlay)
+            # Center the overlay on the screen by computing the offset
+            # from the current screen size. The CSS gives it `position:
+            # absolute; align: center middle`; this .offset positions
+            # it visually. (The CSS alone doesn't always work because the
+            # parent Screen uses `layout: vertical`.)
+            try:
+                w, h = self.size.width, self.size.height
+                # Banner is 60x9 per the CSS; center it.
+                bx = max(0, (w - 60) // 2)
+                by = max(0, (h - 9) // 2)
+                self._paused_overlay.styles.offset = (bx, by)
+            except Exception:
+                pass
+            self.sub_title = "[PAUSED — press p/space to resume]"
+
+        def _hide_paused_banner(self) -> None:
+            overlay = getattr(self, "_paused_overlay", None)
+            if overlay is not None:
+                try:
+                    overlay.remove()
+                except Exception:
+                    pass
+                self._paused_overlay = None
+            self.sub_title = "FULL mode (Textual)"
 
         def action_show_help(self) -> None:
             log = self.query_one("#log", RichLog)
