@@ -1538,8 +1538,20 @@ class CortexSystem:
         self.saved_locations = None
         self.scene_detector = None
         self.connectivity_monitor = None
+        self.navigator = None
+        self.spatial_audio = None
+        self.tof_handler = None
+        self.depth_estimator = None
+        self.audio_alerts = None
+        self.ocr_pipeline = None
+        self._shared_hailo_vdevice = None
+        self.safety_monitor = None
+        self.power_monitor = None
+        self._pending_destination = None
+        self._awaiting_origin = None
         self._textual_app = None
         self._textual_thread = None
+        self._main_loop_thread = None
 
         # Load configuration
         if config_path:
@@ -3956,6 +3968,12 @@ class CortexSystem:
                     self.status_display.start()
                     logger.info("📊 Fell back to legacy StatusDisplay")
         elif self.dashboard_mode == "full":
+            # FULL Textual TUI: Textual's Linux driver needs to install
+            # SIGTSTP/SIGCONT signal handlers, which Python only allows
+            # from the main thread. So we run the main loop in a
+            # background thread and block on the Textual app on the main
+            # thread. When the user quits the TUI, the main loop is
+            # signaled to stop and we join.
             try:
                 from rpi5.live_dashboard.app_textual import CortexFullApp, TEXTUAL_AVAILABLE
                 if not TEXTUAL_AVAILABLE:
@@ -3966,13 +3984,27 @@ class CortexSystem:
                     logger.warning("⚠️ FULL mode requested but DashboardState is unavailable")
                 else:
                     self._textual_app = CortexFullApp(self.dashboard_state, self)
-                    self._textual_thread = threading.Thread(
-                        target=self._textual_app.run,
+                    # Run the main loop in a daemon thread (it
+                    # services camera, L0-L4, GPS, etc.) and block on
+                    # the TUI here on the main thread.
+                    self._main_loop_thread = threading.Thread(
+                        target=self._main_loop,
                         daemon=True,
-                        name="textual-app",
+                        name="cortex-main-loop",
                     )
-                    self._textual_thread.start()
-                    logger.info("📊 FULL mode dashboard (Textual) started in background thread")
+                    self._main_loop_thread.start()
+                    logger.info("📊 FULL mode dashboard (Textual) — main loop in background thread, TUI on main")
+                    try:
+                        self._textual_app.run()
+                    except Exception as e:
+                        logger.error(f"❌ Textual TUI crashed: {e}")
+                    finally:
+                        # TUI exited — stop the main loop cleanly
+                        logger.info("🛑 TUI exited — signaling main loop to stop")
+                        self.running = False
+                        if self._main_loop_thread.is_alive():
+                            self._main_loop_thread.join(timeout=5.0)
+                    return  # Don't fall through to self._main_loop() below
             except ImportError as e:
                 logger.warning(f"⚠️ Textual FULL app import failed: {e} — falling back to legacy StatusDisplay")
                 if self.status_display:
