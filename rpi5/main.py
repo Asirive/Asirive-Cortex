@@ -3957,11 +3957,15 @@ class CortexSystem:
                     logger.info("📊 Fell back to legacy StatusDisplay")
         elif self.dashboard_mode == "full":
             try:
-                from rpi5.live_dashboard.app_textual import TextualApp
-                if self.dashboard_state is None:
+                from rpi5.live_dashboard.app_textual import CortexFullApp, TEXTUAL_AVAILABLE
+                if not TEXTUAL_AVAILABLE:
+                    logger.warning("⚠️ Textual not installed — falling back to legacy StatusDisplay")
+                    if self.status_display:
+                        self.status_display.start()
+                elif self.dashboard_state is None:
                     logger.warning("⚠️ FULL mode requested but DashboardState is unavailable")
                 else:
-                    self._textual_app = TextualApp(self.dashboard_state, self)
+                    self._textual_app = CortexFullApp(self.dashboard_state, self)
                     self._textual_thread = threading.Thread(
                         target=self._textual_app.run,
                         daemon=True,
@@ -3969,8 +3973,8 @@ class CortexSystem:
                     )
                     self._textual_thread.start()
                     logger.info("📊 FULL mode dashboard (Textual) started in background thread")
-            except ImportError:
-                logger.warning("⚠️ Textual not installed — falling back to legacy StatusDisplay")
+            except ImportError as e:
+                logger.warning(f"⚠️ Textual FULL app import failed: {e} — falling back to legacy StatusDisplay")
                 if self.status_display:
                     self.status_display.start()
             except Exception as e:
