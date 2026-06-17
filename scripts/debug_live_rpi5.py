@@ -22,7 +22,7 @@ try:
 except Exception:
     pass
 
-HOST = "10.202.14.31"
+HOST = "10.<REDACTED-RPI-IP>"
 PORT = 22
 USER = "cortex"
 PASS = "REDACTED-RPI-PASSWORD"

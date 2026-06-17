@@ -183,6 +183,10 @@ class HailoDepthEstimator:
         self._latency_history: List[float] = []
         self._alert_timestamps: Dict[str, float] = {}  # type -> last alert time
         self._is_initialized = False
+        # FPS tracking (read by main.py -> DashboardState -> TUI panel)
+        self._depth_fps: float = 0.0
+        self._depth_fps_window: List[float] = []  # recent inference durations
+        self._last_depth_fps_update: float = 0.0
 
         # Initialize if Hailo is available
         if HAILO_AVAILABLE:
@@ -363,6 +367,16 @@ class HailoDepthEstimator:
             self._latency_history.append(elapsed_ms)
             if len(self._latency_history) > 100:
                 self._latency_history = self._latency_history[-50:]
+
+            # FPS tracking — read by DashboardState (TUI panel).
+            # Update at most every 1s; rolling 1s window.
+            now = time.time()
+            self._depth_fps_window.append(now)
+            cutoff = now - 1.0
+            self._depth_fps_window = [t for t in self._depth_fps_window if t >= cutoff]
+            if now - self._last_depth_fps_update > 0.5:
+                self._depth_fps = float(len(self._depth_fps_window))
+                self._last_depth_fps_update = now
 
             logger.debug(f"Depth inference: {elapsed_ms:.1f}ms ({self.model_type})")
             return depth_map

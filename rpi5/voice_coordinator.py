@@ -205,6 +205,9 @@ class VoiceCoordinator:
             # "websocket" (Ink 2 streaming with built-in turn detection).
             stt_config = self.config.get('stt', {})
             cartesia_mode = stt_config.get('cartesia_mode', 'batch')
+            # Whisper fallback can be disabled via config when the user
+            # wants Cartesia-only (e.g. when Whisper is too slow on the Pi).
+            self._whisper_disabled = bool(stt_config.get('whisper_disabled', False))
             if stt_config.get('cartesia_enabled', True):
                 if cartesia_mode == "websocket":
                     from rpi5.layer1_reflex.cartesia_stt_ws import CartesiaSTTWebSocket
@@ -575,12 +578,17 @@ class VoiceCoordinator:
                     logger.debug("🔇 Cartesia: no speech detected (empty response)")
 
             # 2. Fallback to local Whisper ONLY if Cartesia actually failed (None)
+            #    Skip Whisper if config says so (e.g. user wants Cartesia only
+            #    and would rather have no transcript than a 6s Whisper block).
             if text is None and self.stt:
-                if self.cloud_stt and self.cloud_stt.available:
-                    logger.info("🔄 Cartesia API error, falling back to Whisper...")
-                text = self.stt.transcribe(audio)
-                if text:
-                    logger.info(f"🗣️ Transcribed (Whisper): '{text}'")
+                if not getattr(self, "_whisper_disabled", False):
+                    if self.cloud_stt and self.cloud_stt.available:
+                        logger.info("🔄 Cartesia API error, falling back to Whisper...")
+                    text = self.stt.transcribe(audio)
+                    if text:
+                        logger.info(f"🗣️ Transcribed (Whisper): '{text}'")
+                else:
+                    logger.debug("🔇 Whisper fallback disabled (config); dropping transcript")
 
             if text and len(text.strip()) > 1:
                 # Push to the live dashboard activity feed + STT history.

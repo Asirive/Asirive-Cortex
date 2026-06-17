@@ -3,7 +3,7 @@ import sys
 import time
 import paramiko
 
-HOST = "10.202.14.31"
+HOST = "10.<REDACTED-RPI-IP>"
 USER = "cortex"
 PASS = "REDACTED-RPI-PASSWORD"
 TIMEOUT_S = 12

@@ -149,6 +149,14 @@ class SafetyMonitor:
         # Stale-object cleanup timestamp
         self._last_cleanup: float = time.time()
 
+        # Dashboard counters (read by main.py -> DashboardState -> TUI)
+        self._last_tier: int = 0
+        self._t0_count: int = 0
+        self._t1_count: int = 0
+        self._t2_count: int = 0
+        self._alert_timestamps: Deque[float] = deque(maxlen=200)
+        self._alerts_60s: int = 0
+
         logger.info("SafetyMonitor initialised "
                      f"(T2<{tier2_max_distance}m, T3<{tier3_max_distance}m @ >{tier3_approach_velocity}m/s)"
                      f", IMU={'yes' if imu else 'no'}")
@@ -307,6 +315,19 @@ class SafetyMonitor:
         if now - self._last_cleanup > 5.0:
             self._cleanup_trackers(now)
             self._last_cleanup = now
+
+        # Dashboard counters
+        self._last_tier = int(winner.tier)
+        if winner.tier == 0:
+            self._t0_count += 1
+        elif winner.tier == 1:
+            self._t1_count += 1
+        elif winner.tier == 2:
+            self._t2_count += 1
+        # 60s rolling window
+        self._alert_timestamps.append(now)
+        cutoff = now - 60.0
+        self._alerts_60s = sum(1 for ts in self._alert_timestamps if ts >= cutoff)
 
         logger.info(f"⚠️  SAFETY T{winner.tier}: {winner.alert_type} "
                      f"{winner.direction} {winner.distance_m:.1f}m "

@@ -1801,6 +1801,13 @@ class CortexSystem:
         # light up the dashboard's unified timeline panel.
         if self.layer2 is not None:
             self.layer2.on_event = self.record_event
+            # Wire L2 text callback so the CLOUD AI panel in the FULL TUI
+            # shows the most recent "YOU → " and "CORTEX → " lines in real
+            # time. Without this, last_said/last_heard are never updated and
+            # the panel stays empty.
+            handler = getattr(self.layer2, "handler", None) or self.layer2
+            if hasattr(handler, "on_text"):
+                handler.on_text = self._on_gemini_text_for_dashboard
 
         logger.info("[DEBUG] ===== LAYER 2 INITIALIZATION COMPLETE =====")
 
@@ -2031,6 +2038,91 @@ class CortexSystem:
         if self.dashboard_state is not None:
             self.dashboard_state.update(**kwargs)
 
+    def _publish_detection_state(
+        self,
+        layer: str,
+        detections: List[Dict[str, Any]],
+        latency_ms: float,
+    ) -> None:
+        """Push a detection result to BOTH the legacy StatusDisplay AND
+        the new DashboardState in one call.
+
+        The old call sites only updated the legacy StatusDisplay, which
+        meant the new Textual TUI (reading from DashboardState) saw all
+        zeros. This is the single source of truth for detection updates.
+        """
+        # Legacy path
+        if self.status_display:
+            if layer == "l0":
+                self.status_display.update_layer0(detections, latency_ms)
+            elif layer == "l1":
+                self.status_display.update_layer1(detections, latency_ms)
+        # New path
+        if self.dashboard_state is not None:
+            classes = [d.get("class", "unknown") for d in detections]
+            if layer == "l0":
+                self._publish_state(
+                    l0_count=len(detections),
+                    l0_classes=classes,
+                    l0_latency_ms=float(latency_ms),
+                )
+            elif layer == "l1":
+                mode = ""
+                if self.layer1 is not None:
+                    try:
+                        mode = self.layer1.mode.value
+                    except Exception:
+                        pass
+                self._publish_state(
+                    l1_count=len(detections),
+                    l1_classes=classes,
+                    l1_latency_ms=float(latency_ms),
+                    l1_mode=mode,
+                )
+
+    def _publish_runtime_metrics(self, real_fps: float) -> None:
+        """Push per-loop metrics (FPS, Hailo, safety, AI routing) to
+        DashboardState. Legacy StatusDisplay only knows FPS; the rest
+        is full-TUI only."""
+        if self.dashboard_state is None:
+            # Still push FPS to legacy if we have it
+            if self.status_display:
+                self.status_display.update_fps(real_fps)
+            return
+        # FPS
+        self._publish_state(fps=float(real_fps))
+        if self.status_display:
+            self.status_display.update_fps(real_fps)
+        # Hailo
+        hailo = {}
+        if self.depth_estimator is not None and getattr(self.depth_estimator, "is_available", False):
+            hailo["depth_fps"] = float(getattr(self.depth_estimator, "_depth_fps", 0.0) or 0.0)
+        else:
+            hailo["depth_fps"] = 0.0
+        if self.ocr_pipeline is not None and getattr(self.ocr_pipeline, "is_available", False):
+            hailo["ocr_state"] = "ready"
+        else:
+            hailo["ocr_state"] = "idle"
+        self._publish_state(hailo=hailo)
+        # Safety — read directly from the safety monitor's last alert
+        if self.safety_monitor is not None and getattr(self.safety_monitor, "_last_alert", None):
+            last_key = next(iter(self.safety_monitor._last_alert.keys()), "")
+            # Pull tier counters (T0, T1, T2) from the most recent frame tally
+            # — we don't track them in the monitor, so estimate from recent alerts
+            self._publish_state(safety={
+                "tier": int(getattr(self.safety_monitor, "_last_tier", 0) or 0),
+                "t0": int(getattr(self.safety_monitor, "_t0_count", 0) or 0),
+                "t1": int(getattr(self.safety_monitor, "_t1_count", 0) or 0),
+                "t2": int(getattr(self.safety_monitor, "_t2_count", 0) or 0),
+                "alerts_last_60s": int(getattr(self.safety_monitor, "_alerts_60s", 0) or 0),
+                "last_key": last_key,
+            })
+        # AI routing state
+        self._publish_state(ai={
+            "active": bool(self._ai_routing_active),
+            "last_call": str(self._last_tool_call or ""),
+        })
+
     def _publish_system_metrics(self) -> None:
         """Gather CPU, RAM, temperature, load, disk, power, and camera state
         and push them to DashboardState.
@@ -2154,6 +2246,34 @@ class CortexSystem:
         severity = "info" if tier >= 2 else "alert" if tier == 1 else "critical"
         dist_str = f"@{distance_m:.1f}m" if distance_m > 0 else ""
         self.record_event("safety", severity, f"{alert_type} {dist_str}".strip())
+
+    def _on_gemini_text_for_dashboard(self, role: str, text: str) -> None:
+        """Push the latest Gemini user/model transcript to DashboardState
+        so the CLOUD AI panel's "YOU → " / "CORTEX SAID" lines update.
+
+        Called by the Gemini live handler's on_text callback.
+        """
+        if not self.dashboard_state or not text:
+            return
+        import time as _t
+        now = _t.time()
+        snap = self.dashboard_state.snapshot()
+        l2 = dict(snap.get("l2", {}))
+        transcript = list(l2.get("transcript", []))
+        prefix = "YOU:" if role == "user" else "CORTEX:"
+        transcript.append(f"{prefix} {text[:200]}")
+        # Keep last 30 turns
+        transcript = transcript[-30:]
+        update = {
+            "transcript": transcript,
+            "last_heard_ts": now if role == "user" else l2.get("last_heard_ts", 0),
+            "last_said_ts": now if role == "model" else l2.get("last_said_ts", 0),
+        }
+        if role == "user":
+            update["last_heard"] = text[:300]
+        else:
+            update["last_said"] = text[:300]
+        self.dashboard_state.update(l2=update)
 
     def record_event(self, source: str, kind: str, message: str) -> None:
         """Append an event to the unified activity feed.
@@ -4574,7 +4694,8 @@ class CortexSystem:
                     # Status display gets the *real* FPS, not the loop rate
                     if self.status_display and (now - self._last_status_fps_update) >= 0.25:
                         self._last_status_fps_update = now
-                        self.status_display.update_fps(real_fps)
+                        # Push FPS + Hailo + safety + AI to both legacy and new state
+                        self._publish_runtime_metrics(real_fps)
 
                     fps_tracker = []
 
@@ -4657,7 +4778,7 @@ class CortexSystem:
                         self._last_layer0_detections = layer0_detections
                         new_detection_count += len(layer0_detections)
                         if self.status_display:
-                            self.status_display.update_layer0(layer0_detections, latency_ms)
+                            self._publish_detection_state("l0", layer0_detections, latency_ms)
                     except Exception as e:
                         import traceback
                         logger.error(f"❌ layer0 detection failed: {e}\n{traceback.format_exc()}")
@@ -4669,7 +4790,8 @@ class CortexSystem:
                     logger.warning("⚠️ layer0 detection is still running; skipping stale frame submission")
                     self._layer0_timeout_logged = True
                     if self.status_display:
-                        self.status_display.update_layer0(
+                        self._publish_detection_state(
+                            "l0",
                             self._last_layer0_detections,
                             (now - self._layer0_submit_time) * 1000,
                         )
@@ -4692,7 +4814,7 @@ class CortexSystem:
                         self._last_layer1_detections = layer1_detections
                         new_detection_count += len(layer1_detections)
                         if self.status_display:
-                            self.status_display.update_layer1(layer1_detections, latency_ms)
+                            self._publish_detection_state("l1", layer1_detections, latency_ms)
                     except Exception as e:
                         import traceback
                         logger.error(f"❌ layer1 detection failed: {e}\n{traceback.format_exc()}")
@@ -4704,7 +4826,8 @@ class CortexSystem:
                     logger.warning("⚠️ layer1 detection is still running; skipping stale frame submission")
                     self._layer1_timeout_logged = True
                     if self.status_display:
-                        self.status_display.update_layer1(
+                        self._publish_detection_state(
+                            "l1",
                             self._last_layer1_detections,
                             (now - self._layer1_submit_time) * 1000,
                         )
@@ -4908,6 +5031,11 @@ class CortexSystem:
             "continue nav", "continue route", "keep going",
             "where am i", "where are we", "what location", "my location",
             "current location",
+            # Indoor guidance — "guide me out of my room", "lead me out",
+            # "show me the way out", etc. The IntentRouter has "guide me to"
+            # but not the bare "guide me" pattern.
+            "guide me", "lead me", "show me out", "show me the way",
+            "show me where", "find my way", "get me out", "help me get",
         ]
         _has_nav_keyword = any(kw in query_lower for kw in _nav_command_kws)
 

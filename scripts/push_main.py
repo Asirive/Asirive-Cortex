@@ -1,7 +1,7 @@
 """Push local main.py to RPi5 via SFTP."""
 import paramiko
 
-HOST = "10.202.14.31"
+HOST = "10.<REDACTED-RPI-IP>"
 USER = "cortex"
 PASS = "REDACTED-RPI-PASSWORD"
 LOCAL = r"C:\Users\Haziq\Documents\ProjectCortex\rpi5\main.py"

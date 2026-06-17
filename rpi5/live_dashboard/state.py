@@ -165,6 +165,8 @@ def _default_state() -> Dict[str, Any]:
             "lang": "",
             "last_heard": "",
             "last_said": "",
+            "last_heard_ts": 0.0,
+            "last_said_ts": 0.0,
             "transcript": [],              # [str, ...] — last 4 turns ("YOU: ..." or "CORTEX: ...")
             "tool_calls": 0,
             "google_searches": 0,
@@ -234,9 +236,13 @@ def _default_state() -> Dict[str, Any]:
         # Safety
         "safety": {
             "tier": 0,                     # 0 (no alert) | 1 | 2 | 3
+            "t0": 0,                       # lifetime T0 (critical cane-invisible) alert count
+            "t1": 0,                       # lifetime T1 (environmental) alert count
+            "t2": 0,                       # lifetime T2 (silent static) alert count
             "alert_type": "",              # "overhang" | "stairs_up" | "incoming_fast" | ...
             "distance_m": 0.0,
             "alerts_last_60s": 0,          # counter, reset every minute
+            "last_key": "",                # last alert key fired (e.g. "t0_overhang_ahead")
         },
         # Memory (L4)
         "l4": {

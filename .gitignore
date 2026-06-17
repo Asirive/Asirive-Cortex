@@ -55,6 +55,11 @@ README.old.md
 
 # Local agent / handoff docs (personal notes, not for the repo)
 AGENTS.md
+ContextHistory.md
+
+# Textual TUI screenshots from save_screenshot() debugging
+scripts/cortex_full_tui_*.png
+scripts/*.tui.png
 
 # Windows reserved filename artifact
 nul

@@ -116,9 +116,13 @@ class GeminiLiveHandler:
         self._on_connected_callback: Optional[Callable] = None  # Called after each successful (re)connection
         self._on_turn_complete_callback: Optional[Callable] = None  # Called when Gemini finishes a turn
         # Activity-feed callback: fn(source: str, kind: str, message: str) -> None
-        # Used to surface L2 tool calls, transcripts, and turn lifecycle events
-        # in the dashboard's unified timeline.
+        # Used to surface L2 tool calls, transcripts, and turn lifecycle
+        # events in the dashboard's unified timeline.
         self.on_event: Optional[Callable[[str, str, str], None]] = None
+        # L2 text callback: fn(role: str, text: str) -> None
+        # Used to push the last heard/said line to the CLOUD AI panel
+        # in the FULL TUI. role is "user" or "model".
+        self.on_text: Optional[Callable[[str, str], None]] = None
         self._connect_time: Optional[float] = None  # Track connection duration
         self._msg_count = 0  # Count messages per session
         self._barge_in_cooldown_until: float = 0.0  # Suppress false barge-in after text/tool sends
@@ -981,6 +985,11 @@ Safety always comes first. Overhead hazards are your highest priority."""
                             # what the user said — separate from the local STT
                             # feed because they're produced by different paths)
                             self._emit_event("l2", "heard", f'"{it.text[:80]}"')
+                            if self.on_text:
+                                try:
+                                    self.on_text("user", it.text.strip())
+                                except Exception:
+                                    pass
 
                         ot = getattr(sc, 'output_transcription', None)
                         if ot and getattr(ot, 'text', None):
@@ -994,6 +1003,11 @@ Safety always comes first. Overhead hazards are your highest priority."""
                             ]
                             # Push to the dashboard activity feed
                             self._emit_event("l2", "said", f'"{ot.text[:80]}"')
+                            if self.on_text:
+                                try:
+                                    self.on_text("model", ot.text.strip())
+                                except Exception:
+                                    pass
 
                         gc = getattr(sc, 'generation_complete', None)
                         if gc is True:

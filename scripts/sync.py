@@ -67,19 +67,19 @@ def load_config() -> Dict:
             with open(CONFIG_PATH) as f:
                 cfg = yaml.safe_load(f)
             return {
-                "host": cfg.get("rpi5_device", {}).get("host", "10.202.14.31"),
+                "host": cfg.get("rpi5_device", {}).get("host", "10.<REDACTED-RPI-IP>"),
                 "user": cfg.get("rpi5_device", {}).get("user", "cortex"),
                 "path": cfg.get("rpi5_device", {}).get("path", "/home/cortex/ProjectCortex"),
-                "laptop_host": cfg.get("laptop_server", {}).get("host", "10.202.14.101"),
+                "laptop_host": cfg.get("laptop_server", {}).get("host", "10.<REDACTED-LAPTOP-IP>"),
             }
         except Exception as e:
             print(_c(f"Warning: could not load config.yaml: {e}", Colors.YELLOW))
     
     return {
-        "host": "10.202.14.31",
+        "host": "10.<REDACTED-RPI-IP>",
         "user": "cortex",
         "path": "/home/cortex/ProjectCortex",
-        "laptop_host": "10.202.14.101",
+        "laptop_host": "10.<REDACTED-LAPTOP-IP>",
     }
 
 _cfg = load_config()

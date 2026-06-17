@@ -7,7 +7,7 @@ import time
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
-HOST = "10.202.14.31"
+HOST = "10.<REDACTED-RPI-IP>"
 USER = "cortex"
 PASS = "REDACTED-RPI-PASSWORD"
 

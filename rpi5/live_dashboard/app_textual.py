@@ -123,6 +123,7 @@ if TEXTUAL_AVAILABLE:
             ("m", "mute_tts", "Mute TTS"),
             ("r", "ask_cortex", "Ask"),
             ("s", "save_log", "Save log"),
+            ("k", "copy_logs", "Copy logs"),
             ("?", "show_help", "Help"),
             ("p", "toggle_pause", "Pause"),
         ]
@@ -136,23 +137,39 @@ if TEXTUAL_AVAILABLE:
 
         def compose(self):
             yield Header(show_clock=True)
-            # 3x3 grid. Layer 2 takes cols 2-3, rows 1-2 (4 cells = 44%
-            # of the dashboard area). The remaining 5 panels fill the
-            # other 5 cells. This is the v2 layout per feedback that
-            # "gemini should be bigger" and "open spaces too".
-            with Container(id="body"):
-                yield Static(id="detection")  # row 1, col 1
-                yield Static(id="layer2")     # rows 1-2, cols 2-3 (4 cells)
-                yield Static(id="sensors")    # row 2, col 1
-                yield Static(id="system")      # row 3, col 1
-                yield Static(id="tts")         # row 3, col 2
-                yield Static(id="memory")      # row 3, col 3
-            # Unified activity feed (full-width timeline above logs)
-            yield Static(id="activity")
-            yield RichLog(id="log", highlight=True, markup=True, wrap=False)
+            # ONE outer frame around the whole content area. Inner panels
+            # are borderless cells in a grid — the Rich Panel renderable
+            # inside each Static still carries its title (e.g. "DETECTION
+            # · L0/L1"), so we don't lose the visual sections, just the
+            # double-border wasted space.
+            with Container(id="outer"):
+                with Container(id="body"):
+                    yield Static(id="detection")  # row 1, col 1
+                    yield Static(id="layer2")     # rows 1-2, cols 2-3 (4 cells)
+                    yield Static(id="sensors")    # row 2, col 1
+                    yield Static(id="system")     # row 3, col 1
+                    yield Static(id="tts")        # row 3, col 2
+                    yield Static(id="memory")     # row 3, col 3
+                # Unified activity feed (full-width timeline above logs)
+                yield Static(id="activity")
+                # max_lines caps the buffer so the log doesn't grow
+                # unbounded; wrap=True so long log lines actually wrap
+                # into the panel width instead of overflowing horizontally
+                # (which made them look like a single line on top). 200
+                # lines × ~1s polling = ~3 minutes of scrollable history.
+                yield RichLog(id="log", highlight=True, markup=True,
+                              wrap=True, max_lines=200)
             yield Footer()
 
         def on_mount(self) -> None:
+            # Textual owns the screen now (alt screen buffer). The stderr
+            # RichHandler installed by log_setup.py was writing log lines
+            # to the original stderr, which appeared OUTSIDE the alt
+            # screen (top of the terminal as a stray "one liner on top"
+            # of the TUI). Rip it out — logs go to the file only, and
+            # the LogFileWatcher tails them into the #log RichLog panel.
+            self._suppress_stderr_logging()
+
             # Initial render
             self._refresh_all()
             # Refresh loop: 1Hz
@@ -160,13 +177,36 @@ if TEXTUAL_AVAILABLE:
             # Also start a log watcher that pushes to the RichLog
             self._start_log_watcher()
 
+        def _suppress_stderr_logging(self) -> None:
+            """Remove any stderr-bound RichHandler / StreamHandler from the
+            root logger so log records only go to the file. The file is
+            tailed by the LogFileWatcher into the in-TUI log panel."""
+            import logging
+            try:
+                from rich.logging import RichHandler
+            except ImportError:
+                RichHandler = None
+            root = logging.getLogger()
+            for h in list(root.handlers):
+                # Drop stderr-bound RichHandlers (the bleed-through culprit)
+                if RichHandler is not None and isinstance(h, RichHandler):
+                    root.removeHandler(h)
+                    continue
+                # Drop any StreamHandler pointing at stderr (defensive)
+                stream = getattr(h, "stream", None)
+                if stream is not None and getattr(stream, "name", "") == "stderr":
+                    root.removeHandler(h)
+
         def _start_log_watcher(self) -> None:
             from rpi5.live_dashboard.log_watcher import LogFileWatcher
             self._log_watcher = LogFileWatcher(
                 log_path="logs/cortex.log",
                 on_line=self._on_log_line,
                 poll_interval_s=0.2,
-                start_at_end=False,  # show recent lines on startup
+                # Only show NEW lines from this point forward — otherwise
+                # the panel dumps the entire previous session's log on
+                # startup and you get an uncontrollable scroll.
+                start_at_end=True,
             )
             self._log_watcher.start()
 
@@ -194,6 +234,10 @@ if TEXTUAL_AVAILABLE:
             return t
 
         def _refresh_all(self) -> None:
+            # Always update the title bar so PAUSED / MUTED indicators
+            # are visible even when panel updates are skipped.
+            self._update_subtitle()
+
             if self._paused:
                 return
             PULSE.tick()
@@ -206,6 +250,20 @@ if TEXTUAL_AVAILABLE:
                 except Exception:
                     pass
             self._refresh_count += 1
+
+        def _update_subtitle(self) -> None:
+            """Show PAUSED / MUTED state in the title bar so the keybinds
+            feel responsive — without this, pressing `p` or `m` is silent."""
+            try:
+                parts = ["FULL mode (Textual)"]
+                if self._paused:
+                    parts.append("[bold yellow]⏸ PAUSED — press p to resume[/]")
+                tts_snap = self.dashboard_state.snapshot().get("tts", {}) if self.dashboard_state else {}
+                if tts_snap.get("muted", False):
+                    parts.append("[bold red]🔇 MUTED — press m to unmute[/]")
+                self.sub_title = "  ·  ".join(parts)
+            except Exception:
+                pass
 
         # --- panel renderers ---
 
@@ -918,11 +976,64 @@ if TEXTUAL_AVAILABLE:
             tts = getattr(self.system, "tts", None)
             if tts is not None:
                 tts.muted = not getattr(tts, "muted", False)
+                # Push the new muted state to DashboardState so the TTS
+                # panel + subtitle reflect the change immediately.
+                if self.dashboard_state is not None:
+                    self.dashboard_state.update(tts={"muted": bool(tts.muted)})
+                self._update_subtitle()
 
         def action_ask_cortex(self) -> None:
+            """Trigger a one-shot vision query. Three paths, in order:
+              1. VisionQueryHandler (if instantiated) — preferred
+              2. Gemini Live (if connected) — sends "What do you see?" as text
+              3. Local L0+L1 detection summary — last-resort fallback
+            The r keybind will feel responsive regardless of which path
+            is available, so the user can always trigger an "ask".
+            """
             vqh = getattr(self.system, "vision_query_handler", None)
-            if vqh is not None:
+            if vqh is not None and hasattr(vqh, "request_query"):
                 vqh.request_query("What do you see?")
+                self._write_log("[bold cyan]→ Ask: routed to VisionQueryHandler[/]")
+                return
+            # Path 2: Gemini Live text query
+            layer2 = getattr(self.system, "layer2", None)
+            if layer2 is not None:
+                handler = getattr(layer2, "handler", None) or layer2
+                connected = (
+                    getattr(handler, "is_connected", False)
+                    or (hasattr(handler, "is_connected")
+                        and callable(handler.is_connected)
+                        and handler.is_connected())
+                )
+                if connected and hasattr(handler, "send_text"):
+                    try:
+                        handler.send_text("What do you see?")
+                        self._write_log("[bold cyan]→ Ask: sent to Gemini Live[/]")
+                        return
+                    except Exception as e:
+                        self._write_log(f"[bold yellow]⚠ Ask → Gemini failed: {e}[/]")
+            # Path 3: local summary of L0+L1
+            self._write_log("[bold cyan]→ Ask: running local L0+L1 detection…[/]")
+            self._run_local_ask()
+
+        def _run_local_ask(self) -> None:
+            """Last-resort fallback: pull L0+L1 classes from DashboardState
+            and synthesize a short summary into the log panel."""
+            if self.dashboard_state is None:
+                self._write_log("[bold yellow]⚠ no dashboard state — cannot answer[/]")
+                return
+            snap = self.dashboard_state.snapshot()
+            l0 = snap.get("l0_classes", []) or []
+            l1 = snap.get("l1_classes", []) or []
+            classes = list(dict.fromkeys(l0 + l1))  # dedupe, preserve order
+            if classes:
+                self._write_log(
+                    f"[bold green]CORTEX:[/] I see: {', '.join(classes[:8])}"
+                )
+            else:
+                self._write_log(
+                    "[bold green]CORTEX:[/] I don't see anything clearly right now."
+                )
 
         def action_save_log(self) -> None:
             import json
@@ -937,8 +1048,78 @@ if TEXTUAL_AVAILABLE:
                 indent=2, default=str,
             ))
 
+        def action_copy_logs(self) -> None:
+            """Copy the current log panel buffer to the system clipboard
+            so the user can paste it elsewhere. Writes a one-line status
+            to the log panel on success/failure."""
+            log = self.query_one("#log", RichLog)
+            # Build the buffer as a single string
+            try:
+                # RichLog stores lines internally; collect them.
+                # The widget exposes .lines (a deque) on recent Textual,
+                # but to be safe we re-render via the file watcher path.
+                from pathlib import Path
+                log_path = Path("logs/cortex.log")
+                if not log_path.exists():
+                    self._write_log("[bold yellow]⚠ no logs/cortex.log to copy[/]")
+                    return
+                # Tail the last 200 lines — matches max_lines
+                text = "\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-200:])
+                self._copy_to_clipboard(text)
+                self._write_log(
+                    f"[bold green]✓ {len(text.splitlines())} log lines copied to clipboard[/]"
+                )
+            except Exception as e:
+                self._write_log(f"[bold red]✗ copy failed: {e}[/]")
+
+        def _copy_to_clipboard(self, text: str) -> None:
+            """Cross-platform clipboard write. Tries pyperclip, then
+            platform-native fallbacks (pbcopy on mac, clip on Win,
+            xclip/wl-copy on Linux)."""
+            # Try pyperclip first (works on all platforms)
+            try:
+                import pyperclip
+                pyperclip.copy(text)
+                return
+            except ImportError:
+                pass
+            import platform
+            import subprocess
+            system = platform.system()
+            try:
+                if system == "Windows":
+                    # Use PowerShell Set-Clipboard (always available on Win)
+                    subprocess.run(
+                        ["powershell", "-NoProfile", "-Command", "Set-Clipboard"],
+                        input=text.encode("utf-16le"),
+                        check=True, timeout=5,
+                    )
+                elif system == "Darwin":
+                    subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True, timeout=5)
+                else:
+                    # Linux — try xclip then wl-copy
+                    for cmd in (["xclip", "-selection", "clipboard"],
+                                ["wl-copy"]):
+                        try:
+                            subprocess.run(cmd, input=text.encode("utf-8"),
+                                           check=True, timeout=5)
+                            return
+                        except (FileNotFoundError, subprocess.CalledProcessError):
+                            continue
+                    raise RuntimeError("install xclip or wl-copy for clipboard support")
+            except Exception:
+                # Final fallback: write to a file the user can copy
+                from pathlib import Path
+                from datetime import datetime
+                out = Path(f"logs/clipboard_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+                out.write_text(text, encoding="utf-8")
+                raise RuntimeError(f"clipboard unavailable; wrote to {out}")
+
         def action_toggle_pause(self) -> None:
             self._paused = not self._paused
+            # Immediate subtitle update so the user sees feedback instantly,
+            # not after the next 1Hz refresh tick.
+            self._update_subtitle()
 
         def action_show_help(self) -> None:
             log = self.query_one("#log", RichLog)
