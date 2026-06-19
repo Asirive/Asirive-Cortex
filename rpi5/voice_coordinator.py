@@ -587,6 +587,15 @@ class VoiceCoordinator:
                     text = self.stt.transcribe(audio)
                     if text:
                         logger.info(f"🗣️ Transcribed (Whisper): '{text}'")
+                        # Push to the dashboard activity feed + STT history
+                        # even when local Whisper produced the transcript
+                        # (Cartesia path does this at line 588, Whisper path
+                        # was silently dropping it before).
+                        if self.system is not None and hasattr(self.system, "record_stt"):
+                            try:
+                                self.system.record_stt(text.strip(), confidence=0.0)
+                            except Exception as e:
+                                logger.debug(f"record_stt (whisper) error: {e}")
                 else:
                     logger.debug("🔇 Whisper fallback disabled (config); dropping transcript")
 

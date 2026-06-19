@@ -344,11 +344,22 @@ def main() -> int:
     # commands (camera, audio, test, tui, connect) have no Live panel
     # and can use stdout directly.
     rich_stream = "stderr" if getattr(args, "command", None) == "all" else "stdout"
+    # FULL Textual TUI mode: logs must go to FILE ONLY — the TUI owns the
+    # terminal (alt screen buffer). Any stderr/stdout stream handler would
+    # leak around the TUI. The in-TUI log panel tails the file via
+    # LogFileWatcher.
+    _full_mode = (
+        getattr(args, "command", None) == "all"
+        and not getattr(args, "two_point_four", False)
+        and not getattr(args, "old_dashboard", False)
+        and not getattr(args, "no_dashboard", False)
+    )
     setup_logging(
         level=log_level,
         log_file="logs/cortex.log",
         use_rich=True,
         rich_stream=rich_stream,
+        file_only=_full_mode,
     )
 
     if rich_stream == "stderr":

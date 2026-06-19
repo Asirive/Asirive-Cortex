@@ -126,8 +126,8 @@ def _default_state() -> Dict[str, Any]:
         "l1_classes": [],
         "l1_latency_ms": 0.0,
         "l1_mode": "",                     # e.g. "TEXT_PROMPTS"
-        "hailo_depth_fps": 0.0,
-        "hailo_ocr_state": "idle",         # "idle" | "running" | "error"
+        # NOTE: top-level hailo_depth_fps/hailo_ocr_state removed — use the
+        # nested "hailo" dict below. The UI reads snap["hailo"]["depth_fps"].
         # sensors
         "gps": {
             "fix": 0,                      # 0=no fix, 1=GPS, 2=DGPS, 3=PPS
@@ -150,6 +150,7 @@ def _default_state() -> Dict[str, Any]:
         "hailo": {
             "depth_fps": 0.0,
             "ocr_state": "idle",
+            "hailo_state": "none",          # "running" | "init_failed" | "no_runtime" | "not_initialized" | "none"
         },
         # AI / routing
         "ai": {
@@ -176,6 +177,11 @@ def _default_state() -> Dict[str, Any]:
             "latency_ms": {"avg": 0.0, "p95": 0.0, "ttfb": 0.0},
             # NEW: tool call history (last 10)
             "tool_call_log": [],           # [{"name": str, "args_preview": str, "result_preview": str, "ts": float}]
+            # Audio playback state (used by CLOUD AI panel)
+            "audio_queue_size": 0,
+            "is_playing": False,
+            "vad_active": False,
+            "uptime_s": 0.0,
         },
         # Layer 3 (Navigation / Bus / Connectivity)
         # NavMode (physical context):  "idle" | "outdoor" | "indoor" | "bus_stop" | "transit"
@@ -228,6 +234,7 @@ def _default_state() -> Dict[str, Any]:
             "fallback_engine": "",
             "speed": 1.0,
             "muted": False,
+            "voice": "Zephyr",
         },
         "voice": {
             "listening": False,
@@ -239,6 +246,7 @@ def _default_state() -> Dict[str, Any]:
             "t0": 0,                       # lifetime T0 (critical cane-invisible) alert count
             "t1": 0,                       # lifetime T1 (environmental) alert count
             "t2": 0,                       # lifetime T2 (silent static) alert count
+            "t3": 0,                       # lifetime T3 (fast-approach) alert count
             "alert_type": "",              # "overhang" | "stairs_up" | "incoming_fast" | ...
             "distance_m": 0.0,
             "alerts_last_60s": 0,          # counter, reset every minute
@@ -246,6 +254,7 @@ def _default_state() -> Dict[str, Any]:
         },
         # Memory (L4)
         "l4": {
+            "available": False,            # True once HybridMemoryManager init succeeds
             "local_rows": 0,
             "last_sync_age_s": -1,         # -1 = never
             "next_sync_in_s": 60,

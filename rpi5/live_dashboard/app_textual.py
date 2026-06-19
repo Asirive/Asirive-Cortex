@@ -32,8 +32,7 @@ from rich.table import Table
 try:
     from textual.app import App
     from textual.widgets import Header, Footer, Static, RichLog
-    from textual.containers import Container, Vertical, Horizontal, Grid
-    from textual.reactive import reactive
+    from textual.containers import Container, Vertical, Horizontal
     from textual import on
     TEXTUAL_AVAILABLE = True
 except ImportError:
@@ -41,9 +40,7 @@ except ImportError:
     App = None
 
 from rpi5.live_dashboard.state import DashboardState
-from rpi5.live_dashboard.keybinds import (
-    KeyAction, FOOTER_HINTS, FOOTER_HINTS_FULL,
-)
+from rpi5.live_dashboard.keybinds import FOOTER_HINTS_FULL
 
 
 # Pulse state for the "● connected" indicator. We toggle this every 0.5s
@@ -122,6 +119,7 @@ if TEXTUAL_AVAILABLE:
             ("b", "toggle_rec", "Record"),
             ("m", "mute_tts", "Mute TTS"),
             ("r", "ask_cortex", "Ask"),
+            ("g", "ask_cortex", "Ask"),
             ("s", "save_log", "Save log"),
             ("k", "copy_logs", "Copy logs"),
             ("?", "show_help", "Help"),
@@ -137,64 +135,68 @@ if TEXTUAL_AVAILABLE:
 
         def compose(self):
             yield Header(show_clock=True)
-            # ONE outer frame around the whole content area. Inner panels
-            # are borderless cells in a grid — the Rich Panel renderable
-            # inside each Static still carries its title (e.g. "DETECTION
-            # · L0/L1"), so we don't lose the visual sections, just the
-            # double-border wasted space.
             with Container(id="outer"):
                 with Container(id="body"):
-                    yield Static(id="detection")  # row 1, col 1
-                    yield Static(id="layer2")     # rows 1-2, cols 2-3 (4 cells)
-                    yield Static(id="sensors")    # row 2, col 1
-                    yield Static(id="system")     # row 3, col 1
-                    yield Static(id="tts")        # row 3, col 2
-                    yield Static(id="memory")     # row 3, col 3
+                    # Top section: left column (detection, sensors) + big
+                    # layer2 panel spanning the remaining width and full
+                    # height. Textual's Grid can't cell-span, so we use
+                    # nested Horizontal/Vertical containers instead.
+                    with Horizontal(id="top-row"):
+                        with Vertical(id="left-col"):
+                            yield Static(id="detection")
+                            yield Static(id="sensors")
+                        yield Static(id="layer2")
+                    # Bottom row: 3 equal-width panels
+                    with Horizontal(id="bottom-row"):
+                        yield Static(id="system")
+                        yield Static(id="tts")
+                        yield Static(id="memory")
                 # Unified activity feed (full-width timeline above logs)
                 yield Static(id="activity")
                 # max_lines caps the buffer so the log doesn't grow
                 # unbounded; wrap=True so long log lines actually wrap
                 # into the panel width instead of overflowing horizontally
                 # (which made them look like a single line on top). 200
-                # lines × ~1s polling = ~3 minutes of scrollable history.
+                # lines x ~1s polling = ~3 minutes of scrollable history.
                 yield RichLog(id="log", highlight=True, markup=True,
                               wrap=True, max_lines=200)
             yield Footer()
 
         def on_mount(self) -> None:
-            # Textual owns the screen now (alt screen buffer). The stderr
-            # RichHandler installed by log_setup.py was writing log lines
-            # to the original stderr, which appeared OUTSIDE the alt
-            # screen (top of the terminal as a stray "one liner on top"
-            # of the TUI). Rip it out — logs go to the file only, and
-            # the LogFileWatcher tails them into the #log RichLog panel.
+            # Textual owns the screen now (alt screen buffer). Any stderr
+            # handler would leak around the TUI. The __main__.py now passes
+            # file_only=True to setup_logging for FULL mode, so this is a
+            # defensive cleanup in case the app is used standalone.
             self._suppress_stderr_logging()
 
             # Initial render
             self._refresh_all()
-            # Refresh loop: 1Hz
-            self.set_interval(1.0, self._refresh_all)
+            # Refresh loop: 2Hz — half the latency of 1Hz for activity feed
+            # events (the previous 1s lag was the "activity not reacting
+            # fast enough" complaint). 2Hz is still cheap on the Pi.
+            self._refresh_timer = self.set_interval(0.5, self._refresh_all)
             # Also start a log watcher that pushes to the RichLog
             self._start_log_watcher()
 
         def _suppress_stderr_logging(self) -> None:
-            """Remove any stderr-bound RichHandler / StreamHandler from the
-            root logger so log records only go to the file. The file is
-            tailed by the LogFileWatcher into the in-TUI log panel."""
+            """Remove any stderr/stdout-bound handlers from the root logger
+            so log records only go to the file. The file is tailed by the
+            LogFileWatcher into the in-TUI log panel."""
             import logging
+            import sys
             try:
                 from rich.logging import RichHandler
             except ImportError:
                 RichHandler = None
             root = logging.getLogger()
             for h in list(root.handlers):
-                # Drop stderr-bound RichHandlers (the bleed-through culprit)
+                # Drop RichHandlers (they write to a console stream)
                 if RichHandler is not None and isinstance(h, RichHandler):
                     root.removeHandler(h)
                     continue
-                # Drop any StreamHandler pointing at stderr (defensive)
+                # Drop any StreamHandler pointing at stderr or stdout
                 stream = getattr(h, "stream", None)
-                if stream is not None and getattr(stream, "name", "") == "stderr":
+                if stream is not None and (stream is sys.stderr or stream is sys.stdout):
                     root.removeHandler(h)
 
         def _start_log_watcher(self) -> None:
@@ -247,8 +249,13 @@ if TEXTUAL_AVAILABLE:
                 try:
                     panel = self.query_one(f"#{panel_id}", Static)
                     panel.update(self._render_panel(panel_id, snap, hist))
-                except Exception:
-                    pass
+                except Exception as e:
+                    # Log the error so the operator knows a panel is broken
+                    # instead of silently going stale.
+                    try:
+                        self._write_log(f"[red]panel {panel_id} render error: {e}[/]")
+                    except Exception:
+                        pass
             self._refresh_count += 1
 
         def _update_subtitle(self) -> None:
@@ -257,12 +264,12 @@ if TEXTUAL_AVAILABLE:
             try:
                 parts = ["FULL mode (Textual)"]
                 if self._paused:
-                    parts.append("[bold yellow]⏸ PAUSED — press p to resume[/]")
+                    parts.append("PAUSED — press p to resume")
                 tts_snap = self.dashboard_state.snapshot().get("tts", {}) if self.dashboard_state else {}
                 if tts_snap.get("muted", False):
-                    parts.append("[bold red]🔇 MUTED — press m to unmute[/]")
+                    parts.append("MUTED — press m to unmute")
                 self.sub_title = "  ·  ".join(parts)
-            except Exception:
+            except (AttributeError, TypeError):
                 pass
 
         # --- panel renderers ---
@@ -295,7 +302,9 @@ if TEXTUAL_AVAILABLE:
             content.append(f"{l0:>2} obj ", style="bold")
             content.append(f"{l0_lat:.0f}ms", style=l0_lat_color)
             bar = self._latency_bar(l0_lat, 100.0)
-            content.append(f"  {bar}\n")
+            content.append("  ")
+            content.append(bar)
+            content.append("\n")
             l0_classes = ", ".join(snap["l0_classes"][:5]) or "—"
             content.append(f"  ▸ {l0_classes}\n", style="cyan")
             # L1
@@ -306,12 +315,27 @@ if TEXTUAL_AVAILABLE:
             content.append(f"{l1:>2} obj ")
             content.append(f"{l1_lat:.0f}ms")
             bar1 = self._latency_bar(l1_lat, 100.0)
-            content.append(f"  {bar1}\n")
+            content.append("  ")
+            content.append(bar1)
+            content.append("\n")
             l1_classes = ", ".join(snap["l1_classes"][:5]) or "—"
             mode_str = f" [{l1_mode}]" if l1_mode else ""
             content.append(f"  ▸ {l1_classes}{mode_str}\n", style="magenta")
             # Hailo + safety
-            content.append(f"Hailo {snap['hailo']['depth_fps']:.0f}fps  ")
+            hailo_state = snap["hailo"].get("hailo_state", "none")
+            hailo_fps = snap['hailo']['depth_fps']
+            hailo_color = "green" if hailo_fps > 0.5 else ("yellow" if hailo_state == "running" else "red")
+            if hailo_fps > 0.5:
+                content.append(f"Hailo {hailo_fps:.0f}fps  ", style=hailo_color)
+            else:
+                # Show the state so the operator knows WHY it's 0
+                state_label = {
+                    "running": "starting…",
+                    "init_failed": "init failed",
+                    "no_runtime": "no runtime",
+                    "not_initialized": "off",
+                }.get(hailo_state, "off")
+                content.append(f"Hailo {state_label}  ", style=hailo_color)
             content.append(f"OCR {snap['hailo']['ocr_state']}  ", style="dim")
             safety = snap["safety"]
             tier = safety.get("tier", 0)
@@ -341,8 +365,7 @@ if TEXTUAL_AVAILABLE:
             btn = snap.get("button", {})
             btn_ts = float(btn.get("last_press_ts", 0))
             btn_type = btn.get("last_press_type", "")
-            import time as _t
-            now = _t.time()
+            now = time.time()
             content.append("─" * 22 + "\n", style="dim")
             if scene_ts > 0 and (now - scene_ts) < 300:
                 age = int(now - scene_ts)
@@ -400,23 +423,31 @@ if TEXTUAL_AVAILABLE:
             t.append("█" * filled, style=color)
             t.append("░" * empty, style="dim")
             t.append("]")
-            return t.plain
+            return t
 
         def _render_layer2(self, snap: dict, hist: dict) -> Panel:
             """CLOUD AI panel — Gemini Live is the dominant feature.
             Latest response is a prominent box; full conversation flows below;
             latency, tools, mic, and audio state fill the rest."""
-            l2 = snap["l2"]
-            connected = l2["connected"]
+            l2 = snap.get("l2", {}) or {}
+            # Three-state display: connected / reconnecting / disconnected.
+            # The reconnecting case fires when handler.is_connected is False
+            # but the manager is still trying (so the panel no longer
+            # flashes red between turns).
+            state = l2.get("state") or ("connected" if l2.get("connected") else "disconnected")
+            if state == "connected":
+                connected, state_color, state_label = True, "green", "connected"
+            elif state == "reconnecting":
+                connected, state_color, state_label = True, "yellow", "reconnecting"
+            else:
+                connected, state_color, state_label = False, "red", "disconnected"
             content = Text()
 
             # --- Row 1: status header (one compact line) ---
             content.append(f"Gemini Live  {self._dot(connected)} ", style="bold")
-            if connected:
-                content.append("connected  ", style="green")
-                content.append(f"up {l2.get('uptime_s', 0):.0f}s  ", style="dim")
-            else:
-                content.append("disconnected  ", style="red")
+            content.append(f"{state_label}  ", style=state_color)
+            if l2.get("uptime_s", 0):
+                content.append(f"up {l2['uptime_s']:.0f}s  ", style="dim")
             tools = l2.get("tool_calls", 0)
             searches = l2.get("google_searches", 0)
             content.append(f"tools:{tools}  search:{searches}\n", style="dim")
@@ -448,7 +479,7 @@ if TEXTUAL_AVAILABLE:
             content.append(f"  {vu*100:.0f}%\n", style="dim")
 
             # --- PROMINENT LATEST RESPONSE (the headline) ---
-            content.append("─" * 70 + "\n", style="dim")
+            content.append("─" * 60 + "\n", style="dim")
             content.append("  CORTEX SAID\n", style="bold magenta")
             last_said = l2.get("last_said", "").strip()
             if last_said:
@@ -471,7 +502,7 @@ if TEXTUAL_AVAILABLE:
                 content.append(f"\"{self._truncate(last_heard, 60)}\"\n", style="cyan")
 
             # --- Conversation history (more turns now that logs are smaller) ---
-            content.append("─" * 70 + "\n", style="dim")
+            content.append("─" * 60 + "\n", style="dim")
             content.append("Conversation\n", style="bold")
             transcript = l2.get("transcript", [])
             # 4 turns keeps the panel tight while still showing context
@@ -491,7 +522,7 @@ if TEXTUAL_AVAILABLE:
             # --- Tool call history (last 1, super compact) ---
             tool_log = l2.get("tool_call_log", [])
             if tool_log:
-                content.append("─" * 70 + "\n", style="dim")
+                content.append("─" * 60 + "\n", style="dim")
                 entry = tool_log[-1]
                 name = entry.get("name", "?")
                 result = entry.get("result_preview", "")
@@ -503,7 +534,7 @@ if TEXTUAL_AVAILABLE:
             avg = float(l2_lat.get("avg", 0))
             p95 = float(l2_lat.get("p95", 0))
             ttfb = float(l2_lat.get("ttfb", 0))
-            content.append("─" * 70 + "\n", style="dim")
+            content.append("─" * 60 + "\n", style="dim")
             content.append(f"L2 lat  ", style="dim")
             content.append(f"avg {avg:.0f}ms  ", style="green" if avg < 600 else "yellow" if avg < 1000 else "red")
             content.append(f"p95 {p95:.0f}ms  ", style="green" if p95 < 1000 else "yellow" if p95 < 1500 else "red")
@@ -563,35 +594,49 @@ if TEXTUAL_AVAILABLE:
 
         def _render_sensors(self, snap: dict, hist: dict) -> Panel:
             content = Text()
-            gps = snap["gps"]
-            imu = snap["imu"]
-            bt = snap["bt"]
-            env = snap["environment"]
+            gps = snap.get("gps", {}) or {}
+            imu = snap.get("imu", {}) or {}
+            bt = snap.get("bt", {}) or {}
+            env = snap.get("environment", "unknown")
             env_color = "cyan" if env == "indoor" else "yellow" if env == "outdoor" else "dim"
 
             # GPS — compact, 1 line
-            gps_ok = gps["fix"] > 0
+            gps_fix = int(gps.get("fix", 0) or 0)
+            gps_ok = gps_fix > 0
             content.append(f"GPS  {self._dot(gps_ok)} ", style="bold")
             if gps_ok:
-                content.append(f"FIX:{gps['fix']}  {gps['sats']}sats", style="green")
+                content.append(f"FIX:{gps_fix}  {int(gps.get('sats', 0) or 0)}sats", style="green")
                 if gps.get("lat") and gps.get("lon"):
-                    content.append(f"  {gps['lat']:.4f},{gps['lon']:.4f}", style="dim")
+                    content.append(f"  {float(gps['lat']):.4f},{float(gps['lon']):.4f}", style="dim")
             else:
                 content.append(f"NO FIX [{env}]", style=env_color)
             content.append("\n")
             # IMU — compact, 1 line
-            imu_ok = any(c > 0 for c in imu["cal"])
-            cal = imu["cal"]
+            imu_cal = imu.get("cal", [0, 0, 0, 0]) or [0, 0, 0, 0]
+            imu_enabled = imu.get("enabled", True)
+            imu_ok = any(int(c or 0) > 0 for c in imu_cal) if imu_enabled else False
+            cal = imu_cal
             content.append(f"IMU  {self._dot(imu_ok)} ", style="bold")
-            content.append(f"hdg {imu['heading']:.0f}°  S{cal[0]}G{cal[1]}A{cal[2]}M{cal[3]}\n")
-            # BT — compact, 1 line
-            content.append(f"BT   {self._dot(bt['connected'])} ", style="bold")
-            if bt["connected"]:
-                bat = f"{bt['battery_pct']}%" if bt.get("battery_pct", -1) >= 0 else ""
-                eb = bt.get("earbuds", "") or bt.get("device", "")
-                content.append(f"{eb}  {bat}\n", style="green")
+            if not imu_enabled:
+                content.append("off (disabled in config)\n", style="dim")
             else:
-                content.append("disconnected\n", style="red")
+                content.append(f"hdg {float(imu.get('heading', 0) or 0):.0f}°  S{cal[0]}G{cal[1]}A{cal[2]}M{cal[3]}\n")
+            # BT — compact, 1 line. Be forgiving: if the publisher hasn't
+            # sent BT state yet (e.g. on first frame before the sensor
+            # block runs), show a neutral "—" instead of "disconnected"
+            # so the operator doesn't think Bluetooth is broken.
+            content.append(f"BT   {self._dot(bt.get('connected', False))} ", style="bold")
+            if bt.get("connected"):
+                bat = f"{bt.get('battery_pct', -1)}%" if int(bt.get("battery_pct", -1) or -1) >= 0 else ""
+                eb = (bt.get("earbuds", "") or bt.get("device", "")) or "—"
+                content.append(f"{eb}  {bat}\n", style="green")
+            elif bt.get("device") or bt.get("earbuds"):
+                # Paired but not currently connected — surface the device
+                # name so the operator knows what to reconnect.
+                eb = (bt.get("earbuds", "") or bt.get("device", "")) or "—"
+                content.append(f"{eb} (not connected)\n", style="yellow")
+            else:
+                content.append("not paired\n", style="dim")
             # Hailo + camera — combined on 1 line (was 2 in v6; combined to make
             # room for the new Power render in v7)
             content.append(f"Hailo ", style="bold")
@@ -797,17 +842,16 @@ if TEXTUAL_AVAILABLE:
             content.append("listening\n" if voice.get("listening") else "idle\n")
             content.append(f"rec     {self._dot(rec.get('is_recording', False))} ")
             if rec.get("is_recording"):
-                content.append("[bold red]RECORDING[/]\n")
+                content.append("RECORDING\n", style="bold red")
             else:
-                content.append(f"idle  [[{rec.get('toggle_key', 'b')}]]\n", style="dim")
+                content.append(f"idle  [{rec.get('toggle_key', 'b')}]\n", style="dim")
             if muted:
-                content.append("\n[bold yellow]⚠ TTS MUTED[/]\n")
+                content.append("\n⚠ TTS MUTED\n", style="bold yellow")
 
             # Recent STT (last 4 with confidence bars — fills empty space)
             stt_recent = snap.get("stt_recent", [])
             if stt_recent:
-                import time as _t
-                now = _t.time()
+                now = time.time()
                 content.append("─" * 22 + "\n", style="dim")
                 content.append("heard\n", style="bold")
                 for entry in stt_recent[-4:]:
@@ -837,39 +881,66 @@ if TEXTUAL_AVAILABLE:
 
         def _render_memory(self, snap: dict, hist: dict) -> Panel:
             content = Text()
-            m = snap["l4"]
-            content.append(f"local    · {m['local_rows']:>5} rows\n", style="cyan")
+            m = snap.get("l4", {}) or {}
+            l4_available = bool(m.get("available", False))
+            # If the publisher hasn't pushed anything yet (memory_manager
+            # not initialized, or startup race), show zeros honestly
+            # rather than crashing. Was hard-keying m["local_rows"] before
+            # which raised KeyError and silently fell back to the
+            # "render error" branch.
+            local_rows = int(m.get("local_rows", 0) or 0)
+            detect_rows = int(m.get("detections_stored", 0) or 0)
+            events_rows = int(m.get("events_stored", 0) or 0)
+            queue = int(m.get("upload_queue", 0) or 0)
+            failed = int(m.get("upload_failed", 0) or 0)
+            content.append(f"local    · {local_rows:>5} rows\n", style="cyan")
             sync_age = m.get("last_sync_age_s", -1)
             content.append(f"sync     · ")
-            if sync_age < 0:
+            if sync_age is None or sync_age < 0:
                 content.append("never\n", style="dim")
             elif sync_age < 5:
                 content.append(f"{sync_age:.0f}s ago ●\n", style="green")
             else:
                 content.append(f"{sync_age:.0f}s ago\n", style="yellow")
             next_in = m.get("next_sync_in_s", 60)
+            try:
+                next_in = float(next_in)
+            except Exception:
+                next_in = 60.0
             if 0 < next_in < 60:
                 pct = (60 - next_in) / 60 * 100
                 content.append(f"next     · in {next_in:.0f}s  ")
                 content.append(f"[{'█' * int(pct/10):<10}] {pct:.0f}%\n", style="cyan")
             else:
                 content.append(f"next     · in {next_in:.0f}s\n", style="dim")
-            content.append(f"detect   · {m['detections_stored']:>5}\n")
-            content.append(f"events   · {m['events_stored']:>5}\n")
+            content.append(f"detect   · {detect_rows:>5}\n")
+            content.append(f"events   · {events_rows:>5}\n")
             # Upload queue (more detail)
-            queue = m.get("upload_queue", 0)
-            failed = m.get("upload_failed", 0)
             if queue or failed:
                 q_color = "yellow" if failed else "dim"
                 content.append(f"queue    · {queue:>3}  failed {failed}\n", style=q_color)
-            # Disk usage (NEW: fill empty space)
+            # Memory manager availability — surface the truth instead of
+            # staring at zeros forever when the manager didn't init.
+            if not l4_available:
+                content.append("memory mgr: not initialized\n", style="dim yellow")
+            elif local_rows == 0 and detect_rows == 0 and events_rows == 0:
+                # Manager is up but no detections yet — distinguish
+                # "waiting for first frame" from "broken".
+                content.append("(no data stored yet)\n", style="dim")
+            # Disk usage (NEW: fill empty space).
+            # Be forgiving — show whatever fields the publisher sent
+            # even if some are zero. Older builds only sent l4 / power
+            # and skipped disk entirely; the panel used to read
+            # "(no data)" forever in that case.
             content.append("─" * 22 + "\n", style="dim")
-            disk = snap.get("disk", {})
-            if disk:
-                used_gb = float(disk.get("used_gb", 0))
-                total_gb = float(disk.get("total_gb", 1))
-                pct = float(disk.get("percent", 0))
+            disk = snap.get("disk", {}) or {}
+            total_gb = float(disk.get("total_gb", 0) or 0)
+            used_gb = float(disk.get("used_gb", 0) or 0)
+            if total_gb > 0:
+                pct = float(disk.get("percent", 0) or 0)
                 free_gb = total_gb - used_gb
+                if free_gb < 0:
+                    free_gb = 0.0
                 bar_w = 14
                 filled = int(pct / 100 * bar_w)
                 bar = "█" * filled + "░" * (bar_w - filled)
@@ -879,7 +950,24 @@ if TEXTUAL_AVAILABLE:
                 content.append(f"{pct:.0f}%\n", style=d_color)
                 content.append(f"         {used_gb:.0f}G used, {free_gb:.0f}G free\n", style="dim")
             else:
-                content.append("disk    · (no data)\n", style="dim")
+                # Fall back to live psutil so the panel is never blank.
+                try:
+                    import psutil
+                    dsk = psutil.disk_usage("/")
+                    used_gb = dsk.used / (1024 ** 3)
+                    total_gb = dsk.total / (1024 ** 3)
+                    pct = dsk.percent
+                    free_gb = (total_gb - used_gb) if total_gb > used_gb else 0.0
+                    bar_w = 14
+                    filled = int(pct / 100 * bar_w)
+                    bar = "█" * filled + "░" * (bar_w - filled)
+                    d_color = "green" if pct < 70 else "yellow" if pct < 90 else "red"
+                    content.append("disk    · ")
+                    content.append(f"{bar} ", style=d_color)
+                    content.append(f"{pct:.0f}%\n", style=d_color)
+                    content.append(f"         {used_gb:.0f}G used, {free_gb:.0f}G free\n", style="dim")
+                except Exception:
+                    content.append("disk    · (no data)\n", style="dim")
             return Panel(content, title="[bold magenta]MEMORY · L4[/]", border_style="magenta", padding=(0, 1))
 
         # Source → (color, prefix). Compact 4-char source tag, e.g. "stt" or "l2  ".
@@ -921,8 +1009,7 @@ if TEXTUAL_AVAILABLE:
 
             # Show most recent first (newest at top) — operator scans top-down
             recent = events[-8:][::-1]
-            import time as _t
-            now = _t.time()
+            now = time.time()
             for ev in recent:
                 ts = float(ev.get("ts", 0))
                 source = str(ev.get("source", "?"))
@@ -955,7 +1042,7 @@ if TEXTUAL_AVAILABLE:
             latest = events[-1] if events else {}
             latest_ts = float(latest.get("ts", 0))
             latest_age = int(now - latest_ts) if latest_ts > 0 else 0
-            content.append("─" * 100 + "\n", style="dim")
+            content.append("─" * 80 + "\n", style="dim")
             content.append(f"  {count} events captured", style="dim")
             if latest_age > 0:
                 content.append(f"  · latest {latest_age}s ago", style="dim")
@@ -977,9 +1064,23 @@ if TEXTUAL_AVAILABLE:
             if tts is not None:
                 tts.muted = not getattr(tts, "muted", False)
                 # Push the new muted state to DashboardState so the TTS
-                # panel + subtitle reflect the change immediately.
+                # panel + subtitle reflect the change immediately. We
+                # also re-publish engine + state so the panel doesn't
+                # get stuck on a stale "speaking" indicator from a
+                # previous utterance. Without this, muting mid-utterance
+                # leaves the panel reading "speaking" for ~12s.
                 if self.dashboard_state is not None:
-                    self.dashboard_state.update(tts={"muted": bool(tts.muted)})
+                    engine = "muted" if tts.muted else (
+                        getattr(tts, "_last_engine", "") or "cartesia"
+                    )
+                    state = "muted" if tts.muted else (
+                        "speaking" if getattr(tts, "is_playing", False) else "idle"
+                    )
+                    self.dashboard_state.update(tts={
+                        "muted": bool(tts.muted),
+                        "engine": engine,
+                        "state": state,
+                    })
                 self._update_subtitle()
 
         def action_ask_cortex(self) -> None:
@@ -999,12 +1100,8 @@ if TEXTUAL_AVAILABLE:
             layer2 = getattr(self.system, "layer2", None)
             if layer2 is not None:
                 handler = getattr(layer2, "handler", None) or layer2
-                connected = (
-                    getattr(handler, "is_connected", False)
-                    or (hasattr(handler, "is_connected")
-                        and callable(handler.is_connected)
-                        and handler.is_connected())
-                )
+                ic = getattr(handler, "is_connected", False)
+                connected = bool(ic() if callable(ic) else ic)
                 if connected and hasattr(handler, "send_text"):
                     try:
                         handler.send_text("What do you see?")
@@ -1047,27 +1144,31 @@ if TEXTUAL_AVAILABLE:
                  "history": self.dashboard_state.history()},
                 indent=2, default=str,
             ))
+            self._write_log(f"[green]✓ snapshot saved to {out}[/]")
 
         def action_copy_logs(self) -> None:
-            """Copy the current log panel buffer to the system clipboard
-            so the user can paste it elsewhere. Writes a one-line status
-            to the log panel on success/failure."""
-            log = self.query_one("#log", RichLog)
-            # Build the buffer as a single string
+            """Copy the FULL log file to the system clipboard so the user
+            can paste it elsewhere. The previous implementation only copied
+            the last 200 lines (matching the visible buffer), which truncated
+            crashes and earlier session history — the operator wanted the
+            WHOLE log, not just the panel tail.
+
+            Writes a one-line status to the log panel on success/failure.
+            """
             try:
-                # RichLog stores lines internally; collect them.
-                # The widget exposes .lines (a deque) on recent Textual,
-                # but to be safe we re-render via the file watcher path.
                 from pathlib import Path
                 log_path = Path("logs/cortex.log")
                 if not log_path.exists():
                     self._write_log("[bold yellow]⚠ no logs/cortex.log to copy[/]")
                     return
-                # Tail the last 200 lines — matches max_lines
-                text = "\n".join(log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-200:])
+                # Copy the FULL file — operators paste this into bug reports
+                # and need crashes from before the panel buffer started.
+                # 4.4MB is fine for clipboard; tools like wl-copy handle it.
+                text = log_path.read_text(encoding="utf-8", errors="replace")
+                n_lines = len(text.splitlines())
                 self._copy_to_clipboard(text)
                 self._write_log(
-                    f"[bold green]✓ {len(text.splitlines())} log lines copied to clipboard[/]"
+                    f"[bold green]✓ copied {n_lines} lines ({len(text)} chars) — full logs/cortex.log[/]"
                 )
             except Exception as e:
                 self._write_log(f"[bold red]✗ copy failed: {e}[/]")
@@ -1075,7 +1176,12 @@ if TEXTUAL_AVAILABLE:
         def _copy_to_clipboard(self, text: str) -> None:
             """Cross-platform clipboard write. Tries pyperclip, then
             platform-native fallbacks (pbcopy on mac, clip on Win,
-            xclip/wl-copy on Linux)."""
+            xclip/wl-copy on Linux). On the RPi5, xclip is the recommended
+            install (`sudo apt install xclip`) because it works headless
+            over SSH where wl-copy/xsel need a Wayland/X session.
+
+            The clipboard fallback chain is best-effort; each failure
+            falls through to the next option before giving up."""
             # Try pyperclip first (works on all platforms)
             try:
                 import pyperclip
@@ -1083,37 +1189,59 @@ if TEXTUAL_AVAILABLE:
                 return
             except ImportError:
                 pass
+            except Exception:
+                # pyperclip installed but the underlying copy failed
+                # (common on headless Pi); fall through to native tools.
+                pass
             import platform
             import subprocess
             system = platform.system()
+            tried = []
             try:
                 if system == "Windows":
-                    # Use PowerShell Set-Clipboard (always available on Win)
+                    # Set-Clipboard doesn't read stdin; pipe via [Console]::In
                     subprocess.run(
-                        ["powershell", "-NoProfile", "-Command", "Set-Clipboard"],
-                        input=text.encode("utf-16le"),
-                        check=True, timeout=5,
+                        ["powershell", "-NoProfile", "-Command",
+                         "$input = [Console]::In.ReadToEnd(); Set-Clipboard -Value $input"],
+                        input=text.encode("utf-8"),
+                        check=True, timeout=15,
                     )
+                    return
                 elif system == "Darwin":
-                    subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True, timeout=5)
+                    subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True, timeout=15)
+                    return
                 else:
-                    # Linux — try xclip then wl-copy
+                    # Linux / RPi5 — try xclip first (headless-friendly),
+                    # then xsel, then wl-copy (needs Wayland session).
                     for cmd in (["xclip", "-selection", "clipboard"],
+                                ["xsel", "--input", "--clipboard"],
                                 ["wl-copy"]):
+                        tried.append(cmd[0])
                         try:
                             subprocess.run(cmd, input=text.encode("utf-8"),
-                                           check=True, timeout=5)
+                                           check=True, timeout=15)
                             return
-                        except (FileNotFoundError, subprocess.CalledProcessError):
+                        except FileNotFoundError:
                             continue
-                    raise RuntimeError("install xclip or wl-copy for clipboard support")
+                        except subprocess.CalledProcessError:
+                            continue
+                    raise RuntimeError(
+                        f"no working clipboard tool on {system}. Tried: {tried}. "
+                        f"On RPi5 run: sudo apt install xclip"
+                    )
             except Exception:
-                # Final fallback: write to a file the user can copy
+                # Final fallback: write to a file the user can copy manually.
+                # Don't raise — the file IS a successful copy, just not
+                # into the system clipboard. Tell the user clearly.
                 from pathlib import Path
                 from datetime import datetime
                 out = Path(f"logs/clipboard_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
                 out.write_text(text, encoding="utf-8")
-                raise RuntimeError(f"clipboard unavailable; wrote to {out}")
+                raise RuntimeError(
+                    f"clipboard unavailable (tried {tried or [system + ' native']}); "
+                    f"wrote {len(text)} chars to {out}. "
+                    f"On RPi5 run: sudo apt install xclip"
+                )
 
         def action_toggle_pause(self) -> None:
             self._paused = not self._paused
@@ -1129,6 +1257,11 @@ if TEXTUAL_AVAILABLE:
             log.write("")
 
         def cleanup(self) -> None:
+            if hasattr(self, "_refresh_timer"):
+                try:
+                    self._refresh_timer.stop()
+                except Exception:
+                    pass
             if hasattr(self, "_log_watcher") and self._log_watcher is not None:
                 self._log_watcher.stop()
 

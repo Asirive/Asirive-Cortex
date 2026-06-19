@@ -132,6 +132,18 @@ class BusHandler:
         self.announce_interval_s = announce_interval_s
         self.on_bus_detected = on_bus_detected
 
+        # Last bus/bus-stop destination queried — surfaced in the
+        # dashboard's "last_nav_destination" field. Empty until a
+        # query is made (typically by Gemini).
+        self.last_query: str = ""
+
+        # LTA health flag — read by main.py's _publish_nav_state so
+        # the TUI's `bus idle LTA ●/○` dot reflects actual API state.
+        # Default: unknown (False until we make a successful call).
+        self.lta_ok: bool = False
+        self._last_lta_call_unix: float = 0.0
+        self._last_lta_error: str = ""
+
         # State
         self.state = BusStopMode.INACTIVE
         self.current_stop: Optional[BusStop] = None
@@ -211,8 +223,12 @@ class BusHandler:
             try:
                 with urllib.request.urlopen(req, timeout=15) as resp:
                     data = json.loads(resp.read().decode())
+                self.lta_ok = True
+                self._last_lta_call_unix = time.time()
             except Exception as e:
                 logger.error(f"LTA BusStops API error at skip={skip}: {e}")
+                self.lta_ok = False
+                self._last_lta_error = str(e)
                 break
 
             stops = data.get("value", [])
@@ -294,6 +310,11 @@ class BusHandler:
         if not self.lta_api_key:
             logger.warning("No LTA API key — cannot query arrivals")
             return []
+
+        # Record what the user asked for so the TUI's
+        # `last_nav_destination` reflects the most recent query.
+        self.last_query = str(stop_code)
+        self._last_lta_call_unix = time.time()
 
         url = f"{self.LTA_BUS_ARRIVAL_URL}?BusStopCode={urllib.parse.quote(stop_code)}"
         req = urllib.request.Request(url, headers={

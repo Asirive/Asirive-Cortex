@@ -94,7 +94,14 @@ def main():
         "python3-rpi-lgpio", "i2c-tools",
         # Hailo
         "hailo-all",
-    ]
+        # Clipboard (for the FULL Textual mode's "Copy logs" keybind —
+        # without xclip, pressing k falls back to writing
+        # logs/clipboard_<ts>.txt on disk instead of putting the log on
+        # the system clipboard. xclip is the only option that works
+        # headless over SSH because wl-copy needs Wayland and xsel
+        # sometimes hangs.)
+        "xclip",
+    ]  
     
     pkg_str = " ".join(system_pkgs)
     run_cmd(ssh, f"echo 'REDACTED-RPI-PASSWORD' | sudo -S apt-get install -y {pkg_str}", timeout=600)

@@ -34,6 +34,7 @@ class KeyAction(str, Enum):
     TOGGLE_RECORDING = "toggle_recording"     # preserved from old `b` keybind
     ASK_CORTEX = "ask_cortex"
     SAVE_LOG = "save_log"
+    COPY_LOGS = "copy_logs"
     HELP = "help"
     PAUSE = "pause"
 
@@ -59,6 +60,7 @@ KEYBIND_MAP: Dict[str, KeyAction] = {
     "b":         KeyAction.TOGGLE_RECORDING,   # old keybind, preserved
     "r":         KeyAction.ASK_CORTEX,
     "s":         KeyAction.SAVE_LOG,
+    "k":         KeyAction.COPY_LOGS,
     "?":         KeyAction.HELP,
     "f1":        KeyAction.HELP,
     "p":         KeyAction.PAUSE,
@@ -126,13 +128,10 @@ FOOTER_HINTS = [
     ("m", "mute"),
     ("r", "ask"),
     ("s", "save"),
+    ("k", "copy"),
     ("?", "help"),
 ]
 
 FOOTER_HINTS_FULL = FOOTER_HINTS + [
     ("p", "pause"),
-    ("f", "follow"),
-    ("L", "level"),
-    ("Tab", "focus"),
-    ("1-7", "panel"),
 ]

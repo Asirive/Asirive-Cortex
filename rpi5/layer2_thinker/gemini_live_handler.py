@@ -155,6 +155,27 @@ class GeminiLiveHandler:
         self._conversation_history: list = []  # [("user", text), ("model", text), ...]
         self._max_history_turns = 10  # Keep last 10 exchanges
         self._current_model_response_parts: list = []  # Buffer ongoing model response
+        # Buffer for incoming user audio chunks (input_transcription arrives
+        # per audio frame; emit the joined final result on turn_complete so
+        # the CLOUD AI panel shows one "YOU → " line per turn, not 5).
+        self._current_user_input_parts: list = []
+        # Latency tracking (read by main.py -> DashboardState -> TUI panel).
+        # Without these, the "L2 lat avg/p95/ttfb" row is permanently 0.
+        from collections import deque as _deque
+        self._latency_samples: "_deque[float]" = _deque(maxlen=60)
+        self._turn_started_unix: float = 0.0  # when we last sent text
+        self._last_ttfb_unix: float = 0.0  # when first audio arrived after send
+        self._ttfb_samples: "_deque[float]" = _deque(maxlen=60)
+        # Tool / audio state — read by main.py -> DashboardState -> TUI.
+        # Defaulted to safe values so a fresh handler doesn't AttributeError.
+        self._tool_call_count: int = 0
+        self._google_search_count: int = 0
+        self._tool_call_log: "_deque[dict]" = _deque(maxlen=10)
+        self._audio_input_level: float = 0.0
+        self._is_playing_audio: bool = False
+        self._vad_active: bool = False
+        self._audio_queue_size: int = 0
+        self._last_user_input_text: str = ""
 
         # Echo detection: recent Gemini output transcriptions (for filtering
         # mic echo when STT picks up speaker output)
@@ -922,6 +943,20 @@ Safety always comes first. Overhead hazards are your highest priority."""
                                 f"{k}={str(v)[:24]}" for k, v in list(fc_args.items())[:3]
                             )
                             self._emit_event("l2", "tool", f"{fc_name}({args_preview})")
+                            # Count + log the tool call so the TUI's
+                            # `tools:N` and "most recent tool" line update.
+                            self._tool_call_count = int(
+                                getattr(self, "_tool_call_count", 0)
+                            ) + 1
+                            from collections import deque as _deque_tc
+                            if not hasattr(self, "_tool_call_log"):
+                                self._tool_call_log = _deque_tc(maxlen=10)
+                            self._tool_call_log.append({
+                                "name": fc_name,
+                                "args_preview": args_preview[:80],
+                                "result_preview": "",
+                                "ts": time.time(),
+                            })
                         asyncio.create_task(self._handle_tool_calls_async(function_calls))
                         continue
 
@@ -981,15 +1016,15 @@ Safety always comes first. Overhead hazards are your highest priority."""
                         it = getattr(sc, 'input_transcription', None)
                         if it and getattr(it, 'text', None):
                             logger.info(f"👂 User said (Gemini heard): {it.text}")
-                            # Push to the dashboard activity feed (L2's view of
-                            # what the user said — separate from the local STT
-                            # feed because they're produced by different paths)
-                            self._emit_event("l2", "heard", f'"{it.text[:80]}"')
-                            if self.on_text:
-                                try:
-                                    self.on_text("user", it.text.strip())
-                                except Exception:
-                                    pass
+                            # Buffer the chunk — only emit joined text on
+                            # turn_complete so the TUI shows one "YOU → " per
+                            # turn instead of one per audio frame.
+                            self._current_user_input_parts.append(it.text)
+                            # NOTE: do NOT push per-chunk to the activity feed
+                            # here. That used to flood the timeline with
+                            # 6+ events per sentence ("the hallway", "you're
+                            # in", "know when", "Let me"...). The joined
+                            # event is emitted on turn_complete below.
 
                         ot = getattr(sc, 'output_transcription', None)
                         if ot and getattr(ot, 'text', None):
@@ -1001,13 +1036,16 @@ Safety always comes first. Overhead hazards are your highest priority."""
                             self._recent_gemini_outputs = [
                                 (t, txt) for t, txt in self._recent_gemini_outputs if t > cutoff
                             ]
-                            # Push to the dashboard activity feed
-                            self._emit_event("l2", "said", f'"{ot.text[:80]}"')
-                            if self.on_text:
-                                try:
-                                    self.on_text("model", ot.text.strip())
-                                except Exception:
-                                    pass
+                            # NOTE: do NOT call self.on_text("model", ...) here.
+                            # The output transcription arrives in chunks as
+                            # audio is decoded. We only emit the joined final
+                            # response on turn_complete (see below) so the
+                            # CLOUD AI panel's "CORTEX SAID" shows the whole
+                            # turn in one shot, not 4 fragments.
+                            # NOTE: do NOT _emit_event() per chunk either —
+                            # the activity timeline used to be a wall of
+                            # 3-word fragments. Joined emit happens at
+                            # turn_complete so each turn = exactly one event.
 
                         gc = getattr(sc, 'generation_complete', None)
                         if gc is True:
@@ -1018,6 +1056,12 @@ Safety always comes first. Overhead hazards are your highest priority."""
                             for part in model_turn.parts:
                                 if hasattr(part, 'inline_data') and part.inline_data and not top_level_audio:
                                     audio_bytes = part.inline_data.data
+                                    # TTFB: first audio byte after send_text.
+                                    # Record once per turn.
+                                    if self._turn_started_unix > 0 and self._last_ttfb_unix == 0.0:
+                                        self._last_ttfb_unix = time.time()
+                                        ttfb_ms = (self._last_ttfb_unix - self._turn_started_unix) * 1000
+                                        self._ttfb_samples.append(ttfb_ms)
                                     logger.debug(f"📥 Received {len(audio_bytes)} bytes of audio (parts)")
                                     try:
                                         self.audio_queue.put_nowait(audio_bytes)
@@ -1045,7 +1089,58 @@ Safety always comes first. Overhead hazards are your highest priority."""
                             if self._current_model_response_parts:
                                 full_response = "".join(self._current_model_response_parts)
                                 self._add_to_history("model", full_response)
+                                # Now that the turn is complete, push the
+                                # JOINED final response to the CLOUD AI
+                                # panel so the headline shows the whole
+                                # response in one shot, not 4 fragments.
+                                if self.on_text:
+                                    try:
+                                        self.on_text("model", full_response.strip())
+                                    except Exception:
+                                        pass
+                                # Emit ONE joined "said" event to the activity
+                                # timeline per turn — the per-chunk emits were
+                                # removed above because they flooded the feed
+                                # with 3-word fragments.
+                                try:
+                                    preview = full_response.strip()
+                                    if len(preview) > 80:
+                                        preview = preview[:77] + "…"
+                                    self._emit_event("l2", "said", f'"{preview}"')
+                                except Exception:
+                                    pass
+                                # Latency tracking: turn_complete = turn
+                                # end → record total turn latency.
+                                if self._turn_started_unix > 0:
+                                    turn_ms = (time.time() - self._turn_started_unix) * 1000
+                                    self._latency_samples.append(turn_ms)
+                                    self._turn_started_unix = 0.0
                                 self._current_model_response_parts.clear()
+
+                            # Joined user input — emit the buffered chunks
+                            # as one "YOU → " line so the transcript isn't
+                            # dominated by per-chunk rows.
+                            if self._current_user_input_parts:
+                                joined_user = "".join(self._current_user_input_parts).strip()
+                                if joined_user and joined_user != self._last_user_input_text:
+                                    if self.on_text:
+                                        try:
+                                            self.on_text("user", joined_user)
+                                        except Exception:
+                                            pass
+                                    # Emit ONE joined "heard" event to the
+                                    # activity timeline per turn — paired
+                                    # with the "said" emit above so each turn
+                                    # is exactly one heard/one said pair.
+                                    try:
+                                        preview = joined_user
+                                        if len(preview) > 80:
+                                            preview = preview[:77] + "…"
+                                        self._emit_event("l2", "heard", f'"{preview}"')
+                                    except Exception:
+                                        pass
+                                    self._last_user_input_text = joined_user
+                                self._current_user_input_parts.clear()
 
                         if not getattr(sc, 'interrupted', False) and not ot and not model_turn:
                             logger.debug(
@@ -1430,6 +1525,11 @@ Safety always comes first. Overhead hazards are your highest priority."""
         if not self.is_connected or not self.session:
             logger.debug("Text send skipped: not connected")
             return False
+
+        # Mark the start of this turn so we can measure end-to-end
+        # latency on turn_complete. Reset TTFB sample for this turn.
+        self._turn_started_unix = time.time()
+        self._last_ttfb_unix = 0.0
 
         try:
             if self._send_lock:

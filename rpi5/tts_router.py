@@ -132,6 +132,13 @@ class TTSRouter:
         self._cartesia_available = False
         self._playback_lock = threading.Lock()
         self._active_playbacks = 0
+
+        # TUI state publishing — the FULL Textual dashboard reads
+        # tts.engine/tts.state from DashboardState. Without this, the
+        # TTS panel always shows "[idle]" even when we're speaking.
+        self._dashboard_state = None  # set via bind_dashboard_state()
+        self._last_engine = ""  # last engine used (for idle-state re-publish)
+        self.muted = False
         
         # Audio queue integration — prevents TTS from playing over Gemini Live
         try:
@@ -154,6 +161,39 @@ class TTSRouter:
         with self._playback_lock:
             return self._active_playbacks > 0
 
+    def bind_dashboard_state(self, dashboard_state) -> None:
+        """Wire the TTSRouter to push its current engine/state to a
+        DashboardState so the Textual TUI's TTS panel stays in sync."""
+        self._dashboard_state = dashboard_state
+
+    def _publish_tts_state(self, engine: str = "", state: str = "idle") -> None:
+        """Push the current TTS engine + state to DashboardState.
+        No-op if DashboardState wasn't bound. Uses `safe_publish` so
+        a TUI disconnect can't break a TTS call."""
+        if self._dashboard_state is None:
+            return
+        try:
+            voice = ""
+            speed = 1.0
+            # Pull voice from the active engine when known
+            if engine == "cartesia":
+                voice = "Cartesia Sonic 3.5"
+            elif engine == "supertonic":
+                voice = "Supertonic (local ONNX)"
+            elif engine == "gemini":
+                voice = "Gemini 2.5 Flash TTS"
+            elif engine == "gemini-live":
+                voice = "Gemini Live (Zephyr)"
+            self._dashboard_state.update(tts={
+                "engine": engine,
+                "state": state,
+                "voice": voice,
+                "speed": speed,
+                "muted": bool(getattr(self, "muted", False)),
+            })
+        except Exception:
+            pass
+
     def _mark_playback_start(self):
         with self._playback_lock:
             self._active_playbacks += 1
@@ -161,6 +201,17 @@ class TTSRouter:
     def _mark_playback_end(self):
         with self._playback_lock:
             self._active_playbacks = max(0, self._active_playbacks - 1)
+        # When the last active playback ends, flip the TTS panel back to
+        # idle so the operator can see we're ready for the next utterance
+        # (bug: panel used to stick on "speaking" forever).
+        if self._active_playbacks == 0:
+            self._publish_tts_state(engine=self._last_engine, state="idle")
+
+    def _remember_engine(self, engine: str) -> None:
+        """Cache the last engine used so playback-end can re-publish it
+        with state='idle' (keeps the TTS panel showing which engine was
+        last used even after the playback completes)."""
+        self._last_engine = engine
     
     def _save_recording(self, audio_data: bytes, engine: str, text: str):
         """
@@ -271,8 +322,17 @@ class TTSRouter:
             Tuple of (success, engine_used, audio_bytes)
         """
         engine = engine_override or self.select_engine(text)
+        if self.muted:
+            logger.info(f"TTS muted — skipping '{text[:50]}'")
+            self._publish_tts_state(engine="muted", state="muted")
+            return False, "muted", None
         logger.info(f"TTS routing '{text[:50]}...' to {engine} ({len(text)} chars)")
-        
+
+        # Track the active engine so the TUI's TTS panel can show it
+        # in real time. Without this, the panel always shows "[idle]".
+        self._remember_engine(engine)
+        self._publish_tts_state(engine=engine, state="speaking")
+
         success = False
         audio_data = None
         

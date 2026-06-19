@@ -94,6 +94,19 @@ class HybridMemoryManager:
         self._sync_loop = None
         self._sync_thread = None
 
+        # Dashboard counters (read by main.py -> DashboardState -> TUI panel).
+        # Without these, the MEMORY panel shows 0 rows / 0 detections
+        # / 0 events forever even after running for hours. Track them
+        # here so the publish path can read live values.
+        self.local_row_count: int = 0
+        self.detection_count: int = 0
+        self.event_count: int = 0
+        self.upload_failed_count: int = 0
+        self.last_sync_age_s: float = -1.0
+        self.next_sync_in_s: float = float(sync_interval)
+        self.last_sync_unix: float = 0.0
+        self.sync_status: str = "idle"  # "idle" | "syncing" | "error"
+
         # Local write buffer (batch inserts to avoid blocking detection threads)
         self._local_write_buffer: List[Dict[str, Any]] = []
         self._local_buffer_lock = threading.Lock()
@@ -265,9 +278,12 @@ class HybridMemoryManager:
             except ImportError:
                 logger.warning("⚠️ supabase package not installed. Cloud sync disabled.")
                 self.supabase_available = False
+                self.sync_status = "error"
+                self.sync_status = "error"
             except Exception as e:
                 logger.error(f"❌ Failed to initialize Supabase: {e}")
                 self._disable_supabase_with_cooldown()
+                self.sync_status = "error"
 
     def store_detection(self, detection: Dict[str, Any]) -> None:
         """
@@ -289,6 +305,10 @@ class HybridMemoryManager:
         with self._local_buffer_lock:
             self._local_write_buffer.append(detection)
             buffer_size = len(self._local_write_buffer)
+
+        # Increment the dashboard counter so the MEMORY panel's
+        # `detect · N` line updates in real time (was 0 forever before).
+        self.detection_count += 1
 
         if buffer_size >= 50:
             self._trigger_local_flush()
@@ -332,7 +352,8 @@ class HybridMemoryManager:
                         self.upload_queue.append(queue_item)
                     else:
                         self.upload_queue.pop(0)
-                        self.upload_queue.append(queue_item)
+                # Live counter for the MEMORY panel — was stuck on 0 before
+                self.local_row_count += 1
             self.local_db.commit()
             write_time = (time.time() - start_time) * 1000
             logger.debug(f"💾 Local batch write: {len(batch)} rows in {write_time:.2f}ms")
@@ -689,6 +710,7 @@ class HybridMemoryManager:
                 logger.warning("⚠️ Heartbeat skipped: Supabase function overload - fix database")
                 # Disable future attempts to avoid log spam
                 self.supabase_available = False
+                self.sync_status = "error"
             elif 'Event loop is closed' in error_msg:
                 # Suppress during shutdown
                 pass

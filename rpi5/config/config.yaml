@@ -54,10 +54,14 @@ layer0:
 # =====================================================
 layer1:
   enabled: true
-  # YOLO v26s-seg NCNN - Adaptive detection for RPi5 performance
-  model_path: "models/converted/yoloe_26n_seg_pf/model.onnx"
+  # YOLOE-26n-seg — smallest text-prompt model, fast enough for RPi5 CPU.
+  # Was pointing to a non-existent ONNX path ("models/converted/yoloe_26n_seg_pf/model.onnx")
+  # which silently disabled Layer 1 in main.py (the missing-file check at
+  # line 1701 set self.layer1 = None and the TUI read L1=0 forever).
+  # Now points at the real *.pt file in models/.
+  model_path: "models/yoloe-26n-seg.pt"
   # PyTorch fallback for full YOLOE features
-  pt_model_path: "models/yolo26s.pt"
+  pt_model_path: "models/yoloe-26n-seg.pt"
 
   device: "cpu"
   confidence: 0.25

@@ -14,7 +14,7 @@ Date: March 11, 2026
 import logging
 import time
 from collections import deque
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,18 @@ class SceneChangeDetector:
         self._last_narration_time: float = 0.0
         self._last_speech_time: float = time.time()  # Track any speech output
         self._last_trigger_reason: str = ""
+        # Optional callback fired on EVERY trigger (not just narrated
+        # ones) so the dashboard's activity feed shows every scene
+        # change, not just the ones that survived cooldown. Set via
+        # set_change_callback() from main.py.
+        self._change_callback: Optional[Callable[[str], None]] = None
+
+    def set_change_callback(self, fn: Optional[Callable[[str], None]]) -> None:
+        """Register a callback invoked with the trigger reason every
+        time a change is detected. Used by the dashboard to populate
+        the activity feed with scene changes that DIDN'T survive
+        cooldown (e.g. many similar triggers in a row)."""
+        self._change_callback = fn
 
     def should_narrate(
         self,
@@ -91,16 +103,30 @@ class SceneChangeDetector:
 
         # Enforce cooldown (shorter during navigation)
         cooldown = self.cooldown_navigating if is_navigating else self.cooldown_seconds
-        if now - self._last_narration_time < cooldown:
-            return False
+        in_cooldown = (now - self._last_narration_time) < cooldown
 
         # Check each trigger condition
         reason = self._check_triggers(detections, avg_depth, nav_event, is_navigating, now)
         if reason:
-            self._last_narration_time = now
             self._last_trigger_reason = reason
             logger.debug(f"Scene change trigger: {reason}")
-            return True
+
+            # Fire the dashboard callback for EVERY trigger so the
+            # activity feed reflects all scene changes — even ones
+            # that didn't survive the narration cooldown. Without
+            # this, ~95% of scene changes (those filtered by
+            # cooldown) never appear in the activity feed.
+            if self._change_callback is not None:
+                try:
+                    self._change_callback(reason)
+                except Exception:
+                    pass
+
+            # Only allow narration if we're past cooldown.
+            if not in_cooldown:
+                self._last_narration_time = now
+                return True
+            return False
 
         return False
 

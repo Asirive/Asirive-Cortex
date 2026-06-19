@@ -1552,6 +1552,15 @@ class CortexSystem:
         self._textual_app = None
         self._textual_thread = None
         self._main_loop_thread = None
+        # DashboardState — the new Textual TUI's state container.
+        # Defaulted to None so the TTS bind at line ~1955 (and any
+        # other early `self.dashboard_state` references in __init__)
+        # don't AttributeError before the FULL Textual mode wires
+        # it in start(). Without this default, `if self.tts and
+        # self.dashboard_state is not None` crashed with
+        # AttributeError on every boot (Round 2 regression — the
+        # TTS bind was added before dashboard_state initialization).
+        self.dashboard_state = None
 
         # Load configuration
         if config_path:
@@ -1589,6 +1598,13 @@ class CortexSystem:
         self._loop_iterations = 0        # total loop spins (incl. no-frame sleep)
         self._last_routing_log_time = 0.0  # throttle for periodic routing log
         self._routing_log_interval = 5.0  # emit routing log every 5s
+
+        # Camera health monitoring. Previously `self.camera_available`
+        # was set once during start() and never reset, so a camera that
+        # died later kept showing "available" forever.
+        self._last_frame_ts = 0.0          # when we last got a non-None frame
+        self._camera_no_signal = False     # True when frames stop arriving
+        self._last_camera_lost_warn = 0.0  # throttle for TTS warning
         self._routing_last_frames_logged = 0
         self._routing_last_time_logged = time.time()
         self._live31_proactive_guidance_enabled = (
@@ -1750,6 +1766,23 @@ class CortexSystem:
                 """Callback: play Gemini audio responses via StreamingAudioPlayer."""
                 if self.session_recorder:
                     self.session_recorder.write_ai_audio(audio_bytes, sample_rate=24000)
+                # Compute RMS level of incoming 24kHz PCM int16 audio so the
+                # TUI's Mic VU meter reflects real output activity. Was
+                # always 0% before (handler._audio_input_level was read but
+                # never written).
+                try:
+                    import numpy as _np_l2
+                    samples = _np_l2.frombuffer(audio_bytes, dtype=_np_l2.int16).astype(_np_l2.float32) / 32768.0
+                    if samples.size:
+                        rms = float(_np_l2.sqrt(_np_l2.mean(samples * samples)))
+                        # -40dB to 0dB maps to 0..1
+                        level = max(0.0, min(1.0, (rms - 0.01) / 0.5))
+                        handler = getattr(self.layer2, "handler", None) if self.layer2 else None
+                        if handler is not None:
+                            handler._audio_input_level = level
+                            handler._is_playing_audio = True
+                except Exception:
+                    pass
                 if self.gemini_audio_player:
                     handler = getattr(self.layer2, 'handler', None) if self.layer2 else None
                     if handler and getattr(handler, 'interrupted', False):
@@ -1799,13 +1832,18 @@ class CortexSystem:
             self.layer2.set_tool_callback(self._handle_gemini_tool_call)
         # Wire activity-feed callback so L2 tool calls, heard/said transcripts
         # light up the dashboard's unified timeline panel.
+        # CRITICAL: on_event is read by the HANDLER's receive loop, not the
+        # manager. Setting it on the manager alone (the previous wiring) was
+        # silently broken — events were never recorded. Set on both for safety.
         if self.layer2 is not None:
             self.layer2.on_event = self.record_event
+            handler = getattr(self.layer2, "handler", None) or self.layer2
+            if hasattr(handler, "on_event"):
+                handler.on_event = self.record_event
             # Wire L2 text callback so the CLOUD AI panel in the FULL TUI
             # shows the most recent "YOU → " and "CORTEX → " lines in real
             # time. Without this, last_said/last_heard are never updated and
             # the panel stays empty.
-            handler = getattr(self.layer2, "handler", None) or self.layer2
             if hasattr(handler, "on_text"):
                 handler.on_text = self._on_gemini_text_for_dashboard
 
@@ -1920,6 +1958,14 @@ class CortexSystem:
 
         # TTS singleton (M1 fix: avoid re-instantiation on every voice command)
         self.tts = TTSRouter() if TTSRouter else None
+        # Wire TTS to push engine/state to DashboardState so the TUI's
+        # TTS + VOICE panel reflects what's actually playing in real time
+        # (without this the panel always reads "[idle]").
+        if self.tts and self.dashboard_state is not None:
+            try:
+                self.tts.bind_dashboard_state(self.dashboard_state)
+            except Exception as e:
+                logger.debug(f"TTS bind_dashboard_state failed: {e}")
 
         # Initialize Voice Coordinator (with audio config for VAD/Whisper tuning)
         audio_config = self.config.get('audio', {})
@@ -2059,13 +2105,24 @@ class CortexSystem:
                 self.status_display.update_layer1(detections, latency_ms)
         # New path
         if self.dashboard_state is not None:
-            classes = [d.get("class", "unknown") for d in detections]
+            # L0 emits 'class'; L1 emits 'class_name'. Normalize once here
+            # so the dashboard always reads a consistent key (L1 rows showed
+            # "unknown" forever in the e2e sweep).
+            classes = [
+                (d.get("class") or d.get("class_name") or "unknown")
+                for d in detections
+            ]
             if layer == "l0":
                 self._publish_state(
                     l0_count=len(detections),
                     l0_classes=classes,
                     l0_latency_ms=float(latency_ms),
                 )
+                if self.dashboard_state is not None:
+                    self.dashboard_state.record_sample(
+                        l0_count=float(len(detections)),
+                        l0_latency_ms=float(latency_ms),
+                    )
             elif layer == "l1":
                 mode = ""
                 if self.layer1 is not None:
@@ -2091,24 +2148,57 @@ class CortexSystem:
             return
         # FPS
         self._publish_state(fps=float(real_fps))
+        if self.dashboard_state is not None:
+            self.dashboard_state.record_sample(fps=float(real_fps))
         if self.status_display:
             self.status_display.update_fps(real_fps)
-        # Hailo
-        hailo = {}
-        if self.depth_estimator is not None and getattr(self.depth_estimator, "is_available", False):
-            hailo["depth_fps"] = float(getattr(self.depth_estimator, "_depth_fps", 0.0) or 0.0)
+        # Hailo — distinguish between "not installed", "not initialized",
+        # "running", and "failed" so the panel can show WHY it's 0fps.
+        hailo = {"depth_fps": 0.0, "ocr_state": "idle", "hailo_state": "none"}
+        if self.depth_estimator is not None:
+            try:
+                avail = bool(self.depth_estimator.is_available)
+            except Exception:
+                avail = False
+            if avail:
+                hailo["depth_fps"] = float(
+                    getattr(self.depth_estimator, "_depth_fps", 0.0) or 0.0
+                )
+                hailo["hailo_state"] = "running"
+            else:
+                # Initialized object but not available — tell us why
+                try:
+                    import importlib
+                    hailo_platform = importlib.util.find_spec("hailo_platform")
+                    hailo["hailo_state"] = (
+                        "no_runtime" if hailo_platform is None
+                        else "init_failed"
+                    )
+                except Exception:
+                    hailo["hailo_state"] = "init_failed"
         else:
-            hailo["depth_fps"] = 0.0
-        if self.ocr_pipeline is not None and getattr(self.ocr_pipeline, "is_available", False):
-            hailo["ocr_state"] = "ready"
-        else:
-            hailo["ocr_state"] = "idle"
+            hailo["hailo_state"] = "not_initialized"
+        if self.ocr_pipeline is not None:
+            try:
+                ocr_avail = bool(self.ocr_pipeline.is_available)
+            except Exception:
+                ocr_avail = False
+            hailo["ocr_state"] = "ready" if ocr_avail else "idle"
         self._publish_state(hailo=hailo)
-        # Safety — read directly from the safety monitor's last alert
-        if self.safety_monitor is not None and getattr(self.safety_monitor, "_last_alert", None):
-            last_key = next(iter(self.safety_monitor._last_alert.keys()), "")
-            # Pull tier counters (T0, T1, T2) from the most recent frame tally
-            # — we don't track them in the monitor, so estimate from recent alerts
+        # Safety — ALWAYS push the tier counters so the DETECTION panel's
+        # T0/T1/T2 row updates in real time. Previously this was gated on
+        # `self.safety_monitor._last_alert` being truthy, which meant the
+        # safety state was never published on startup or during quiet
+        # stretches — the TUI read T0:0 T1:0 T2:0 forever even after
+        # alerts fired.
+        if self.safety_monitor is not None:
+            last_key = ""
+            try:
+                last_key = next(iter(
+                    getattr(self.safety_monitor, "_last_alert", {}) or {}
+                ), "")
+            except Exception:
+                last_key = ""
             self._publish_state(safety={
                 "tier": int(getattr(self.safety_monitor, "_last_tier", 0) or 0),
                 "t0": int(getattr(self.safety_monitor, "_t0_count", 0) or 0),
@@ -2122,6 +2212,23 @@ class CortexSystem:
             "active": bool(self._ai_routing_active),
             "last_call": str(self._last_tool_call or ""),
         })
+        # TTS engine override — when Gemini Live is connected, the
+        # voice in use is "Gemini Live (Zephyr)", not the local
+        # TTSRouter. Fill it in here so the TTS panel reflects reality.
+        l2_connected = bool(
+            self.layer2
+            and getattr(self.layer2, "handler", None)
+            and getattr(self.layer2.handler, "is_connected", False)
+        )
+        tts_snap = self.dashboard_state.snapshot().get("tts", {})
+        # Only override if the local TTSRouter isn't actively speaking.
+        if l2_connected and tts_snap.get("state") in (None, "", "idle"):
+            self._publish_state(tts={
+                "engine": "gemini-live",
+                "voice": "Gemini Live (Zephyr)",
+                "state": "connected",
+                "muted": bool(getattr(self.tts, "muted", False)) if self.tts else False,
+            })
 
     def _publish_system_metrics(self) -> None:
         """Gather CPU, RAM, temperature, load, disk, power, and camera state
@@ -2135,6 +2242,24 @@ class CortexSystem:
             return
         try:
             import psutil
+            # Local `now` so the camera_no_signal check below can reference
+            # wall time without NameError. Previously this function relied
+            # on a `now` from an outer scope that did not exist — every
+            # invocation silently died inside the inner try/except and
+            # the dashboard state was never updated with system stats,
+            # so the SENSORS · SYSTEM panel read CPU 0% T 0.0°C MEM 0%
+            # for the entire run.
+            now = time.time()
+            # Pre-warm psutil.cpu_percent BEFORE the first read. The first
+            # call with interval=None returns 0.0 because psutil has no
+            # previous sample to compare against. Pre-warm sets a baseline
+            # on the very first call so the first published CPU% is real.
+            if not getattr(self, "_cpu_prewarmed", False):
+                try:
+                    psutil.cpu_percent(interval=None)
+                    self._cpu_prewarmed = True
+                except Exception:
+                    pass
             cpu = float(psutil.cpu_percent(interval=None))
             mem = psutil.virtual_memory()
             try:
@@ -2156,6 +2281,40 @@ class CortexSystem:
                 # picamera2 has 'camera'; OpenCV has 'isOpened'. We just mark
                 # the backend string by checking the class name.
                 cam_backend = type(cam).__name__
+
+            # Camera "no signal" detection — if a frame hasn't arrived
+            # in >3 seconds and the camera was once available, flip to
+            # "no_signal" so the TUI shows the cause instead of staying
+            # green forever after the CSI cable wiggles loose.
+            try:
+                last_ts = float(getattr(self, "_last_frame_ts", 0.0) or 0.0)
+                if (
+                    cam_avail
+                    and last_ts > 0.0
+                    and (now - last_ts) > 3.0
+                ):
+                    if not getattr(self, "_camera_no_signal", False):
+                        self._camera_no_signal = True
+                        logger.warning("📷 Camera stream lost — no frames for >3s")
+                        # Once-only voice warning (throttled to 60s in case
+                        # the cable keeps disconnecting)
+                        last_warn = float(getattr(self, "_last_camera_lost_warn", 0.0) or 0.0)
+                        if (now - last_warn) > 60.0 and self.tts:
+                            self._last_camera_lost_warn = now
+                            try:
+                                run_async_safe(self.tts.speak_async(
+                                    "I lost my camera feed. Please check the cable."
+                                ))
+                            except Exception:
+                                pass
+                    cam_avail = False
+                else:
+                    # Stream recovered — clear the flag.
+                    if getattr(self, "_camera_no_signal", False):
+                        self._camera_no_signal = False
+                        logger.info("📷 Camera stream recovered")
+            except Exception:
+                pass
 
             # Power / UPS state (battery, voltage, current, charging)
             power_snap = None
@@ -2203,10 +2362,130 @@ class CortexSystem:
                     "backend": cam_backend,
                     "resolution": cam_resolution,
                     "fps_target": cam_fps_target,
+                    "no_signal": bool(getattr(self, "_camera_no_signal", False)),
                 },
             )
             if power_snap is not None:
                 update_kwargs["power"] = power_snap
+
+            # TTS + Voice state
+            tts_dict = {"engine": "", "state": "idle", "muted": False}
+            if self.tts is not None:
+                tts_dict["engine"] = getattr(self.tts, "_last_engine", "") or ""
+                tts_dict["state"] = "speaking" if getattr(self.tts, "is_playing", False) else "idle"
+                tts_dict["muted"] = bool(getattr(self.tts, "muted", False))
+            update_kwargs["tts"] = tts_dict
+            voice_dict = {"listening": False, "vad_active": False}
+            vc = getattr(self, "voice_coordinator", None)
+            if vc is not None:
+                voice_dict["listening"] = bool(getattr(vc, "is_listening", False))
+                voice_dict["vad_active"] = bool(getattr(vc, "vad_active", False))
+            update_kwargs["voice"] = voice_dict
+
+            # L4 Memory state. Always push SOMETHING for l4 — even an empty
+            # `available: False` dict — so the TUI can distinguish "memory
+            # manager not initialized" from "memory manager running but no
+            # detections yet". Previously, the `if l4_dict:` guard meant
+            # the panel read all-zero defaults forever and the operator
+            # had no way to tell whether L4 was actually working.
+            l4_dict = {
+                "available": False,
+                "local_rows": 0,
+                "detections_stored": 0,
+                "events_stored": 0,
+                "upload_queue": 0,
+                "upload_failed": 0,
+                "sync_status": "idle",
+                "last_sync_age_s": -1,
+                "next_sync_in_s": 60,
+            }
+            if self.memory_manager is not None:
+                try:
+                    l4_dict["available"] = True
+                    l4_dict["local_rows"] = int(getattr(self.memory_manager, "local_row_count", 0) or 0)
+                    l4_dict["detections_stored"] = int(getattr(self.memory_manager, "detection_count", 0) or 0)
+                    l4_dict["events_stored"] = int(getattr(self.memory_manager, "event_count", 0) or 0)
+                    l4_dict["upload_queue"] = int(len(getattr(self.memory_manager, "upload_queue", []) or []))
+                    l4_dict["upload_failed"] = int(getattr(self.memory_manager, "upload_failed_count", 0) or 0)
+                    l4_dict["sync_status"] = str(getattr(self.memory_manager, "sync_status", "idle"))
+                    l4_dict["last_sync_age_s"] = float(getattr(self.memory_manager, "last_sync_age_s", -1))
+                    l4_dict["next_sync_in_s"] = int(getattr(self.memory_manager, "next_sync_in_s", 60))
+                except Exception:
+                    pass
+            update_kwargs["l4"] = l4_dict
+
+            # Recorder state
+            rec_dict = {"is_recording": False, "toggle_key": "b"}
+            if self.session_recorder is not None:
+                rec_dict["is_recording"] = bool(getattr(self.session_recorder, "is_recording", False))
+            update_kwargs["recorder"] = rec_dict
+
+            # L2 (Gemini Live) structured state — read from the handler
+            l2_dict = {}
+            handler = None
+            manager = None
+            if self.layer2 is not None:
+                manager = self.layer2
+                handler = getattr(self.layer2, "handler", None) or self.layer2
+            if handler is not None:
+                import time as _t_l2
+                # Connected state with reconnect-aware logic. The
+                # GeminiLiveManager briefly sets handler.is_connected=False
+                # between reconnect attempts (manager loop at handler.py:1777
+                # resets state before calling connect() again). The naive
+                # boolean made the panel flash disconnected every few seconds
+                # during normal operation, so prefer:
+                #   - connected: handler.is_connected True
+                #   - reconnecting: handler.is_connected False BUT manager
+                #                   is_running True (next connect attempt
+                #                   is in flight)
+                #   - disconnected: both False
+                _hc = bool(getattr(handler, "is_connected", False))
+                _mr = bool(getattr(manager, "is_running", False))
+                if _hc:
+                    l2_dict["connected"] = True
+                    l2_dict["state"] = "connected"
+                elif _mr:
+                    l2_dict["connected"] = True
+                    l2_dict["state"] = "reconnecting"
+                else:
+                    l2_dict["connected"] = False
+                    l2_dict["state"] = "disconnected"
+                l2_dict["model"] = str(getattr(handler, "model", "") or "")
+                ct = getattr(handler, "_connect_time", None)
+                l2_dict["uptime_s"] = float(_t_l2.time() - ct) if ct else 0.0
+                l2_dict["voice"] = str(getattr(handler, "voice_name", "Zephyr") or "Zephyr")
+                l2_dict["lang"] = str(getattr(handler, "language", "en") or "en")
+                l2_dict["tool_calls"] = int(getattr(handler, "_tool_call_count", 0) or 0)
+                l2_dict["google_searches"] = int(getattr(handler, "_google_search_count", 0) or 0)
+                l2_dict["audio_input_level"] = float(getattr(handler, "_audio_input_level", 0.0) or 0.0)
+                l2_dict["is_playing"] = bool(getattr(handler, "_is_playing_audio", False))
+                l2_dict["vad_active"] = bool(getattr(handler, "_vad_active", False))
+                l2_dict["audio_queue_size"] = int(getattr(handler, "_audio_queue_size", 0) or 0)
+                tool_log = list(getattr(handler, "_tool_call_log", []) or [])
+                l2_dict["tool_call_log"] = tool_log[-10:]
+                # Latency tracking — read the rolling-window samples that
+                # the handler now maintains. Was always 0 before.
+                try:
+                    samples = list(getattr(handler, "_latency_samples", []) or [])
+                    ttfbs = list(getattr(handler, "_ttfb_samples", []) or [])
+                    if samples:
+                        sorted_s = sorted(samples)
+                        n = len(sorted_s)
+                        l2_dict["latency_ms"] = {
+                            "avg": sum(samples) / n,
+                            "p95": sorted_s[int(n * 0.95)] if n > 1 else sorted_s[-1],
+                        }
+                    else:
+                        l2_dict["latency_ms"] = {"avg": 0.0, "p95": 0.0}
+                    if ttfbs:
+                        l2_dict["latency_ms"]["ttfb"] = sum(ttfbs) / len(ttfbs)
+                    else:
+                        l2_dict["latency_ms"]["ttfb"] = 0.0
+                except Exception:
+                    l2_dict["latency_ms"] = {"avg": 0.0, "p95": 0.0, "ttfb": 0.0}
+            if l2_dict:
+                update_kwargs["l2"] = l2_dict
 
             # System metrics push
             self.dashboard_state.update(**update_kwargs)
@@ -2242,6 +2521,12 @@ class CortexSystem:
         })
         existing = existing[-5:]
         self.dashboard_state.update(safety_recent=existing)
+        # Also push structured safety state for the DETECTION panel
+        self._publish_state(safety={
+            "tier": int(tier),
+            "alert_type": alert_type,
+            "distance_m": float(distance_m),
+        })
         # Also push to the unified activity feed
         severity = "info" if tier >= 2 else "alert" if tier == 1 else "critical"
         dist_str = f"@{distance_m:.1f}m" if distance_m > 0 else ""
@@ -2328,6 +2613,15 @@ class CortexSystem:
         })
         self.record_event("scene", "info", f"scene: {change_type}")
 
+    def _on_scene_change_for_dashboard(self, reason: str) -> None:
+        """Callback fired by SceneChangeDetector on every detected
+        change (not just narrated ones). Used to populate the activity
+        feed and the scene history. Cheap and idempotent."""
+        try:
+            self.record_scene_change(reason)
+        except Exception:
+            pass
+
     def _publish_nav_state(self) -> None:
         """Pull the current navigation status from the navigator and push
         it to DashboardState.nav.
@@ -2392,6 +2686,13 @@ class CortexSystem:
                 bh = getattr(self, "bus_handler", None)
                 if bh and getattr(bh, "last_query", None):
                     last_dest = str(bh.last_query)
+                # Fallback: show the live route destination when there
+                # is no bus query yet. Without this the field is always
+                # blank until a bus query happens.
+                if not last_dest:
+                    live_dest = str(status.get("destination", "") or "")
+                    if live_dest:
+                        last_dest = live_dest
             except Exception:
                 pass
 
@@ -2419,7 +2720,13 @@ class CortexSystem:
                 "saved_locations": saved_locs,
                 "last_nav_destination": last_dest,
                 "bus_state": "idle",
-                "lta_ok": bool(getattr(self, "_lta_ok", False)),
+                # LTA health — was reading self._lta_ok which was never
+                # set anywhere, so the TUI's "LTA ●/○" dot was permanently
+                # False. Now read from the actual BusHandler.
+                "lta_ok": bool(
+                    getattr(self.bus_handler, "lta_ok", False)
+                    if self.bus_handler else False
+                ),
             })
         except Exception as e:
             logger.debug(f"_publish_nav_state: {e}")
@@ -2568,6 +2875,11 @@ class CortexSystem:
         if SceneChangeDetector:
             try:
                 self.scene_detector = SceneChangeDetector()
+                # Wire the change callback so every scene-change trigger
+                # lands in the activity feed — not just the ones that
+                # survived the narration cooldown. Previously ~95% of
+                # triggers (filtered by cooldown) were silently dropped.
+                self.scene_detector.set_change_callback(self._on_scene_change_for_dashboard)
                 logger.info("✅ SceneChangeDetector initialized")
             except Exception as e:
                 logger.error(f"❌ Failed to init SceneChangeDetector: {e}")
@@ -3312,6 +3624,15 @@ class CortexSystem:
         Critical events (road_crossing, approaching_destination, indoor_mode)
         trigger a Gemini response. Routine events are absorbed silently.
         """
+        # Always log to the activity feed so the operator can see the
+        # nav lifecycle from the dashboard (was previously invisible).
+        try:
+            detail_preview = ", ".join(
+                f"{k}={v}" for k, v in (details or {}).items() if v
+            )[:60]
+            self.record_event("nav", "route", f"{event} {detail_preview}".strip())
+        except Exception:
+            pass
         if not self.layer2 or not self.layer2.is_running:
             return
         if self._gemini_is_live_31():
@@ -3538,6 +3859,18 @@ class CortexSystem:
         # The receive loop in GeminiLiveHandler already emits a "l2 / tool"
         # event when Gemini requests a tool call, so this method only
         # dispatches the call and returns the result.
+        #
+        # Also emit an "ai" source event so the activity feed can show
+        # which tool calls the AI dispatched. Without this, the "ai"
+        # source in _EVENT_SOURCE_STYLE is dead code (no caller ever
+        # pushed with source="ai") and that source column is empty.
+        try:
+            args_preview = ", ".join(
+                f"{k}={str(v)[:24]}" for k, v in list((args or {}).items())[:2]
+            )
+            self.record_event("ai", "tool", f"{name}({args_preview})")
+        except Exception:
+            pass
         return self._dispatch_tool_call(name, args) or {"error": "no result"}
 
     def _dispatch_tool_call(self, name: str, args: dict) -> dict:
@@ -4023,13 +4356,11 @@ class CortexSystem:
         self.set_mode("PRODUCTION")
 
         # Force the lazy-init path in _publish_nav_state to run NOW so
-        # self.gps / self.imu / self.nav_engine / self.bus_handler etc.
-        # exist before we try to start() the peripherals. (TODO: move
-        # the init work out of _publish_nav_state into __init__.)
-        try:
-            self._publish_nav_state()
-        except Exception as e:
-            logger.debug(f"start: pre-warm _publish_nav_state failed: {e}")
+        # Removed: pre-warm _publish_nav_state() call. The previous
+        # code pushed an "inactive" nav state before nav_engine had any
+        # data, which the activity feed then showed as a phantom event.
+        # The 1Hz publish from the main loop is enough — the TUI will
+        # just show empty nav fields for the first second.
 
         # Start hardware peripherals
         if self.gps:
@@ -4101,7 +4432,9 @@ class CortexSystem:
                     if self.status_display:
                         self.status_display.start()
                 elif self.dashboard_state is None:
-                    logger.warning("⚠️ FULL mode requested but DashboardState is unavailable")
+                    logger.warning("⚠️ FULL mode requested but DashboardState is unavailable — falling back to legacy StatusDisplay")
+                    if self.status_display:
+                        self.status_display.start()
                 else:
                     self._textual_app = CortexFullApp(self.dashboard_state, self)
                     # Run the main loop in a daemon thread (it
@@ -4171,6 +4504,7 @@ class CortexSystem:
                     continue
                 self._last_processed_frame_seq = frame_seq
                 self._frames_processed += 1
+                self._last_frame_ts = time.time()
                 if self.session_recorder:
                     self.session_recorder.write_video_frame(frame)
 
@@ -4399,6 +4733,7 @@ class CortexSystem:
 
                         if is_indoor_nav and self._can_send_proactive_gemini_guidance() and self.scene_detector.should_narrate(all_detections, avg_depth, nav_event, is_nav_active):
                             trigger = self.scene_detector.get_last_trigger()
+                            self.record_scene_change(trigger)
                             logger.info(f"🎙️ Indoor scene change detected ({trigger}), requesting proactive Gemini guidance")
                             context_parts = []
                             if self.nav_engine:
@@ -4571,16 +4906,95 @@ class CortexSystem:
                         gps_fix = self.gps.get_fix() if self.gps else None
                         imu_reading = self.imu.get_reading() if self.imu else None
 
-                        # Update TUI status display with sensor data (always, even without WS)
+                        # Compute environment + GPS source for both displays
+                        env_label = "unknown"
+                        if self.depth_estimator and hasattr(self.depth_estimator, '_is_indoor'):
+                            env_label = "indoor" if self.depth_estimator._is_indoor else "outdoor"
+                        gps_source = ""
+                        if hasattr(self.gps, 'active_source'):
+                            gps_source = self.gps.active_source or ""
+
+                        # Update legacy TUI status display with sensor data
                         if self.status_display:
-                            env_label = "unknown"
-                            if self.depth_estimator and hasattr(self.depth_estimator, '_is_indoor'):
-                                env_label = "indoor" if self.depth_estimator._is_indoor else "outdoor"
-                            gps_source = ""
-                            if hasattr(self.gps, 'active_source'):
-                                gps_source = self.gps.active_source or ""
                             self.status_display.update_gps(gps_fix, environment=env_label, source=gps_source)
                             self.status_display.update_imu(imu_reading)
+
+                        # Push sensors to DashboardState for the new dashboards.
+                        # Surface an explicit `enabled` flag for IMU so the
+                        # TUI can show "IMU off (disabled in config)" instead
+                        # of "NO DATA" — they look identical and confuse users.
+                        imu_enabled = bool(
+                            imu_cfg.get('enabled', False)
+                        ) and self.imu is not None
+                        if self.dashboard_state is not None:
+                            gps_dict = {
+                                "fix": int(gps_fix.fix_quality) if gps_fix else 0,
+                                "sats": int(gps_fix.satellites) if gps_fix else 0,
+                                "lat": float(gps_fix.latitude) if gps_fix else 0.0,
+                                "lon": float(gps_fix.longitude) if gps_fix else 0.0,
+                                "source": gps_source,
+                            }
+                            imu_dict = {
+                                "heading": float(imu_reading.heading) if imu_reading else 0.0,
+                                "cal": [
+                                    int(imu_reading.cal_system) if imu_reading else 0,
+                                    int(imu_reading.cal_gyro) if imu_reading else 0,
+                                    int(imu_reading.cal_accel) if imu_reading else 0,
+                                    int(imu_reading.cal_mag) if imu_reading else 0,
+                                ],
+                                # Explicit `enabled` flag so the TUI can
+                                # distinguish "IMU off because config says so"
+                                # (short-circuit disabled) from "IMU on but
+                                # silent" (sensor failure).
+                                "enabled": imu_enabled,
+                            }
+                            bt_dict = {"connected": False, "device": "", "earbuds": "", "battery_pct": -1}
+                            try:
+                                # Read BT state from the actual manager.
+                                # NOTE: is_connected is a METHOD on
+                                # BluetoothAudioManager, not an attribute —
+                                # using getattr(...) returned the bound
+                                # method object (always truthy), which made
+                                # the panel permanently read "connected"
+                                # even when nothing was paired. Call it
+                                # properly with no args.
+                                bt_mgr = getattr(self, "bt_manager", None)
+                                if bt_mgr is not None:
+                                    _ic = getattr(bt_mgr, "is_connected", None)
+                                    if callable(_ic):
+                                        try:
+                                            bt_dict["connected"] = bool(_ic())
+                                        except Exception:
+                                            bt_dict["connected"] = False
+                                    else:
+                                        bt_dict["connected"] = bool(_ic)
+                                    bt_dict["device"] = str(
+                                        getattr(bt_mgr, "device_name", "") or ""
+                                    )
+                                    # Try to pull richer status (sink/source
+                                    # IDs) from get_status() when available.
+                                    _gs = getattr(bt_mgr, "get_status", None)
+                                    if callable(_gs):
+                                        try:
+                                            st = _gs() or {}
+                                            if st.get("connected"):
+                                                bt_dict["connected"] = True
+                                                # If we have a paired device
+                                                # name different from the
+                                                # configured one, prefer
+                                                # whatever the system actually
+                                                # connected to.
+                                            bt_dict["earbuds"] = str(
+                                                st.get("device_name", "") or ""
+                                            ) or bt_dict["device"]
+                                        except Exception:
+                                            pass
+                            except Exception:
+                                pass
+                            self._publish_state(
+                                gps=gps_dict, imu=imu_dict, bt=bt_dict,
+                                environment=env_label,
+                            )
 
                         # Push nav state to the new DashboardState so the
                         # 2.4 and FULL mode dashboards can render it.
@@ -4678,6 +5092,7 @@ class CortexSystem:
                     self._routing_last_time_logged = now
 
                     real_fps = window_frames / window_secs if window_secs > 0 else 0.0
+                    self._last_published_fps = real_fps
 
                     # Per-frame routing log — answers "is YOLO/Hailo actually
                     # being called?" Every ~5s.
@@ -4698,6 +5113,21 @@ class CortexSystem:
                         self._publish_runtime_metrics(real_fps)
 
                     fps_tracker = []
+
+                # Wall-clock-based publish fallback. When the camera
+                # freezes or the loop gets stuck (e.g. waiting on a slow
+                # network call), `len(fps_tracker) >= 30` may never be
+                # true and the dashboard freezes. This guarantees a
+                # publish at least every 0.5s using the last computed
+                # FPS — which will trend to 0 once frames stop arriving,
+                # which is correct behavior (not a hang).
+                now = time.time()
+                if (now - getattr(self, "_last_wall_publish_ts", 0.0)) >= 0.5:
+                    self._last_wall_publish_ts = now
+                    if self.dashboard_state is not None or self.status_display:
+                        self._publish_runtime_metrics(
+                            float(getattr(self, "_last_published_fps", 0.0))
+                        )
 
         except KeyboardInterrupt:
             logger.info("⚠️  Interrupted by user")
@@ -4949,6 +5379,15 @@ class CortexSystem:
         logger.info(f"🎤 Voice command: '{query}'")
         query_lower = query.lower().strip()
 
+        # CRITICAL: Remember the user's intent BEFORE any discard/filter logic
+        # runs. Otherwise high-impact Gemini tool calls (guide_indoor,
+        # start_outdoor_navigation) get blocked with "no recent confirmed
+        # STT query" because every "discard during Gemini response" path
+        # returned BEFORE this function ever remembered the user spoke.
+        # The discard still skips routing — it just no longer hides the
+        # user's intent from the tool-call verifier.
+        self._remember_confirmed_voice_query(query)
+
         # Q&A backlog prevention: if Gemini is currently responding with audio,
         # discard new queries to prevent chain reaction where slow responses
         # pile up and spam the user with stale answers.
@@ -4959,6 +5398,12 @@ class CortexSystem:
             _critical_kws = ["stop", "cancel", "privacy mode", "camera off", "camera on", "help", "emergency"]
             if not any(kw in query_lower for kw in _critical_kws):
                 logger.info(f"🔇 Discarding query during Gemini response: '{query[:50]}'")
+                # Even though we discard, log to activity feed so the operator
+                # sees the user spoke (and that we ignored it).
+                try:
+                    self.record_event("l2", "info", f"discarded during playback: \"{query[:40]}\"")
+                except Exception:
+                    pass
                 return
 
         # Echo filter: if STT picked up Gemini's own speaker output, discard it
@@ -4967,8 +5412,6 @@ class CortexSystem:
             and self.layer2.handler.is_echo(query)):
             logger.info(f"🔇 Discarding echo: '{query[:60]}'")
             return
-
-        self._remember_confirmed_voice_query(query)
 
         if any(kw in query_lower for kw in ["privacy mode", "camera off", "turn off camera", "turn off the camera"]):
             self.privacy_mode = True
@@ -5537,6 +5980,9 @@ class CortexSystem:
 
     def stop(self):
         """Graceful shutdown"""
+        if getattr(self, "_stopped", False):
+            return
+        self._stopped = True
         turn_count = len(self.conversation_manager.turns) if self.conversation_manager else 0
         print(f"\n[Cortex] Shutting down... ({turn_count} turns saved to SQLite)")
         logger.info("Stopping Asirive Cortex v2.0...")
@@ -5593,8 +6039,9 @@ class CortexSystem:
                 self._textual_app.cleanup()
             except Exception as e:
                 logger.debug(f"Textual app cleanup error: {e}")
-        if self._textual_thread is not None and self._textual_thread.is_alive():
-            self._textual_thread.join(timeout=2.0)
+        # _textual_thread is never started (the TUI runs on the main thread
+        # in FULL mode), so there's nothing to join. The main-loop thread
+        # (_main_loop_thread) is joined separately in start().
 
         # Stop Navigator (spatial audio)
         if self.navigator:
