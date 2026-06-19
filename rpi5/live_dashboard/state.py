@@ -181,7 +181,6 @@ def _default_state() -> Dict[str, Any]:
             "audio_queue_size": 0,
             "is_playing": False,
             "vad_active": False,
-            "uptime_s": 0.0,
         },
         # Layer 3 (Navigation / Bus / Connectivity)
         # NavMode (physical context):  "idle" | "outdoor" | "indoor" | "bus_stop" | "transit"

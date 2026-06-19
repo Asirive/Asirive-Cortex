@@ -82,6 +82,7 @@ def load_config(config_path: str = None) -> Dict[str, Any]:
                 config[key] = default_config[key]
 
         # Override Supabase credentials from environment variables
+        # (env always wins — config.yaml is for non-secret defaults only)
         if 'supabase' in config:
             env_url = os.getenv('SUPABASE_URL', '')
             env_key = os.getenv('SUPABASE_ANON_KEY', '') or os.getenv('SUPABASE_KEY', '')
@@ -95,6 +96,32 @@ def load_config(config_path: str = None) -> Dict[str, Any]:
             env_gemini = os.getenv('GEMINI_API_KEY', '')
             if env_gemini:
                 config['layer2']['gemini_api_key'] = env_gemini
+
+        # H1: Override laptop_server host/port from env. Without this, a
+        # placeholder like `10.<REDACTED-LAPTOP-IP>` in config.yaml would
+        # be loaded as a literal string and the laptop would fail to
+        # connect. The .env (gitignored) is the source of truth.
+        if 'laptop_server' in config:
+            env_host = os.getenv('LAPTOP_HOST')
+            if env_host:
+                config['laptop_server']['host'] = env_host
+            env_port = os.getenv('LAPTOP_PORT')
+            if env_port:
+                try:
+                    config['laptop_server']['port'] = int(env_port)
+                except ValueError:
+                    pass
+
+        # H2: Override rpi5_device host from env so the on-device sync
+        # tool works on a different network than the one baked into
+        # config.yaml. The Pi's .env supplies RPI_HOST for this.
+        if 'rpi5_device' in config:
+            env_rpi_host = os.getenv('RPI_HOST')
+            if env_rpi_host:
+                config['rpi5_device']['host'] = env_rpi_host
+            env_rpi_user = os.getenv('RPI_USER')
+            if env_rpi_user:
+                config['rpi5_device']['user'] = env_rpi_user
 
         # M27: Resolve relative paths against project root so cwd doesn't matter
         project_root = Path(__file__).parent.parent.parent  # ProjectCortex/

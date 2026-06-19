@@ -455,11 +455,19 @@ def _ensure_async_bridge_loop() -> asyncio.AbstractEventLoop:
 def run_async_safe(coro, blocking=True):
     """
     Safely run an async coroutine from sync code.
-    
+
     Args:
         coro: The coroutine to run.
         blocking: If True, blocks until complete (max 30s). If False, fire-and-forget.
+
+    Notes:
+        M69 fix: on `KeyboardInterrupt` (or timeout) we cancel the future
+        AND wait briefly for the coroutine to actually stop, so the
+        bridge loop doesn't accumulate orphan tasks. Previously the
+        `except Exception` branch only called `future.cancel()` and
+        returned — the coroutine kept running on the bridge thread.
     """
+    import concurrent.futures  # local import; cheap
     try:
         # Check if there's already a running event loop
         asyncio.get_running_loop()
@@ -476,6 +484,22 @@ def run_async_safe(coro, blocking=True):
 
     try:
         return future.result(timeout=30)
+    except KeyboardInterrupt:
+        # M69: cancel and wait so the coroutine stops on the bridge loop
+        future.cancel()
+        try:
+            future.result(timeout=2.0)
+        except (Exception, asyncio.CancelledError):
+            pass
+        raise
+    except (asyncio.TimeoutError, concurrent.futures.TimeoutError):
+        future.cancel()
+        try:
+            future.result(timeout=2.0)
+        except (Exception, asyncio.CancelledError):
+            pass
+        logger.error("Async execution timed out after 30s — coroutine cancelled")
+        return None
     except Exception as error:
         future.cancel()
         logger.error(f"Async execution failed: {error}")

@@ -73,6 +73,12 @@ def render_sparkline(values, width: int = 30, color: str = "green") -> Text:
 
     Each value is normalized to 0..7 and mapped to a block char. NaN /
     None values render as space.
+
+    M3 fix: a constant series (all values the same) used to render as
+    a blank line because (v - lo) / (hi - lo) = 0/1 = 0, which maps
+    to the first _SPARK_CHARS entry (a space). Now we render the
+    midpoint char (▄) so the user can see "yes, this is data" even
+    when the value is steady.
     """
     if not values:
         return Text(" " * width, style="dim")
@@ -85,8 +91,16 @@ def render_sparkline(values, width: int = 30, color: str = "green") -> Text:
         sampled = list(values)
     lo = min((v for v in sampled if v is not None), default=0)
     hi = max((v for v in sampled if v is not None), default=1)
-    if hi == lo:
-        hi = lo + 1
+    constant = (hi == lo)
+    if constant:
+        # Render as a midpoint char so the panel still shows "live data"
+        out = Text()
+        for v in sampled:
+            if v is None:
+                out.append(" ")
+            else:
+                out.append(_SPARK_CHARS[4], style=color)  # ▄ — middle
+        return out
     out = Text()
     for v in sampled:
         if v is None:

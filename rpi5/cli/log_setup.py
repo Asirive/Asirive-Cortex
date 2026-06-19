@@ -66,11 +66,13 @@ def setup_logging(
     if log_path.parent and not log_path.parent.exists():
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Reset any existing handlers
-    root = logging.getLogger()
-    for h in list(root.handlers):
-        root.removeHandler(h)
-    root.setLevel(getattr(logging, level.upper(), logging.INFO))
+    # M41 fix (cont'd): build the new handlers first. We'll detach any
+    # of OUR prior handlers (matched by the `_cortex_logging_handler`
+    # sentinel) below, but leave third-party handlers (e.g. from
+    # libraries that called `logging.basicConfig()` before us) alone.
+    # The old "wipe ALL handlers" block above used to silently drop
+    # any library-installed handler — including their level config —
+    # which is exactly what M41 was supposed to prevent.
 
     handlers = [logging.FileHandler(log_file, encoding="utf-8")]
 
@@ -94,13 +96,25 @@ def setup_logging(
         else:
             stream = sys.stderr if rich_stream == "stderr" else sys.stdout
             handlers.append(logging.StreamHandler(stream))
-    
-    logging.basicConfig(
-        level=getattr(logging, level.upper(), logging.INFO),
-        format="%(message)s",
-        datefmt="[%X]",
-        handlers=handlers,
-    )
+
+    # M41 fix: `logging.basicConfig(handlers=...)` is a no-op when the
+    # root logger already has handlers (e.g. if setup_logging() was
+    # called twice in a parent + forked child, or if some other module
+    # attached a handler first). The second call would silently keep
+    # the old handlers and never apply our new level / format.
+    # Instead, attach the handlers directly to the root logger after
+    # clearing any prior handlers we don't own.
+    root = logging.getLogger()
+    # Remove handlers we previously installed (matched by our own class
+    # identity) but leave any third-party handlers alone.
+    sentinel_attr = "_cortex_logging_handler"
+    for h in list(root.handlers):
+        if getattr(h, sentinel_attr, False):
+            root.removeHandler(h)
+    for h in handlers:
+        setattr(h, sentinel_attr, True)
+        root.addHandler(h)
+    root.setLevel(getattr(logging, level.upper(), logging.INFO))
     
     # Quiet noisy libraries
     for noisy in ["urllib3", "httpx", "httpcore", "requests", "PIL"]:

@@ -46,7 +46,16 @@ class KeyAction(str, Enum):
     TOGGLE_DENSITY = "toggle_density"
     SPARKLINE_WINDOW_UP = "sparkline_window_up"
     SPARKLINE_WINDOW_DOWN = "sparkline_window_down"
-    FOCUS_PANEL = "focus_panel"                # with arg: 1..7
+    # M40 fix: each panel jump key now has its own action so the
+    # consumer can dispatch without inspecting the raw key string.
+    # Use `panel_index_for(action)` to recover the 1..7 number.
+    FOCUS_PANEL_1 = "focus_panel_1"
+    FOCUS_PANEL_2 = "focus_panel_2"
+    FOCUS_PANEL_3 = "focus_panel_3"
+    FOCUS_PANEL_4 = "focus_panel_4"
+    FOCUS_PANEL_5 = "focus_panel_5"
+    FOCUS_PANEL_6 = "focus_panel_6"
+    FOCUS_PANEL_7 = "focus_panel_7"
 
 
 # Map: canonical key string -> KeyAction
@@ -77,14 +86,14 @@ KEYBIND_MAP: Dict[str, KeyAction] = {
     "-":         KeyAction.SPARKLINE_WINDOW_DOWN,
     "_":         KeyAction.SPARKLINE_WINDOW_DOWN, # shift+- on US keyboard
     "g":         KeyAction.ASK_CORTEX,         # alias for `r`
-    # === FULL mode: panel jump keys (1..7) ===
-    "1": KeyAction.FOCUS_PANEL,
-    "2": KeyAction.FOCUS_PANEL,
-    "3": KeyAction.FOCUS_PANEL,
-    "4": KeyAction.FOCUS_PANEL,
-    "5": KeyAction.FOCUS_PANEL,
-    "6": KeyAction.FOCUS_PANEL,
-    "7": KeyAction.FOCUS_PANEL,
+    # === FULL mode: panel jump keys (1..7) — M40 fix ===
+    "1": KeyAction.FOCUS_PANEL_1,
+    "2": KeyAction.FOCUS_PANEL_2,
+    "3": KeyAction.FOCUS_PANEL_3,
+    "4": KeyAction.FOCUS_PANEL_4,
+    "5": KeyAction.FOCUS_PANEL_5,
+    "6": KeyAction.FOCUS_PANEL_6,
+    "7": KeyAction.FOCUS_PANEL_7,
 }
 
 
@@ -97,8 +106,31 @@ FULL_ONLY: Set[KeyAction] = {
     KeyAction.TOGGLE_DENSITY,
     KeyAction.SPARKLINE_WINDOW_UP,
     KeyAction.SPARKLINE_WINDOW_DOWN,
-    KeyAction.FOCUS_PANEL,
+    KeyAction.FOCUS_PANEL_1,
+    KeyAction.FOCUS_PANEL_2,
+    KeyAction.FOCUS_PANEL_3,
+    KeyAction.FOCUS_PANEL_4,
+    KeyAction.FOCUS_PANEL_5,
+    KeyAction.FOCUS_PANEL_6,
+    KeyAction.FOCUS_PANEL_7,
 }
+
+
+# Map: FOCUS_PANEL_N -> N (1..7). Use this when dispatching the focus.
+_FOCUS_PANEL_INDEX: Dict[KeyAction, int] = {
+    KeyAction.FOCUS_PANEL_1: 1,
+    KeyAction.FOCUS_PANEL_2: 2,
+    KeyAction.FOCUS_PANEL_3: 3,
+    KeyAction.FOCUS_PANEL_4: 4,
+    KeyAction.FOCUS_PANEL_5: 5,
+    KeyAction.FOCUS_PANEL_6: 6,
+    KeyAction.FOCUS_PANEL_7: 7,
+}
+
+
+def panel_index_for(action: KeyAction) -> int | None:
+    """Return the 1..7 panel index for a FOCUS_PANEL_N action, else None."""
+    return _FOCUS_PANEL_INDEX.get(action)
 
 
 def resolve_key(key: str) -> KeyAction | None:

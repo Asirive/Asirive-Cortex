@@ -361,9 +361,11 @@ class BusHandler:
         try:
             # Format: "2026-03-11T14:30:00+08:00"
             from datetime import datetime, timezone, timedelta
-            # Parse ISO format
-            eta_str_clean = eta_str.replace("+08:00", "+0800").replace("+08:00", "+0800")
-            # Use a simple approach: extract the datetime
+            # M66 fix: removed dead duplicate `.replace("+08:00", "+0800")`
+            # on the same string. The original had it twice, which is
+            # both confusing AND ineffective on the second call. The
+            # `eta_str_clean` variable was assigned but never used, so
+            # we drop it and parse the timestamp directly.
             dt_part = eta_str[:19]  # "2026-03-11T14:30:00"
             eta_dt = datetime.strptime(dt_part, "%Y-%m-%dT%H:%M:%S")
             # Assume SGT (UTC+8)
