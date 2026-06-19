@@ -21,7 +21,12 @@ from typing import Dict, Optional
 logger = logging.getLogger(__name__)
 
 # Alert definitions: alert_key -> spoken text template
-# Use {distance} placeholder for runtime distance injection
+# Use {distance} placeholder for runtime distance injection.
+# C4 fix: keys must match the safety_monitor / hailo_depth hazard type
+# values (lowercase strings: "wall", "stairs_down", "overhang", etc.).
+# Previously the overhang key was misspelled as "overhead" — Hailo emits
+# "overhang" so the lookup missed and pre-generated overhang.wav never
+# played; the user got haptic only.
 ALERT_TEXTS: Dict[str, str] = {
     "wall":                "Wall, {distance} ahead",
     "stairs_down":         "Stairs going down, {distance} ahead",
@@ -29,9 +34,32 @@ ALERT_TEXTS: Dict[str, str] = {
     "curb":                "Step, {distance} ahead",
     "dropoff":             "Drop off, {distance} ahead. Stop!",
     "approaching_object":  "Something approaching, {distance} away",
-    "overhead":            "Overhead obstacle, {distance} ahead. Duck!",
+    "overhang":            "Overhead obstacle, {distance} ahead. Duck!",
     "signboard":           "Low signboard ahead, {distance}",
     "branch":              "Low branch ahead, {distance}",
+    # H32 fix: Tier 2 (COCO silent-static) alerts. The original
+    # template lookup fell through to `alert_key.replace("_", " ")`
+    # and produced "fire hydrant" with no distance, even when
+    # distance_m was known. Add explicit templates so the
+    # formatter replaces {distance} properly.
+    "fire_hydrant":        "Fire hydrant, {distance} ahead",
+    "bench":               "Bench, {distance} ahead",
+    "chair":               "Chair, {distance} ahead",
+    "potted plant":        "Plant, {distance} ahead",
+    "parking meter":       "Parking meter, {distance} ahead",
+    "suitcase":            "Suitcase, {distance} ahead",
+    "backpack":            "Backpack, {distance} ahead",
+    "skateboard":          "Skateboard, {distance} ahead",
+    "stop sign":           "Stop sign, {distance} ahead",
+    "traffic light":       "Traffic light, {distance} ahead",
+    "umbrella":            "Umbrella, {distance} ahead",
+    "handbag":             "Handbag, {distance} ahead",
+    "surfboard":           "Surfboard, {distance} ahead",
+    "snowboard":           "Snowboard, {distance} ahead",
+    "dining table":        "Table, {distance} ahead",
+    "toilet":              "Toilet, {distance} ahead",
+    "couch":               "Couch, {distance} ahead",
+    "bed":                 "Bed, {distance} ahead",
 }
 
 
@@ -52,7 +80,7 @@ class AudioAlertManager:
     def __init__(
         self,
         alerts_dir: str = None,
-        cooldown: float = 3.0,
+        cooldown: float = 6.0,  # H21 fix: 6.0s per safety spec, was 3.0s
     ):
         """
         Initialize the audio alert manager.
@@ -181,27 +209,42 @@ class AudioAlertManager:
     def play(self, alert_key: str, blocking: bool = False, distance_m: float = None) -> bool:
         """
         Speak an alert with distance info if not on cooldown.
-        
+
         Uses pre-generated clips for common distances, Supertonic for
         real-time generation, and espeak-ng as last-resort fallback.
-        
+
         Args:
             alert_key: Alert type (e.g., "wall", "stairs_down", "dropoff")
             blocking: If True, wait for playback to complete
             distance_m: Distance in meters (injected into speech text)
-            
+
         Returns:
             True if alert was spoken, False if on cooldown or unavailable
         """
         now = time.time()
-        
-        # Check cooldown
-        last = self._last_played.get(alert_key, 0)
+
+        # H21 fix: key the cooldown by (alert_key, distance_bucket)
+        # so a "wall 2m" alert doesn't suppress an updated "wall 3m"
+        # 100ms later. The previous version keyed on alert_key alone,
+        # so a distance change still hit cooldown and the user heard
+        # a stale distance for the configured cooldown window.
+        # Bucket to 1m granularity — finer buckets let micro-jitter
+        # bypass cooldown; coarser buckets re-create the bug.
+        if distance_m is not None:
+            bucket = int(round(distance_m))
+            cooldown_key = f"{alert_key}@{bucket}m"
+        else:
+            cooldown_key = alert_key
+
+        last = self._last_played.get(cooldown_key, 0)
         if (now - last) < self.cooldown:
-            logger.debug(f"Alert '{alert_key}' on cooldown ({now - last:.1f}s < {self.cooldown}s)")
+            logger.debug(
+                f"Alert '{cooldown_key}' on cooldown "
+                f"({now - last:.1f}s < {self.cooldown}s)"
+            )
             return False
-        
-        self._last_played[alert_key] = now
+
+        self._last_played[cooldown_key] = now
 
         # Build spoken text with distance
         template = ALERT_TEXTS.get(alert_key, alert_key.replace("_", " "))

@@ -393,6 +393,26 @@ class VoiceCoordinator:
 
     def _on_audio_chunk(self, chunk: np.ndarray):
         """Forward every VAD audio chunk to Gemini Live + Cartesia WebSocket STT."""
+        # C7 fix: accumulate audio into _cmd_queue_buffer whenever the
+        # command queue is active (i.e. speech was detected during Gemini
+        # playback and barge-in is disabled). Without this, the buffer
+        # stayed None from _on_speech_start to _on_speech_end and the
+        # "speech buffered during playback" feature never sent anything
+        # to STT — user speech was silently dropped.
+        if self._cmd_queue_active:
+            if self._cmd_queue_buffer is None:
+                self._cmd_queue_buffer = chunk.copy()
+            else:
+                self._cmd_queue_buffer = np.concatenate(
+                    [self._cmd_queue_buffer, chunk]
+                )
+            # Track speech-vs-silence durations (VAD has already decided
+            # this chunk is speech, so count full chunk length).
+            self._cmd_queue_speech_ms += len(chunk) / 16.0  # 16kHz = 16 samples/ms
+            self._cmd_queue_silence_ms = 0.0
+            # Don't double-send to STT here — the buffered audio will
+            # be evaluated and dispatched at _on_speech_end.
+
         # Noise gate: reject very quiet audio (distant speech, ambient noise)
         if not self._passes_noise_gate(chunk):
             # Still send silence to Gemini to maintain stream continuity

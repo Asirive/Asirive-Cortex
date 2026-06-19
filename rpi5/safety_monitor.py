@@ -33,14 +33,21 @@ logger = logging.getLogger(__name__)
 
 # ─── Threat Classification ─────────────────────────────────────────────────
 
-# Tier 2: Silent static obstacles — user can't hear these through transparency
-TIER2_SILENT_STATIC = {
+# Tier 2: Silent static obstacles — user can't hear these through transparency.
+# Split by indoor cane handling (C3 fix):
+#   CANE_HANDLED: ground-level objects the cane already detects — suppress
+#                 alerts in indoor mode (cane + AI shouldn't double up).
+#   HEAD_HEIGHT:  objects the cane can't reach — keep alert in indoor mode.
+TIER2_CANE_HANDLED = {
     "fire hydrant", "bench", "chair", "potted plant",
     "parking meter", "suitcase", "backpack", "skateboard",
-    "stop sign", "traffic light", "umbrella", "handbag",
     "surfboard", "snowboard", "dining table", "toilet",
     "couch", "bed",
 }
+TIER2_HEAD_HEIGHT = {
+    "stop sign", "traffic light", "umbrella", "handbag",
+}
+TIER2_SILENT_STATIC = TIER2_CANE_HANDLED | TIER2_HEAD_HEIGHT  # union — backwards compatible
 
 # Tier 3: Vehicles — user usually hears them, but alert if closing fast
 TIER3_VEHICLES = {
@@ -144,10 +151,15 @@ class SafetyMonitor:
         # Cooldown timestamps  (alert_key → last alert time)
         self._last_alert: Dict[str, float] = {}
         self._last_tts: Dict[str, float] = {}
-        self._last_haptic: float = 0.0
+        # M7 fix: per-hazard-class haptic timestamp so the user
+        # under a continuous overhang still gets a reminder every
+        # few seconds. The previous single `_last_haptic` field
+        # meant any haptic in the last N seconds blocked ALL
+        # subsequent haptics regardless of source.
+        self._last_haptic: Dict[str, float] = {}
 
         # Stale-object cleanup timestamp
-        self._last_cleanup: float = time.time()
+        self._last_cleanup: float = time.monotonic()  # M5 fix: monotonic clock
 
         # Dashboard counters (read by main.py -> DashboardState -> TUI)
         self._last_tier: int = 0
@@ -183,7 +195,7 @@ class SafetyMonitor:
         Returns:
             The single highest-priority ThreatAlert, or None if everything is safe.
         """
-        now = time.time()
+        now = time.monotonic()  # M5 fix: monotonic — immune to NTP/clock jumps
         candidates: List[ThreatAlert] = []
 
         # ── Tier 1: Environmental hazards from Hailo depth ──────────
@@ -226,7 +238,7 @@ class SafetyMonitor:
                 )
                 needs_haptic = (
                     (h.distance < 1.0 or is_critical_trap)
-                    and not self._haptic_on_cooldown(now)
+                    and not self._haptic_on_cooldown(now, key=f"t1_{h.type.value}_{h.direction}")
                 )
 
                 # Cane-aware tier escalation (fix for C3).
@@ -269,6 +281,12 @@ class SafetyMonitor:
 
             # ─ Tier 2: Silent static obstacle, close ─
             if cls in TIER2_SILENT_STATIC and dist and dist < self.tier2_max_distance:
+                # C3 fix: indoors, the cane already handles the ground-level
+                # subset (TIER2_CANE_HANDLED). The head-height subset
+                # (TIER2_HEAD_HEIGHT — stop sign, traffic light, umbrella,
+                # handbag) is still cane-invisible and needs the AI alert.
+                if self._is_indoor and cls in TIER2_CANE_HANDLED:
+                    continue
                 direction = self._bbox_to_direction(bbox)
                 key = f"t2_{cls}_{direction}"
                 if self._on_cooldown(key, now):
@@ -319,7 +337,9 @@ class SafetyMonitor:
             tts_key = f"t1_{winner.alert_type}_{winner.direction}"
             self._last_tts[tts_key] = now
         if winner.needs_haptic:
-            self._last_haptic = now
+            # M7 fix: per-hazard-key haptic tracking.
+            haptic_key = f"t{winner.tier}_{winner.alert_type}_{winner.direction}"
+            self._last_haptic[haptic_key] = now
 
         # Periodic cleanup of stale trackers (every 5s)
         if now - self._last_cleanup > 5.0:
@@ -373,8 +393,14 @@ class SafetyMonitor:
     def _tts_on_cooldown(self, key: str, now: float) -> bool:
         return (now - self._last_tts.get(key, 0)) < self.tts_cooldown
 
-    def _haptic_on_cooldown(self, now: float) -> bool:
-        return (now - self._last_haptic) < self.haptic_cooldown
+    def _haptic_on_cooldown(self, now: float, key: str = "default") -> bool:
+        # M7 fix: per-hazard haptic cooldown. `key` should be the
+        # same alert key (e.g. "t1_overhang_ahead") so the user
+        # gets a fresh reminder for the SAME hazard every
+        # `haptic_cooldown` seconds, and OTHER hazards can fire
+        # independently without being blocked.
+        last = self._last_haptic.get(key, 0.0)
+        return (now - last) < self.haptic_cooldown
 
     # ── Velocity tracking ───────────────────────────────────────────
 
@@ -397,8 +423,15 @@ class SafetyMonitor:
     @staticmethod
     def _make_object_id(cls: str, bbox) -> str:
         if bbox and len(bbox) >= 4:
-            cx = int((bbox[0] + bbox[2]) / 2 / 50) * 50
-            cy = int((bbox[1] + bbox[3]) / 2 / 50) * 50
+            # M4 fix: 50px grid caused cell-flips every ~10 frames
+            # for objects moving slowly — the bbox centre crossed a
+            # 50-pixel boundary, the object_id changed, and the
+            # velocity tracker reset. Approach-velocity inference
+            # requires ≥5 frames of stable id to be meaningful, and
+            # 50px meant we rarely got there. Reduce to 10px so a
+            # slowly-walking user doesn't reset every half-second.
+            cx = int((bbox[0] + bbox[2]) / 2 / 10) * 10
+            cy = int((bbox[1] + bbox[3]) / 2 / 10) * 10
             return f"{cls}_{cx}_{cy}"
         return f"{cls}_unknown"
 

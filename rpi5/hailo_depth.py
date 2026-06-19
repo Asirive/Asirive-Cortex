@@ -758,18 +758,39 @@ class HailoDepthEstimator:
         else:
             depth_ratio = 0
 
-        if depth_ratio > self.dropoff_threshold:
+        # C6 fix: the previous code ONLY detected the "cliff in front of me"
+        # case (bottom >> mid). It systematically MISSED the cane-relevant
+        # "top of stairs going down" case, where the user looks down at the
+        # descending steps — the bottom band is CLOSER than the mid band
+        # (mid_median > bottom_median → ratio < 1), so the cliff case never
+        # fired. Detect both directions and use the larger depth-jump as the
+        # drop distance.
+        forward_cliff = depth_ratio > self.dropoff_threshold  # cliff in front
+        top_of_stairs = (
+            bottom_median > 1e-6
+            and (mid_median / bottom_median) > self.dropoff_threshold
+        )  # top of stairs, looking down
+        detected = forward_cliff or top_of_stairs
+
+        if detected:
             # Ground falls away — drop-off detected
-            drop_distance = mid_median
+            # Use the closer of the two bands as the "distance to the drop"
+            # because that's the edge the user is about to step off.
+            drop_distance = min(mid_median, bottom_median)
 
             severity = HazardSeverity.CRITICAL if drop_distance < 2.0 else HazardSeverity.WARNING
 
+            # Confidence: bigger jump = higher confidence.
+            jump = (
+                depth_ratio if forward_cliff
+                else (mid_median / bottom_median)
+            )
             hazards.append(Hazard(
                 type=HazardType.DROPOFF,
                 severity=severity,
                 direction="ahead",
                 distance=round(drop_distance, 2),
-                confidence=round(min(1.0, depth_ratio / (self.dropoff_threshold * 2)), 2),
+                confidence=round(min(1.0, jump / (self.dropoff_threshold * 2)), 2),
                 bbox_region=(center_start, int(dh * 0.6), center_end, dh)
             ))
             self._mark_alerted("dropoff", now)
@@ -927,8 +948,17 @@ class HailoDepthEstimator:
         row_gradients = np.mean(center_gradient, axis=1)
 
         # For stairs UP, we're looking for a sharp NEGATIVE gradient
-        # (distance goes from large → small as we go down the image)
-        threshold = self.stairs_up_min_riser_m
+        # (distance goes from large → small as we go down the image).
+        #
+        # C5 fix: row_gradients is in METERS PER ROW of the depthmap
+        # (dist_map is metric). A real 0.3m riser that spans ~5 rows
+        # produces a per-row gradient of ~0.06m, NOT 0.3m. The previous
+        # threshold of 0.3m meant the detector only fired on an
+        # impossibly steep single-row step — the entire indoor
+        # cane-invisible step-up detection was dead. Use the same
+        # per-row threshold as the outdoor stairs detector
+        # (self.stair_gradient_threshold).
+        threshold = self.stair_gradient_threshold
         step_rows = np.where(row_gradients < -threshold)[0]
 
         if len(step_rows) == 0:
@@ -1167,10 +1197,10 @@ class HailoDepthEstimator:
     def classify_distance(self, distance_m: float) -> str:
         """
         Classify a distance into a human-readable zone.
-        
+
         Args:
             distance_m: Distance in meters
-            
+
         Returns:
             Zone string for speech output
         """
@@ -1183,21 +1213,12 @@ class HailoDepthEstimator:
         else:
             return "far away"
 
-    def cleanup(self):
-        """Release Hailo device resources."""
-        try:
-            # Release configured model context
-            if self._configured_infer_model:
-                try:
-                    self._configured_infer_model.shutdown()
-                except Exception as e:
-                    logger.debug(f"ConfiguredInferModel shutdown error (non-fatal): {e}")
-                self._configured_infer_model = None
-            self._infer_model = None
-            # Only release VDevice if we created it ourselves
-            if self._owns_vdevice and self._vdevice:
-                self._vdevice = None
-            self._is_initialized = False
-            logger.info("Hailo depth estimator cleaned up")
-        except Exception as e:
-            logger.warning(f"Cleanup error: {e}")
+    # H30 fix: there used to be a SECOND `cleanup()` defined here
+    # (at line 1216 in the previous version). It shadowed the proper
+    # one at line 274 and called `_configured_infer_model.shutdown()`
+    # — a method that doesn't exist on the HailoRT binding. Python
+    # silently used the second definition, the configured model
+    # context was never released, the VDevice was never freed, and
+    # the next `init()` raised "device busy". The canonical
+    # `cleanup()` at line 274 (using `__exit__` + `del _vdevice`) is
+    # the only one we want. The orphaned duplicate is gone.

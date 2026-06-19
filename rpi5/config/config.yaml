@@ -130,13 +130,11 @@ layer2:
 
   tier_1:  # Gemini TTS (HTTP fallback)
     enabled: true
-    api_keys:  # 6-key rotation
-      - "YOUR_GEMINI_KEY_1"
-      - "YOUR_GEMINI_KEY_2"
-      - "YOUR_GEMINI_KEY_3"
-      - "YOUR_GEMINI_KEY_4"
-      - "YOUR_GEMINI_KEY_5"
-      - "YOUR_GEMINI_KEY_6"
+    # API keys are read from env (GEMINI_API_KEY, GEMINI_API_KEY_2..10),
+    # NEVER from this file. See rpi5/layer2_thinker/gemini_tts_handler.py.
+    # Placeholders previously here were sent to Google and triggered
+    # misleading 400 errors on every fallback attempt. If the env has
+    # no keys, the handler raises a clear ValueError on startup.
 
   tier_2:  # GLM-4.6V Z.ai (final fallback)
     enabled: true
