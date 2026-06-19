@@ -3071,9 +3071,11 @@ class CortexSystem:
         Called by VoiceCoordinator for every 32ms VAD chunk (continuous stream).
         Video is sent separately at 1 FPS from the detection loop.
 
-        During speaker playback, sends zero-filled silence instead of real audio.
-        This keeps the audio stream continuous — dropping audio creates
-        silence→audio transitions that destabilize Gemini's live turn state.
+        Mic audio is streamed CONTINUOUSLY — including during Gemini's TTS
+        playback — so user speech is never lost. The local VAD (in
+        voice_coordinator) triggers barge-in to stop Gemini's audio output
+        when the user starts speaking; the audio reaching Gemini is the
+        ground truth for "did the user say something". C7 fix.
         """
         if not self.layer2 or not self.layer2.is_running:
             return

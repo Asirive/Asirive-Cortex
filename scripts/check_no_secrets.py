@@ -27,12 +27,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # Patterns that should NEVER appear in tracked source.
+# (REDACTED-*-KEY placeholders are explicitly allowed — they're the
+# scrubbed replacement we WANT to commit.)
 PATTERNS = [
-    ("hardcoded ssh password", re.compile(r"REDACTED-RPI-PASSWORD")),
-    ("gemini key (AIzaSy...)", re.compile(r"AIzaSy[A-Za-z0-9_-]{20,}")),
-    ("openai key (sk-...)",     re.compile(r"sk-[A-Za-z0-9]{20,}")),
-    ("cartesia key (sk_car_)",  re.compile(r"sk_car_[A-Za-z0-9]{10,}")),
-    ("supabase publishable",    re.compile(r"sb_publishable_[A-Za-z0-9_]{10,}")),
+    ("hardcoded ssh password", re.compile(r"\bHaziqshah21\b")),
+    ("gemini key (AIzaSy...)", re.compile(r"\bAIzaSy[A-Za-z0-9_-]{20,}\b")),
+    ("openai key (sk-...)",     re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")),
+    ("cartesia key (sk_car_)",  re.compile(r"\bsk_car_[A-Za-z0-9]{10,}\b")),
+    ("supabase publishable",    re.compile(r"\bsb_publishable_[A-Za-z0-9_]{10,}\b")),
 ]
 
 # Files that may legitimately contain these patterns.
@@ -42,6 +44,7 @@ ALLOWLIST = {
     "AGENTS.md",  # personal handoff, gitignored anyway
     "ContextHistory.md",  # personal handoff
     "scripts/check_no_secrets.py",  # self
+    "scripts/_history_replacements.txt",  # the redaction map
 }
 
 # Directory prefixes to skip entirely.

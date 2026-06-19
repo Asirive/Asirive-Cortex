@@ -229,8 +229,18 @@ class SafetyMonitor:
                     and not self._haptic_on_cooldown(now)
                 )
 
-                # Tier 0 for critical trap at any distance
-                tier = 0 if (is_critical_trap and h.severity.value == "critical") else 1
+                # Cane-aware tier escalation (fix for C3).
+                # The cane-invisible hazards (overhang, stairs_up, incoming_fast)
+                # must ALWAYS be T0 indoors — the cane cannot see them at all,
+                # so a "warning"-severity detection is still a critical trap for
+                # an indoor user. Outdoors, only escalate to T0 at "critical"
+                # severity (cars, etc. — user can hear them naturally).
+                if is_critical_trap and self._is_indoor:
+                    tier = 0
+                elif is_critical_trap and h.severity.value == "critical":
+                    tier = 0
+                else:
+                    tier = 1
 
                 candidates.append(ThreatAlert(
                     tier=tier,
@@ -434,15 +444,26 @@ class SafetyMonitor:
         self._is_indoor = indoor
         if indoor:
             # Indoors: less clutter. Cane handles ground; AI only speaks
-            # for the things the cane can't see.
-            self.alert_cooldown = 6.0   # was 8.0 — slightly faster repeats
-            self.tts_cooldown = 12.0    # was 20.0 — say it more often
-            self.haptic_cooldown = 3.0  # was 5.0
+            # for the things the cane can't see. Make all cooldowns
+            # SHORTER than outdoor (responsive — these are life-safety
+            # alerts the user has no other way to perceive). Fixes C4
+            # where indoor TTS was 12s vs outdoor 8s default — the
+            # original code made indoor LESS responsive than outdoor,
+            # which is the wrong direction.
+            self.alert_cooldown = 4.0   # was 6.0 — even more responsive
+            self.tts_cooldown = 6.0     # was 12.0 — was slower than outdoor; now faster
+            self.haptic_cooldown = 2.0  # was 3.0
         else:
             self.alert_cooldown = self._outdoor_alert_cooldown
             self.tts_cooldown = self._outdoor_tts_cooldown
             self.haptic_cooldown = self._outdoor_haptic_cooldown
         label = "INDOOR" if indoor else "OUTDOOR"
-        logger.info(f"SafetyMonitor → {label}: cooldowns alert={self.alert_cooldown}s, "
-                    f"tts={self.tts_cooldown}s, haptic={self.haptic_cooldown}s, "
-                    f"cane-handled={indoor}")
+        # Fix for C5: the old `cane-handled={indoor}` log line was
+        # misleading — `indoor=True` means cane handles ground and AI
+        # handles head-height, so the boolean name was wrong. Use the
+        # environment label directly.
+        logger.info(
+            f"SafetyMonitor → {label}: cooldowns "
+            f"alert={self.alert_cooldown}s, tts={self.tts_cooldown}s, "
+            f"haptic={self.haptic_cooldown}s"
+        )

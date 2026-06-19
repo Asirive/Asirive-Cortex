@@ -274,7 +274,19 @@ audio:
     min_speech_duration_ms: 400  # Minimum speech length to accept (filters short noise bursts)
     min_silence_duration_ms: 500  # Silence gap before speech end (longer = more tolerant)
     padding_duration_ms: 200  # Audio padding around speech segments
-    barge_in_enabled: false  # Ignore user speech during Gemini playback instead of interrupting it
+    # When true, user speech during Gemini playback flushes the audio
+    # queue and is sent to Gemini immediately — the core "interrupt me"
+    # UX promise. When false, the user's speech is buffered in
+    # command_queue (below) and sent only after Gemini finishes its
+    # current turn.
+    #
+    # v2.1 fix (C7): was hard-disabled ("Ignore user speech during
+    # Gemini playback instead of interrupting it") which silently
+    # dropped user speech during TTS — a fatal UX bug for a
+    # voice-first system. Default flipped to true. A 2s cooldown
+    # after each text send still prevents false barge-ins from
+    # trailing TTS audio (see _barge_in_cooldown_until).
+    barge_in_enabled: true
 
     # Command queue during playback (buffer user speech, send after Gemini finishes)
     command_queue_enabled: true
