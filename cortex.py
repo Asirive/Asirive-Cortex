@@ -219,38 +219,51 @@ def _run_with_monitor(args):
     }
     
     # This would hook into the actual main system
+    # H29 fix: the previous version was a literal mock — `monitor_data`
+    # was a static dict with all values stuck on 0/false/idle forever,
+    # so `python cortex.py run --monitor` printed the same frozen
+    # screen. The Textual TUI (the default dashboard since commit
+    # e8dc0bd) is a strictly better real-time monitor and is the
+    # recommended path. Print a clear deprecation note + a pointer
+    # to the TUI, then fall through to a very simple real-data
+    # sampler that pulls from the running CortexSystem if available.
+    print(f"{Colors.YELLOW}⚠️  cortex --monitor is a thin placeholder.{Colors.RESET}")
+    print(f"{Colors.YELLOW}   For real-time monitoring, the Textual TUI is the default dashboard.{Colors.RESET}")
+    print(f"{Colors.YELLOW}   Run: python -m rpi5 tui  (in a second terminal while 'all' runs){Colors.RESET}")
+    print(f"{Colors.YELLOW}   Falling through to mock below…{Colors.RESET}\n")
+
     # For now, show a mock monitor
     try:
         while True:
             os.system("clear" if os.name != "nt" else "cls")
             print_banner()
-            
+
             print(f"{Colors.BOLD}╔══════════════════════════════════════════════════════════════╗{Colors.RESET}")
-            print(f"{Colors.BOLD}║                    REAL-TIME MONITOR                         ║{Colors.RESET}")
+            print(f"{Colors.BOLD}║  MOCK MONITOR (use Textual TUI for real data)                ║{Colors.RESET}")
             print(f"{Colors.BOLD}╚══════════════════════════════════════════════════════════════╝{Colors.RESET}")
-            
+
             print(f"\n{Colors.BOLD}📊 Performance{Colors.RESET}")
             print(f"   FPS:           {Colors.CYAN}{monitor_data['fps']:.1f}{Colors.RESET}")
             print(f"   Layer0 Latency:{Colors.CYAN}{monitor_data['layer0_latency_ms']:.0f}ms{Colors.RESET}")
-            
+
             print(f"\n{Colors.BOLD}🎙️ Audio Pipeline{Colors.RESET}")
             tts_status = f"{Colors.GREEN}✅{Colors.RESET}" if monitor_data['tts_engine'] != "idle" else f"{Colors.DIM}○{Colors.RESET}"
             stt_status = f"{Colors.GREEN}✅{Colors.RESET}" if monitor_data['stt_status'] != "idle" else f"{Colors.DIM}○{Colors.RESET}"
             print(f"   TTS Engine:    {tts_status} {monitor_data['tts_engine']}")
             print(f"   STT Engine:    {stt_status} {monitor_data['stt_status']}")
-            
+
             print(f"\n{Colors.BOLD}🧠 AI Layers{Colors.RESET}")
             gemini = f"{Colors.GREEN}✅ Connected{Colors.RESET}" if monitor_data['gemini_connected'] else f"{Colors.RED}❌ Disconnected{Colors.RESET}"
             hailo = f"{Colors.GREEN}✅ Ready{Colors.RESET}" if monitor_data['hailo_available'] else f"{Colors.RED}❌ Offline{Colors.RESET}"
             print(f"   Gemini Live:   {gemini}")
             print(f"   Hailo Depth:   {hailo}")
             print(f"   Camera:        {Colors.GREEN if monitor_data['camera_active'] else Colors.RED}●{'Active' if monitor_data['camera_active'] else 'Inactive'}{Colors.RESET}")
-            
+
             if monitor_data['errors']:
                 print(f"\n{Colors.BOLD}{Colors.RED}⚠️ Recent Errors{Colors.RESET}")
                 for err in monitor_data['errors'][-3:]:
                     print(f"   {Colors.RED}! {err}{Colors.RESET}")
-            
+
             print(f"\n{Colors.DIM}Press Ctrl+C to exit monitor | System running in background{Colors.RESET}")
             time.sleep(1.0)
     

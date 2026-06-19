@@ -43,9 +43,10 @@ from rpi5.live_dashboard.state import DashboardState
 from rpi5.live_dashboard.keybinds import FOOTER_HINTS_FULL
 
 
-# Pulse state for the "● connected" indicator. We toggle this every 0.5s
-# so connected things appear to breathe. Tied to a counter that increments
-# on every refresh; the render uses it to pick ● vs ◉.
+# Pulse state for the "● connected" indicator. Toggles on every
+# refresh tick (2Hz) so connected things appear to breathe. Tied to a
+# counter that increments on every refresh; the render uses it to
+# pick ● vs ◉.
 class PulseState:
     def __init__(self):
         self._tick = 0
@@ -208,9 +209,27 @@ if TEXTUAL_AVAILABLE:
                 if RichHandler is not None and isinstance(h, RichHandler):
                     root.removeHandler(h)
                     continue
-                # Drop any StreamHandler pointing at stderr or stdout
+                # Drop any StreamHandler pointing at stderr or stdout.
+                # M30 fix: Rich wraps sys.stderr in a Console object,
+                # so `stream is sys.stderr` was always False and
+                # the RichHandler leaked through to the alt screen.
+                # Use a name-based + class-based match to catch
+                # Console-wrapped streams too.
                 stream = getattr(h, "stream", None)
-                if stream is not None and (stream is sys.stderr or stream is sys.stdout):
+                if stream is None:
+                    continue
+                if stream is sys.stderr or stream is sys.stdout:
+                    root.removeHandler(h)
+                    continue
+                # Console-wrapped stream — check by class name.
+                cls_name = type(stream).__name__
+                if cls_name in ("Console", "ConsoleFileProxy"):
+                    root.removeHandler(h)
+                    continue
+                # Check wrapped console's file (Rich Console stores
+                # the original in `.file`).
+                underlying = getattr(stream, "file", None)
+                if underlying is sys.stderr or underlying is sys.stdout:
                     root.removeHandler(h)
 
         def _start_log_watcher(self) -> None:
@@ -522,6 +541,13 @@ if TEXTUAL_AVAILABLE:
             # 4 turns keeps the panel tight while still showing context
             last_turns = transcript[-4:] if transcript else []
             for line in last_turns:
+                # M32 fix: normalize shape. Producers should publish
+                # strings prefixed "YOU:" or "CORTEX:"; if anything
+                # else (dict, None, etc.) sneaks in, render as a
+                # placeholder rather than crash on .startswith().
+                if not isinstance(line, str):
+                    content.append(f"  (unparsed entry: {type(line).__name__})\n", style="dim")
+                    continue
                 if line.startswith("YOU:"):
                     content.append("  YOU    →  ", style="bold cyan")
                     content.append(f"{self._truncate(line[4:].strip(), 58)}\n", style="white")
@@ -1077,20 +1103,19 @@ if TEXTUAL_AVAILABLE:
             tts = getattr(self.system, "tts", None)
             if tts is not None:
                 tts.muted = not getattr(tts, "muted", False)
-                # Push the new muted state to DashboardState so the TTS
-                # panel + subtitle reflect the change immediately. We
-                # also re-publish engine + state so the panel doesn't
-                # get stuck on a stale "speaking" indicator from a
-                # previous utterance. Without this, muting mid-utterance
-                # leaves the panel reading "speaking" for ~12s.
+                # Push ONLY muted + state to DashboardState. M33 fix:
+                # previously we overwrote the full tts dict including
+                # engine, voice, speed, fallback_engine. If the publisher
+                # (_publish_system_metrics) fires a moment later with
+                # stale values, the panel flickers. Touching only what
+                # we changed keeps the TUI stable.
                 if self.dashboard_state is not None:
-                    engine = "muted" if tts.muted else (
-                        getattr(tts, "_last_engine", "") or "cartesia"
-                    )
                     state = "muted" if tts.muted else (
                         "speaking" if getattr(tts, "is_playing", False) else "idle"
                     )
                     self.dashboard_state.update(tts={
+                        "muted": bool(tts.muted),
+                        "state": state,
                         "muted": bool(tts.muted),
                         "engine": engine,
                         "state": state,
@@ -1118,9 +1143,30 @@ if TEXTUAL_AVAILABLE:
                 connected = bool(ic() if callable(ic) else ic)
                 if connected and hasattr(handler, "send_text"):
                     try:
-                        handler.send_text("What do you see?")
-                        self._write_log("[bold cyan]→ Ask: sent to Gemini Live[/]")
-                        return
+                        import asyncio as _asyncio
+                        import inspect as _inspect
+                        send_fn = handler.send_text
+                        # M31 fix: send_text is async on the live
+                        # handler (returns a coroutine). The Textual
+                        # action_ask_cortex() runs on the main loop
+                        # and cannot `await` a coroutine directly.
+                        # Use run_coroutine_threadsafe if the loop is
+                        # running on a worker thread, otherwise
+                        # create_task on the current loop.
+                        if _inspect.iscoroutinefunction(send_fn):
+                            try:
+                                loop = _asyncio.get_running_loop()
+                            except RuntimeError:
+                                loop = None
+                            coro = send_fn("What do you see?")
+                            if loop is not None:
+                                loop.create_task(coro)
+                            self._write_log("[bold cyan]→ Ask: sent to Gemini Live[/]")
+                            return
+                        else:
+                            send_fn("What do you see?")
+                            self._write_log("[bold cyan]→ Ask: sent to Gemini Live[/]")
+                            return
                     except Exception as e:
                         self._write_log(f"[bold yellow]⚠ Ask → Gemini failed: {e}[/]")
             # Path 3: local summary of L0+L1
@@ -1278,6 +1324,18 @@ if TEXTUAL_AVAILABLE:
                     pass
             if hasattr(self, "_log_watcher") and self._log_watcher is not None:
                 self._log_watcher.stop()
+
+        # M29 fix: Textual's lifecycle calls on_unmount when the
+        # app exits (q key, Ctrl+C, exit()). Previously cleanup()
+        # was only called from explicit code paths, so log-watcher
+        # threads and refresh timers leaked across restarts. Now
+        # on_unmount invokes cleanup() so the resources are always
+        # released.
+        def on_unmount(self) -> None:
+            try:
+                self.cleanup()
+            except Exception:
+                pass
 
 
 else:

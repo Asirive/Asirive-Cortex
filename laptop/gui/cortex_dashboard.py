@@ -36,7 +36,9 @@ import base64
 import io
 
 from laptop.config import DashboardConfig
-from laptop.protocol import MessageType, BaseMessage
+# TB2 fix: use the shared protocol module instead of the laptop-local
+# duplicate. See docs/plans/... for the consolidation rationale.
+from shared.api.protocol import MessageType, BaseMessage
 
 
 logger = logging.getLogger(__name__)

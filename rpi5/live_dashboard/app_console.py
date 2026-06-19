@@ -91,6 +91,11 @@ class ConsoleApp:
         self._old_sigint: Optional[Any] = None
         self._old_sigterm: Optional[Any] = None
 
+        # M37 fix: store terminal attrs so cleanup() can restore them
+        # even if the keybind thread's own join times out.
+        self._saved_termios_attrs: Optional[Any] = None
+        self._termios_fd: Optional[int] = None
+
     # --- public ---
 
     def run(self) -> int:
@@ -136,6 +141,16 @@ class ConsoleApp:
         for t in (self._status_thread, self._keybind_thread):
             if t and t.is_alive():
                 t.join(timeout=1.0)
+        # M37 fix: explicitly restore terminal attrs even if the
+        # keybind thread's own finally-block didn't run (join timed out
+        # because the thread was stuck in sys.stdin.read). Without this
+        # the user's terminal is left in cbreak mode and echo is off.
+        if self._saved_termios_attrs is not None and self._termios_fd is not None:
+            try:
+                import termios
+                termios.tcsetattr(self._termios_fd, termios.TCSADRAIN, self._saved_termios_attrs)
+            except Exception:
+                pass
         # Restore signal handlers
         if self._old_sigint is not None:
             try:
@@ -153,8 +168,9 @@ class ConsoleApp:
     # --- internals ---
 
     def _on_signal(self, signum: int, frame: Any) -> None:
-        sys.stdout.write(f"\n[2.4 mode: received signal {signum}, shutting down]\n")
-        sys.stdout.flush()
+        # M36 fix: signal handlers must be async-signal-safe. Only touch
+        # the Event (thread-safe) here. All other cleanup runs from
+        # the main thread when it sees the Event set.
         self._stop.set()
 
     def _print_banner(self) -> None:
@@ -202,7 +218,7 @@ class ConsoleApp:
             f"GPS     : {self._fmt_gps(snap['gps']):17}  IMU      : {self._fmt_imu(snap['imu'])}",
             f"AI      : {self._fmt_ai(snap['ai']):17}  TTS      : {self._fmt_tts(snap['tts'])}",
             f"BT      : {self._fmt_bt(snap['bt']):17}  L2 Live  : {self._fmt_l2(snap['l2'])}",
-            f"L4 Mem  : {snap['l4']['local_rows']:>5} rows      Voice    : {self._fmt_voice(snap['voice'])}",
+            f"L4 Mem  : {snap['l4'].get('local_rows', 0):>5} rows      Voice    : {self._fmt_voice(snap['voice'])}",
             "─────────────────────"[:SEP_WIDTH],
         ]
         for line in lines:
@@ -229,9 +245,15 @@ class ConsoleApp:
 
     @staticmethod
     def _fmt_gps(gps: dict) -> str:
-        if gps["fix"] == 0:
-            return f"NO FIX sats:{gps['sats']}"
-        return f"FIX:{gps['fix']} sats:{gps['sats']}"
+        # L5 fix: guard against None / missing keys. A producer
+        # pushing gps={} (no fix yet) would raise KeyError here
+        # and crash the status print loop.
+        fix = gps.get("fix", 0) or 0
+        sats = gps.get("sats", 0)
+        sats = sats if sats is not None else 0
+        if fix == 0:
+            return f"NO FIX sats:{sats}"
+        return f"FIX:{fix} sats:{sats}"
 
     @staticmethod
     def _fmt_imu(imu: dict) -> str:
@@ -292,6 +314,10 @@ class ConsoleApp:
             old_attrs = termios.tcgetattr(fd)
         except Exception:
             return
+        # M37 fix: also store on the app so cleanup() can restore if
+        # this thread's own finally-block is skipped (e.g. on hang).
+        self._saved_termios_attrs = old_attrs
+        self._termios_fd = fd
 
         try:
             tty.setcbreak(fd)

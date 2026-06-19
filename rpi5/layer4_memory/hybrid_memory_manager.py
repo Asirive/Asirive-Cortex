@@ -278,7 +278,8 @@ class HybridMemoryManager:
             except ImportError:
                 logger.warning("⚠️ supabase package not installed. Cloud sync disabled.")
                 self.supabase_available = False
-                self.sync_status = "error"
+                # L2 fix: was previously setting `self.sync_status = "error"`
+                # twice on the same branch. Single assignment is enough.
                 self.sync_status = "error"
             except Exception as e:
                 logger.error(f"❌ Failed to initialize Supabase: {e}")
@@ -330,17 +331,26 @@ class HybridMemoryManager:
             start_time = time.time()
             cursor = self.local_db.cursor()
             for d in batch:
-                cursor.execute("""
-                    INSERT INTO detections_local
-                    (layer, class_name, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
-                     bbox_area, detection_mode, source, timestamp, synced)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-                """, (
-                    d.get('layer'), d.get('class_name'), d.get('confidence'),
-                    d.get('bbox_x1'), d.get('bbox_y1'), d.get('bbox_x2'), d.get('bbox_y2'),
-                    d.get('bbox_area'), d.get('detection_mode'), d.get('source'),
-                    time.time()
-                ))
+                # M15 fix: wrap each insert in its own try/except so a
+                # single bad row (missing field, type error) doesn't
+                # break the whole batch and leave a partially-flushed
+                # state. Previously a mid-batch exception would commit
+                # the rows that succeeded and silently drop the rest.
+                try:
+                    cursor.execute("""
+                        INSERT INTO detections_local
+                        (layer, class_name, confidence, bbox_x1, bbox_y1, bbox_x2, bbox_y2,
+                         bbox_area, detection_mode, source, timestamp, synced)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+                    """, (
+                        d.get('layer'), d.get('class_name'), d.get('confidence'),
+                        d.get('bbox_x1'), d.get('bbox_y1'), d.get('bbox_x2'), d.get('bbox_y2'),
+                        d.get('bbox_area'), d.get('detection_mode'), d.get('source'),
+                        time.time()
+                    ))
+                except Exception as e:
+                    logger.warning(f"Skipping bad detection row: {e}")
+                    continue
                 row_id = cursor.lastrowid
                 queue_item = {
                     'table': 'detections',
@@ -391,9 +401,25 @@ class HybridMemoryManager:
         """
         logger.info(f"🔄 Background sync worker started (interval: {self.sync_interval}s)")
 
+        # M14 fix: tick a 1s countdown so the TUI's
+        # `next_sync_in_s` actually decreases between syncs.
+        # Previously the field was initialised once at startup
+        # and never updated, so the TUI showed the same number
+        # forever and the user couldn't tell whether syncing
+        # was alive.
         while self.sync_running:
             try:
-                await asyncio.sleep(self.sync_interval)
+                # Decrement the published countdown once per second
+                # so the user sees a live timer, not a stale one.
+                for _ in range(int(self.sync_interval)):
+                    if not self.sync_running:
+                        return
+                    self.next_sync_in_s = max(0.0, self.next_sync_in_s - 1.0)
+                    await asyncio.sleep(1.0)
+                # After the countdown expires, reset for the next
+                # interval (in case sync_interval changed since
+                # the last loop).
+                self.next_sync_in_s = float(self.sync_interval)
 
                 with self._queue_lock:
                     if not self.upload_queue:
@@ -414,6 +440,11 @@ class HybridMemoryManager:
 
                 try:
                     await self._upload_batch(batch)
+                    # M13 fix: reset the failure counter on a clean
+                    # upload so the dashboard's "fail count" reflects
+                    # RECENT failures, not all-time.
+                    if self.upload_failed_count:
+                        self.upload_failed_count = 0
 
                     # M19: Mark as synced — if this fails, rows will be re-uploaded (safe duplicate)
                     try:
@@ -952,8 +983,15 @@ class HybridMemoryManager:
         logger.warning(f"⚠️ Supabase disabled, will retry in {self._supabase_retry_cooldown}s")
 
     def _handle_supabase_failure(self):
-        """H23: Exponential backoff on Supabase failures."""
+        """H23: Exponential backoff on Supabase failures.
+
+        M13 fix: also bump `upload_failed_count` so the dashboard's
+        `upload_failed_count` counter actually reflects reality. It
+        was declared but never incremented anywhere, so the MEMORY
+        panel always showed 0.
+        """
         self._supabase_backoff = min(self._supabase_backoff * 2, 300)  # Cap at 5 min
+        self.upload_failed_count += 1
         logger.warning(f"⚠️ Supabase failure, backoff: {self._supabase_backoff}s")
         if self._supabase_backoff >= 60:
             self._disable_supabase_with_cooldown()

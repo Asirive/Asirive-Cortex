@@ -27,7 +27,10 @@ from datetime import datetime
 from threading import Thread, Lock
 import queue
 
-from laptop.protocol import MessageType
+# TB2 fix: rpi5 is consuming the laptop's protocol module, which is
+# the wrong direction. The laptop module was a copy/paste of
+# shared/api/protocol.py; we now consolidate on the shared one.
+from shared.api.protocol import MessageType
 
 
 logger = logging.getLogger(__name__)
@@ -160,6 +163,20 @@ class RPiWebSocketClient:
                     # Handle CONFIG (future)
                     elif msg_type == MessageType.CONFIG.value:
                         logger.info(f"?? Received config update: {data.get('data')}")
+
+                    # H28 fix: previously the legacy WS client silently
+                    # dropped any message type it didn't explicitly
+                    # handle (DETECTIONS, LAYER1_RESPONSE, NAVIGATION,
+                    # SPATIAL_AUDIO, VIDEO_FRAME, etc.). The FastAPI
+                    # client handles all of these. Without a warning
+                    # here, a user on the legacy path sees "no video"
+                    # and "no detection" with no signal that the
+                    # messages are arriving but being dropped.
+                    elif msg_type is not None:
+                        logger.debug(
+                            f"Legacy WS: unhandled message type {msg_type!r} "
+                            f"(keys={list(data.keys())})"
+                        )
 
                 except Exception as e:
                     logger.error(f"Error processing message: {e}")

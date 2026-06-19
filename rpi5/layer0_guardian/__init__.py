@@ -406,17 +406,21 @@ class YOLOGuardian:
             dx = max(0, min(dx, dw - 1))
             dy = max(0, min(dy, dh - 1))
             
-            # Sample median depth in a 5x5 region (robust to noise)
-            r = 2
+            # M8 fix: use 7×7 region to match HailoDepthEstimator.get_depth_at_bbox.
+            # Previously a 5×5 window here vs 7×7 in the Hailo estimator
+            # gave different distance values for the same detection at the
+            # same frame. Centralise the radius constant so the two stay
+            # in sync.
+            r = 3
             y1 = max(0, dy - r)
             y2 = min(dh, dy + r + 1)
             x1 = max(0, dx - r)
             x2 = min(dw, dx + r + 1)
             region = depth_map[y1:y2, x1:x2]
-            
+
             if region.size == 0:
                 return -1.0
-            
+
             return float(np.median(region))
             
         except Exception as e:

@@ -26,6 +26,7 @@ Date: January 17, 2026
 import asyncio
 import logging
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -122,7 +123,13 @@ class RPi5Client(AsyncWebSocketClient):
 
         # Callbacks
         self.on_command: Optional[Callable[[Dict[str, Any]], None]] = None
-        
+
+        # M43 fix: serialize the check-then-act around the async loop
+        # so we never call run_coroutine_threadsafe on a dead loop.
+        self._schedule_lock = threading.Lock()
+        # M44 fix: shared cache update helper used by both DETECTIONS
+        # and LAYER1_RESPONSE handlers.
+
         # Cache for latest Layer 1 detections from laptop
         # Used by voice handler to include L1 results in responses
         self.latest_layer1_detections: List[Dict[str, Any]] = []
@@ -132,11 +139,13 @@ class RPi5Client(AsyncWebSocketClient):
 
     def _schedule_send(self, msg: BaseMessage, description: str) -> bool:
         """Schedule a send onto the client's async loop only when it is alive."""
-        if not self._async_loop or not self._async_loop.is_running() or not self.is_running:
-            logger.debug(f"Skipping {description}: async loop not running")
-            return False
-
-        future = asyncio.run_coroutine_threadsafe(self.send(msg), self._async_loop)
+        with self._schedule_lock:
+            if not self._async_loop or not self._async_loop.is_running() or not self.is_running:
+                logger.debug(f"Skipping {description}: async loop not running")
+                return False
+            future = asyncio.run_coroutine_threadsafe(self.send(msg), self._async_loop)
+        # Callback registered outside the lock so the callback body
+        # can call back into _schedule_send without self-deadlock.
 
         def _log_send_result(done_future):
             try:
@@ -145,6 +154,29 @@ class RPi5Client(AsyncWebSocketClient):
                 logger.debug(f"Failed to send {description}: {e}")
 
         future.add_done_callback(_log_send_result)
+        return True
+
+    def _update_layer1_cache(self, detections: list, inference_time_ms: float, source_tag: str = "laptop") -> None:
+        """M44 fix: shared helper used by both DETECTIONS and
+        LAYER1_RESPONSE handlers. Previously each handler duplicated
+        the cache write + status display update, so a DETECTIONS
+        message followed by a LAYER1_RESPONSE would clobber the
+        first cache write with the second, losing the most recent
+        laptop-side inference result."""
+        self.latest_layer1_detections = detections
+        self._layer1_cache_time = time.time()
+        logger.debug(f"Cached {len(detections)} L1 detections from laptop ({source_tag})")
+        try:
+            from rpi5.main import get_status_display
+            status_display = get_status_display()
+            if status_display and detections:
+                formatted_dets = [
+                    {"class": det.get("class", det.get("class_name", "unknown"))}
+                    for det in detections
+                ]
+                status_display.update_layer1(formatted_dets, inference_time_ms)
+        except ImportError:
+            pass
         return True
 
     # =========================================================================
@@ -182,10 +214,24 @@ class RPi5Client(AsyncWebSocketClient):
             await self.websocket.close()
 
     async def _receive_impl(self) -> Optional[BaseMessage]:
-        """Receive next message."""
+        """Receive next message.
+
+        H27 fix: the previous `return` inside the `async for` would
+        close the websocket's async iterator on the first call, so
+        every subsequent call would re-enter a fresh `async for` on
+        a stateful stream that had already advanced — subsequent
+        messages were silently dropped. Pull the next message via
+        `__anext__` (which advances state without closing the
+        iterator) and let the receive loop in base_client.py call
+        us again for the next one.
+        """
+        if self.websocket is None:
+            return None
         try:
-            async for message in self.websocket:
-                return parse_message(message)
+            message = await self.websocket.__anext__()
+            return parse_message(message)
+        except StopAsyncIteration:
+            return None
         except ConnectionClosed:
             return None
         except Exception as e:
@@ -270,24 +316,8 @@ class RPi5Client(AsyncWebSocketClient):
                 # Log at DEBUG level (status display shows summary)
                 logger.debug(f"[{timestamp}] <laptop> {cls} ({int(conf*100)}%) bbox={bbox_str}")
             
-            # Cache detections for voice handler (Layer 1 queries)
-            self.latest_layer1_detections = detections
-            self._layer1_cache_time = time.time()
-            logger.debug(f"Cached {len(detections)} L1 detections from laptop (DETECTIONS msg)")
-            
-            # Update the interactive status display with Layer 1 detections from laptop
-            try:
-                from rpi5.main import get_status_display
-                status_display = get_status_display()
-                if status_display and detections:
-                    # Format detections for status display (needs 'class' key)
-                    formatted_dets = [
-                        {"class": det.get("class", det.get("class_name", "unknown"))}
-                        for det in detections
-                    ]
-                    status_display.update_layer1(formatted_dets, inference_time_ms)
-            except ImportError:
-                pass  # Status display not available yet
+            # M44 fix: shared helper used by both handlers.
+            self._update_layer1_cache(detections, inference_time_ms, source_tag="DETECTIONS")
 
     async def _handle_navigation(self, message: BaseMessage):
         """Handle NAVIGATION messages from laptop."""
@@ -314,24 +344,9 @@ class RPi5Client(AsyncWebSocketClient):
         inference_time_ms = data.get("inference_time_ms", 0)
         
         logger.debug(f"LAYER1_RESPONSE: {len(detections)} detections, {inference_time_ms:.1f}ms")
-        
-        # Cache detections for voice handler (Layer 1 queries)
-        self.latest_layer1_detections = detections
-        self._layer1_cache_time = time.time()
-        logger.debug(f"Cached {len(detections)} L1 detections from laptop (LAYER1_RESPONSE msg)")
-        
-        # Update status display with Layer 1 detections from laptop
-        try:
-            from rpi5.main import get_status_display
-            status_display = get_status_display()
-            if status_display and detections:
-                formatted_dets = [
-                    {"class": det.get("class", det.get("class_name", "unknown"))}
-                    for det in detections
-                ]
-                status_display.update_layer1(formatted_dets, inference_time_ms)
-        except ImportError:
-            pass
+
+        # M44 fix: shared helper used by both handlers.
+        self._update_layer1_cache(detections, inference_time_ms, source_tag="LAYER1_RESPONSE")
 
     # =========================================================================
     # Public API (RPi5-specific)

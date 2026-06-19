@@ -43,7 +43,16 @@ class SessionAVRecorder:
         self.is_recording = False
         self.session_dir: Optional[Path] = None
 
-        self._lock = threading.Lock()
+        # M46 fix: split the single lock into per-resource locks so
+        # video writes, audio writes, and event logging don't block
+        # each other. The legacy `_lock` is kept as an alias for the
+        # session-state transitions (start/stop) only.
+        self._state_lock = threading.Lock()
+        self._video_lock = threading.Lock()
+        self._audio_lock = threading.Lock()
+        self._events_lock = threading.Lock()
+        self._lock = self._state_lock  # backwards-compat alias
+
         self._video_writer = None
         self._video_size: Optional[Tuple[int, int]] = None
         self._last_video_write = 0.0
@@ -56,7 +65,7 @@ class SessionAVRecorder:
         if not self.enabled:
             return False
 
-        with self._lock:
+        with self._state_lock:
             if self.is_recording:
                 return True
 
@@ -78,7 +87,7 @@ class SessionAVRecorder:
 
     def stop(self) -> None:
         """Flush and close the active recording session."""
-        with self._lock:
+        with self._state_lock:
             if not self.is_recording:
                 return
 
@@ -109,7 +118,7 @@ class SessionAVRecorder:
         if not self.is_recording or not self.record_camera or frame is None:
             return
 
-        with self._lock:
+        with self._video_lock:
             if not self.is_recording:
                 return
 
@@ -136,7 +145,7 @@ class SessionAVRecorder:
         if not self.is_recording or not self.record_mic or not audio_bytes:
             return
 
-        with self._lock:
+        with self._audio_lock:
             if not self.is_recording:
                 return
             if self._mic_wave is None:
@@ -149,7 +158,7 @@ class SessionAVRecorder:
         if not self.is_recording or not self.record_ai_audio or not audio_bytes:
             return
 
-        with self._lock:
+        with self._audio_lock:
             if not self.is_recording:
                 return
             if self._ai_wave is None:
@@ -161,7 +170,7 @@ class SessionAVRecorder:
         """Write a text event into the session log while recording."""
         if not text:
             return
-        with self._lock:
+        with self._events_lock:
             if not self.is_recording:
                 return
             self._log_event(kind, text=text)
@@ -196,5 +205,20 @@ class SessionAVRecorder:
             "event": event_type,
         }
         entry.update(payload)
-        self._events_file.write(json.dumps(entry) + "\n")
-        self._events_file.flush()
+        try:
+            self._events_file.write(json.dumps(entry) + "\n")
+            # M47 fix: catch the flush — on a full disk or
+            # read-only mount the file write succeeds but flush()
+            # raises BlockingIOError, which previously propagated
+            # and killed the record loop. Silently logging the
+            # failure is the right behaviour (recording continues,
+            # event is lost) since dropping the event beats
+            # dropping the entire session.
+            self._events_file.flush()
+        except (OSError, IOError) as e:
+            # Don't crash the recording loop on a transient
+            # disk error — just log and move on. The video +
+            # audio streams are still being captured.
+            logger.warning(
+                f"SessionAVRecorder._log_event flush failed: {e}"
+            )

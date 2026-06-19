@@ -257,10 +257,14 @@ def run_self_test() -> int:
         tests_failed += 1
 
     # Test 8: Camera
-    print("\n[8/8] Camera...")
+    # L10 fix: the previous label said "[8/8] Camera..." but the
+    # body only imports the class — no actual capture happens, so
+    # the "passed" status was misleading. Re-label to reflect what
+    # the test actually does (import smoke-test only).
+    print("\n[8/8] Camera (import check only)...")
     try:
         from main import CameraHandler
-        print("    Camera handler imported - OK")
+        print("    Camera handler imported - OK (no live capture performed)")
         tests_passed += 1
     except ImportError as e:
         print(f"    Camera import failed: {e}")
@@ -295,10 +299,27 @@ def connect_to_laptop(host: Optional[str] = None, port: int = 8765) -> int:
         client.start()
 
         print("Connected! Press Ctrl+C to disconnect.")
-        # Keep running
+        # L11 fix: previous version was a bare `while True:
+        # time.sleep(1)` with no graceful shutdown. The
+        # KeyboardInterrupt handler below relied on the
+        # default SIGINT handler to stop the loop, which works
+        # but is invisible — no shutdown progress is logged
+        # and a long-running command would need a hard kill to
+        # exit if `client.stop()` itself raised. Use a
+        # short-poll loop with a stop event and log progress
+        # so Ctrl+C triggers a clean teardown.
         import time
-        while True:
-            time.sleep(1)
+        import threading
+        stop_event = threading.Event()
+        def _sigint(_signum, _frame):
+            stop_event.set()
+        try:
+            import signal
+            signal.signal(signal.SIGINT, _sigint)
+        except Exception:
+            pass
+        while not stop_event.is_set():
+            time.sleep(0.5)
 
     except KeyboardInterrupt:
         print("\nDisconnecting...")
@@ -389,6 +410,10 @@ def test_gemini_live() -> int:
         config = types.LiveConnectConfig(
             response_modalities=[types.Modality.AUDIO],
         )
+        # L12 fix: wrap the genai.Client so it gets explicitly closed
+        # even if the probe raises mid-way. Without this, the
+        # underlying httpx/aiohttp connection pool can leak and the
+        # next probe (e.g. after a key rotation) hits a stale state.
         try:
             print("⏳ Opening WebSocket...")
             async with client.aio.live.connect(
@@ -443,6 +468,16 @@ def test_gemini_live() -> int:
                 print(f"   API code: {getattr(e, 'code', '?')}")
                 print(f"   API message: {getattr(e, 'message', '?')}")
             return 1
+        finally:
+            # L12 fix: ensure the genai.Client is closed. Some SDK
+            # versions raise on __aexit__ from a partially-initialized
+            # client; swallow that since we're exiting anyway.
+            try:
+                aclose = getattr(client, "aclose", None)
+                if aclose is not None:
+                    await aclose()
+            except Exception:
+                pass
 
     try:
         return asyncio.run(_probe())

@@ -88,8 +88,14 @@ class IntentRouter:
         ]
         # Word stems (any word starting with these → L3 candidate)
         self._l3_stems = {"navigat", "route"}
-        # Exact word hits (individual words that signal L3)
-        self._l3_words = {"navigate", "navigation", "directions", "bus", "gps", "stop"}
+        # Exact word hits (individual words that signal L3).
+        # H12 fix: "stop" was here, but a single-word "stop" mid-walk
+        # ("stop, let me think" / "stop, where am I?") would route to
+        # Layer 3 and call stop_navigation — a safety hazard during
+        # active routes. "stop" is now a global system command handled
+        # by the orchestrator before routing; explicit "stop navigation"
+        # still matches via _l3_phrases below.
+        self._l3_words = {"navigate", "navigation", "directions", "bus", "gps"}
 
         # ===============================================================
         # LAYER 1: Object detection (fast, local YOLO)
@@ -129,8 +135,17 @@ class IntentRouter:
         self._l2_words = {"describe", "explain", "analyze", "read"}
 
     def _clean(self, text: str) -> str:
-        """Strip punctuation and normalize whitespace."""
-        return re.sub(r'[^\w\s]', '', text.lower().strip())
+        """Strip punctuation, drop apostrophes, normalize whitespace.
+
+        M20 fix: both filler detection and routing previously operated
+        on different normalized forms (one stripped punctuation, the
+        other only lowercased). For "what's this", the filler check
+        saw "whats" while the phrase matcher saw "what's" — a
+        punctuation variant could miss the L1/L2/L3 phrase lists.
+        """
+        # Lowercase, strip punctuation, then remove apostrophe artefacts
+        # (downstream the string is alphanumeric + whitespace only).
+        return re.sub(r"[^\w\s]", "", text.lower().strip()).replace("'", "")
 
     def _extract_words(self, cleaned: str) -> set:
         """Get the set of words from cleaned text."""
@@ -268,11 +283,23 @@ class IntentRouter:
         Recommend YOLOE detection mode based on query intent.
         """
         query_lower = query.lower().strip()
-        
+
         # PERSONAL QUERIES → VISUAL PROMPTS
+        # M19 fix: previously "find the wallet", "locate the keys",
+        # "where's the laptop" all fell through to TEXT_PROMPTS
+        # (default) because the patterns only matched the
+        # possessive "my X" form. For personal-object localization
+        # we want VISUAL_PROMPTS — the visual-prompt mode is much
+        # better at finding user-personal items because it can
+        # accept an open-vocabulary class name. Also catch "is my
+        # X here", "can you find my X", and "do you see my X"
+        # variants people actually say.
         personal_patterns = [
             "where's my", "where is my", "find my", "show me my",
-            "locate my", "guide me to my", "where are my"
+            "locate my", "guide me to my", "where are my",
+            "where's the", "where is the", "find the",
+            "locate the", "where's that", "where is that",
+            "is my", "can you find my", "do you see my",
         ]
         
         for pattern in personal_patterns:

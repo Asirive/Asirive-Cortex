@@ -29,7 +29,9 @@ from typing import Set, Dict, Any, Callable, Optional, TYPE_CHECKING
 from datetime import datetime
 import json
 
-from laptop.protocol import (
+# TB2 fix: use the shared protocol module instead of the laptop-local
+# duplicate. See docs/plans/... for the consolidation rationale.
+from shared.api.protocol import (
     MessageType,
     parse_message,
     BaseMessage
@@ -154,8 +156,13 @@ class CortexWebSocketServer:
                         if parsed_message.type == MessageType.PING.value:
                             logger.debug(f"Received PING from {websocket.remote_address}")
                             ping_id = parsed_message.data.get("ping_id")
-                            from laptop.protocol import create_pong
-                            
+                            # TB2 fix: create_pong comes from the
+                            # shared protocol module (the inline
+                            # import-from-laptop-path was the last
+                            # laptop.protocol reference; consolidated
+                            # above).
+                            from shared.api.protocol import create_pong
+
                             # Respond with standardized PONG echoing the ID
                             pong_msg = create_pong(
                                 device_id="laptop-dashboard",

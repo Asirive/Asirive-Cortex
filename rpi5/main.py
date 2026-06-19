@@ -644,9 +644,11 @@ class StatusDisplay:
             from collections import deque as _deque
             self._log_deque = _deque(maxlen=50)
             self._log_lock = threading.Lock()
-            self._log_handler = _LogPaneHandler(self._log_deque, self._log_lock)
-            self._log_handler.setLevel(logging.INFO)
-            self._log_handler.setFormatter(logging.Formatter(fmt="%(message)s"))
+            # L8 fix: the original code created a plain _LogPaneHandler
+            # here, then overwrote it 30 lines later with a
+            # _DedupedLogPaneHandler. The first assignment was dead
+            # code that briefly attached a non-deduping handler to
+            # the deque. Skip straight to the deduped version.
 
             # Build the two-pane layout. Size 12 covers the 6 status rows
             # + panel padding + borders; the logs pane takes the rest.
@@ -2885,6 +2887,21 @@ class CortexSystem:
                     lta_api_key=os.environ.get('LTA_API_KEY', bus_cfg.get('lta_api_key', '')),
                     tts=self.tts,
                 )
+                # H13 + H17 fix: bind the bus handler to the main
+                # orchestrator event loop. update_detections() runs on
+                # a ThreadPoolExecutor worker (no loop), and the nav
+                # engine's bus-monitor coroutine runs on a separate
+                # thread. Without this binding, run_coroutine_threadsafe
+                # would have no loop to schedule on, and the bus-
+                # approaching announcement would be silently dropped.
+                try:
+                    main_loop = asyncio.get_running_loop()
+                    self.bus_handler.bind_to_loop(main_loop)
+                except RuntimeError:
+                    logger.warning(
+                        "BusHandler created before main event loop was "
+                        "running — bind_to_loop() must be called later."
+                    )
                 logger.info("✅ BusHandler initialized")
             except Exception as e:
                 logger.error(f"❌ Failed to init BusHandler: {e}")
@@ -3232,15 +3249,35 @@ class CortexSystem:
         return bool(self.layer2 and self.layer2.is_running and not self._gemini_is_live_31())
 
     def _gemini_mid_session_context_allowed(self) -> bool:
-        """Return True when the active runtime supports silent mid-session context."""
-        return bool(self.layer2 and self.layer2.is_running and not self._gemini_is_live_31())
+        """Return True when the active runtime supports silent mid-session context.
+
+        TB1 fix: on Gemini 3.1, mid-session context is QUEUED (not
+        auto-triggered). Gemini processes queued context on the next
+        activity_start from the user. This means we should still push
+        [NAV_EVENT] context on 3.1 — the user pressing a button or
+        asking "where am I?" will let Gemini process the queued nav
+        event. Previously the gate returned False for 3.1, which
+        meant the context never reached Gemini at all.
+        """
+        return bool(self.layer2 and self.layer2.is_running)
 
     def _should_suppress_local_nav_voice(self) -> bool:
         """Suppress local nav TTS when Gemini Live is connected.
 
         Gemini narrates via tool responses (user-triggered turns). Background
         turns are disabled on 3.1, but tool call responses still generate audio.
+
+        TB1 fix: on Gemini 3.1 the live session has manual VAD and
+        background turns are disabled. Gemini WILL NOT receive
+        [NAV_EVENT] context messages, and the local nav TTS is the
+        ONLY voice path the user has for turns / arrivals / road
+        crossings. Suppressing local voice on 3.1 produced silent
+        guidance (TB1). Only suppress for non-3.1 (older Live
+        models that have automatic activity detection and can
+        fire background turns from context).
         """
+        if self._gemini_is_live_31():
+            return False  # let local nav TTS speak on 3.1
         return self._is_gemini_live_online()
 
     def _log_gemini_background_turn_skipped(self, reason: str) -> None:
@@ -3661,9 +3698,20 @@ class CortexSystem:
             pass
         if not self.layer2 or not self.layer2.is_running:
             return
-        if self._gemini_is_live_31():
-            self._log_gemini_background_turn_skipped(f"nav_event:{event}")
-            return
+        # TB1 fix: previously this branch dropped [NAV_EVENT] messages
+        # for Gemini 3.1 because the live API's realtime_input_config
+        # is set to manual VAD. The system prompt at gemini_live_handler
+        # line 209 explicitly tells Gemini "You receive [NAV_EVENT]
+        # messages" — dropping them on the 3.1 path left Gemini with
+        # no way to know when the user was approaching a turn, arriving
+        # at the destination, or crossing a road, while the nav
+        # engine had suppressed its own speech (it thinks Gemini is
+        # the narrator). Result: silent guidance.
+        #
+        # The right fix: still send the [NAV_EVENT] as context, but
+        # don't auto-trigger a Gemini turn (the VAD is manual on 3.1).
+        # The next natural activity_start from the mic/user will let
+        # Gemini process the queued context, including the [NAV_EVENT].
         try:
             # Build event message for Gemini
             detail_parts = [f"{k}={v}" for k, v in details.items() if v]
@@ -5768,7 +5816,15 @@ class CortexSystem:
                         history = self.conversation_manager.get_history_for_gemini()
                         system_instruction = self.conversation_manager.build_system_instruction()
                         max_chars = self.conversation_manager.get_response_limit(routing["query_type"])
-                        # Override code execution from ConversationManager config
+                        # Override code execution from ConversationManager config.
+                        # M65 fix: the Gemini Live API doesn't support
+                        # code execution at all, so this is a no-op
+                        # kept for logging parity. The `enable_code_exec`
+                        # value is logged but never threaded into
+                        # generate_text_from_image because the live
+                        # path has no tool for it. If we ever migrate
+                        # to a non-live model that supports it, hook
+                        # this in here.
                         enable_code_exec = self.conversation_manager.should_enable_code_execution(routing["query_type"])
                         logger.info(
                             f"  [MEMORY] History: {len(history) if history else 0} turns, "
@@ -6039,9 +6095,21 @@ class CortexSystem:
             self.memory_manager.stop_sync_worker()
             self.memory_manager.cleanup()
 
-        # Save conversation session and cleanup old data
+        # Save conversation session and cleanup old data.
+        # M70 fix: save_session() can raise on a locked or
+        # corrupted SQLite file. Previously the exception escaped
+        # stop() and aborted the rest of the shutdown — leaving
+        # the WebSocket open, the audio player running, and the
+        # camera in an undefined state. Catch the failure, log
+        # it, and continue the shutdown sequence.
         if self.conversation_manager:
-            self.conversation_manager.save_session()
+            try:
+                self.conversation_manager.save_session()
+            except Exception as e:
+                logger.error(
+                    f"⚠️ save_session() failed during shutdown: {e}",
+                    exc_info=True,
+                )
             cleanup_days = self.config.get('conversation', {}).get('cleanup_days', 7)
             self.conversation_manager.cleanup_old_conversations(days=cleanup_days)
             session_id = self.conversation_manager.session_id[:8]

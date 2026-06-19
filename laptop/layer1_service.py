@@ -226,7 +226,15 @@ class Layer1Service:
                     
             except Exception as e:
                 logger.error(f"Inference Error: {e}")
-                
+                # TB9 fix: previously an inference exception left
+                # self.latest_results holding the last successful
+                # detection set. Voice queries then spoke those
+                # "phantom" objects for several seconds after the
+                # scene had changed (or the model had errored).
+                # Set to empty list so callers see "no detections"
+                # immediately, matching the actual current state.
+                self.latest_results = []
+
             # Limit FPS? No, run as fast as possible.
 
     def set_model(self, model_path: str):

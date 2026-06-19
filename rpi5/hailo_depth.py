@@ -539,10 +539,15 @@ class HailoDepthEstimator:
         """
         hazards = []
         
+        # M3 fix: regions are now non-overlapping. The previous
+        # boundaries [0, 0.33) / [0.25, 0.75) / [0.67, 1.0] overlapped
+        # at [0.25, 0.33) and [0.67, 0.75), so a wall spanning the
+        # center of the frame would fire BOTH "left" and "ahead"
+        # (or "right" and "ahead") simultaneously.
         regions = [
-            ("left", int(dw * 0.0), int(dw * 0.33)),
-            ("ahead", int(dw * 0.25), int(dw * 0.75)),
-            ("right", int(dw * 0.67), int(dw * 1.0)),
+            ("left", int(dw * 0.00), int(dw * 0.33)),
+            ("ahead", int(dw * 0.33), int(dw * 0.67)),
+            ("right", int(dw * 0.67), int(dw * 1.00)),
         ]
 
         for direction, x1, x2 in regions:
@@ -1050,8 +1055,19 @@ class HailoDepthEstimator:
         if len(approaching_pixels[0]) == 0:
             return hazards
 
-        cy = int(np.mean(approaching_pixels[0]))
         cx = int(np.mean(approaching_pixels[1]))
+
+        # M2 fix: the centroid (cy) of the approaching region is
+        # typically the floor (the largest connected region). The
+        # actual person/object is in the UPPER portion. We restrict
+        # the distance sample to the top half of the approach_mask
+        # to avoid sampling the floor.
+        top_half_mask = approach_mask[: dh // 2, :]
+        top_pixels = np.where(top_half_mask)
+        if len(top_pixels[0]) > 0:
+            cy = int(np.mean(top_pixels[0]))
+        else:
+            cy = int(np.mean(approaching_pixels[0]))
 
         # Direction
         if cx < dw * 0.33:
@@ -1061,7 +1077,7 @@ class HailoDepthEstimator:
         else:
             direction = "ahead"
 
-        # Distance to the approaching object
+        # Distance to the approaching object — sample upper portion only
         dist = float(np.median(depth_map[
             max(0, cy - 5):min(dh, cy + 5),
             max(0, cx - 5):min(dw, cx + 5)

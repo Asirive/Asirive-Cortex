@@ -129,17 +129,33 @@ class YOLOELearner:
         elif self.mode == YOLOEMode.TEXT_PROMPTS:
             # Text prompts: Adaptive learning from Gemini/Maps/Memory
             self.prompt_manager = prompt_manager or AdaptivePromptManager()
-            
-            # Set initial classes (BASE ONLY - no dynamic learning at startup)
-            self.current_classes = [
-                "person", "car", "phone", "wallet", "keys",
-                "door", "stairs", "chair", "table", "bottle",
-                "cup", "book", "laptop", "bag", "glasses"
-            ]
-            logger.info(f"🧠 [Text Prompts Mode] Using {len(self.current_classes)}-class base vocabulary")
+
+            # TB9-secondary fix: previously the constructor set
+            # current_classes to the BASE vocabulary only and the
+            # comment "Skip prompt update to avoid 883ms startup
+            # delay" disabled _update_classes_internal() — meaning
+            # the AdaptivePromptManager's learned prompts (loaded
+            # from disk at __init__ time) were never applied until
+            # someone explicitly called load_text_prompts() later.
+            # The user could teach the system "wallet", "phone",
+            # "keys" etc. on Monday, reboot on Tuesday, and the
+            # live detection would still use only the base 15
+            # classes until the next time load_text_prompts()
+            # was called. The 883ms cost is for the embedding
+            # compute, not for get_current_prompts() (which is
+            # just a list concat). Pull the merged list (base +
+            # learned) here. Embedding compute stays deferred.
+            if self.prompt_manager:
+                self.current_classes = self.prompt_manager.get_current_prompts()
+            else:
+                self.current_classes = [
+                    "person", "car", "phone", "wallet", "keys",
+                    "door", "stairs", "chair", "table", "bottle",
+                    "cup", "book", "laptop", "bag", "glasses",
+                ]
+            logger.info(f"🧠 [Text Prompts Mode] Using {len(self.current_classes)}-class vocabulary (base + learned)")
             logger.info("   Adaptive learning enabled (Gemini/Maps/Memory integration)")
-            # Skip prompt update to avoid 883ms startup delay
-            # self._update_classes_internal()
+            # Embedding compute remains deferred — see _update_classes_internal().
         
         elif self.mode == YOLOEMode.VISUAL_PROMPTS:
             # Visual prompts: Personal object recognition (user's specific items)

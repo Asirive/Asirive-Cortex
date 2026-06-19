@@ -847,11 +847,21 @@ class DashboardOverviewWidget(QWidget):
         self.send_command.emit(cmd)
 
     def _toggle_stream(self):
-        # We don't track state locally effectively without feedback, but we can send toggle
-        # Actually protocol says START/STOP_VIDEO_STREAMING
-        # For simplicity, let's just assume we want to START
-        # Or better, make it a checkable button
-        pass # Implemented in future if needed
+        # TB7 fix: previously this was a literal `pass`, so the
+        # START STREAM button did nothing. Now emit a real
+        # START_VIDEO_STREAMING / STOP_VIDEO_STREAMING command
+        # based on the button's checked state, and toggle the
+        # label to match.
+        if self.btn_stream.isChecked():
+            self.btn_stream.setText("STOP STREAM")
+            self.send_command.emit({
+                "action": "START_VIDEO_STREAMING",
+            })
+        else:
+            self.btn_stream.setText("START STREAM")
+            self.send_command.emit({
+                "action": "STOP_VIDEO_STREAMING",
+            })
 
     def _set_l1_mode(self, mode_str):
         cmd = {
@@ -1033,8 +1043,15 @@ class ServerTab(QWidget):
         layout.addWidget(log_panel, 60)
 
     def _toggle_service(self):
-        # Implementation depends on tracking state
-        pass
+        # TB7 fix: previously this was a literal `pass`, so the
+        # STOP SERVICE button did nothing. Now emit a real
+        # SHUTDOWN command and update the label. The server-side
+        # handler is responsible for the actual cleanup.
+        self.btn_toggle_service.setText("STOPPING…")
+        self.btn_toggle_service.setEnabled(False)
+        self.send_command.emit({
+            "action": "SHUTDOWN",
+        })
 
     def _change_model(self, model_name):
         self.send_command.emit({

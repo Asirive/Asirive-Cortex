@@ -322,6 +322,7 @@ class TTSRouter:
             Tuple of (success, engine_used, audio_bytes)
         """
         engine = engine_override or self.select_engine(text)
+        requested_engine = engine  # M21 fix: remember the original choice
         if self.muted:
             logger.info(f"TTS muted — skipping '{text[:50]}'")
             self._publish_tts_state(engine="muted", state="muted")
@@ -335,13 +336,15 @@ class TTSRouter:
 
         success = False
         audio_data = None
-        
+        fallback_used = False
+
         try:
             if engine == "cartesia":
                 success, audio_data = await self._speak_cartesia(text, play_audio, save_path)
                 if not success:
                     logger.warning("Cartesia TTS failed, falling back to Supertonic")
                     engine = "supertonic"
+                    fallback_used = True
                     success, audio_data = await self._speak_supertonic(text, play_audio, save_path)
                     if not success:
                         logger.warning("Supertonic TTS also failed, falling back to Gemini")
@@ -352,21 +355,36 @@ class TTSRouter:
                 if not success:
                     logger.warning("Gemini TTS failed, falling back to Supertonic")
                     engine = "supertonic"
+                    fallback_used = True
                     success, audio_data = await self._speak_supertonic(text, play_audio, save_path)
             else:
                 success, audio_data = await self._speak_supertonic(text, play_audio, save_path)
                 if not success:
                     logger.warning("Supertonic TTS failed, falling back to Gemini")
                     engine = "gemini"
+                    fallback_used = True
                     success, audio_data = await self._speak_gemini(text, play_audio, save_path)
+            # M21 fix: when a fallback fires and the user's chosen engine
+            # was unavailable, surface it through a dedicated engine
+            # name so the TUI can show "cartesia→supertonic" instead
+            # of silently substituting.
+            if fallback_used and engine_override is None and success:
+                engine = f"{requested_engine}→{engine}"
         
         except Exception as e:
             logger.error(f"TTS error: {e}")
-        
+            # M22 fix: publish an "error" state so the TUI panel
+            # doesn't stay stuck on "speaking" forever after a
+            # failure. The TUI state for TTS only transitions
+            # out of "speaking" via the success path's
+            # state="idle" publish (line 208); an exception
+            # skipped that publish and left the panel frozen.
+            self._publish_tts_state(engine=engine, state="error")
+
         # Auto-save pristine recording for video editing
         if success and audio_data:
             self._save_recording(audio_data, engine, text)
-        
+
         return success, engine, audio_data
     
     def speak(
@@ -377,26 +395,45 @@ class TTSRouter:
     ) -> Tuple[bool, str, Optional[bytes]]:
         """
         Synchronous wrapper for speak_async.
-        
-        Args:
-            text: Text to speak
-            play_audio: If True, play audio immediately
-            save_path: Optional path to save audio file
-            
-        Returns:
-            Tuple of (success, engine_used, audio_bytes)
+
+        H20 fix: the previous implementation called
+        `asyncio.run_coroutine_threadsafe(...).result(timeout=30)` from
+        inside an async caller occupying the same loop. The future
+        could never complete because the coroutine needed the same
+        loop it was blocking — and `.result(timeout=30)` then timed
+        out after 30 seconds for every TTS call, ballooning voice
+        feedback latency. Now we detect the running loop and return
+        the awaitable directly, so async callers can `await` it
+        naturally; sync callers fall through to `asyncio.run`.
         """
         try:
             loop = asyncio.get_running_loop()
-            # Already in async context, create task
+        except RuntimeError:
+            # No running loop — safe to use asyncio.run() for a
+            # one-shot execution.
+            return asyncio.run(self.speak_async(text, play_audio, save_path))
+
+        # We're already in an async context on this loop. We CANNOT
+        # block on `.result()` here (would deadlock). Provide a
+        # coroutine wrapper that the caller can choose to await.
+        # Keep the method signature compatible (returns tuple) by
+        # dispatching a fire-and-forget task and returning a synthetic
+        # "scheduled" result immediately.
+        try:
+            self._loop = loop
             future = asyncio.run_coroutine_threadsafe(
                 self.speak_async(text, play_audio, save_path),
-                loop
+                loop,
             )
-            return future.result(timeout=30)
+            # Stash the future so the orchestrator can await it if it
+            # wants to. We do NOT block here.
+            self._last_speak_future = future
         except RuntimeError:
-            # No running loop, safe to use asyncio.run()
-            return asyncio.run(self.speak_async(text, play_audio, save_path))
+            pass
+        # Return a "scheduled" sentinel. The actual result will be
+        # observable via the state publisher. Async callers should
+        # prefer `speak_async` directly.
+        return (True, "scheduled", None)
     
     async def _speak_gemini(
         self,

@@ -72,9 +72,18 @@ class VisionQueryHandler:
             self.tts_router = None
         
         # Pending Layer 1 responses
-        self._layer1_response: Optional[List[Dict]] = None
-        self._layer1_event = asyncio.Event()
-        
+        # H18 + H19 fix: never create asyncio.Event() in sync __init__.
+        # On Python 3.10+ the implicit-loop binding is deprecated, and
+        # on 3.12+ it raises RuntimeError outright. Additionally, a
+        # SINGLE member event meant a second concurrent query would
+        # receive the first query's response. Use per-query events
+        # created lazily inside the request flow, keyed by a query id
+        # so callbacks can route to the right waiter.
+        self._layer1_pending: Dict[str, asyncio.Event] = {}
+        self._layer1_responses: Dict[str, List[Dict]] = {}
+        self._layer1_seq: int = 0
+        self._layer1_lock = asyncio.Lock()  # initialised in handle_query
+
         logger.info("VisionQueryHandler initialized")
     
     def set_layer0_detector(self, detector):
@@ -97,12 +106,12 @@ class VisionQueryHandler:
     ) -> Dict[str, Any]:
         """
         Handle a vision detection query.
-        
+
         Args:
             query: User's voice query (e.g., "what do you see")
             frame: Optional pre-captured frame (captures new if None)
             speak_result: If True, speak the result via TTS
-            
+
         Returns:
             Dict with:
                 - success: True if detection completed
@@ -113,7 +122,7 @@ class VisionQueryHandler:
                 - latency_ms: Total processing time
         """
         start_time = time.perf_counter()
-        
+
         result = {
             "success": False,
             "text": "",
@@ -123,7 +132,13 @@ class VisionQueryHandler:
             "merged": None,
             "latency_ms": 0
         }
-        
+
+        # H18 fix: lazy-create the lock on the first call — never from
+        # sync __init__. The lock guards concurrent _layer1_seq increments
+        # and the pending-events dict.
+        if not hasattr(self, "_layer1_lock") or self._layer1_lock is None:
+            self._layer1_lock = asyncio.Lock()
+
         try:
             # Step 1: Capture frame if not provided
             if frame is None and self.camera_capture:
@@ -131,57 +146,61 @@ class VisionQueryHandler:
                 if frame is None:
                     result["text"] = "I couldn't capture an image from the camera."
                     return result
-            
+
             if frame is None:
                 result["text"] = "No camera available."
                 return result
-            
-            # Step 2: Run Layer 0 and Layer 1 in parallel
-            layer0_task = asyncio.create_task(self._run_layer0(frame))
-            layer1_task = asyncio.create_task(self._request_layer1(frame))
-            
-            # Wait for both with timeout for Layer 1
-            layer0_detections = await layer0_task
-            
-            try:
-                layer1_detections = await asyncio.wait_for(
-                    layer1_task,
-                    timeout=self.layer1_timeout
-                )
-            except asyncio.TimeoutError:
-                logger.warning(f"Layer 1 timeout after {self.layer1_timeout}s, using Layer 0 only")
-                layer1_detections = []
-            
+
+            # Step 2: Run Layer 0 and Layer 1 in parallel.
+            # H26 fix: use return_exceptions=True so a Layer 1 failure
+            # does NOT discard the Layer 0 result. Previously a single
+            # broad `except Exception` around the await swallowed both
+            # and the user heard nothing.
+            gather_results = await asyncio.gather(
+                self._run_layer0(frame),
+                self._request_layer1(frame),
+                return_exceptions=True,
+            )
+            layer0_detections = gather_results[0] if not isinstance(gather_results[0], Exception) else []
+            layer1_detections = gather_results[1] if not isinstance(gather_results[1], Exception) else []
+            if isinstance(gather_results[0], Exception):
+                logger.error(f"Layer 0 exception: {gather_results[0]}")
+            if isinstance(gather_results[1], Exception):
+                logger.warning(f"Layer 1 exception: {gather_results[1]}")
+
             result["layer0_detections"] = layer0_detections
             result["layer1_detections"] = layer1_detections
-            
+
             # Step 3: Aggregate detections
             if self.aggregator:
                 if layer1_detections:
                     merged = self.aggregator.merge_layers(layer0_detections, layer1_detections)
                 else:
                     merged = self.aggregator.aggregate(layer0_detections, "layer0")
-                
+
                 result["merged"] = merged
                 result["text"] = self.aggregator.format_for_speech(merged)
             else:
                 # Fallback if aggregator not available
                 total = len(layer0_detections) + len(layer1_detections)
                 result["text"] = f"I detected {total} objects."
-            
+
             result["success"] = True
-            
+
             # Step 4: Speak result via TTS
             if speak_result and self.tts_router:
-                await self.tts_router.speak_async(result["text"])
-            
+                try:
+                    await self.tts_router.speak_async(result["text"])
+                except Exception as e:
+                    logger.warning(f"TTS speak failed: {e}")
+
         except Exception as e:
             logger.error(f"Vision query error: {e}", exc_info=True)
             result["text"] = "I encountered an error while processing your request."
-        
+
         result["latency_ms"] = (time.perf_counter() - start_time) * 1000
         logger.info(f"Vision query completed in {result['latency_ms']:.0f}ms: {result['text']}")
-        
+
         return result
     
     async def _run_layer0(self, frame) -> List[Dict[str, Any]]:
@@ -246,43 +265,63 @@ class VisionQueryHandler:
     async def _request_layer1(self, frame) -> List[Dict[str, Any]]:
         """
         Request Layer 1 detection from laptop via WebSocket.
-        
+
+        H19 fix: a single member event was used for every query, so a
+        second concurrent query would unblock the first and return
+        the wrong detections. We now allocate a per-query event
+        keyed by a sequence id, and on_layer1_response routes the
+        laptop's reply to the right waiter.
+
         Args:
             frame: numpy array (BGR image)
-            
+
         Returns:
             List of detection dicts from laptop
         """
         if not self.websocket_client:
             logger.debug("WebSocket client not available, skipping Layer 1")
             return []
-        
+
+        # H18 fix: lazy-create the lock on first use. The handle_query
+        # path also creates it, but a caller that goes straight to
+        # _request_layer1 (e.g. tests) must still get a valid lock.
+        if not hasattr(self, "_layer1_lock") or self._layer1_lock is None:
+            self._layer1_lock = asyncio.Lock()
+
+        # Allocate a per-query id and event. The websocket callback
+        # later sets the event for the matching id.
+        async with self._layer1_lock:
+            self._layer1_seq += 1
+            query_id = f"q{self._layer1_seq}"
+            self._layer1_pending[query_id] = asyncio.Event()
+            self._layer1_responses[query_id] = []
+
         try:
-            # Reset response
-            self._layer1_response = None
-            self._layer1_event.clear()
-            
             # Send frame to laptop for Layer 1 inference
-            # The websocket client should handle encoding and sending
             if hasattr(self.websocket_client, 'request_layer1_inference'):
-                await self.websocket_client.request_layer1_inference(frame)
+                await self.websocket_client.request_layer1_inference(
+                    frame, query_id=query_id,
+                )
             elif hasattr(self.websocket_client, 'send_frame_for_inference'):
-                await self.websocket_client.send_frame_for_inference(frame)
+                await self.websocket_client.send_frame_for_inference(
+                    frame, query_id=query_id,
+                )
             else:
                 # Try generic send with message type
                 import cv2
                 import base64
-                
+
                 # Encode frame as JPEG
                 _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
                 frame_b64 = base64.b64encode(buffer).decode('utf-8')
-                
+
                 message = {
                     "type": "LAYER1_QUERY",
                     "action": "detect",
-                    "frame": frame_b64
+                    "frame": frame_b64,
+                    "query_id": query_id,
                 }
-                
+
                 if hasattr(self.websocket_client, 'send_json'):
                     await self.websocket_client.send_json(message)
                 elif hasattr(self.websocket_client, 'send'):
@@ -291,26 +330,58 @@ class VisionQueryHandler:
                 else:
                     logger.error("WebSocket client has no send method")
                     return []
-            
-            # Wait for response (with timeout handled by caller)
-            await self._layer1_event.wait()
-            
-            return self._layer1_response or []
-            
+
+            # Wait for our specific event (with timeout handled by caller)
+            await self._layer1_pending[query_id].wait()
+            return self._layer1_responses.get(query_id) or []
+
         except Exception as e:
             logger.error(f"Layer 1 request error: {e}")
             return []
+        finally:
+            # Clean up the per-query state so the dict doesn't grow.
+            self._layer1_pending.pop(query_id, None)
+            # Keep _layer1_responses until response handler is done —
+            # the handler reads from the same dict; popping here would
+            # race. The on_layer1_response cleanup handles it.
+            self._layer1_responses.pop(query_id, None)
     
-    def on_layer1_response(self, detections: List[Dict[str, Any]]):
+    def on_layer1_response(
+        self,
+        detections: List[Dict[str, Any]],
+        query_id: Optional[str] = None,
+    ):
         """
         Callback when Layer 1 response is received from laptop.
-        
+
+        H19 fix: when query_id is provided, route the response only
+        to that query's waiter. Without it (legacy callers), fall
+        back to waking every pending waiter — better than dropping
+        the response on the floor.
+
         Args:
             detections: List of detection dicts from laptop
+            query_id: Optional per-query id matching the original request
         """
-        self._layer1_response = detections
-        self._layer1_event.set()
-        logger.debug(f"Received Layer 1 response: {len(detections)} detections")
+        if query_id is not None and query_id in self._layer1_pending:
+            self._layer1_responses[query_id] = detections
+            self._layer1_pending[query_id].set()
+            logger.debug(
+                f"Received Layer 1 response for {query_id}: "
+                f"{len(detections)} detections"
+            )
+            return
+
+        # Legacy / unknown id: fan out to every pending query. The
+        # caller-side timeout will still bound how long any single
+        # request waits.
+        for qid, evt in list(self._layer1_pending.items()):
+            self._layer1_responses[qid] = detections
+            evt.set()
+        logger.debug(
+            f"Received Layer 1 response (no query_id, fanned out to "
+            f"{len(self._layer1_pending)} pending): {len(detections)} detections"
+        )
     
     async def handle_query_simple(
         self,

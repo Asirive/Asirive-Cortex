@@ -233,7 +233,14 @@ class ConversationManager:
         return conn
 
     def _check_session_timeout(self):
-        """Check if session has timed out and start a new one if needed."""
+        """Check if session has timed out and start a new one if needed.
+
+        M63 fix: previously this saved the session, then blanked
+        `self.turns`, so the very next `get_history_for_gemini()`
+        returned [] and Gemini saw no recent context. Keep the
+        last 2 turns as a "carryover" buffer so the new session
+        has at least a sliver of recent context to work with.
+        """
         elapsed = time.time() - self.last_activity
         if elapsed > self.session_timeout:
             logger.info(
@@ -241,7 +248,13 @@ class ConversationManager:
                 f"Starting new session."
             )
             self.save_session()
+            # M63 fix: carry the last 2 turns over so the new
+            # session has immediate context (e.g. "what were we
+            # just talking about?"). Without this, `turns` is
+            # cleared and get_history_for_gemini() returns [].
+            carryover = list(self.turns[-2:]) if self.turns else []
             self._start_new_session()
+            self.turns = carryover
 
     def _start_new_session(self):
         """Start a fresh conversation session."""
@@ -476,29 +489,41 @@ class ConversationManager:
     def extract_personal_facts(self, text: str):
         """
         Extract personal facts from user speech using regex patterns.
-        
+
         Triggered keywords: "my name is", "I live at", "remember that", etc.
         Stores extracted facts to SQLite user_profile table.
-        
+
         Args:
             text: User's speech text
         """
         if not self.extract_facts_enabled:
             return
-        
+
         text_lower = text.lower().strip()
-        
+
         for pattern, fact_key in PERSONAL_FACT_PATTERNS:
             match = re.search(pattern, text_lower, re.IGNORECASE)
             if match:
                 value = match.group(1).strip()
+                # M64 fix: the previous patterns used `(.+?)(?:\.|$)` which
+                # is lazy but the `$` anchor only fires at the absolute
+                # end of the line, so a sentence like "I like apples
+                # and I work as a teacher" would capture the entire
+                # trailing run as one fact. Trim at common conjunction
+                # boundaries (".", " and ", " but ", " also ") so we
+                # only store the first fact per sentence.
+                for stop in (".", " and ", " but ", " also ", " however "):
+                    if stop in value:
+                        value = value.split(stop, 1)[0].strip()
+                # Drop trailing punctuation
+                value = value.rstrip(".,;:!?").strip()
                 if len(value) < 2 or len(value) > 200:
                     continue  # Skip too short or too long
-                
+
                 # Capitalize names
                 if fact_key == "name":
                     value = value.capitalize()
-                
+
                 logger.info(f"Personal fact extracted: {fact_key} = '{value}'")
                 self.store_user_profile(fact_key, value)
 
@@ -561,10 +586,17 @@ class ConversationManager:
 
     def _try_restore_session(self):
         """
-        On startup, always restore the last session regardless of age.
-        
-        Sessions persist indefinitely across restarts. A new session is only
-        started during runtime if the user is silent for session_timeout seconds.
+        On startup, restore the last session if it's recent enough.
+
+        H31 fix: previously the comment said "Sessions persist
+        indefinitely" and the code restored a 30-day-old session
+        as if it were fresh. That fed stale personal-context
+        history into the LLM at next boot, which produced
+        confidently-wrong answers ("I remember you said X
+        yesterday…" when X was from last month). Now we honour
+        `session_timeout` on restore too: if the gap between the
+        last turn and now is greater than 2 × session_timeout, we
+        start a fresh session ID and skip loading old turns.
         """
         try:
             conn = self._get_db()
@@ -576,17 +608,30 @@ class ConversationManager:
                 LIMIT 1
             """)
             row = cursor.fetchone()
-            
+
             if row:
                 last_session_id = row['session_id']
                 last_timestamp = row['last_ts']
                 age = time.time() - last_timestamp
-                
-                # Always restore — sessions persist indefinitely
+
+                # Allow a generous restore window: 2 × session_timeout
+                # (e.g. 600s by default). Beyond that, treat the
+                # previous session as stale and start fresh.
+                max_restore_age = max(self.session_timeout * 2, 60.0)
+                if age > max_restore_age:
+                    logger.info(
+                        f"Last session {last_session_id[:8]}... is "
+                        f"{age:.0f}s old (>{max_restore_age:.0f}s "
+                        f"window) — starting fresh session."
+                    )
+                    conn.close()
+                    return
+
+                # Restore — within the freshness window.
                 self.session_id = last_session_id
                 self.session_start = last_timestamp  # Approximate
                 self.last_activity = time.time()  # Reset activity to NOW so timeout starts fresh
-                
+
                 # Load turns (including image_path and full_response)
                 turns_cursor = conn.execute("""
                     SELECT role, content, query_type, timestamp, image_path, full_response
@@ -594,7 +639,7 @@ class ConversationManager:
                     WHERE session_id = ?
                     ORDER BY timestamp ASC
                 """, (last_session_id,))
-                
+
                 for turn_row in turns_cursor:
                     self.turns.append({
                         "role": turn_row['role'],
@@ -604,12 +649,12 @@ class ConversationManager:
                         "image_path": turn_row['image_path'],
                         "full_response": turn_row['full_response'],
                     })
-                
+
                 logger.info(
                     f"Restored session {last_session_id[:8]}... "
                     f"({len(self.turns)} turns, {age:.0f}s old)"
                 )
-            
+
             conn.close()
         except Exception as e:
             logger.warning(f"Could not restore session: {e}")
@@ -739,14 +784,27 @@ class ConversationManager:
             List of dicts with keys: content, full_response, image_path, timestamp, session_id
         """
         results = []
-        search_term = f"%{object_name}%"
-        
+        # M12 fix: previously a user query like "100% my wallet"
+        # or "blue_pen" had the `%` and `_` interpreted as SQL
+        # LIKE wildcards. `100%` matched every row containing
+        # "100" + any suffix, and `_pen` matched any 4-char string
+        # ending in "pen". Escape the LIKE metacharacters so the
+        # search is a literal substring match. (FTS5 would be
+        # better long-term, but escape is the minimal-risk fix.)
+        def _escape_like(s: str) -> str:
+            return (
+                s.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
+        search_term = f"%{_escape_like(object_name)}%"
+
         try:
             conn = self._get_db()
             cursor = conn.execute("""
                 SELECT session_id, role, content, full_response, image_path, timestamp
                 FROM conversations_local
-                WHERE (content LIKE ? OR full_response LIKE ?)
+                WHERE (content LIKE ? ESCAPE '\\' OR full_response LIKE ? ESCAPE '\\')
                   AND role = 'model'
                 ORDER BY timestamp DESC
                 LIMIT ?

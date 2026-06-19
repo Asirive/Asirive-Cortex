@@ -26,6 +26,7 @@ import logging
 import time
 import sys
 import threading
+import queue
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -71,13 +72,50 @@ class HapticController:
                 self._chip_handle = lgpio.gpiochip_open(0)
                 # Start PWM with 0% duty cycle (off)
                 lgpio.tx_pwm(self._chip_handle, gpio_pin, pwm_frequency, 0)
-                
+
+                # M9 fix: one persistent worker thread + bounded queue
+                # replaces the per-pulse thread spawn. Eliminates the
+                # ~20 threads/sec churn at 21 FPS L0 and prevents
+                # overlapping tx_pwm calls from corrupting the PWM
+                # hardware state.
+                self._pulse_queue: "queue.Queue" = queue.Queue(maxsize=32)
+                self._pulse_worker = threading.Thread(
+                    target=self._pulse_worker_loop,
+                    name="haptic-pulse",
+                    daemon=True,
+                )
+                self._pulse_worker.start()
+
                 logger.info(f"✅ Haptic Controller initialized (GPIO {gpio_pin}, {pwm_frequency}Hz)")
             except Exception as e:
                 logger.error(f"❌ Failed to initialize GPIO: {e}")
                 self.enabled = False
         else:
             logger.info("ℹ️ Haptic Controller in MOCK mode (laptop testing)")
+
+    def _pulse_worker_loop(self) -> None:
+        """Single worker that drains the pulse queue and emits one PWM
+        pulse at a time. Keeps tx_pwm calls strictly serial.
+        """
+        while True:
+            try:
+                intensity, duration = self._pulse_queue.get()
+            except Exception:
+                continue
+            try:
+                if self._chip_handle is None:
+                    continue
+                lgpio.tx_pwm(self._chip_handle, self.gpio_pin, self.pwm_frequency, intensity)
+                time.sleep(duration)
+                lgpio.tx_pwm(self._chip_handle, self.gpio_pin, self.pwm_frequency, 0)
+                logger.debug(f"🔊 Haptic: PULSE ({intensity}%, {duration}s)")
+            except Exception as e:
+                logger.error(f"❌ Haptic control failed: {e}")
+            finally:
+                try:
+                    self._pulse_queue.task_done()
+                except Exception:
+                    pass
     
     def continuous(self, intensity: int = 100) -> None:
         """
@@ -103,26 +141,25 @@ class HapticController:
     ) -> None:
         """
         Pulsed vibration (near/far objects). Non-blocking, single pulse.
-        
+
         Args:
             intensity: Vibration intensity (0-100%)
             duration: Pulse duration in seconds
         """
-        def _do_pulse():
-            if self.enabled and self._chip_handle is not None:
-                try:
-                    lgpio.tx_pwm(self._chip_handle, self.gpio_pin, self.pwm_frequency, intensity)
-                    time.sleep(duration)
-                    lgpio.tx_pwm(self._chip_handle, self.gpio_pin, self.pwm_frequency, 0)
-                    logger.debug(f"🔊 Haptic: PULSE ({intensity}%, {duration}s)")
-                except Exception as e:
-                    logger.error(f"❌ Haptic control failed: {e}")
-
-        if self.enabled and self._chip_handle is not None:
-            threading.Thread(target=_do_pulse, daemon=True).start()
-        else:
-            # Mock mode (laptop)
+        # M9 fix: previously this spawned a new daemon thread per
+        # call. At high detection rates (Tier 3 incoming-fast, 21
+        # FPS L0) we'd churn ~20 threads/sec. The threads were
+        # short-lived so it didn't OOM, but it flooded the GIL and
+        # the lgpio chip got hammered with overlapping tx_pwm calls
+        # that occasionally corrupted the PWM hardware state. Now a
+        # single worker thread + queue handles all pulses.
+        if not self.enabled or self._chip_handle is None:
             logger.debug(f"🔊 [MOCK] Haptic: PULSE ({intensity}%, {duration}s)")
+            return
+        try:
+            self._pulse_queue.put_nowait((intensity, duration))
+        except Exception:
+            pass  # Queue full — drop; the user is already being pulsed
     
     def stop(self) -> None:
         """Stop all vibration."""

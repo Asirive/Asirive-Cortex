@@ -194,7 +194,17 @@ class USBCameraHandler:
                 time.sleep(0.01)
                 continue
             if not ret or frame is None:
-                time.sleep(0.001)
+                # TB6 fix: previously a read failure (camera
+                # disconnected, USB error) would just sleep and
+                # retry, leaving _latest_frame holding the LAST
+                # successful frame. get_frame() then returns stale
+                # imagery forever, freezing L0/L1 detection and
+                # Gemini context on the dead frame. Clear the
+                # cache so callers see "no frame" instead of
+                # stale data.
+                with self._frame_lock:
+                    self._latest_frame = None
+                time.sleep(0.005)
                 continue
 
             frame = self._apply_transforms(frame)

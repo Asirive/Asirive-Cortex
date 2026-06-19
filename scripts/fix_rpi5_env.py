@@ -66,17 +66,32 @@ with sftp.open(ENV_PATH, "r") as f:
     old_env = f.read().decode("utf-8", errors="replace")
 print(old_env)
 
-# 2. Patch .env: replace GEMINI_API_KEY and GOOGLE_API_KEY primary lines
+# 2. Patch .env: replace GEMINI_API_KEY and GOOGLE_API_KEY primary lines.
+# M71 fix: the previous version used `seen_keys` to skip duplicate
+# key names, but the bookkeeping only set `seen_keys` AFTER the
+# replacement. The result: if the file had TWO `GEMINI_API_KEY=`
+# lines (e.g. an old one at the top and a new one further down
+# from a partial earlier rotation), only the FIRST got replaced;
+# the second was appended to the file as-is, and python-dotenv
+# uses the LAST value — so the new key was silently overridden
+# by the old (often expired) key. Now we replace ALL occurrences
+# of the targeted keys in a single pass and append any new
+# targets that didn't exist in the original file.
 new_env_lines = []
-seen_keys = set()
+written_keys = set()
 for line in old_env.splitlines():
     if "=" in line and not line.strip().startswith("#"):
         key_name = line.split("=", 1)[0].strip()
-        if key_name in ("GEMINI_API_KEY", "GOOGLE_API_KEY") and key_name not in seen_keys:
+        if key_name in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
             new_env_lines.append(f"{key_name}={NEW_KEY}")
-            seen_keys.add(key_name)
+            written_keys.add(key_name)
             continue
     new_env_lines.append(line)
+# Append any target key that wasn't in the file at all, so the
+# patched .env always has a working entry for every target.
+for k in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
+    if k not in written_keys:
+        new_env_lines.append(f"{k}={NEW_KEY}")
 new_env = "\n".join(new_env_lines) + "\n"
 
 # 3. Write patched .env

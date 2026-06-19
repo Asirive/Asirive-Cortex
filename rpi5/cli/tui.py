@@ -50,7 +50,11 @@ STATE_STYLE = {
 }
 
 # Patterns for log event parsing
-RE_DETECTION  = re.compile(r'\[L([0-4])\]\s+(\w+)\s+conf=([\d.]+)')
+# L4 fix: previously required `conf=` to be followed by a decimal
+# point, so logs emitting integer confidences like `conf=1` were
+# silently skipped and the TUI missed the detection. Allow one OR
+# more digits, optional decimal.
+RE_DETECTION  = re.compile(r'\[L([0-4])\]\s+(\w+)\s+conf=(\d+(?:\.\d+)?)')
 RE_SPEECH     = re.compile(r'(?:🎤\s*Speech detected|Transcribed)[^"\']*["\']([^"\']+)["\']')
 RE_GEMINI     = re.compile(r'🗣️[^"\']*["\']([^"\']+)["\']')
 RE_LAYER      = re.compile(r'\bLayer\s+([0-4])\s+(ready|started|active|init|error|failed)', re.IGNORECASE)

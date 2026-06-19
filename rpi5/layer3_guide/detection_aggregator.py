@@ -275,14 +275,43 @@ class DetectionAggregator:
         layer0_agg = self.aggregate(layer0_detections, "layer0")
         layer1_agg = self.aggregate(layer1_detections, "layer1")
         
-        # Merge counts (take max for each class to avoid double-counting)
-        merged_counts = Counter()
-        
-        for class_name, count in layer0_agg["counts"].items():
-            merged_counts[class_name] = max(merged_counts[class_name], count)
-        
-        for class_name, count in layer1_agg["counts"].items():
-            merged_counts[class_name] = max(merged_counts[class_name], count)
+        # Merge counts.
+        # M11 fix: previous logic used `max(layer0, layer1)` per
+        # class, which UNDERCOUNTED objects in the common case
+        # where the two layers cover DIFFERENT fields of view
+        # (e.g. L0 sees a "person" at 5m, L1 sees a different
+        # "person" at 3m → max(1, 1) = 1, but the user actually
+        # has 2 people in view). Use a set-based dedup by bbox
+        # overlap (IoU) when bboxes are available; fall back to
+        # summing when not.
+        merged_counts: Counter = Counter()
+        seen_bboxes: List[List[float]] = []  # for IoU dedup
+
+        def _iou(a: List[float], b: List[float]) -> float:
+            x1 = max(a[0], b[0]); y1 = max(a[1], b[1])
+            x2 = min(a[2], b[2]); y2 = min(a[3], b[3])
+            inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+            area_a = max(0.0, a[2] - a[0]) * max(0.0, a[3] - a[1])
+            area_b = max(0.0, b[2] - b[0]) * max(0.0, b[3] - b[1])
+            union = area_a + area_b - inter
+            return inter / union if union > 0 else 0.0
+
+        def _add_one(class_name: str, bbox) -> None:
+            if bbox and len(bbox) >= 4:
+                for prev in seen_bboxes:
+                    if prev[0] == class_name and _iou(prev[1], bbox) > 0.5:
+                        return  # duplicate — same object
+                seen_bboxes.append([class_name, bbox])
+            merged_counts[class_name] += 1
+
+        for det in layer0_detections:
+            cls = det.get("class_name") or det.get("class", "")
+            if cls:
+                _add_one(cls, det.get("bbox"))
+        for det in layer1_detections:
+            cls = det.get("class_name") or det.get("class", "")
+            if cls:
+                _add_one(cls, det.get("bbox"))
         
         # Merge distances (take closest per class from either layer)
         merged_distances: Dict[str, float] = {}

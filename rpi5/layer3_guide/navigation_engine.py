@@ -318,6 +318,17 @@ class NavigationEngine:
         self._turn_announced = set()  # waypoint indices where turn was announced
         self._road_crossing_active = False
         self._road_crossing_pos = None  # GPS pos when crossing detected
+        # H14 fix: track which waypoint indices have already triggered a
+        # road-crossing pause. Without this, after the user says "resume"
+        # the state goes back to NAVIGATING but the current waypoint is
+        # still the crossing waypoint — _check_road_crossing re-fires
+        # and we enter an infinite pause/resume loop at every crossing.
+        self._road_crossing_paused_at: set = set()
+        # H16 fix: serialise speak_critical so two coroutines cannot
+        # both pass the cooldown gate in the same event-loop tick.
+        # Without this, simultaneous turn + announce calls can fire
+        # TTS back-to-back within milliseconds, drowning the user.
+        self._speak_lock = asyncio.Lock()
 
         # Multi-leg transit tracking
         self.current_leg_idx = 0
@@ -662,11 +673,40 @@ class NavigationEngine:
             "indoor": True,
         })
 
+        # H14 fix: clear per-route pause tracking on every new route.
+        # Old waypoint indices from a previous route would otherwise
+        # suppress a legitimate crossing pause on the new one.
+        if hasattr(self, "_road_crossing_paused_at"):
+            self._road_crossing_paused_at.clear()
+
         self._ensure_event_loop()
-        future = asyncio.run_coroutine_threadsafe(
-            self._navigation_loop(), self._event_loop
-        )
-        self._nav_future = future
+        # H15 fix: prefer asyncio.create_task on the SAME loop the caller
+        # is running on (no cross-loop TTS scheduling). Fall back to
+        # run_coroutine_threadsafe + wrap_future only when the caller
+        # is on a different loop from the nav's persistent one — in
+        # that case we MUST wrap the future before awaiting anything
+        # that depends on it, or we'd deadlock on "Future attached to
+        # a different loop".
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        if current_loop is self._event_loop:
+            self._nav_future = asyncio.create_task(self._navigation_loop())
+        elif current_loop is None:
+            # Synchronous caller (legacy path) — dispatch via
+            # run_coroutine_threadsafe and don't block on the future.
+            self._nav_future = asyncio.run_coroutine_threadsafe(
+                self._navigation_loop(), self._event_loop
+            )
+        else:
+            # Two different loops running. Use run_coroutine_threadsafe
+            # on the nav's own loop; expose the future for stop().
+            self._nav_future = asyncio.run_coroutine_threadsafe(
+                self._navigation_loop(), self._event_loop
+            )
+
         await self._speak(f"Indoor guidance started for {destination}.")
         logger.info(f"Indoor guidance started: {destination}")
         return True
@@ -942,7 +982,11 @@ class NavigationEngine:
         self.state = NavState.INACTIVE
         self.route = None
         self.current_waypoint_idx = 0
-        await self._speak("Navigation stopped.")
+        # M18 fix: wrap _speak in wait_for so a hung TTS can't block shutdown.
+        try:
+            await asyncio.wait_for(self._speak("Navigation stopped."), timeout=3.0)
+        except (asyncio.TimeoutError, Exception):
+            pass
         self._fire_nav_event("navigation_stopped", {})
         logger.info("Navigation stopped")
 
@@ -1475,19 +1519,27 @@ class NavigationEngine:
         hear these even if Gemini narration is delayed or missed.
         Bypasses the normal cooldown with a shorter 2-second gate
         to prevent rapid-fire repeats while still being responsive.
-        """
-        now = time.time()
-        if now - self._last_voice_time < 2.0:
-            await asyncio.sleep(2.0 - (now - self._last_voice_time))
 
-        self._last_voice_time = time.time()
-        if self.tts:
-            try:
-                await self.tts.speak_async(text)
-            except Exception as e:
-                logger.warning(f"Critical TTS failed: {e}")
-        else:
-            logger.info(f"NAV CRITICAL: {text}")
+        H16 fix: the lock is held only for the duration of the
+        cooldown-gate update and the TTS dispatch; we don't hold it
+        across the actual TTS playback (that would serialise
+        everything). This just prevents two coroutines from
+        reading `_last_voice_time`, both seeing "old enough", and
+        both firing TTS.
+        """
+        async with self._speak_lock:
+            now = time.time()
+            if now - self._last_voice_time < 2.0:
+                await asyncio.sleep(2.0 - (now - self._last_voice_time))
+
+            self._last_voice_time = time.time()
+            if self.tts:
+                try:
+                    await self.tts.speak_async(text)
+                except Exception as e:
+                    logger.warning(f"Critical TTS failed: {e}")
+            else:
+                logger.info(f"NAV CRITICAL: {text}")
 
     async def _speak_turn(self, wp: Waypoint):
         """Handle a turn waypoint.
@@ -1544,16 +1596,35 @@ class NavigationEngine:
                 logger.debug(f"Approaching turn: {direction} in {dist:.0f}m (critical TTS + event)")
                 break  # One announcement at a time
 
-    async def _check_road_crossing(self, wp: Waypoint):
+    async def _check_road_crossing(self, wp: Waypoint, waypoint_idx: int = -1):
         """Check if current waypoint indicates a road crossing.
-        
+
         Enhanced with YOLO: detects vehicles/traffic lights near crossing.
+
+        H14 fix: track which waypoint indices have already triggered
+        a crossing pause. Without this, after the user says "resume"
+        the state goes back to NAVIGATING but the current waypoint is
+        still the crossing waypoint — _check_road_crossing re-fires
+        and we enter an infinite pause/resume loop at every crossing.
         """
         if self._road_crossing_active:
             return
 
+        # If we've already paused for this specific waypoint, don't
+        # re-pause. The waypoint_index is stable across the pause/
+        # resume cycle until the user actually advances past it.
+        if waypoint_idx >= 0 and waypoint_idx in self._road_crossing_paused_at:
+            return
+
         instruction_lower = wp.instruction.lower()
         if any(kw in instruction_lower for kw in self.ROAD_CROSSING_KEYWORDS):
+            # Mark this waypoint as having triggered a pause BEFORE we
+            # actually pause — that way a re-entrant call from the
+            # main loop (between pause_navigation and the next tick)
+            # sees the flag and bails out.
+            if waypoint_idx >= 0:
+                self._road_crossing_paused_at.add(waypoint_idx)
+
             # Enrich with YOLO vehicle/traffic light detections
             road_objects = []
             vehicle_classes = {"car", "truck", "bus", "motorcycle", "bicycle", "traffic light"}
@@ -1562,7 +1633,7 @@ class NavigationEngine:
                 if cls in vehicle_classes:
                     dist = det.get('distance_m', 999)
                     road_objects.append(f"{cls}({dist:.0f}m)")
-            
+
             if road_objects:
                 warning = f"Road crossing detected. I see: {', '.join(road_objects[:5])}. Check it's safe."
             else:

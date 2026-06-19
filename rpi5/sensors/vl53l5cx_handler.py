@@ -440,7 +440,14 @@ class VL53L5CXHandler:
                     logger.debug("VL53L5CX stop error: %s", e)
 
     def __del__(self):
-        self.stop()
+        # M59 fix: never call stop() from __del__. During interpreter
+        # shutdown the module-level logging / threading globals may
+        # already be torn down, and stop() acquires a lock + closes
+        # the I2C bus — both can raise or deadlock. We can't rely on
+        # this finalizer running at all, and shouldn't try to do
+        # real work here. Explicit stop() is the supported cleanup
+        # path.
+        pass
 
 
 # ---------------------------------------------------------------------------

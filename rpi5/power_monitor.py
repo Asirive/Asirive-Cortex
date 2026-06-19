@@ -71,7 +71,18 @@ class PowerMonitor:
     def __init__(self, config: Optional[Dict[str, Any]] = None) -> None:
         self.config = config or {}
         self.low_water_pct = float(self.config.get("low_water_pct", 15.0))
-        self.manual = self.config.get("manual", None)  # for demo without UPS
+        # M60 fix: previously `manual=False` (a YAML bool) was
+        # treated as "manual mode" because `if self.manual` was
+        # False and `_discover_platform` fell into the sysfs /
+        # psutil branches but the cached readings had a "manual"
+        # label because the bool collapsed truthiness oddly in
+        # some code paths. Strict isinstance check — only treat
+        # a non-empty DICT as "manual mode"; a bool is just an
+        # absent config value, not a manual override.
+        self.manual: Optional[Dict[str, Any]] = None
+        raw_manual = self.config.get("manual", None)
+        if isinstance(raw_manual, dict) and raw_manual:
+            self.manual = raw_manual
         self._last_publish_ts: float = 0.0
         self._publish_interval_s: float = float(self.config.get("publish_interval_s", 1.0))
         self._cached: Dict[str, Any] = _default_power()
@@ -172,9 +183,25 @@ class PowerMonitor:
         snap["power_supply_name"] = best.name
         # Capacity (percent)
         _try_read_int(best / "capacity", "battery_pct", snap, scale=1.0)
-        # Voltage (in µV on sysfs — convert to V)
+        # Voltage (in µV on sysfs — convert to V).
+        # M62 fix: previously `voltage_now=0` (battery absent) was
+        # reported as 0.0V — operators misread the dashboard as
+        # "hardware failure: dead battery". Distinguish "battery
+        # present and reporting 0V" from "battery not present" via
+        # an explicit `voltage_present` flag.
         if _try_read_int(best / "voltage_now", "voltage_uv", snap):
-            snap["voltage_v"] = float(snap.pop("voltage_uv", 0)) / 1_000_000.0
+            v = float(snap.pop("voltage_uv", 0))
+            if v > 0:
+                snap["voltage_v"] = v / 1_000_000.0
+                snap["voltage_present"] = True
+            else:
+                # Battery physically absent or not yet responding
+                # (common on hotplug / cold boot). The dashboard
+                # can show "—" instead of "0.0V".
+                snap["voltage_v"] = None
+                snap["voltage_present"] = False
+        else:
+            snap["voltage_present"] = False
         # Current (in µA on sysfs — positive=charging, negative=discharging
         # per the Linux power_supply convention)
         if _try_read_int(best / "current_now", "current_ua", snap):
@@ -215,6 +242,19 @@ class PowerMonitor:
             import psutil
             b = psutil.sensors_battery()
             if b is None:
+                # M61 fix: psutil is installed but the platform
+                # doesn't expose a battery sensor. The previous
+                # code silently returned the default (all zero)
+                # and the dashboard sat at "0% / 0V" with no
+                # indication WHY. Emit a one-time INFO log so an
+                # operator can tell the difference between "no
+                # battery fitted" and "psutil import failed".
+                if not getattr(self, "_no_sensor_logged", False):
+                    logger.info(
+                        "PowerMonitor: psutil.sensors_battery() returned None "
+                        "— this platform doesn't expose a battery sensor."
+                    )
+                    self._no_sensor_logged = True
                 return snap
             snap["available"] = True
             snap["source"] = "psutil"

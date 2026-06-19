@@ -154,10 +154,16 @@ class AsyncWebSocketServer(ABC):
         logger.info("Stopping server...")
         self._running = False
 
-        # Disconnect all clients
+        # TB4 fix: previously this held self._lock and then called
+        # _disconnect_client(), which ALSO acquires self._lock.
+        # asyncio.Lock is non-reentrant, so the second acquire hangs
+        # the stop() coroutine indefinitely. Snapshot the client
+        # IDs under the lock, release it, then disconnect each
+        # one (each call re-acquires + releases the lock normally).
         async with self._lock:
-            for client_id in list(self._clients.keys()):
-                await self._disconnect_client(client_id, "server_shutdown")
+            client_ids = list(self._clients.keys())
+        for client_id in client_ids:
+            await self._disconnect_client(client_id, "server_shutdown")
 
         await self._stop_server_impl()
         logger.info("Server stopped")

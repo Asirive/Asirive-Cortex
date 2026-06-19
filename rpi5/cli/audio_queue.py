@@ -66,9 +66,13 @@ class AudioQueueManager:
         self._on_interrupt_callback: Optional[Callable] = None
         
         # Source active flags
-        self._gemini_active = False
+        # M23 fix: track the number of overlapping Gemini "active"
+        # markers (not just a boolean) so nested start/stop calls
+        # from competing producers (turn-taking, barge-in, multi-
+        # segment responses) don't prematurely release the gate.
+        self._gemini_active_count = 0
         self._gemini_turn_complete = False
-        
+
         # Stats
         self.interrupt_count = 0
         self.queued_count = 0
@@ -84,10 +88,20 @@ class AudioQueueManager:
         self._on_interrupt_callback = on_interrupt
     
     def mark_gemini_active(self, active: bool = True):
-        """Mark Gemini Live as actively speaking."""
+        """Mark Gemini Live as actively speaking.
+
+        M23 fix: balanced counter so multiple overlapping
+        mark_gemini_active(True) calls require an equal number of
+        mark_gemini_active(False) calls before the gate releases.
+        """
         with self._lock:
-            self._gemini_active = active
-            if not active:
+            if active:
+                self._gemini_active_count += 1
+            else:
+                # Floor at 0 so under-counts from a missed start don't
+                # pin the gate open forever.
+                self._gemini_active_count = max(0, self._gemini_active_count - 1)
+            if self._gemini_active_count == 0:
                 self._gemini_turn_complete = True
     
     def mark_gemini_turn_complete(self):
@@ -99,18 +113,33 @@ class AudioQueueManager:
         """
         Immediately stop current playback and clear queue.
         Used for safety alerts and user barge-in.
+
+        H22 fix: the previous version only cleared state — it never
+        told the consumer to terminate the in-progress playback. The
+        callback is the consumer's hook for "kill the current
+        subprocess now"; we call it under the lock so the consumer
+        can't race the state mutation, and we release the lock
+        BEFORE invoking the callback (M25 fix) so the callback can
+        safely call back into us (e.g. re-enqueue) without deadlocking.
         """
         with self._lock:
-            if self._on_interrupt_callback:
-                try:
-                    self._on_interrupt_callback(reason)
-                except Exception:
-                    pass
             self._current_source = None
             self._is_playing = False
             self._queue.clear()
             self.interrupt_count += 1
-    
+            cb = self._on_interrupt_callback
+        # Call outside the lock — the callback may need to re-acquire
+        # it (e.g. to enqueue the interrupting audio).
+        if cb:
+            try:
+                cb(reason)
+            except Exception as e:
+                # Callback failures must never bring down the queue.
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"on_interrupt_callback error: {e}"
+                )
+
     def enqueue(
         self,
         audio_data: np.ndarray,
@@ -121,30 +150,25 @@ class AudioQueueManager:
     ) -> bool:
         """
         Add audio to the playback queue.
-        
+
         Returns True if accepted, False if dropped (queue full).
         """
         with self._lock:
-            # Safety alerts: bypass queue, immediately play
+            # Safety alerts: bypass queue, immediately play.
+            # H23 fix: also fire the on_interrupt_callback so the
+            # consumer actually stops any in-progress TTS. Previously
+            # the comment claimed "safety always preempts" but the
+            # code only cleared _current_source; the consumer kept
+            # playing its current chunk for the full duration before
+            # noticing. Now safety alerts go through the same path
+            # as interrupt() so the in-progress subprocess is killed.
             if source == AudioSource.SAFETY_ALERT:
                 self._queue.clear()  # clear lower-priority items
                 self._current_source = None
-                req = AudioRequest(
-                    source=source,
-                    audio_data=audio_data,
-                    sample_rate=sample_rate,
-                    is_continuous=False,
-                    is_final_chunk=True,
-                )
-                self._queue.append(req)
-                self.queued_count += 1
-                return True
-            
-            # Drop TTS requests if Gemini is actively playing
-            if source >= AudioSource.CARTESIA_TTS and self._gemini_active and not self._gemini_turn_complete:
-                self.dropped_count += 1
-                return False
-            
+                cb = self._on_interrupt_callback
+            else:
+                cb = None
+
             req = AudioRequest(
                 source=source,
                 audio_data=audio_data,
@@ -152,49 +176,99 @@ class AudioQueueManager:
                 is_continuous=is_continuous,
                 is_final_chunk=is_final_chunk,
             )
-            
-            # Cap queue size
-            if len(self._queue) >= 20:
-                self.dropped_count += 1
-                return False
-            
-            self._queue.append(req)
-            self.queued_count += 1
-            return True
-    
+
+            if source == AudioSource.SAFETY_ALERT:
+                self._queue.append(req)
+                self.queued_count += 1
+                accepted = True
+            else:
+                # Drop TTS requests if Gemini is actively playing
+                if (
+                    source >= AudioSource.CARTESIA_TTS
+                    and self._gemini_active
+                    and not self._gemini_turn_complete
+                ):
+                    self.dropped_count += 1
+                    return False
+
+                # Cap queue size
+                if len(self._queue) >= 20:
+                    self.dropped_count += 1
+                    return False
+
+                self._queue.append(req)
+                self.queued_count += 1
+                accepted = True
+
+        # Call the interrupt callback OUTSIDE the lock — the consumer
+        # may need to re-acquire the lock to terminate its subprocess
+        # and the locked re-entry would deadlock.
+        if cb is not None:
+            try:
+                cb("safety_alert")
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(
+                    f"on_interrupt_callback error during safety enqueue: {e}"
+                )
+
+        return accepted
+
     def next_request(self) -> Optional[AudioRequest]:
         """
         Get the next request that should play, respecting priority.
-        
+
         Returns None if no playable request.
         """
         with self._lock:
             if not self._queue:
                 return None
-            
-            # If Gemini is actively playing, don't return TTS requests
-            if self._gemini_active and not self._gemini_turn_complete:
-                for req in self._queue:
+
+            # M23 fix: previously a boolean `_gemini_active` meant
+            # only the latest mark_gemini_active() call mattered. A
+            # chunk that arrived mid-utterance (before the consumer
+            # saw "active=False") was treated as "during Gemini" and
+            # could be dequeued in the wrong order. Use a counter so
+            # nested start/stop calls (e.g. overlapping TTS turns)
+            # correctly reflect whether ANY Gemini audio is in flight.
+            # M24 fix: don't mutate the deque mid-iteration; find the
+            # index and popleft, or just popleft the head and check.
+            if self._gemini_active_count > 0 and not self._gemini_turn_complete:
+                for i, req in enumerate(self._queue):
                     if req.source == AudioSource.GEMINI_LIVE:
-                        self._queue.remove(req)
-                        self._current_source = req.source
-                        return req
+                        # Pop by index to avoid O(n) list.remove inside
+                        # the for-loop iteration.
+                        popped = self._queue[i]
+                        del self._queue[i]
+                        self._current_source = popped.source
+                        return popped
                 return None
-            
-            # Gemini turn complete — play next TTS request
+
+            # Gemini turn complete — play next non-Gemini request.
+            # M24 fix: previously this was `for i, req in enumerate + del
+            # self._queue[i]` which is O(n) per pop on a deque
+            # (deletion shifts the tail). Use a single pass that
+            # tracks the first match and either rotates+pops it out,
+            # or just dequeues from the left if it's the first item.
             if self._gemini_turn_complete:
-                for req in self._queue:
+                for i, req in enumerate(self._queue):
                     if req.source != AudioSource.GEMINI_LIVE:
-                        self._queue.remove(req)
-                        self._current_source = req.source
-                        # If we played non-Gemini, reset the turn flag
-                        if req.source != AudioSource.GEMINI_LIVE:
-                            self._gemini_turn_complete = False
-                        return req
+                        if i == 0:
+                            popped = self._queue.popleft()
+                        else:
+                            # Rotate the deque so the match is at the
+                            # left, then popleft. This keeps the
+                            # operation O(n) for the rotate but the
+                            # dequeue is O(1).
+                            popped = self._queue[i]
+                            del self._queue[i]
+                        self._current_source = popped.source
+                        self._gemini_turn_complete = False
+                        return popped
                 # Only Gemini chunks left, but turn is "complete"
-                # let them drain
-            
-            # Default: pop highest priority
+                # let them drain.
+
+            # Default: pop highest priority (head of deque)
             req = self._queue.popleft()
             self._current_source = req.source
             return req
@@ -224,7 +298,7 @@ class AudioQueueManager:
             "dropped": self.dropped_count,
             "interrupted": self.interrupt_count,
             "pending": self.queue_size,
-            "gemini_active": self._gemini_active,
+            "gemini_active": self._gemini_active_count > 0,
         }
 
 

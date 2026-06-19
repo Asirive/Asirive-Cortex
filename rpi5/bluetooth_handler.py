@@ -34,13 +34,27 @@ class BluetoothAudioManager:
     """
     
     _instance = None  # Singleton
-    
+
     def __new__(cls, *args, **kwargs):
         """Singleton pattern - only one Bluetooth manager."""
         if cls._instance is None:
             cls._instance = super(BluetoothAudioManager, cls).__new__(cls)
             cls._instance._initialized = False
         return cls._instance
+
+    @classmethod
+    def reset_singleton(cls) -> None:
+        """M49 fix: explicitly drop the singleton so a fresh manager
+        can be constructed (e.g. after a key change or in unit tests).
+        Without this, the cached instance keeps stale MAC + dead
+        threads across invocations and the constructor becomes a
+        no-op on second+ call."""
+        if cls._instance is not None:
+            try:
+                cls._instance.stop_auto_reconnect()
+            except Exception:
+                pass
+        cls._instance = None
     
     def __init__(
         self,
@@ -75,6 +89,11 @@ class BluetoothAudioManager:
         self.retry_delay = retry_delay
         self.max_retries = max_retries
         self.connected_mac: Optional[str] = None
+        # M48 fix: cache the last successful is_connected poll so a
+        # transient bluetoothctl timeout doesn't trigger a reconnect
+        # storm. Cleared on disconnect.
+        self._last_connected_check_ts: float = 0.0
+        self._last_connected_check_result: bool = False
         self._initialized = True
         
         logger.info(f"BluetoothAudioManager initialized (device='{device_name}', mac={mac_address or 'auto-detect'})")
@@ -148,17 +167,26 @@ class BluetoothAudioManager:
     def is_connected(self, mac_address: Optional[str] = None) -> bool:
         """
         Check if a device is currently connected.
-        
+
         Args:
             mac_address: MAC to check (uses last connected if None)
-            
+
         Returns:
             True if connected
         """
         mac = mac_address or self.connected_mac
         if not mac:
             return False
-            
+
+        # M48 fix: cache the last successful poll for ~5s. The
+        # previous version hit bluetoothctl on every call and on a
+        # transient subprocess failure (timeout, dbus glitch) it
+        # returned False, which triggered a reconnect storm from
+        # callers that poll is_connected in a loop.
+        now = time.time()
+        if self._last_connected_check_ts and (now - self._last_connected_check_ts) < 5.0:
+            return self._last_connected_check_result
+
         try:
             result = subprocess.run(
                 ["bluetoothctl", "info", mac],
@@ -167,8 +195,16 @@ class BluetoothAudioManager:
                 timeout=5
             )
             connected = "Connected: yes" in result.stdout
+            self._last_connected_check_ts = now
+            self._last_connected_check_result = connected
             return connected
-            
+
+        except subprocess.TimeoutExpired:
+            # Command-level failure (bluetoothd stalled). Keep the
+            # last known result instead of declaring "disconnected"
+            # on a transient subprocess issue.
+            logger.debug("bluetoothctl info timed out; keeping last known result")
+            return self._last_connected_check_result
         except Exception as e:
             logger.error(f"Error checking connection status: {e}")
             return False
@@ -510,8 +546,16 @@ class BluetoothAudioManager:
                 mac_formatted = mac_address.replace(":", "_").lower()
                 for source in sources:
                     source_lower = source["name"].lower()
-                    # Skip monitor sources (e.g. bluez_output.XX.monitor) — not real mics
-                    if ".monitor" in source_lower:
+                    # M50 fix: monitor sources end in `.monitor` (e.g.
+                    # `bluez_output.XX.monitor`). The previous check
+                    # `".monitor" in name` would also skip a USB mic
+                    # whose name happened to contain ".monitor"
+                    # anywhere (e.g. "USB.Monitor.Mic"). Anchor the
+                    # match to the suffix. (Proper fix would be to
+                    # use `pactl list sources short` and check
+                    # media.class, but the string-based check is
+                    # sufficient for the common case.)
+                    if source_lower.endswith(".monitor"):
                         continue
                     if (mac_formatted in source_lower or 
                         self.device_name.lower() in source_lower or

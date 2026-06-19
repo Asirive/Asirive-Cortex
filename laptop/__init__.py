@@ -17,7 +17,11 @@ __author__ = "Haziq (@IRSPlays)"
 
 # Core imports
 from laptop.config import DashboardConfig, default_config
-from laptop.protocol import MessageType, BaseMessage, create_message, parse_message
+# TB2 fix: previously this re-exported from the laptop-local protocol.py
+# even though shared/api/protocol.py has the same names. Migrate to
+# the shared module so there is exactly ONE message-protocol definition
+# across the codebase.
+from shared.api.protocol import MessageType, BaseMessage, parse_message
 
 # GUI modules
 from laptop.gui.cortex_dashboard import CortexDashboard, DashboardSignals
@@ -35,10 +39,9 @@ __all__ = [
     # Config
     "DashboardConfig",
     "default_config",
-    # Protocol
+    # Protocol (from shared.api.protocol, re-exported)
     "MessageType",
     "BaseMessage",
-    "create_message",
     "parse_message",
     # GUI
     "CortexDashboard",

@@ -321,7 +321,15 @@ class PhoneGPSReceiver:
         while self._running:
             await asyncio.sleep(0.5)
 
-        await runner.cleanup()
+        # M53 fix: bound the cleanup wait so a stuck aiohttp shutdown
+        # doesn't leave the port in TIME_WAIT for 30+ seconds. The
+        # 3s limit matches the stop() timeout in PhoneGPSReceiver.stop.
+        try:
+            await asyncio.wait_for(runner.cleanup(), timeout=3.0)
+        except asyncio.TimeoutError:
+            logger.warning("PhoneGPS runner.cleanup() timed out after 3s")
+        except Exception as e:
+            logger.debug(f"PhoneGPS runner.cleanup() error: {e}")
 
     async def _handle_page(self, request: web.Request) -> web.Response:
         """Serve the GPS HTML page."""
@@ -352,9 +360,19 @@ class PhoneGPSReceiver:
         fix = self.get_fix()
         lk = self.get_last_known_fix()
         logger.debug(f"\U0001f4f1 Status check from {request.remote}: connected={self.is_connected}, has_fix={fix is not None}, updates={self._update_count}")
+        # M54 fix: explicit "live" vs "last_known" vs "none" state so
+        # callers can distinguish "the phone sent a fresh fix in the
+        # last N seconds" from "we have a cached fix from earlier".
+        if fix is not None and not self._is_last_known:
+            current_state = "live"
+        elif fix is not None:
+            current_state = "last_known"
+        else:
+            current_state = "none"
         return web.json_response({
             "connected": self.is_connected,
             "has_fix": fix is not None,
+            "current_state": current_state,
             "is_last_known": self._is_last_known,
             "update_count": self._update_count,
             "lat": fix.latitude if fix else None,

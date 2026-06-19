@@ -157,6 +157,18 @@ class BusHandler:
         # Target service filtering (set by navigation engine for transit routes)
         self._target_service: Optional[str] = None
 
+        # H13 + H17 fix: the main detection loop runs on a
+        # ThreadPoolExecutor worker (sync context), and the navigation
+        # engine's bus-monitoring coroutine runs on its own dedicated
+        # event-loop thread. Neither of those is the orchestrator's main
+        # event loop. We track the loop the BusHandler was bound to so
+        # we can schedule coroutines via run_coroutine_threadsafe and
+        # avoid the RuntimeError "no running event loop" / "Future
+        # attached to different loop" failures that previously dropped
+        # bus-approaching announcements and crashed the nav loop.
+        self._main_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._main_loop_thread_id: Optional[int] = None
+
         # Initialize bus stops database
         self._init_db()
 
@@ -261,17 +273,23 @@ class BusHandler:
     def find_nearest_stop(self, lat: float, lng: float) -> Optional[BusStop]:
         """
         Find the nearest bus stop to given coordinates.
-        
+
         Uses a bounding box pre-filter for performance, then haversine for accuracy.
         """
-        # Approximate bounding box (±0.005° ≈ ±500m)
-        delta = 0.005
+        # M17 fix: derive the bbox from proximity_radius_m and apply a
+        # latitude correction (1° lng shrinks toward the poles). The
+        # previous hard-coded ±0.005° is only correct near the equator
+        # and is Singapore-only by accident (~500m is the right value
+        # at 1° lat, but 0.005° lng is also ~500m at the equator, only
+        # ~440m at Singapore's 1.3° lat).
+        lat_delta = self.proximity_radius_m / 111000.0
+        lng_delta = self.proximity_radius_m / (111000.0 * max(0.01, math.cos(math.radians(lat))))
         try:
             db = sqlite3.connect(self.db_path)
             rows = db.execute(
                 "SELECT code, description, road_name, latitude, longitude FROM bus_stops "
                 "WHERE latitude BETWEEN ? AND ? AND longitude BETWEEN ? AND ?",
-                (lat - delta, lat + delta, lng - delta, lng + delta),
+                (lat - lat_delta, lat + lat_delta, lng - lng_delta, lng + lng_delta),
             ).fetchall()
             db.close()
         except Exception as e:
@@ -322,11 +340,22 @@ class BusHandler:
             "Accept": "application/json",
         })
 
+        # M16 fix: lta_ok was only ever set in download_bus_stops,
+        # never in query_arrivals — so the TUI's `bus idle LTA ●/○`
+        # dot stayed at "unknown" forever even after the first
+        # successful arrival query. Set the flag on BOTH success
+        # and failure paths so the dashboard reflects real LTA
+        # health. (Setting lta_ok=False on failure is correct — a
+        # transient API error should mark the link unhealthy.)
         try:
             with urllib.request.urlopen(req, timeout=10) as resp:
                 data = json.loads(resp.read().decode())
+            self.lta_ok = True
+            self._last_lta_error = ""
         except Exception as e:
             logger.warning(f"LTA BusArrival API error: {e}")
+            self.lta_ok = False
+            self._last_lta_error = str(e)
             return []
 
         arrivals = []
@@ -415,8 +444,31 @@ class BusHandler:
         # Initial arrival query
         await self._refresh_and_announce()
 
-        # Start monitoring loop
-        self._monitor_task = asyncio.create_task(self._monitor_loop())
+        # Start monitoring loop.
+        # H17 fix: previously this called `asyncio.create_task(...)`
+        # which would create the task on WHICHEVER loop was running
+        # start_monitoring — typically the nav engine's dedicated
+        # loop on its own background thread. When the nav loop later
+        # crashed (e.g. due to an unrelated exception), this orphan
+        # task also died, and there was no graceful recovery path.
+        # Use the bound main loop if we have one, so monitoring is
+        # anchored to the orchestrator's loop and survives nav-loop
+        # restarts.
+        if self._main_loop is not None and self._main_loop.is_running():
+            self._monitor_task = asyncio.run_coroutine_threadsafe(
+                self._monitor_loop(), self._main_loop
+            )
+        else:
+            try:
+                self._monitor_task = asyncio.create_task(self._monitor_loop())
+            except RuntimeError:
+                # No running loop — defer to the caller to start it
+                # manually via bind_to_loop() + start_monitoring later.
+                self._monitor_task = None
+                logger.warning(
+                    "BusHandler has no bound main loop; monitoring "
+                    "will not start until bind_to_loop() is called."
+                )
         logger.info(f"Bus monitoring started at stop {stop.code} ({stop.description})")
         return True
 
@@ -526,7 +578,7 @@ class BusHandler:
     def update_detections(self, detections: List[Dict[str, Any]]):
         """
         Process YOLO detections, looking for "bus" class.
-        
+
         Called from the main detection loop each frame.
         """
         bus_detected = any(
@@ -538,19 +590,56 @@ class BusHandler:
             self._bus_detected_in_frame = True
             if self.state == BusStopMode.MONITORING:
                 self.state = BusStopMode.BUS_APPROACHING
-                # Trigger async announcement
-                try:
-                    loop = asyncio.get_running_loop()
-                    asyncio.ensure_future(self._speak("A bus is approaching."), loop=loop)
-                except RuntimeError:
-                    logger.info("Bus approaching detected (no event loop for TTS)")
+                # H13 fix: update_detections is called from the main
+                # detection loop running on a ThreadPoolExecutor — there
+                # is no running asyncio loop on that thread, so
+                # `asyncio.get_running_loop()` raised RuntimeError and
+                # the announcement was silently dropped. Schedule the
+                # coroutine on the orchestrator's main loop via
+                # run_coroutine_threadsafe, falling back to a fire-and-
+                # forget log line if we were never bound to a loop.
+                self._schedule_announcement("A bus is approaching.")
 
                 if self.on_bus_detected:
-                    self.on_bus_detected()
+                    try:
+                        self.on_bus_detected()
+                    except Exception as e:
+                        logger.warning("on_bus_detected callback error: %s", e)
         elif not bus_detected:
             self._bus_detected_in_frame = False
             if self.state == BusStopMode.BUS_APPROACHING:
                 self.state = BusStopMode.MONITORING
+
+    def bind_to_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """
+        Bind the BusHandler to an event loop for cross-thread scheduling.
+
+        The orchestrator (main.py) should call this once at startup
+        with the main event loop. After binding, update_detections()
+        (called from a worker thread) can safely schedule coroutines
+        via run_coroutine_threadsafe without RuntimeError.
+        """
+        self._main_loop = loop
+        self._main_loop_thread_id = None  # any thread may use it now
+        logger.debug(f"BusHandler bound to loop {id(loop)}")
+
+    def _schedule_announcement(self, text: str) -> None:
+        """
+        Schedule a TTS announcement on the bound main loop.
+
+        Called from worker threads (e.g. detection loop) where there
+        is no running asyncio loop. Falls back to a log line if the
+        handler was never bound to a loop.
+        """
+        if self._main_loop is None or not self._main_loop.is_running():
+            logger.info(f"🚌 (no loop bound) {text}")
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._speak(text), self._main_loop
+            )
+        except RuntimeError as e:
+            logger.warning(f"BusHandler schedule failed: {e}")
 
     # -------------------------------------------------
     # AUTO-DETECT (called from navigation engine)
@@ -559,26 +648,34 @@ class BusHandler:
     async def check_proximity(self, lat: float, lng: float) -> bool:
         """
         Check if user is near a bus stop and auto-start monitoring.
-        
+
         Returns:
             True if near a bus stop (monitoring started or already active)
         """
-        if self.state != BusStopMode.INACTIVE:
-            # Already monitoring — check if we've moved away
-            if self.current_stop:
-                dist = _haversine(lat, lng, self.current_stop.latitude, self.current_stop.longitude)
-                if dist > self.proximity_radius_m * 2:
-                    # Moved away from bus stop
-                    await self.stop_monitoring()
-                    return False
-            return True
+        # M67 fix: this is normally called via run_async_safe(..., blocking=False)
+        # which is fire-and-forget. Wrap the whole body in try/except so
+        # a transient SQLite/HAVERSINE/network error doesn't get lost
+        # and don't kill the main detection loop.
+        try:
+            if self.state != BusStopMode.INACTIVE:
+                # Already monitoring — check if we've moved away
+                if self.current_stop:
+                    dist = _haversine(lat, lng, self.current_stop.latitude, self.current_stop.longitude)
+                    if dist > self.proximity_radius_m * 2:
+                        # Moved away from bus stop
+                        await self.stop_monitoring()
+                        return False
+                return True
 
-        # Check for nearby bus stop
-        stop = self.find_nearest_stop(lat, lng)
-        if stop:
-            await self.start_monitoring(lat, lng)
-            return True
-        return False
+            # Check for nearby bus stop
+            stop = self.find_nearest_stop(lat, lng)
+            if stop:
+                await self.start_monitoring(lat, lng)
+                return True
+            return False
+        except Exception as e:
+            logger.debug(f"check_proximity error: {e}")
+            return False
 
     # -------------------------------------------------
     # VOICE

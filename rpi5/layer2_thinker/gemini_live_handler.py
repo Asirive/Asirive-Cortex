@@ -374,6 +374,14 @@ Safety always comes first. Overhead hazards are your highest priority."""
                 # Configure Live API connection
                 # Generation params (temperature etc.) are set directly on LiveConnectConfig.
                 # Build config kwargs conditionally (gemini-3.1 doesn't support thinking_budget)
+                # M28 fix: gemini-3.1-flash-live-preview rejects several
+                # fields that older Live models accept. Per-field gate:
+                #   - media_resolution: 3.1 returns 1008 (policy) — drop
+                #   - context_window_compression: 3.1 manages this server-side
+                #     for some clients; sending the sliding-window config
+                #     triggers 1008. Drop for 3.1.
+                # Other fields (speech_config, transcription, realtime_input,
+                # tools) are accepted on 3.1.
                 config_kwargs = dict(
                     response_modalities=self.response_modalities,
                     system_instruction=self.system_instruction,
@@ -383,13 +391,6 @@ Safety always comes first. Overhead hazards are your highest priority."""
                         voice_config=types.VoiceConfig(
                             prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Zephyr")
                         )
-                    ),
-                    # Medium resolution for video frames (258 tokens/image)
-                    media_resolution="MEDIA_RESOLUTION_MEDIUM",
-                    # Sliding window compression prevents session timeout (~15 min)
-                    context_window_compression=types.ContextWindowCompressionConfig(
-                        trigger_tokens=104857,
-                        sliding_window=types.SlidingWindow(target_tokens=52428),
                     ),
                     # Transcribe model audio output for logging
                     output_audio_transcription=types.AudioTranscriptionConfig(),
@@ -717,6 +718,19 @@ Safety always comes first. Overhead hazards are your highest priority."""
                     ])],
                 )
 
+                # M28 fix: add back media_resolution and
+                # context_window_compression ONLY for non-3.1 models.
+                # (See the comment at the config_kwargs construction
+                # site above — these are 3.1-incompatible.)
+                if not self._is_gemini_live_31:
+                    config_kwargs["media_resolution"] = "MEDIA_RESOLUTION_MEDIUM"
+                    config_kwargs["context_window_compression"] = (
+                        types.ContextWindowCompressionConfig(
+                            trigger_tokens=104857,
+                            sliding_window=types.SlidingWindow(target_tokens=52428),
+                        )
+                    )
+
                 # Create config from kwargs
                 config = types.LiveConnectConfig(**config_kwargs)
 
@@ -887,7 +901,40 @@ Safety always comes first. Overhead hazards are your highest priority."""
                 turn_message_count = 0
                 turn_completed = False
 
-                async for response in self.session.receive():
+                # H24 fix: bound the receive() wait so a yield-empty
+                # session (e.g. transient stream lull, network blip)
+                # can't spin the loop at 100% CPU. We wrap the
+                # iterator in a small coroutine that pulls one item
+                # with a timeout; on timeout we treat the turn as
+                # idle and loop back to the outer while (which
+                # re-checks is_connected/session).
+                receive_iter = self.session.receive()
+                try:
+                    response = await asyncio.wait_for(
+                        receive_iter.__anext__(),
+                        timeout=2.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.debug(
+                        "Gemini Live receive() idle for 2s — "
+                        "resetting turn counters"
+                    )
+                    turn_completed = True
+                    continue
+                except StopAsyncIteration:
+                    # Iterator ended; outer while will re-enter or
+                    # notice is_connected==False.
+                    continue
+
+                # We have the first response. Process it AND any
+                # remaining items in the same turn, bounded by a
+                # short per-iteration timeout so a stuck iterator
+                # can never block the loop indefinitely.
+                _to_process = [response]
+                async for response in receive_iter:
+                    _to_process.append(response)
+
+                for response in _to_process:
                     turn_message_count += 1
                     self._msg_count += 1
 
