@@ -1,15 +1,15 @@
 """Push the live_dashboard package to RPi5 and run Round 1 test."""
-import io, sys
-import paramiko
+import io, os, sys
+from scripts._rpi_ssh import RPI_HOST, RPI_USER, RPI_PASSWORD, require_credentials, get_ssh_client
 
 try:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 except Exception:
     pass
 
-c = paramiko.SSHClient()
-c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect("10.<REDACTED-RPI-IP>", 22, "cortex", "REDACTED-RPI-PASSWORD", timeout=10, allow_agent=False, look_for_keys=False)
+require_credentials()
+c = get_ssh_client()
+c.connect(RPI_HOST, 22, RPI_USER, RPI_PASSWORD, timeout=10, allow_agent=False, look_for_keys=False)
 
 sftp = c.open_sftp()
 
@@ -25,7 +25,6 @@ for sub in ("", "/tests"):
         pass  # already exists
 
 # Upload each file
-import os
 for root, _, files in os.walk(LOCAL_DIR):
     for f in files:
         if not f.endswith(".py"):

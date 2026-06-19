@@ -1,0 +1,42 @@
+#!/usr/bin/env python3
+"""
+Pre-commit hook — refuse the commit if any staged file contains a
+hardcoded secret (SSH password, API key, etc.).
+
+Install:
+    ln -s ../../scripts/pre-commit .git/hooks/pre-commit
+    # or just copy:
+    cp scripts/pre-commit .git/hooks/pre-commit
+    chmod +x .git/hooks/pre-commit
+
+This hook delegates to ``scripts/check_no_secrets.py --staged`` so the
+detection logic stays in one place.
+"""
+import subprocess
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+SCANNER = REPO_ROOT / "scripts" / "check_no_secrets.py"
+
+if not SCANNER.exists():
+    print(f"[pre-commit] scanner not found at {SCANNER}", file=sys.stderr)
+    sys.exit(0)  # don't block if scanner is missing (e.g. partial clone)
+
+result = subprocess.run(
+    [sys.executable, str(SCANNER), "--staged"],
+    cwd=REPO_ROOT,
+)
+if result.returncode != 0:
+    print(
+        "\n[pre-commit] HARD-CODED SECRETS DETECTED. Commit blocked.\n"
+        "Move the secret to .env (gitignored) and load via:\n"
+        "  - scripts/_rpi_ssh.py for RPi SSH credentials\n"
+        "  - os.environ / python-dotenv for API keys\n"
+        "Then re-stage and commit.\n"
+        "If you really need to bypass (e.g. redacted placeholder in a doc):\n"
+        "  git commit --no-verify",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+sys.exit(0)

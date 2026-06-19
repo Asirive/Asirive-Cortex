@@ -8,31 +8,24 @@ Connects, captures:
 4. runs google-genai SDK Live test (proves whether SDK is the bug)
 5. cat logs/cortex.log tail (last 30 lines)
 """
-import os
-import sys
-import time
 import io
-import paramiko
-from pathlib import Path
+import sys
 
-# Force UTF-8 stdout (Windows cp1252 can't print emoji)
 try:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 except Exception:
     pass
 
-HOST = "10.<REDACTED-RPI-IP>"
-PORT = 22
-USER = "cortex"
-PASS = "REDACTED-RPI-PASSWORD"
+from scripts._rpi_ssh import RPI_HOST, RPI_USER, RPI_PASSWORD, require_credentials, get_ssh_client
+require_credentials()
+import paramiko
+
 PROJECT_DIR = "~/ProjectCortex"
 
-# Resolve project dir to absolute
 def ssh():
-    c = paramiko.SSHClient()
-    c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    c.connect(HOST, PORT, USER, PASS, timeout=10, allow_agent=False, look_for_keys=False)
+    c = get_ssh_client()
+    c.connect(RPI_HOST, 22, RPI_USER, RPI_PASSWORD, timeout=10, allow_agent=False, look_for_keys=False)
     return c
 
 def run(c, cmd, timeout=30):
@@ -51,7 +44,7 @@ def banner(t):
 
 def main():
     c = ssh()
-    print(f"[OK] Connected to {USER}@{HOST}")
+    print(f"[OK] Connected to {RPI_USER}@{RPI_HOST}")
 
     # 1. PWD + project layout
     banner("1. Environment basics")

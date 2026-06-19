@@ -1,15 +1,15 @@
 """Install textual on RPi5 and verify."""
 import io, sys
-import paramiko
+from scripts._rpi_ssh import RPI_HOST, RPI_USER, RPI_PASSWORD, require_credentials, get_ssh_client
 
 try:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 except Exception:
     pass
 
-c = paramiko.SSHClient()
-c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect("10.<REDACTED-RPI-IP>", 22, "cortex", "REDACTED-RPI-PASSWORD", timeout=10, allow_agent=False, look_for_keys=False)
+require_credentials()
+c = get_ssh_client()
+c.connect(RPI_HOST, 22, RPI_USER, RPI_PASSWORD, timeout=10, allow_agent=False, look_for_keys=False)
 si, so, se = c.exec_command(
     "bash -lc 'cd ~/ProjectCortex && source venv/bin/activate && pip install --quiet textual 2>&1 && python -c \"import textual; print(\\\"textual version:\\\", textual.__version__)\"'",
     timeout=120,

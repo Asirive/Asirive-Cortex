@@ -273,11 +273,13 @@ User Query → Gemini 2.5 Flash TTS (image+prompt → audio directly)
 
 self.api_key_pool = [
     os.getenv("GEMINI_API_KEY"),
-    "<REDACTED-GEMINI-KEY>",
-    "<REDACTED-GEMINI-KEY>",
-    "<REDACTED-GEMINI-KEY>",
-    "<REDACTED-GEMINI-KEY>",
-    "<REDACTED-GEMINI-KEY>"
+    # NOTE: real key values were redacted on 2026-06-19 — do not
+    # commit live API keys to docs. Use env vars / .env only.
+    "<REDACTED-KEY-2>",
+    "<REDACTED-KEY-3>",
+    "<REDACTED-KEY-4>",
+    "<REDACTED-KEY-5>",
+    "<REDACTED-KEY-6>",
 ]
 
 def rotate_to_next_key(self) -> bool:

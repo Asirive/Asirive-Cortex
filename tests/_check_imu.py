@@ -1,9 +1,16 @@
 """Quick IMU check via SSH to RPi5."""
-import paramiko
+from scripts._rpi_ssh import (
+    RPI_HOST,
+    RPI_PASSWORD,
+    RPI_USER,
+    get_ssh_client,
+    require_credentials,
+)
+require_credentials()
+import paramiko  # noqa: E402  (imported after env check)
 
-ssh = paramiko.SSHClient()
-ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect('10.<REDACTED-RPI-IP>', username='cortex', password='REDACTED-RPI-PASSWORD', timeout=10)
+ssh = get_ssh_client()
+ssh.connect(RPI_HOST, username=RPI_USER, password=RPI_PASSWORD, timeout=10)
 
 cmds = [
     "fuser /dev/i2c-1 2>&1 || echo 'no process using i2c-1'",

@@ -89,8 +89,19 @@ RPI_PATH = _cfg["path"]
 LAPTOP_PATH = str(PROJECT_ROOT)
 SSH_TARGET = f"{RPI_USER}@{RPI_HOST}"
 
-# Get password
-RPI_PASSWORD = os.environ.get("RPI_PASSWORD", "REDACTED-RPI-PASSWORD")
+# Pull SSH password from the shared helper. It will raise CredentialError
+# if RPI_PASSWORD is missing, so we never silently fall back to a
+# hardcoded default.
+try:
+    from scripts._rpi_ssh import RPI_PASSWORD as _SSH_PASSWORD  # noqa: E402
+except Exception:
+    _SSH_PASSWORD = os.environ.get("RPI_PASSWORD")
+RPI_PASSWORD = _SSH_PASSWORD
+if not RPI_PASSWORD:
+    raise RuntimeError(
+        "RPI_PASSWORD is not set. Add it to .env (gitignored) or your shell, "
+        "then re-run. See scripts/_rpi_ssh.py for details."
+    )
 
 # Sync paths
 CODE_PATHS = [

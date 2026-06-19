@@ -1,16 +1,13 @@
 """Boot smoke test: run 'python -m rpi5 all' on the Pi for N seconds, kill it, dump logs."""
 import sys
 import time
-import paramiko
+from scripts._rpi_ssh import RPI_HOST, RPI_USER, RPI_PASSWORD, require_credentials, get_ssh_client
 
-HOST = "10.<REDACTED-RPI-IP>"
-USER = "cortex"
-PASS = "REDACTED-RPI-PASSWORD"
+require_credentials()
 TIMEOUT_S = 12
 
-c = paramiko.SSHClient()
-c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect(HOST, username=USER, password=PASS, timeout=10)
+c = get_ssh_client()
+c.connect(RPI_HOST, username=RPI_USER, password=RPI_PASSWORD, timeout=10)
 cmd = (
     f"bash -lc 'cd ~/ProjectCortex && source venv/bin/activate && "
     f"timeout --signal=INT {TIMEOUT_S} python -m rpi5 all 2>&1' "

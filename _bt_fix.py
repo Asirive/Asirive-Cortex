@@ -1,9 +1,14 @@
 """Fix BT state - kill app, verify pairing, clean state."""
-import paramiko, time
+import time
+from pathlib import Path
+import sys
 
-c = paramiko.SSHClient()
-c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect('10.<REDACTED-RPI-IP>', username='cortex', password='REDACTED-RPI-PASSWORD')
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from scripts._rpi_ssh import RPI_HOST, RPI_USER, RPI_PASSWORD, require_credentials, get_ssh_client
+
+require_credentials()
+c = get_ssh_client()
+c.connect(RPI_HOST, username=RPI_USER, password=RPI_PASSWORD)
 
 # 1. Kill any running cortex processes
 print("=== Killing cortex processes ===")
@@ -30,9 +35,10 @@ stdin, stdout, stderr = c.exec_command('bluetoothctl devices Paired')
 paired = stdout.read().decode().strip()
 print("Paired list:", paired if paired else "(empty)")
 
-# 3. Check LinkKey
+# 3. Check LinkKey (sudo uses the SSH password, sourced from env)
 stdin, stdout, stderr = c.exec_command(
-    'echo REDACTED-RPI-PASSWORD | sudo -S grep LinkKey /var/lib/bluetooth/2C:CF:67:A7:D2:45/2C:BE:EE:2D:9E:E6/info 2>/dev/null'
+    f"echo {RPI_PASSWORD} | sudo -S grep LinkKey "
+    "/var/lib/bluetooth/2C:CF:67:A7:D2:45/2C:BE:EE:2D:9E:E6/info 2>/dev/null"
 )
 linkkey = stdout.read().decode().strip()
 print("LinkKey:", linkkey if linkkey else "(missing)")

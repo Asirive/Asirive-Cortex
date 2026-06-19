@@ -1,18 +1,15 @@
 """Fetch a file from RPi5 to local via SFTP."""
-import paramiko
 import sys
 from pathlib import Path
+from scripts._rpi_ssh import RPI_HOST, RPI_USER, RPI_PASSWORD, require_credentials, get_ssh_client
 
-HOST = "10.<REDACTED-RPI-IP>"
-USER = "cortex"
-PASS = "REDACTED-RPI-PASSWORD"
+require_credentials()
 REMOTE = sys.argv[1]
 LOCAL = sys.argv[2]
 
 def main():
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(HOST, username=USER, password=PASS, timeout=10)
+    client = get_ssh_client()
+    client.connect(RPI_HOST, username=RPI_USER, password=RPI_PASSWORD, timeout=10)
     sftp = client.open_sftp()
     try:
         Path(LOCAL).parent.mkdir(parents=True, exist_ok=True)

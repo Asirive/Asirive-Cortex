@@ -1,13 +1,17 @@
 """Quick script to make BT pairable permanent on RPi5."""
-import paramiko
 import time
+from pathlib import Path
+import sys
 
-c = paramiko.SSHClient()
-c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect('10.<REDACTED-RPI-IP>', username='cortex', password='REDACTED-RPI-PASSWORD')
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from scripts._rpi_ssh import RPI_HOST, RPI_USER, RPI_PASSWORD, require_credentials, get_ssh_client
 
-# Set AlwaysPairable = true in BlueZ config
-sed_cmd = 'echo REDACTED-RPI-PASSWORD | sudo -S sed -i "s/^#AlwaysPairable = false/AlwaysPairable = true/" /etc/bluetooth/main.conf'
+require_credentials()
+c = get_ssh_client()
+c.connect(RPI_HOST, username=RPI_USER, password=RPI_PASSWORD)
+
+# Set AlwaysPairable = true in BlueZ config (sudo uses SSH password from env)
+sed_cmd = f'echo {RPI_PASSWORD} | sudo -S sed -i "s/^#AlwaysPairable = false/AlwaysPairable = true/" /etc/bluetooth/main.conf'
 stdin, stdout, stderr = c.exec_command(sed_cmd)
 print("sed:", stderr.read().decode().strip()[:200])
 
@@ -16,7 +20,7 @@ stdin, stdout, stderr = c.exec_command('grep -i pairable /etc/bluetooth/main.con
 print("Config:", stdout.read().decode().strip())
 
 # Restart bluetooth
-stdin, stdout, stderr = c.exec_command('echo REDACTED-RPI-PASSWORD | sudo -S systemctl restart bluetooth')
+stdin, stdout, stderr = c.exec_command(f'echo {RPI_PASSWORD} | sudo -S systemctl restart bluetooth')
 time.sleep(3)
 print("Bluetooth restarted")
 

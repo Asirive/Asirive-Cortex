@@ -1,7 +1,9 @@
 import paramiko
-c = paramiko.SSHClient()
-c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect('10.<REDACTED-RPI-IP>', username='cortex', password='REDACTED-RPI-PASSWORD', timeout=10, look_for_keys=False, allow_agent=False)
+from scripts._rpi_ssh import RPI_HOST, RPI_USER, RPI_PASSWORD, require_credentials, get_ssh_client
+
+require_credentials()
+c = get_ssh_client()
+c.connect(RPI_HOST, username=RPI_USER, password=RPI_PASSWORD, timeout=10, look_for_keys=False, allow_agent=False)
 cmds = [
     'echo === __main__ file_only block ===',
     'grep -n -A8 "_full_mode" ~/ProjectCortex/rpi5/__main__.py',

@@ -4,9 +4,6 @@ Temporary script - delete after use.
 """
 import paramiko, sys
 
-HOST = "10.<REDACTED-RPI-IP>"
-USER = "cortex"
-PASS = "REDACTED-RPI-PASSWORD"
 CARD = "bluez_card.2C_BE_EE_2D_9E_E6"
 
 # Try LDAC first (best quality), fall back to SBC-XQ, then SBC, then generic a2dp-sink
@@ -17,9 +14,8 @@ PROFILES = [
     "a2dp-sink",
 ]
 
-ssh = paramiko.SSHClient()
-ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect(HOST, username=USER, password=PASS, timeout=10)
+ssh = get_ssh_client()
+ssh.connect(RPI_HOST, username=RPI_USER, password=RPI_PASSWORD, timeout=10)
 
 def run(cmd):
     _, stdout, stderr = ssh.exec_command(cmd, timeout=10)

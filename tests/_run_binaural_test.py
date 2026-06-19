@@ -3,15 +3,18 @@ Run the binaural 3D audio sweep test on RPi5 via SSH.
 Plays a tone that rotates 360 degrees around your head.
 Temporary script - delete after use.
 """
-import paramiko
+from scripts._rpi_ssh import (
+    RPI_HOST,
+    RPI_PASSWORD,
+    RPI_USER,
+    get_ssh_client,
+    require_credentials,
+)
+require_credentials()
+import paramiko  # noqa: E402  (imported after env check)
 
-HOST = "10.<REDACTED-RPI-IP>"
-USER = "cortex"
-PASS = "REDACTED-RPI-PASSWORD"
-
-ssh = paramiko.SSHClient()
-ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect(HOST, username=USER, password=PASS, timeout=10)
+ssh = get_ssh_client()
+ssh.connect(RPI_HOST, username=RPI_USER, password=RPI_PASSWORD, timeout=10)
 
 def run(cmd, timeout=60):
     _, stdout, stderr = ssh.exec_command(cmd, timeout=timeout)

@@ -3,9 +3,9 @@ Fix RPi5: replace expired API key in .env with the new one, then test.
 Uses SFTP to drop a small Python script on the RPi5 to avoid shell-quoting hell.
 """
 import io
+import os
 import sys
 from pathlib import Path
-import paramiko
 
 # Force UTF-8 stdout (Windows cp1252)
 try:
@@ -14,9 +14,18 @@ try:
 except Exception:
     pass
 
-HOST = "10.<REDACTED-RPI-IP>"
-USER = "cortex"
-PASS = "REDACTED-RPI-PASSWORD"
+# Credentials come from env (via scripts/_rpi_ssh.py) — never hardcoded.
+from scripts._rpi_ssh import (
+    RPI_HOST as HOST,
+    RPI_USER as USER,
+    RPI_PASSWORD as PASS,
+    require_credentials,
+    get_ssh_client,
+)
+
+require_credentials()
+import paramiko  # imported after env check so missing creds error out first
+
 ENV_PATH = "/home/cortex/ProjectCortex/.env"
 SCRIPTS_DIR = "/home/cortex/ProjectCortex/scripts"
 
@@ -45,8 +54,7 @@ def run(c, cmd, timeout=30):
     rc = stdout.channel.recv_exit_status()
     return out, err, rc
 
-c = paramiko.SSHClient()
-c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+c = get_ssh_client()
 c.connect(HOST, 22, USER, PASS, timeout=10, allow_agent=False, look_for_keys=False)
 print(f"[OK] Connected to {USER}@{HOST}")
 

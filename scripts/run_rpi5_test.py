@@ -1,20 +1,16 @@
 """Re-run the RPi5 test with longer timeout and output streaming."""
 import io
 import sys
-import paramiko
 import time
+from scripts._rpi_ssh import RPI_HOST, RPI_USER, RPI_PASSWORD, require_credentials, get_ssh_client
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
-HOST = "10.<REDACTED-RPI-IP>"
-USER = "cortex"
-PASS = "REDACTED-RPI-PASSWORD"
-
-c = paramiko.SSHClient()
-c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect(HOST, 22, USER, PASS, timeout=10, allow_agent=False, look_for_keys=False)
-print(f"[OK] Connected to {USER}@{HOST}")
+require_credentials()
+c = get_ssh_client()
+c.connect(RPI_HOST, 22, RPI_USER, RPI_PASSWORD, timeout=10, allow_agent=False, look_for_keys=False)
+print(f"[OK] Connected to {RPI_USER}@{RPI_HOST}")
 
 # Run with streaming output, longer timeout
 print("\n>>> Running test on RPi5 (max 90s)...")

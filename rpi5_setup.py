@@ -1,11 +1,35 @@
-import paramiko
+"""
+RPi5 dependency / environment setup helper.
+
+All commands are run over SSH using the credentials from
+``scripts/_rpi_ssh.py`` (env vars, never hardcoded). See
+``python scripts/_rpi_ssh.py`` to verify your env is set.
+
+Usage:
+    python rpi5_setup.py check         # check numpy/picamera2
+    python rpi5_setup.py fix-numpy     # upgrade numpy in venv
+    python rpi5_setup.py core          # install core python pkgs
+    python rpi5_setup.py verify        # run a full import check
+    ... (see __main__ block for the full list)
+"""
 import sys
 
-ssh = paramiko.SSHClient()
-ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect('10.<REDACTED-RPI-IP>', username='cortex', password='REDACTED-RPI-PASSWORD', timeout=10)
+from scripts._rpi_ssh import (
+    RPI_HOST,
+    RPI_PASSWORD,
+    RPI_USER,
+    get_ssh_client,
+    require_credentials,
+)
+
+require_credentials()
+import paramiko  # noqa: E402  (imported after env check)
+
+ssh = get_ssh_client()
+ssh.connect(RPI_HOST, username=RPI_USER, password=RPI_PASSWORD, timeout=10)
 
 VENV = "source /home/cortex/ProjectCortex/venv/bin/activate"
+
 
 def run(cmd, label=""):
     stdin, stdout, stderr = ssh.exec_command(cmd, timeout=300)
@@ -27,13 +51,14 @@ def run(cmd, label=""):
     print(f"EXIT: {code}")
     return code, out, err
 
+
 # Step from command line arg
 step = sys.argv[1] if len(sys.argv) > 1 else "check"
 
 if step == "check":
     run('python3 -c "import numpy; print(numpy.__version__)"', "System numpy")
     run(f'bash -c "{VENV} && python -c \\"import numpy; print(numpy.__version__)\\""', "Venv numpy")
-    run(f'bash -c "{VENV} && python -c \\"import picamera2; print(\\\\\\\"picamera2 OK\\\\\\\")\\""', "Venv picamera2")
+    run(f'bash -c "{VENV} && python -c \\"import picamera2; print(\\\\\\"picamera2 OK\\\\\\")\\""', "Venv picamera2")
 
 elif step == "fix-numpy":
     run(f'bash -c "{VENV} && pip install --upgrade \\"numpy>=2.1.0\\""', "Upgrade numpy in venv")
@@ -83,13 +108,13 @@ elif step == "extras":
 elif step == "fix-torchaudio":
     run(f'bash -c "{VENV} && ls /home/cortex/ProjectCortex/venv/lib/python3.11/site-packages/torch/lib/libc10* 2>&1 | head -5"', "Check torch libs exist")
     run(f'bash -c "{VENV} && pip install torchaudio --index-url https://download.pytorch.org/whl/cpu --force-reinstall --no-deps"', "Install CPU-only torchaudio")
-    run(f'bash -c "ldd /home/cortex/ProjectCortex/venv/lib/python3.11/site-packages/torchaudio/lib/_torchaudio.abi3.so 2>&1 | grep not"', "Check missing shared libs after fix")
+    run(f'bash -c "{VENV} && ldd /home/cortex/ProjectCortex/venv/lib/python3.11/site-packages/torchaudio/lib/_torchaudio.abi3.so 2>&1 | grep not"', "Check missing shared libs after fix")
 
 elif step == "aiohttp":
     run(f'bash -c "{VENV} && pip install aiohttp"', "aiohttp")
 
 elif step == "hailo":
-    run(f'bash -c "{VENV} && python -c \\"from hailo_platform import VDevice; print(\\\\\\\"Hailo OK\\\\\\\")\\""', "Hailo check")
+    run(f'bash -c "{VENV} && python -c \\"from hailo_platform import VDevice; print(\\\\\\"Hailo OK\\\\\\")\\""', "Hailo check")
 
 elif step == "verify":
     # Write a verification script to RPi5 to avoid quoting hell
@@ -130,10 +155,10 @@ print(f"\\nRESULTS: {passed} passed, {failed} failed / {len(checks)}")
     run(f'bash -c "{VENV} && python /tmp/verify_imports.py"', "Run verification")
 
 elif step == "test-import":
-    run(f'bash -c "{VENV} && cd /home/cortex/ProjectCortex && python -c \\"from rpi5.main import CortexSystem; print(\\\\\\\"CortexSystem import OK\\\\\\\")\\""', "Test rpi5.main import")
+    run(f'bash -c "{VENV} && cd /home/cortex/ProjectCortex && python -c \\"from rpi5.main import CortexSystem; print(\\\\\\"CortexSystem import OK\\\\\\")\\""', "Test rpi5.main import")
 
 elif step == "test-import-full":
-    run(f'bash -c "{VENV} && cd /home/cortex/ProjectCortex && python -c \\"from rpi5.main import CortexSystem; print(\\\\\\\"CortexSystem import OK\\\\\\\")\\" 2>&1"', "Test rpi5.main import (full stderr)")
+    run(f'bash -c "{VENV} && cd /home/cortex/ProjectCortex && python -c \\"from rpi5.main import CortexSystem; print(\\\\\\"CortexSystem import OK\\\\\\")\\" 2>&1"', "Test rpi5.main import (full stderr)")
 
 else:
     print(f"Unknown step: {step}")

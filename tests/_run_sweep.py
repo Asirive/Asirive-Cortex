@@ -5,13 +5,8 @@ Temporary script - delete after use.
 """
 import paramiko, time
 
-HOST = "10.<REDACTED-RPI-IP>"
-USER = "cortex"
-PASS = "REDACTED-RPI-PASSWORD"
-
-ssh = paramiko.SSHClient()
-ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect(HOST, username=USER, password=PASS, timeout=10)
+ssh = get_ssh_client()
+ssh.connect(RPI_HOST, username=RPI_USER, password=RPI_PASSWORD, timeout=10)
 
 def run(cmd, timeout=60):
     _, stdout, stderr = ssh.exec_command(cmd, timeout=timeout)

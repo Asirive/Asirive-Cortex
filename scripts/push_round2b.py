@@ -1,15 +1,15 @@
 """Push app_textual.py + style.tcss + screenshot script to RPi5 and run."""
 import io, os, sys
-import paramiko
+from scripts._rpi_ssh import RPI_HOST, RPI_USER, RPI_PASSWORD, require_credentials, get_ssh_client
 
 try:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
 except Exception:
     pass
 
-c = paramiko.SSHClient()
-c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-c.connect("10.<REDACTED-RPI-IP>", 22, "cortex", "REDACTED-RPI-PASSWORD", timeout=10, allow_agent=False, look_for_keys=False)
+require_credentials()
+c = get_ssh_client()
+c.connect(RPI_HOST, 22, RPI_USER, RPI_PASSWORD, timeout=10, allow_agent=False, look_for_keys=False)
 
 sftp = c.open_sftp()
 LOCAL_DIR = r"C:\Users\Haziq\Documents\ProjectCortex\rpi5\live_dashboard"

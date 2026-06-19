@@ -17,19 +17,29 @@ Usage:
 Author: Haziq (@IRSPlays)
 """
 
-import paramiko
 import sys
 import time
 
-ssh = paramiko.SSHClient()
-ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect('10.<REDACTED-RPI-IP>', username='cortex', password='REDACTED-RPI-PASSWORD', timeout=10)
+from scripts._rpi_ssh import (
+    RPI_HOST,
+    RPI_PASSWORD,
+    RPI_USER,
+    get_ssh_client,
+    require_credentials,
+)
+
+require_credentials()
+import paramiko  # noqa: E402  (imported after env check)
+
+ssh = get_ssh_client()
+ssh.connect(RPI_HOST, username=RPI_USER, password=RPI_PASSWORD, timeout=10)
 
 VENV = "source /home/cortex/ProjectCortex/venv/bin/activate"
 
 # Known devices
 CMF_MAC = None  # Will be discovered by scan
 UGREEN_MAC = None
+
 
 def run(cmd, label="", timeout=60):
     stdin, stdout, stderr = ssh.exec_command(cmd, timeout=timeout)
@@ -60,7 +70,7 @@ elif step == "install-audio":
     print("Installing PipeWire + Bluetooth audio stack...")
     # PipeWire with Bluetooth support
     run("sudo apt-get update -qq", "apt update")
-    run("sudo apt-get install -y pipewire pipewire-audio wireplumber libspa-0.2-bluetooth pulseaudio-utils", 
+    run("sudo apt-get install -y pipewire pipewire-audio wireplumber libspa-0.2-bluetooth pulseaudio-utils",
         "Install PipeWire + BT audio", timeout=120)
     # Enable PipeWire for user
     run("systemctl --user --now enable pipewire pipewire-pulse wireplumber 2>&1", "Enable PipeWire services")
@@ -89,27 +99,27 @@ elif step == "pair":
     if not mac:
         print("Usage: python rpi5_bt_setup.py pair <MAC> [name]")
         sys.exit(1)
-    
+
     # Ensure scan is running so device stays visible
     print(f"Pairing {name} ({mac})...")
     ssh.exec_command("bluetoothctl scan on", timeout=5)
     time.sleep(5)
-    
+
     run(f"bluetoothctl pair {mac}", f"Pair {name}", timeout=30)
     time.sleep(2)
     run(f"bluetoothctl trust {mac}", f"Trust {name}")
     time.sleep(1)
-    
+
     # Connect with retries
     for attempt in range(1, 4):
         code, out, err = run(f"bluetoothctl connect {mac}", f"Connect attempt {attempt}/3", timeout=30)
         if "Connection successful" in out:
             break
         time.sleep(5)
-    
+
     ssh.exec_command("bluetoothctl scan off", timeout=5)
     time.sleep(1)
-    
+
     # Show result
     run(f"bluetoothctl info {mac}", f"Device info for {name}")
 
@@ -117,10 +127,10 @@ elif step == "pair-cmf":
     # Scan and pair CMF Buds
     print("Looking for CMF Buds 2 Plus/Pro...")
     print("Make sure earbuds are in pairing mode!")
-    
+
     run("bluetoothctl power on", "Power on")
     ssh.exec_command("bluetoothctl scan on", timeout=5)
-    
+
     # Poll for device appearance
     cmf_mac = None
     for i in range(6):  # 30s total
@@ -137,24 +147,24 @@ elif step == "pair-cmf":
         if cmf_mac:
             break
         print(f"  Scanning... ({(i+1)*5}s)")
-    
+
     if not cmf_mac:
         print("\nCMF Buds not found! Make sure they're in pairing mode.")
         ssh.exec_command("bluetoothctl scan off", timeout=5)
         sys.exit(1)
-    
+
     # Pair while scan is still active
     run(f"bluetoothctl pair {cmf_mac}", "Pair CMF", timeout=30)
     time.sleep(2)
     run(f"bluetoothctl trust {cmf_mac}", "Trust CMF")
     time.sleep(1)
-    
+
     for attempt in range(1, 4):
         code, out, err = run(f"bluetoothctl connect {cmf_mac}", f"Connect attempt {attempt}/3", timeout=30)
         if "Connection successful" in out:
             break
         time.sleep(5)
-    
+
     ssh.exec_command("bluetoothctl scan off", timeout=5)
     run(f"bluetoothctl info {cmf_mac}", "CMF Buds info")
 
@@ -162,10 +172,10 @@ elif step == "pair-ugreen":
     # Scan and pair UGREEN HiTune S3
     print("Looking for UGREEN HiTune S3...")
     print("Make sure earbuds are in pairing mode!")
-    
+
     run("bluetoothctl power on", "Power on")
     ssh.exec_command("bluetoothctl scan on", timeout=5)
-    
+
     ugreen_mac = None
     for i in range(6):
         time.sleep(5)
@@ -181,23 +191,23 @@ elif step == "pair-ugreen":
         if ugreen_mac:
             break
         print(f"  Scanning... ({(i+1)*5}s)")
-    
+
     if not ugreen_mac:
         print("\nUGREEN HiTune S3 not found! Make sure they're in pairing mode.")
         ssh.exec_command("bluetoothctl scan off", timeout=5)
         sys.exit(1)
-    
+
     run(f"bluetoothctl pair {ugreen_mac}", "Pair UGREEN", timeout=30)
     time.sleep(2)
     run(f"bluetoothctl trust {ugreen_mac}", "Trust UGREEN")
     time.sleep(1)
-    
+
     for attempt in range(1, 4):
         code, out, err = run(f"bluetoothctl connect {ugreen_mac}", f"Connect attempt {attempt}/3", timeout=30)
         if "Connection successful" in out:
             break
         time.sleep(5)
-    
+
     ssh.exec_command("bluetoothctl scan off", timeout=5)
     run(f"bluetoothctl info {ugreen_mac}", "UGREEN info")
 
@@ -211,7 +221,7 @@ elif step == "status":
         if match:
             mac, name = match.group(1), match.group(2)
             run(f"bluetoothctl info {mac} | grep -E 'Name:|Connected:|Paired:|Trusted:'", f"{name}")
-    
+
     # Audio status
     run("wpctl status 2>&1 | head -40", "PipeWire audio status")
 

@@ -1,14 +1,11 @@
 """Clear Python caches and re-run the screenshot test on RPi5."""
-import paramiko
+from scripts._rpi_ssh import RPI_HOST, RPI_USER, RPI_PASSWORD, require_credentials, get_ssh_client
 
-HOST = "10.<REDACTED-RPI-IP>"
-USER = "cortex"
-PASS = "REDACTED-RPI-PASSWORD"
+require_credentials()
 
 def main():
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    client.connect(HOST, username=USER, password=PASS, timeout=10)
+    client = get_ssh_client()
+    client.connect(RPI_HOST, username=RPI_USER, password=RPI_PASSWORD, timeout=10)
     try:
         commands = [
             "find ~/ProjectCortex/rpi5/live_dashboard -name __pycache__ -exec rm -rf {} + 2>/dev/null; find ~/ProjectCortex/rpi5 -name __pycache__ -exec rm -rf {} + 2>/dev/null; echo caches_cleared",

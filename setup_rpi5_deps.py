@@ -3,22 +3,27 @@
 RPi5 Dependency Setup via Paramiko
 Fixes numpy/picamera2 incompatibility, installs zmq, hailo, and all deps.
 
+Credentials are loaded from environment variables (or .env) — see
+``scripts/_rpi_ssh.py``. Set RPI_HOST, RPI_USER, RPI_PASSWORD before
+running. RPI_PASSWORD is required (no default).
+
 Author: Haziq (@IRSPlays)
 Date: March 25, 2026
 """
 import sys
-import time
 
-try:
-    import paramiko
-except ImportError:
-    print("ERROR: paramiko not installed. Run: pip install paramiko")
-    sys.exit(1)
+# Pull credentials from env (RPI_PASSWORD has NO default — fail loud)
+from scripts._rpi_ssh import (
+    RPI_HOST,
+    RPI_PASSWORD,
+    RPI_USER,
+    get_ssh_client,
+    require_credentials,
+)
 
-# RPi5 connection details
-RPI_HOST = "10.<REDACTED-RPI-IP>"
-RPI_USER = "cortex"
-RPI_PASS = "REDACTED-RPI-PASSWORD"
+require_credentials()
+import paramiko  # noqa: E402  (imported after env check)
+
 PROJECT_DIR = "/home/cortex/ProjectCortex"
 VENV_ACTIVATE = f"source {PROJECT_DIR}/venv/bin/activate"
 
@@ -28,13 +33,13 @@ def run_cmd(ssh, cmd, timeout=300, check=False):
     print(f"\n{'='*60}")
     print(f"[CMD] {cmd}")
     print('='*60)
-    
+
     stdin, stdout, stderr = ssh.exec_command(cmd, timeout=timeout)
-    
+
     out = stdout.read().decode('utf-8', errors='replace')
     err = stderr.read().decode('utf-8', errors='replace')
     exit_code = stdout.channel.recv_exit_status()
-    
+
     if out.strip():
         # Truncate very long output
         lines = out.strip().split('\n')
@@ -46,37 +51,37 @@ def run_cmd(ssh, cmd, timeout=300, check=False):
             print(out.strip())
     if err.strip():
         print(f"[STDERR] {err.strip()[:500]}")
-    
+
     if check and exit_code != 0:
         print(f"[FAIL] Exit code: {exit_code}")
     else:
         print(f"[OK] Exit code: {exit_code}")
-    
+
     return exit_code, out, err
 
 
 def main():
     print("Connecting to RPi5...")
-    ssh = paramiko.SSHClient()
+    ssh = get_ssh_client()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    
+
     try:
-        ssh.connect(RPI_HOST, username=RPI_USER, password=RPI_PASS, timeout=10)
+        ssh.connect(RPI_HOST, username=RPI_USER, password=RPI_PASSWORD, timeout=10)
         print(f"Connected to {RPI_USER}@{RPI_HOST}")
     except Exception as e:
         print(f"Connection failed: {e}")
         sys.exit(1)
-    
+
     # ──────────────────────────────────────────────────
     # PHASE 1: System packages (apt)
     # ──────────────────────────────────────────────────
     print("\n" + "="*60)
     print("PHASE 1: System packages (apt)")
     print("="*60)
-    
-    # Update apt cache
-    run_cmd(ssh, "echo 'REDACTED-RPI-PASSWORD' | sudo -S apt-get update -qq", timeout=120)
-    
+
+    # Update apt cache (sudo uses the SSH password from env)
+    run_cmd(ssh, f"echo '{RPI_PASSWORD}' | sudo -S apt-get update -qq", timeout=120)
+
     # Install all system dependencies in one shot
     system_pkgs = [
         # Audio
@@ -101,27 +106,27 @@ def main():
         # headless over SSH because wl-copy needs Wayland and xsel
         # sometimes hangs.)
         "xclip",
-    ]  
-    
+    ]
+
     pkg_str = " ".join(system_pkgs)
-    run_cmd(ssh, f"echo 'REDACTED-RPI-PASSWORD' | sudo -S apt-get install -y {pkg_str}", timeout=600)
-    
+    run_cmd(ssh, f"echo '{RPI_PASSWORD}' | sudo -S apt-get install -y {pkg_str}", timeout=600)
+
     # ──────────────────────────────────────────────────
     # PHASE 2: Fix numpy in venv
     # ──────────────────────────────────────────────────
     print("\n" + "="*60)
     print("PHASE 2: Fix numpy / picamera2 compatibility")
     print("="*60)
-    
+
     # Check system numpy version first
     run_cmd(ssh, "python3 -c \"import numpy; print('System numpy:', numpy.__version__)\"")
-    
+
     # Check current venv numpy
     run_cmd(ssh, f"bash -c '{VENV_ACTIVATE} && python -c \"import numpy; print(numpy.__version__)\"'")
-    
+
     # Force reinstall numpy to match what system simplejpeg expects (numpy 2.x)
     run_cmd(ssh, f"bash -c '{VENV_ACTIVATE} && pip install --upgrade \"numpy>=2.1.0\"'", timeout=180)
-    
+
     # Verify picamera2 now works
     exit_code, out, _ = run_cmd(ssh, f"bash -c '{VENV_ACTIVATE} && python -c \"import picamera2; print(picamera2.__version__)\"'")
     if exit_code == 0:
@@ -131,16 +136,16 @@ def main():
         # Alternative: reinstall simplejpeg to match current numpy
         run_cmd(ssh, f"bash -c '{VENV_ACTIVATE} && pip install --force-reinstall simplejpeg'", timeout=120)
         run_cmd(ssh, f"bash -c '{VENV_ACTIVATE} && python -c \"import picamera2; print(picamera2.__version__)\"'")
-    
+
     # ──────────────────────────────────────────────────
     # PHASE 3: Core Python packages (pip)
     # ──────────────────────────────────────────────────
     print("\n" + "="*60)
     print("PHASE 3: Core Python packages")
     print("="*60)
-    
+
     # Install in batches to avoid OOM on 4GB RPi5
-    
+
     # Batch 1: Core essentials
     batch1 = [
         "python-dotenv",
@@ -151,13 +156,13 @@ def main():
         "rich",
     ]
     run_cmd(ssh, f"bash -c '{VENV_ACTIVATE} && pip install {' '.join(batch1)}'", timeout=180)
-    
+
     # Batch 2: OpenCV (headless for Lite OS)
     run_cmd(ssh, f"bash -c '{VENV_ACTIVATE} && pip install opencv-python-headless>=4.10.0'", timeout=300)
-    
+
     # Batch 3: ZMQ
     run_cmd(ssh, f"bash -c '{VENV_ACTIVATE} && pip install pyzmq>=26.0.0 imagezmq>=1.2.0'", timeout=180)
-    
+
     # Batch 4: Audio
     batch4 = [
         "pygame>=2.6.1",
@@ -168,7 +173,7 @@ def main():
         "silero-vad>=5.1.2",
     ]
     run_cmd(ssh, f"bash -c '{VENV_ACTIVATE} && pip install {' '.join(batch4)}'", timeout=300)
-    
+
     # Batch 5: Web/Server
     batch5 = [
         "fastapi>=0.115.6",
@@ -176,10 +181,10 @@ def main():
         "websockets>=14.1",
     ]
     run_cmd(ssh, f"bash -c '{VENV_ACTIVATE} && pip install {' '.join(batch5)}'", timeout=180)
-    
+
     # Batch 6: AI/ML (heavy - torch is big)
     run_cmd(ssh, f"bash -c '{VENV_ACTIVATE} && pip install torch>=2.6.0 torchvision>=0.21.0'", timeout=900)
-    
+
     # Batch 7: YOLO + inference
     batch7 = [
         "ultralytics>=8.4.0",
@@ -188,7 +193,7 @@ def main():
         "onnx>=1.15.0",
     ]
     run_cmd(ssh, f"bash -c '{VENV_ACTIVATE} && pip install {' '.join(batch7)}'", timeout=600)
-    
+
     # Batch 8: Cloud APIs
     batch8 = [
         "google-genai>=1.60.0",
@@ -198,7 +203,7 @@ def main():
         "cartesia>=1.0.0",
     ]
     run_cmd(ssh, f"bash -c '{VENV_ACTIVATE} && pip install {' '.join(batch8)}'", timeout=300)
-    
+
     # Batch 9: TTS/STT
     batch9 = [
         "openai-whisper>=20240930",
@@ -210,30 +215,30 @@ def main():
 
     # Batch 10: Supabase
     run_cmd(ssh, f"bash -c '{VENV_ACTIVATE} && pip install supabase>=2.3.4'", timeout=180)
-    
+
     # Batch 11: PyOpenAL for spatial audio
     run_cmd(ssh, f"bash -c '{VENV_ACTIVATE} && pip install PyOpenAL'", timeout=120)
-    
+
     # ──────────────────────────────────────────────────
     # PHASE 4: Hailo SDK (if apt didn't cover it)
     # ──────────────────────────────────────────────────
     print("\n" + "="*60)
     print("PHASE 4: Hailo SDK check")
     print("="*60)
-    
+
     exit_code, _, _ = run_cmd(ssh, f"bash -c '{VENV_ACTIVATE} && python -c \"from hailo_platform import VDevice; print(\\\"Hailo OK\\\")\"'")
     if exit_code != 0:
         print("Hailo platform not available via system. Trying pip...")
         run_cmd(ssh, f"bash -c '{VENV_ACTIVATE} && pip install hailort'", timeout=300)
         run_cmd(ssh, f"bash -c '{VENV_ACTIVATE} && python -c \"from hailo_platform import VDevice; print(\\\"Hailo OK\\\")\"'")
-    
+
     # ──────────────────────────────────────────────────
     # PHASE 5: Verification
     # ──────────────────────────────────────────────────
     print("\n" + "="*60)
-    print("PHASE 5: Verification")  
+    print("PHASE 5: Verification")
     print("="*60)
-    
+
     checks = [
         ("numpy",      "import numpy; print('numpy', numpy.__version__)"),
         ("cv2",        "import cv2; print('cv2', cv2.__version__)"),
@@ -252,7 +257,7 @@ def main():
         ("genai",      "from google import genai; print('google-genai OK')"),
         ("hailo",      "from hailo_platform import VDevice; print('hailo OK')"),
     ]
-    
+
     passed = 0
     failed = 0
     for name, check_code in checks:
@@ -262,11 +267,11 @@ def main():
         else:
             failed += 1
             print(f"  >>> {name} FAILED")
-    
+
     print(f"\n{'='*60}")
     print(f"RESULTS: {passed} passed, {failed} failed out of {len(checks)}")
     print(f"{'='*60}")
-    
+
     ssh.close()
     print("\nDone! SSH connection closed.")
 
