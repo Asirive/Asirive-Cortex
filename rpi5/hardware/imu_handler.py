@@ -164,7 +164,18 @@ class IMUHandler:
             if preset:
                 self._sensor.mode = adafruit_bno055.CONFIG_MODE
                 time.sleep(0.025)  # BNO055 needs 19ms to switch modes
-                self._sensor.axis_remap = preset
+                # H8 fix: the Adafruit library's `axis_remap` setter
+                # now type-checks for the AXIS_REMAP_CONFIG namedtuple
+                # in current releases. Passing a raw 6-tuple silently
+                # raised inside the setter, the exception was caught
+                # by our outer try/except, and _enabled was flipped
+                # to False — the glasses-mounted IMU has never worked.
+                # Wrap the preset in the namedtuple the library expects.
+                if hasattr(adafruit_bno055, "AXIS_REMAP_CONFIG"):
+                    self._sensor.axis_remap = adafruit_bno055.AXIS_REMAP_CONFIG(*preset)
+                else:
+                    # Older library versions accept a plain tuple.
+                    self._sensor.axis_remap = preset
                 logger.info(f"🧭 Axis remap applied for '{self._mounting}' mounting")
 
             self._sensor.mode = adafruit_bno055.NDOF_MODE
@@ -270,16 +281,33 @@ class IMUHandler:
         """Continuously poll sensor at configured frequency."""
         logger.debug("IMU polling thread started")
         _imu_err_count = 0
+        # H9 fix: previous code did a flat 0.5s sleep on every error
+        # and never recovered fast — persistent I2C glitches would
+        # permanently drop the poll rate to ~2Hz and fall detection
+        # became useless. Use exponential backoff that decays back
+        # to the configured poll_interval on consecutive successes.
+        backoff = 0.0
         while self._running:
             try:
                 self._read_sensor()
-                _imu_err_count = 0  # Reset on success
+                if _imu_err_count > 0:
+                    logger.info(
+                        f"IMU recovered after {_imu_err_count} errors"
+                    )
+                _imu_err_count = 0
+                backoff = 0.0  # Reset on success
             except Exception as exc:
                 _imu_err_count += 1
                 if _imu_err_count <= 3 or _imu_err_count % 50 == 0:
                     logger.warning(f"IMU read error (#{_imu_err_count}): {exc}")
-                time.sleep(0.5)
-            time.sleep(self._poll_interval)
+                # Exponential backoff: 0.1s, 0.2s, 0.4s, 0.8s, ... capped
+                # at 0.5s. This gives the I2C bus room to settle without
+                # permanently throttling the loop.
+                backoff = min(0.5, max(0.1, 0.1 * (2 ** min(_imu_err_count, 4))))
+            # Sleep for the configured poll interval, plus any error
+            # backoff. The backoff is added (not substituted) so we
+            # still respect the 25Hz target on success.
+            time.sleep(self._poll_interval + backoff)
         logger.debug("IMU polling thread stopped")
 
     def _read_sensor(self) -> None:
@@ -337,12 +365,22 @@ class IMUHandler:
         if time.time() - self._start_time < 5.0:
             return
 
-        # Skip when accel is exactly zero on all axes — indicates I2C read
-        # failure (Errno 121) where values defaulted to 0.0
-        if ax == 0.0 and ay == 0.0 and az == 0.0:
+        # M58 fix: previous guard only skipped the exact (0,0,0) tuple.
+        # A real I2C error (Errno 121) can return near-zero on all axes
+        # (e.g. (0.001, 0.0, -0.0007)) which still passed the check and
+        # produced false "free-fall" events. Use a strict band that
+        # covers sensor-internal noise + a small epsilon for floating
+        # point fuzz, and a sanity-check that magnitude is plausible.
+        EPS = 0.5  # m/s² — anything under this is sensor noise, not motion
+        if -EPS < ax < EPS and -EPS < ay < EPS and -EPS < az < EPS:
             return
 
         total = math.sqrt(ax * ax + ay * ay + az * az)
+        # Plausibility check: BNO055 accel magnitude should be in
+        # [~7 m/s² true free-fall + 0, ~30 m/s² hard impact] under
+        # normal use. Values outside that band are bogus.
+        if total < 0.5 or total > 50.0:
+            return
 
         if total < self.FALL_ACCEL_THRESHOLD and self.on_fall_detected:
             try:

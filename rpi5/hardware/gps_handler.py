@@ -97,6 +97,16 @@ class GPSHandler:
         # Latest parsed fix (None until first valid sentence)
         self._fix: Optional[GPSFix] = None
         self._receiving = False  # True once any NMEA sentence is seen
+        # H11 fix: track timestamp of the last NMEA sentence so
+        # FusedGPSHandler can detect "UART cable snagged" / module gone
+        # silent. Without this, get_fix() happily returns the cached
+        # fix forever and FusedGPSHandler reports the user is outdoors
+        # while they're indoors. The phone already tracks this; the
+        # M8U needs the same gate.
+        self._last_nmea_ts: float = 0.0
+        # Maximum age (seconds) a cached fix is considered fresh.
+        # 10s matches the phone GPS STALE_THRESHOLD.
+        self.STALE_THRESHOLD = 10.0
 
         if not self._enabled:
             logger.info("ℹ️ GPS Handler in MOCK mode")
@@ -148,11 +158,23 @@ class GPSHandler:
 
     def get_fix(self) -> Optional[GPSFix]:
         """
-        Return the latest GPS fix, or None if no fix yet.
+        Return the latest GPS fix, or None if no fix yet / stale.
 
         Thread-safe.
+
+        H11 fix: also returns None if the last NMEA sentence is older
+        than STALE_THRESHOLD. This catches "UART cable snagged" /
+        "module gone silent" — previously the cached fix was returned
+        forever and FusedGPSHandler was misled into thinking the user
+        was outdoors while they had walked indoors.
         """
         with self._lock:
+            if self._fix is None:
+                return None
+            if self._last_nmea_ts == 0.0:
+                return None
+            if (time.monotonic() - self._last_nmea_ts) > self.STALE_THRESHOLD:
+                return None
             return self._fix
 
     def get_location(self) -> Optional[Tuple[float, float]]:
@@ -168,14 +190,22 @@ class GPSHandler:
 
     @property
     def has_fix(self) -> bool:
-        """True when a valid GPS fix is available."""
+        """True when a valid, non-stale GPS fix is available."""
         fix = self.get_fix()
         return fix is not None and fix.fix_quality > 0
 
     @property
     def is_receiving(self) -> bool:
-        """True when NMEA sentences are being received (even without fix)."""
-        return self._receiving
+        """True when NMEA sentences are being received (even without fix).
+
+        H11 fix: previously a single sentence at boot pinned this True
+        forever. Now also requires the most recent sentence to be
+        within STALE_THRESHOLD.
+        """
+        with self._lock:
+            if not self._receiving or self._last_nmea_ts == 0.0:
+                return False
+            return (time.monotonic() - self._last_nmea_ts) <= self.STALE_THRESHOLD
 
     # ------------------------------------------------------------------
     # Background reader loop
@@ -220,6 +250,10 @@ class GPSHandler:
                 self._parse_rmc(parts)
             elif msg_type in ("GPGGA", "GNGGA"):
                 self._parse_gga(parts)
+            # H11 fix: stamp the wall-clock on every parsed sentence so
+            # get_fix() can detect UART silence.
+            with self._lock:
+                self._last_nmea_ts = time.monotonic()
         except (IndexError, ValueError) as exc:
             logger.debug(f"NMEA parse error in {msg_type}: {exc}")
 

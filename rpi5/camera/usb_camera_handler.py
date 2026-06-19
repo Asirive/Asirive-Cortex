@@ -172,8 +172,27 @@ class USBCameraHandler:
 
     def _capture_loop(self):
         """Background thread: continuously read frames from USB camera."""
-        while self._running and self._cap and self._cap.isOpened():
-            ret, frame = self._cap.read()
+        while self._running:
+            cap = self._cap
+            # H7 fix: snapshot _cap on every iteration. stop() can null
+            # _cap between our check and the next read(); without
+            # re-snapshotting we'd dereference None on .read() and the
+            # capture thread would die hard (sometimes segfaulting the
+            # process on repeated start/stop in self-test).
+            if cap is None or not cap.isOpened():
+                time.sleep(0.005)
+                continue
+            try:
+                ret, frame = cap.read()
+            except cv2.error as e:
+                # OpenCV can raise if the device disappears mid-read.
+                logger.debug("USB camera read error (recoverable): %s", e)
+                time.sleep(0.01)
+                continue
+            except Exception as e:
+                logger.warning("USB camera unexpected read error: %s", e)
+                time.sleep(0.01)
+                continue
             if not ret or frame is None:
                 time.sleep(0.001)
                 continue

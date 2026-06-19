@@ -135,8 +135,18 @@ class PhoneGPSReceiver:
 
     @property
     def is_connected(self) -> bool:
-        """True if we received a GPS update recently."""
-        return self._connected_phones > 0
+        """True if we received a GPS update within the stale window.
+
+        H10 fix: the previous version set _connected_phones=1 on the
+        first POST and never reset it, so is_connected stayed True
+        forever (even after the phone walked away). Now we track the
+        timestamp of the last POST and consider the link stale after
+        STALE_THRESHOLD seconds.
+        """
+        with self._lock:
+            if self._last_update == 0.0:
+                return False
+            return (time.monotonic() - self._last_update) <= self.STALE_THRESHOLD
 
     @property
     def update_count(self) -> int:
@@ -224,15 +234,54 @@ class PhoneGPSReceiver:
 
     @staticmethod
     def _get_local_ips() -> list:
-        """Get all non-loopback IPv4 addresses on this machine."""
+        """Get all non-loopback IPv4 addresses on this machine.
+
+        M52 fix: previously this used `getaddrinfo(hostname)` which
+        fails on systems where the hostname doesn't resolve to a
+        public address (e.g. fresh RPi5 install with a routable
+        hostname but no reverse DNS). When that failed, the SAN
+        list collapsed to `[]` and Chrome showed
+        `NET::ERR_CERT_COMMON_NAME_INVALID`. Fall back to the
+        `ip -4 addr` subprocess (always present on Linux) which
+        enumerates ALL bound addresses reliably, including
+        non-resolving ones.
+        """
         ips = set()
+        # Primary: parse `ip -4 addr` output. This works on any
+        # Linux system with the iproute2 package (RPi5 OS has it
+        # by default) and returns every bound IPv4 address
+        # regardless of DNS resolution.
         try:
-            for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
-                ip = info[4][0]
-                if not ip.startswith("127."):
-                    ips.add(ip)
-        except socket.gaierror:
+            result = subprocess.run(
+                ["ip", "-4", "-o", "addr", "show", "scope", "global"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.splitlines():
+                    # Format: "2: eth0    inet 192.168.1.42/24 ..."
+                    parts = line.split()
+                    for tok in parts:
+                        if "/" in tok and tok.count(".") == 3:
+                            ip = tok.split("/")[0]
+                            if not ip.startswith("127."):
+                                ips.add(ip)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
+
+        # Secondary: getaddrinfo (in case `ip` wasn't on PATH).
+        if not ips:
+            try:
+                for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+                    ip = info[4][0]
+                    if not ip.startswith("127."):
+                        ips.add(ip)
+            except socket.gaierror:
+                pass
+
+        # Final fallback: ask the kernel what the default route's
+        # source address would be.
         if not ips:
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -290,7 +339,9 @@ class PhoneGPSReceiver:
             data = await request.json()
             self._is_last_known = bool(data.get("is_last_known", False))
             self._update_fix(data)
-            self._connected_phones = 1
+            # H10 fix: don't increment _connected_phones — the staleness
+            # window on _last_update is what gates is_connected now. The
+            # counter was the source of the "connected forever" bug.
             return web.json_response({"ok": True, "count": self._update_count})
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             logger.warning(f"📱 Bad GPS POST from {request.remote}: {e}")

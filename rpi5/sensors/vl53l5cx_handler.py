@@ -118,7 +118,8 @@ class VL53L5CXHandler:
         self._mock = mock
         self._mock_scenario = mock_scenario
         self._driver = None
-        self._is_available = False
+        self._is_available = False          # Real hardware working
+        self._is_mock_active = False        # Mock scenario generator running
         self._lock = threading.Lock()
 
         # Latest depth grid (8×8, mm)
@@ -130,8 +131,14 @@ class VL53L5CXHandler:
         if not self._mock:
             self._init_real_driver()
         else:
+            # H4 fix: mock mode must NOT advertise _is_available=True, or
+            # the safety pipeline will treat synthetic grid data as real
+            # and can fire CRITICAL alerts based on a developer scenario.
+            # Mark a separate _is_mock_active flag so dev / unit tests
+            # can opt in explicitly.
             logger.info("🎭 VL53L5CX running in MOCK mode (scenario: %s)", mock_scenario)
-            self._is_available = True
+            self._is_available = False
+            self._is_mock_active = True
 
     # ------------------------------------------------------------------
     # Driver initialization
@@ -161,16 +168,19 @@ class VL53L5CXHandler:
             logger.warning(
                 "⚠️ vl53l5cx Python driver not installed. "
                 "Install: pip install vl53l5cx\n"
-                "Falling back to MOCK mode."
+                "Falling back to MOCK mode (H4: marked as mock — "
+                "SafetyMonitor will ignore this data for real alerts)."
             )
             self._mock = True
-            self._is_available = True
+            self._is_available = False
+            self._is_mock_active = True
 
         except Exception as e:
             logger.error("❌ VL53L5CX init failed: %s", e)
-            logger.warning("Falling back to MOCK mode.")
+            logger.warning("Falling back to MOCK mode (H4: marked as mock).")
             self._mock = True
-            self._is_available = True
+            self._is_available = False
+            self._is_mock_active = True
 
     # ------------------------------------------------------------------
     # Public API
@@ -183,18 +193,27 @@ class VL53L5CXHandler:
         Returns:
             List of Hazard objects for SafetyMonitor.
         """
+        # H5 fix: do the I2C read OUTSIDE the lock. Holding the lock
+        # across a 50-200ms I2C transaction blocks every consumer
+        # (get_depth_mm, get_context_string) for the same window,
+        # blowing the <100ms safety latency budget. Pattern:
+        #   1. Snapshot the driver reference under the lock.
+        #   2. Perform the blocking read with NO lock held.
+        #   3. Re-acquire the lock to publish the new grid.
         with self._lock:
-            if not self._is_available:
+            if not self._is_available and not self._is_mock_active:
                 return []
+            driver = self._driver
+            use_mock = bool(self._mock)
 
-            if self._mock:
-                self._mock_update()
-            else:
-                self._real_update()
+        if use_mock:
+            self._mock_update()
+        else:
+            self._real_update(driver)  # H5: pass driver, do I/O lock-free
 
+        with self._lock:
             self._last_update = time.time()
             self._update_count += 1
-
             return self._analyze_grid()
 
     def get_depth_mm(self) -> np.ndarray:
@@ -204,8 +223,21 @@ class VL53L5CXHandler:
 
     @property
     def is_available(self) -> bool:
-        """Return True if the sensor is initialized and ready."""
-        return self._is_available
+        """True if the handler can produce data — real OR mock.
+
+        Callers that need to distinguish real hardware from a developer
+        mock should use is_real (H4).
+        """
+        return self._is_available or self._is_mock_active
+
+    @property
+    def is_real(self) -> bool:
+        """True only when REAL sensor data is being produced (H4).
+
+        The safety pipeline should check is_real() before trusting
+        ToF data for user-facing alerts.
+        """
+        return self._is_available and not self._is_mock_active
 
     @property
     def is_mock(self) -> bool:
@@ -214,7 +246,7 @@ class VL53L5CXHandler:
         Callers should treat mock data as synthetic — never use it to
         short-circuit a more authoritative source (e.g. Hailo depth).
         """
-        return bool(self._mock)
+        return bool(self._is_mock_active)
 
     def get_context_string(self) -> str:
         """Short status string for dashboard / logging."""
@@ -227,15 +259,25 @@ class VL53L5CXHandler:
     # Real driver path
     # ------------------------------------------------------------------
 
-    def _real_update(self):
-        """Read from actual VL53L5CX sensor."""
+    def _real_update(self, driver=None):
+        """Read from actual VL53L5CX sensor.
+
+        H5 fix: caller passes the driver reference in so we do the
+        blocking I/O OUTSIDE the lock. If the I/O fails we publish the
+        previous frame untouched (better stale than dead).
+        """
+        if driver is None:
+            driver = self._driver
         try:
-            data = self._driver.get_data()
+            data = driver.get_data()
             # data.distance_mm is expected to be an 8×8 array or flat 64
             distances = np.array(data.distance_mm, dtype=np.int16).reshape(8, 8)
             # VL53L5CX returns 0 for invalid; map to -1 for consistency
             distances[distances == 0] = -1
-            self.depth_mm = distances
+            # Publish under the lock; copy() so the working array
+            # can't be mutated by an overlapping I/O call.
+            with self._lock:
+                self.depth_mm = distances.copy()
         except Exception as e:
             logger.debug("VL53L5CX read error: %s", e)
 
@@ -301,22 +343,33 @@ class VL53L5CXHandler:
             return hazards
 
         # ── 1. Ground / Drop-off detection (bottom 2 rows) ──
+        # H6 fix: the previous code averaged every cell whose value was
+        # >0, including a single noisy specular reflection that can
+        # report 4000mm and dominate the mean — a CRITICAL DROPOFF
+        # alert would fire while the user walks on flat ground. We now
+        # require ≥50% of the 16 bottom cells to be valid AND reject
+        # out-of-range cells (>2500mm) before averaging.
         bottom = grid[6:8, :]
-        bottom_valid = bottom[bottom > 0]
-        if len(bottom_valid) > 0:
-            bottom_avg = float(np.mean(bottom_valid))
-            if bottom_avg > self.GROUND_MAX * 1000:
-                # Ground is far away → likely stairs down or drop-off
-                hazards.append(Hazard(
-                    type=HazardType.DROPOFF,
-                    severity=HazardSeverity.CRITICAL,
-                    direction="ahead",
-                    distance=bottom_avg / 1000.0,
-                    confidence=0.85,
-                ))
-            elif bottom_avg < self.DROPOFF_THRESHOLD * 1000:
-                # Unexpectedly close ground → possible curb / step up
-                pass  # normal walking; don't alert
+        bottom_all_valid = bottom[bottom > 0]
+        if bottom_all_valid.size >= 8:  # ≥50% of 16 cells
+            # Reject cells that are clearly out-of-range (specular
+            # reflections, long-range returns). 2500mm is the ToF
+            # module's documented max for reliable ranging.
+            bottom_in_range = bottom_all_valid[bottom_all_valid <= 2500]
+            if bottom_in_range.size >= 4:  # still need a quorum post-filter
+                bottom_avg = float(np.mean(bottom_in_range))
+                if bottom_avg > self.GROUND_MAX * 1000:
+                    # Ground is far away → likely stairs down or drop-off
+                    hazards.append(Hazard(
+                        type=HazardType.DROPOFF,
+                        severity=HazardSeverity.CRITICAL,
+                        direction="ahead",
+                        distance=bottom_avg / 1000.0,
+                        confidence=0.85,
+                    ))
+                elif bottom_avg < self.DROPOFF_THRESHOLD * 1000:
+                    # Unexpectedly close ground → possible curb / step up
+                    pass  # normal walking; don't alert
 
         # ── 2. Center "ahead" wall detection (rows 2-5, cols 2-5) ──
         center = grid[2:6, 2:6]

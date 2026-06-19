@@ -666,9 +666,13 @@ class BluetoothAudioManager:
         if not connected:
             logger.error("Failed to connect after all retries")
             return False
-        
-        self.connected_mac = mac
-        
+
+        # H3 fix: do NOT set self.connected_mac yet. We must verify that
+        # the audio sink is actually set as default before claiming a
+        # working connection — otherwise the system logs "connected"
+        # while audio still plays on the wrong device. We'll set it
+        # below, after the sink verification succeeds.
+
         # Step 5: Wait for audio profile to initialize
         if was_already_connected:
             logger.info("Device was already connected, checking audio immediately...")
@@ -734,8 +738,22 @@ class BluetoothAudioManager:
                 logger.warning("Bluetooth audio source (mic) not found after HSP/HFP switch")
         
         if success:
+            # H3 fix: only now do we have a working audio path. Set
+            # connected_mac after the sink is verified, not right after
+            # the BT handshake — that way get_status() and the TUI will
+            # not report "connected" while audio is still going to the
+            # wrong sink (or no sink at all).
+            self.connected_mac = mac
             logger.info(f"Bluetooth audio setup complete for '{search_name}'")
-        
+        else:
+            # Sink verification failed — leave connected_mac unset so
+            # is_connected() and the TUI honestly report the broken state.
+            logger.error(
+                "Bluetooth audio sink not verified for '%s' — "
+                "connected_mac NOT set; will not report as connected.",
+                search_name,
+            )
+
         return success
     
     def get_status(self) -> Dict:
