@@ -926,14 +926,27 @@ Safety always comes first. Overhead hazards are your highest priority."""
                     # notice is_connected==False.
                     continue
 
-                # We have the first response. Process it AND any
-                # remaining items in the same turn, bounded by a
-                # short per-iteration timeout so a stuck iterator
-                # can never block the loop indefinitely.
+                # We have the first response. Process remaining items in
+                # the same turn AS THEY ARRIVE (not all at once). Collecting
+                # the whole turn in _to_process before processing caused
+                # audio chunks to be queued in handler.audio_queue but NOT
+                # drained by _process_audio_queue until turn_complete fired,
+                # so the speaker heard nothing for the entire response. Now
+                # each response is processed inline + we yield to the event
+                # loop after every response so the audio drain task can run
+                # and forward chunks to StreamingAudioPlayer in realtime.
                 _to_process = [response]
                 async for response in receive_iter:
                     _to_process.append(response)
 
+                # L-FIX-REALTIME-AUDIO: process each response inline with
+                # an event-loop yield between them. Without this, the
+                # async for above fills _to_process with every chunk in
+                # the turn before we process any of them — and since
+                # audio_callback (add_audio_chunk) is only called from
+                # _process_audio_queue after we've already put audio in
+                # handler.audio_queue, the user perceived ~2s latency
+                # between speech-end and first speaker output.
                 for response in _to_process:
                     turn_message_count += 1
                     self._msg_count += 1
@@ -1124,6 +1137,9 @@ Safety always comes first. Overhead hazards are your highest priority."""
                             turn_completed = True
                             reason = getattr(sc, 'turn_complete_reason', None)
                             self.interrupted = False
+                            # L-FIX-REALTIME-AUDIO: reset per-turn drain flag
+                            # so the next turn logs again.
+                            self._drain_log_emitted = False
                             logger.info(
                                 f"📨 [MSG #{self._msg_count}] Turn complete "
                                 f"(reason={reason})"
@@ -1194,6 +1210,16 @@ Safety always comes first. Overhead hazards are your highest priority."""
                                 f"📨 [MSG #{self._msg_count}] Unhandled server_content: "
                                 f"attrs={[a for a in dir(sc) if not a.startswith('_')]}"
                             )
+
+                    # L-FIX-REALTIME-AUDIO: yield to the event loop after
+                    # every response so _process_audio_queue can drain
+                    # handler.audio_queue → audio_callback → StreamingAudioPlayer.
+                    # Without this, a burst of responses in one turn (typical
+                    # for Gemini Live) would block the loop until all are
+                    # processed, so audio chunks sat in handler.audio_queue
+                    # and only reached the speaker AT turn_complete (~1-2s after
+                    # the user's speech ended).
+                    await asyncio.sleep(0)
 
                 if server_requested_close or not self.is_connected or not self.session:
                     break
@@ -1911,20 +1937,32 @@ class GeminiLiveManager:
                 try:
                     # Get audio chunk with timeout
                     audio_bytes = await asyncio.wait_for(
-                        self.handler.audio_queue.get(), 
+                        self.handler.audio_queue.get(),
                         timeout=0.5
                     )
-                    
+
                     if self.audio_callback:
+                        # L-FIX-REALTIME-AUDIO: log the first chunk of each
+                        # turn so the user can see whether audio is being
+                        # forwarded as it arrives (good) or only at turn
+                        # complete (the bug we just fixed).
+                        if not getattr(self, "_drain_log_emitted", False):
+                            self._drain_log_emitted = True
+                            logger.info(
+                                f"🎧 First audio chunk drained to callback "
+                                f"({len(audio_bytes)} bytes) — realtime ✓"
+                            )
                         # Call directly — add_audio_chunk is non-blocking
                         # (spawning a thread per audio chunk overwhelms RPi5)
                         self.audio_callback(audio_bytes)
-                        
+
                 except asyncio.TimeoutError:
                     # No audio available, continue waiting
                     continue
-                    
+
         except asyncio.CancelledError:
+            # Reset on cancellation so the next turn logs again
+            self._drain_log_emitted = False
             logger.info("🛑 Audio processing cancelled")
             raise
         except Exception as e:
