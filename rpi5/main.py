@@ -4438,6 +4438,19 @@ class CortexSystem:
                     # Do NOT start it here — premature start sets is_playing=True
                     # which triggers echo suppression and suppresses all speech.
                     logger.info("✅ Gemini Live API started (background thread)")
+                    # M-FIX-REALTIME-AUDIO: pre-open the OutputStream now
+                    # (BEFORE the user speaks) so the slow PortAudio device
+                    # negotiation (500ms-1s on Bluetooth HFP) is paid up
+                    # front. When the first Gemini audio chunk arrives,
+                    # the stream is already open and playback can start
+                    # within one callback tick (~50ms) instead of after
+                    # the full response has been generated. Note:
+                    # warmup() does NOT set is_playing=True — it only
+                    # opens the PortAudio stream. is_playing is set later
+                    # by start() when the first audio chunk arrives, so
+                    # echo suppression is NOT triggered here.
+                    if self.gemini_audio_player is not None:
+                        self.gemini_audio_player.warmup()
                 except Exception as e:
                     logger.warning(f"⚠️ Gemini Live API failed: {e}")
             else:
@@ -6105,6 +6118,9 @@ class CortexSystem:
         # Stop Gemini audio player
         if self.gemini_audio_player:
             self.gemini_audio_player.stop()
+            # M-FIX-REALTIME-AUDIO: close the pre-opened OutputStream so
+            # PortAudio releases the audio device cleanly on shutdown.
+            self.gemini_audio_player.close_preopened()
 
         # Disconnect WebSocket
         if self.ws_client:

@@ -97,12 +97,12 @@ class StreamingAudioPlayer:
         if self.is_playing:
             logger.warning("⚠️ Audio player already playing")
             return
-        
+
         # Prevent infinite thread spawning if audio device is broken
         if getattr(self, '_start_failure_count', 0) >= 5:
             logger.error("❌ Audio device permanently unavailable — giving up after 5 failures")
             return
-        
+
         self.is_playing = True
         self.is_interrupted = False
         self._silence_count = 0
@@ -110,31 +110,46 @@ class StreamingAudioPlayer:
         self._leftover = None
         self._queue_full_count = 0
         self._turn_complete = False
-        
+
         # Bump generation counter so old playback thread won't close our stream
         self._stream_generation = getattr(self, '_stream_generation', 0) + 1
-        
+
         # Clear audio queue
         while not self.audio_queue.empty():
             try:
                 self.audio_queue.get_nowait()
             except queue.Empty:
                 break
-        
-        # Start playback thread
+
+        # M-FIX-REALTIME-AUDIO: if we already pre-opened the stream via
+        # warmup(), skip the slow OutputStream constructor (which can
+        # take 500ms+ on Bluetooth HFP). Just start the playback thread
+        # which will begin firing callbacks immediately.
+        if getattr(self, '_preopened', False) and self.stream is not None:
+            logger.info(
+                "🔊 Audio playback started (using pre-opened stream — "
+                "instant ✓)"
+            )
+            self.playback_thread = threading.Thread(target=self._playback_loop, daemon=True)
+            self.playback_thread.start()
+            if self.on_start_callback:
+                self.on_start_callback()
+            return
+
+        # Start playback thread (slow path — opens OutputStream first)
         self.playback_thread = threading.Thread(target=self._playback_loop, daemon=True)
         self.playback_thread.start()
-        
+
         # Notify audio queue that Gemini Live is now active
         try:
             from rpi5.cli.audio_queue import audio_queue, AudioSource
             audio_queue.mark_gemini_active(True)
         except Exception:
             pass
-        
+
         if self.on_start_callback:
             self.on_start_callback()
-        
+
         logger.info("🔊 Audio playback started")
     
     def stop(self, interrupted: bool = False):
@@ -422,11 +437,69 @@ class StreamingAudioPlayer:
     def queue_size(self) -> int:
         """Get current audio queue size."""
         return self.audio_queue.qsize()
-    
+
     @property
     def is_queue_empty(self) -> bool:
         """Check if audio queue is empty."""
         return self.audio_queue.empty()
+
+    def warmup(self) -> bool:
+        """
+        Pre-open the OutputStream NOW so the slow PortAudio device
+        negotiation is paid BEFORE the first Gemini audio chunk arrives.
+
+        M-FIX-REALTIME-AUDIO: on RPi5 + Bluetooth HFP, sd.OutputStream(...)
+        can take 500ms-1s to open because PortAudio negotiates the device.
+        If we open it lazily on the first audio chunk, the user hears
+        silence for that whole window. By pre-opening during CortexSystem
+        startup (after BT is connected but before the user speaks), the
+        stream is already open when the first chunk arrives — playback
+        can start within the first callback tick (~50ms).
+
+        Returns:
+            True if pre-opened successfully, False on failure (the next
+            call to start() will fall back to the slow path).
+        """
+        if getattr(self, '_preopened', False):
+            return True
+        if self.is_playing:
+            return True  # already running
+        try:
+            logger.info(
+                f"🔊 Pre-opening OutputStream "
+                f"(rate={self.sample_rate}, blocksize={self.blocksize}, device={self.device})..."
+            )
+            self.stream = sd.OutputStream(
+                samplerate=self.sample_rate,
+                channels=self.channels,
+                dtype=self.dtype,
+                device=self.device,
+                blocksize=self.blocksize,
+                latency='low',
+                callback=self._audio_callback,
+            )
+            self.stream.start()
+            self._preopened = True
+            logger.info("🔊 OutputStream pre-opened — playback will be instant ✓")
+            return True
+        except Exception as e:
+            logger.warning(f"⚠️ Audio warmup failed (will fall back to lazy open): {e}")
+            self.stream = None
+            return False
+
+    def close_preopened(self) -> None:
+        """Close the pre-opened OutputStream (if any). Called on shutdown."""
+        if not getattr(self, '_preopened', False):
+            return
+        if self.stream is None:
+            return
+        try:
+            self.stream.stop()
+            self.stream.close()
+        except Exception as e:
+            logger.debug(f"close_preopened: {e}")
+        self.stream = None
+        self._preopened = False
 
 
 # Example usage (for testing)
