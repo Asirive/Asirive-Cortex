@@ -1785,13 +1785,18 @@ class CortexSystem:
             else:
                 logger.warning("[DEBUG] Layer 2 API key not found in config.yaml or env vars")
 
-            # Initialize streaming audio player for Gemini output
+            # Initialize streaming audio player for Gemini output.
+            # M-FIX-REALTIME-AUDIO: pass blocksize=None so StreamingAudioPlayer
+            # uses its default (1200 = 50ms @ 24kHz). The previous hardcoded
+            # blocksize=4800 (200ms) made the FIRST Gemini audio chunk take 200ms
+            # to start playing after arrival — by then, the user's brain has
+            # already given up waiting. 50ms is the sweet spot for Bluetooth
+            # HSP/HFP on RPi5.
             if StreamingAudioPlayer:
                 try:
                     self.gemini_audio_player = StreamingAudioPlayer(
                         sample_rate=24000,  # Gemini Live API outputs 24kHz PCM
                         channels=1,
-                        blocksize=4800,     # 200ms blocks
                     )
                     # Reset _gemini_audio_active_since when playback stops
                     # so the echo cooldown doesn't extend past actual audio
