@@ -314,8 +314,13 @@ audio:
   # STT Pipeline (Cartesia Ink primary, Whisper fallback)
   stt:
     cartesia_enabled: true      # Use Cartesia Ink cloud STT as primary
-    cartesia_model: "ink-2"     # Cartesia model ID (ink-2 for WebSocket, ink-whisper for batch)
-    cartesia_mode: "batch"      # "batch" (HTTP POST) or "websocket" (streaming with turn detection)
+    # Cartesia has two STT paths with DIFFERENT model IDs:
+    #   - WebSocket (turns/websocket): "ink-2"     — streaming + built-in turn detection
+    #   - Batch    (HTTP POST):       "ink-whisper" — Whisper-class batch transcription
+    # The batch fallback below uses ink-whisper; the WebSocket path uses ink-2.
+    cartesia_model: "ink-2"           # WebSocket model (used only when cartesia_mode=websocket)
+    cartesia_batch_model: "ink-whisper"  # Batch HTTP model (used by CartesiaSTT fallback)
+    cartesia_mode: "websocket"        # "batch" (HTTP POST) or "websocket" (streaming with turn detection)
     language: "en"              # ISO-639-1 language code
     whisper_disabled: false     # Set true to skip Whisper fallback entirely (Cartesia only)
     # WebSocket mode notes:

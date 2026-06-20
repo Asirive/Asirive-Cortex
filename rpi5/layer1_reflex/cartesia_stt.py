@@ -22,8 +22,14 @@ import requests
 logger = logging.getLogger(__name__)
 
 # Cartesia STT API endpoint
+# M-FIX-CARTESIA-MODEL: per docs.cartesia.ai, the batch /stt endpoint
+# ONLY accepts the ink-whisper model family. ink-2 is WebSocket-only.
+# We hard-default to ink-whisper here and ignore any caller-supplied
+# model that's not in the allowed set (the voice_coordinator used to
+# forward cartesia_model from config, which defaults to ink-2).
 CARTESIA_STT_URL = "https://api.cartesia.ai/stt"
-CARTESIA_API_VERSION = "2025-04-16"
+CARTESIA_API_VERSION = "2026-03-01"  # Latest API version (was 2025-04-16 — old)
+_CARTESIA_BATCH_ALLOWED_MODELS = {"ink-whisper", "ink-whisper-2025-06-04"}
 
 
 class CartesiaSTT:
@@ -42,6 +48,15 @@ class CartesiaSTT:
         sample_rate: int = 16000,
     ):
         self.api_key = api_key or os.getenv("CARTESIA_API_KEY")
+        # If a caller passes an ink-2 (WebSocket model) to the batch
+        # endpoint, silently coerce to ink-whisper — otherwise Cartesia
+        # returns HTTP 400 "Unsupported model".
+        if model not in _CARTESIA_BATCH_ALLOWED_MODELS:
+            logger.warning(
+                f"⚠️ Cartesia batch STT got model={model!r} (not in "
+                f"{_CARTESIA_BATCH_ALLOWED_MODELS}); coercing to 'ink-whisper'"
+            )
+            model = "ink-whisper"
         self.model = model
         self.language = language
         self.sample_rate = sample_rate

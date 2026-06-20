@@ -43,8 +43,8 @@ class CartesiaSTTWebSocket:
     """
 
     WS_URL = "wss://api.cartesia.ai/stt/turns/websocket"
-    MODEL = "ink-2"
-    API_VERSION = "2026-03-01"
+    MODEL = "ink-2"  # WebSocket-only model (NOT valid for /stt batch endpoint)
+    API_VERSION = "2026-03-01"  # Latest as of docs.cartesia.ai/build-with-cartesia/stt/latest
 
     def __init__(
         self,

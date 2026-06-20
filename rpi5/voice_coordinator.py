@@ -220,9 +220,13 @@ class VoiceCoordinator:
                     else:
                         self.ws_stt = None
                         logger.warning("⚠️ Cartesia WebSocket STT unavailable — falling back to batch")
-                # Always also instantiate batch (used as fallback if WS disconnects)
+                # Always also instantiate batch (used as fallback if WS disconnects).
+                # M-FIX-CARTESIA-MODEL: pass `cartesia_batch_model` (ink-whisper),
+                # NOT `cartesia_model` (ink-2). Per docs.cartesia.ai, ink-2 is
+                # WebSocket-only — the /stt batch endpoint returns HTTP 400
+                # "Unsupported model" if you pass ink-2.
                 self.cloud_stt = CartesiaSTT(
-                    model=stt_config.get('cartesia_model', 'ink-whisper'),
+                    model=stt_config.get('cartesia_batch_model', 'ink-whisper'),
                     language=stt_config.get('language', 'en'),
                 )
                 if self.cloud_stt.available:

@@ -136,6 +136,21 @@ if not logging.getLogger().handlers:
                 logging.StreamHandler(sys.stderr)
             ]
         )
+
+# M-FIX-DUP-LOGS: mark every handler we just attached with the
+# `_cortex_logging_handler` sentinel so `setup_logging()` in
+# `rpi5/cli/log_setup.py` can detect and replace them on its next call.
+# Without this, the secondary basicConfig above runs at rpi5.main import
+# time (BEFORE __main__.py calls setup_logging()), so by the time
+# setup_logging runs the root logger already has handlers WITHOUT the
+# sentinel. setup_logging's cleanup loop only removes handlers WITH the
+# sentinel, so the basicConfig handlers leak through — producing 2×
+# FileHandlers (and 2× RichHandlers) which writes every log record
+# TWICE to the log file. Marking them here makes setup_logging treat
+# them as "ours" and replace them cleanly.
+_CORTEX_HANDLER_SENTINEL = "_cortex_logging_handler"
+for _h in list(logging.getLogger().handlers):
+    setattr(_h, _CORTEX_HANDLER_SENTINEL, True)
 logger = logging.getLogger(__name__)
 
 # Add rpi5 to path
