@@ -271,24 +271,35 @@ class StreamingAudioPlayer:
         """Background thread for audio playback."""
         my_generation = self._stream_generation  # Capture at thread start
         try:
-            # Open audio output stream
-            # latency='low' asks PortAudio for the smallest buffer it can
-            # safely negotiate with the hardware (typically 20-40ms on
-            # Bluetooth HSP/HFP). Combined with blocksize=1200 (50ms),
-            # the first Gemini audio chunk starts playing ~70ms after
-            # arrival instead of the old ~250ms.
-            self.stream = sd.OutputStream(
-                samplerate=self.sample_rate,
-                channels=self.channels,
-                dtype=self.dtype,
-                device=self.device,
-                blocksize=self.blocksize,
-                latency='low',
-                callback=self._audio_callback
-            )
-            
-            self.stream.start()
-            logger.info(f"🔊 Audio stream opened (rate={self.sample_rate}, blocksize={self.blocksize}, device={self.device})")
+            # M-FIX-REALTIME-AUDIO: if warmup() already opened the
+            # OutputStream, REUSE it. Otherwise we'd open a SECOND
+            # stream on the same device, which crashes PortAudio /
+            # CFFI with `PyType_HasFeature(Py_TPFLAGS_HAVE_VERSION_TAG)
+            # failed` and produces choppy audio from interleaved streams.
+            if not (getattr(self, '_preopened', False) and self.stream is not None):
+                # Open audio output stream
+                # latency='low' asks PortAudio for the smallest buffer it can
+                # safely negotiate with the hardware (typically 20-40ms on
+                # Bluetooth HSP/HFP). Combined with blocksize=1200 (50ms),
+                # the first Gemini audio chunk starts playing ~70ms after
+                # arrival instead of the old ~250ms.
+                self.stream = sd.OutputStream(
+                    samplerate=self.sample_rate,
+                    channels=self.channels,
+                    dtype=self.dtype,
+                    device=self.device,
+                    blocksize=self.blocksize,
+                    latency='low',
+                    callback=self._audio_callback
+                )
+
+                self.stream.start()
+                logger.info(f"🔊 Audio stream opened (rate={self.sample_rate}, blocksize={self.blocksize}, device={self.device})")
+            else:
+                logger.info(
+                    f"🔊 Audio stream already open (pre-warmed) — "
+                    f"reuse for instant playback ✓"
+                )
             
             # Keep thread alive while playing, auto-stop on prolonged silence
             import time as _time
@@ -343,13 +354,23 @@ class StreamingAudioPlayer:
             # where old thread closes a newly opened stream)
             if getattr(self, '_stream_generation', 0) == my_generation:
                 stream = self.stream
-                self.stream = None
-                if stream:
-                    try:
-                        stream.stop()
-                        stream.close()
-                    except Exception as e:
-                        logger.debug(f"Stream cleanup in _playback_loop: {e}")
+                # M-FIX-REALTIME-AUDIO: if warmup() pre-opened the stream,
+                # DON'T close it on playback-loop exit — keep it open for
+                # the next turn so we never pay the PortAudio open latency
+                # again. close_preopened() handles final shutdown.
+                if getattr(self, '_preopened', False) and stream is not None:
+                    logger.debug(
+                        "Playback loop exiting but stream is pre-opened — "
+                        "keeping it open for next turn"
+                    )
+                else:
+                    self.stream = None
+                    if stream:
+                        try:
+                            stream.stop()
+                            stream.close()
+                        except Exception as e:
+                            logger.debug(f"Stream cleanup in _playback_loop: {e}")
             else:
                 logger.debug("Skipping stream cleanup — newer generation took over")
     
