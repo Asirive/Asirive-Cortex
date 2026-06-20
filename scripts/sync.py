@@ -315,19 +315,54 @@ def upload_and_extract(tar_path: str, ssh: RPiSSH) -> bool:
     
                 # Extract
     print(_c(f"\n📂 Extracting on RPi5...", Colors.BOLD))
-    # Preserve .env separately so we don't overwrite with an old one
+    # M-SYNC-FIX-PYCACHE: after extracting the new .py sources, wipe all
+    # stale __pycache__ directories on the Pi. Without this, Python can
+    # load a stale .pyc file whose source has been replaced, and the
+    # user sees the old code running (e.g. blocksize=4800 instead of
+    # 1200) even after a successful sync. We only remove cache dirs
+    # under rpi5/, laptop/, shared/, tests/, scripts/ — NOT under
+    # third-party packages installed in venv/.
     cmd = (
         f"cd {RPI_PATH} && "
         f"cp .env /tmp/cortex_env_backup 2>/dev/null; true && "
         f"tar -xzf {remote_tar} && "
         f"mv /tmp/cortex_env_backup .env 2>/dev/null; true && "
         f"chmod +x cortex 2>/dev/null; true && "
+        # Wipe stale .pyc files matching extracted sources so the
+        # next `python -m rpi5 all` recompiles from the new .py.
+        f"find rpi5 laptop shared tests scripts cortex.py -type d -name __pycache__ -prune -exec rm -rf {{}} + 2>/dev/null; true && "
+        f"find rpi5 laptop shared tests scripts cortex.py -type f -name '*.pyc' -delete 2>/dev/null; true && "
         f"rm -f {remote_tar}"
     )
     exit_code, out, err = ssh.exec(cmd)
-    
+
     if exit_code == 0:
         print(_c("   ✓ Extraction complete", Colors.GREEN))
+        # M-SYNC-FIX-PYCACHE: detect a running python -m rpi5 process
+        # and warn the user that in-memory modules are still the OLD
+        # version — they need to restart the program to pick up the
+        # new code. The sync tool only writes new files to disk; it
+        # can't hot-reload a running interpreter.
+        try:
+            check_cmd = (
+                f"pgrep -af 'python.*rpi5' | grep -v pgrep | head -3"
+            )
+            _, pout, _ = ssh.exec(check_cmd, capture=True)
+            if pout.strip():
+                print(_c(
+                    f"\n⚠️  WARNING: a running rpi5 process was detected:",
+                    Colors.YELLOW,
+                ))
+                for line in pout.strip().splitlines()[:3]:
+                    print(_c(f"   {line}", Colors.YELLOW))
+                print(_c(
+                    "   The new code is on disk but the running process\n"
+                    "   still has the OLD modules in memory. Restart it:\n"
+                    "     Ctrl+C, then: python -m rpi5 all --standalone",
+                    Colors.YELLOW,
+                ))
+        except Exception:
+            pass
         return True
     else:
         print(_c(f"   ✗ Extraction failed: {err}", Colors.RED))
