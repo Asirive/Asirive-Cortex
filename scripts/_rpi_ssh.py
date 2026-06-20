@@ -124,7 +124,7 @@ def require_credentials() -> None:
             + "\n  - ".join(missing)
             + "\n\nSet them in your .env (gitignored) or shell, then retry.\n"
             "Example .env entries:\n"
-            "    RPI_HOST=10.202.14.31\n"
+            "    RPI_HOST=10.87.97.31\n"
             "    RPI_USER=cortex\n"
             "    RPI_PASSWORD=...    # never commit this\n"
         )
