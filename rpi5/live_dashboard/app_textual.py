@@ -344,16 +344,26 @@ if TEXTUAL_AVAILABLE:
             l1 = snap["l1_count"]
             l1_lat = snap["l1_latency_ms"]
             l1_mode = snap.get("l1_mode", "")
-            content.append(f"L1 Learner   {self._dot(l1 >= 0)} ")
-            content.append(f"{l1:>2} obj ")
-            content.append(f"{l1_lat:.0f}ms")
-            bar1 = self._latency_bar(l1_lat, 100.0)
-            content.append("  ")
-            content.append(bar1)
-            content.append("\n")
-            l1_classes = ", ".join(snap["l1_classes"][:5]) or "—"
-            mode_str = f" [{l1_mode}]" if l1_mode else ""
-            content.append(f"  ▸ {l1_classes}{mode_str}\n", style="magenta")
+            # M69 fix: L1 is laptop-only — on the Pi (standalone) the
+            # YOLOE NCNN backend segfaults, so we disable L1 in config.
+            # When l1_mode is empty, show a clear "laptop only" hint
+            # instead of "0 obj 0ms" which made it look like the
+            # detector was running but finding nothing.
+            if not l1_mode:
+                content.append("L1 Learner   ○ ", style="dim")
+                content.append("laptop only\n", style="dim")
+                content.append("  ▸ (runs on paired laptop, not on Pi)\n", style="dim")
+            else:
+                content.append(f"L1 Learner   {self._dot(l1 >= 0)} ")
+                content.append(f"{l1:>2} obj ")
+                content.append(f"{l1_lat:.0f}ms")
+                bar1 = self._latency_bar(l1_lat, 100.0)
+                content.append("  ")
+                content.append(bar1)
+                content.append("\n")
+                l1_classes = ", ".join(snap["l1_classes"][:5]) or "—"
+                mode_str = f" [{l1_mode}]" if l1_mode else ""
+                content.append(f"  ▸ {l1_classes}{mode_str}\n", style="magenta")
             # Hailo + safety
             hailo_state = snap["hailo"].get("hailo_state", "none")
             hailo_fps = snap['hailo']['depth_fps']

@@ -53,7 +53,11 @@ layer0:
 # LAYER 1: THE LEARNER (Adaptive Context-Aware Detection)
 # =====================================================
 layer1:
-  enabled: true
+  # M69 fix: L1 is laptop-only — the Pi has no L1 model that runs
+  # without segfaulting (ultralytics NCNN backend crashes on the
+  # yoloe_*.ncnn models). Disabling here is the clean fix; the
+  # TUI now shows "L1 — laptop only" instead of "0 obj 0ms".
+  enabled: false
   # YOLOE-26n-seg — smallest text-prompt model, fast enough for RPi5 CPU.
   # Was pointing to a non-existent ONNX path ("models/converted/yoloe_26n_seg_pf/model.onnx")
   # which silently disabled Layer 1 in main.py (the missing-file check at

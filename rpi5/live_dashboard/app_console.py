@@ -214,7 +214,7 @@ class ConsoleApp:
             f"─── STATUS @ {ts} ───".center(SEP_WIDTH, " "),
             f"Mode    : {snap['mode']:11}  FPS      : {snap['fps']:.1f}",
             f"L0      : {snap['l0_count']:>2} {self._fmt_classes(snap['l0_classes'])} {snap['l0_latency_ms']:.0f}ms",
-            f"L1      : {snap['l1_count']:>2} {self._fmt_classes(snap['l1_classes'])} {snap['l1_latency_ms']:.0f}ms",
+            f"L1      : {'laptop only' if not snap.get('l1_mode') else f'{snap['l1_count']:>2} {self._fmt_classes(snap['l1_classes'])} {snap['l1_latency_ms']:.0f}ms'}",
             f"GPS     : {self._fmt_gps(snap['gps']):17}  IMU      : {self._fmt_imu(snap['imu'])}",
             f"AI      : {self._fmt_ai(snap['ai']):17}  TTS      : {self._fmt_tts(snap['tts'])}",
             f"BT      : {self._fmt_bt(snap['bt']):17}  L2 Live  : {self._fmt_l2(snap['l2'])}",
