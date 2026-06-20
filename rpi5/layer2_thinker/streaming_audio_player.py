@@ -41,17 +41,21 @@ class StreamingAudioPlayer:
         channels: int = 1,
         dtype: str = 'int16',
         device: Optional[int] = None,
-        blocksize: int = 4800  # 200ms blocks @ 24kHz
+        blocksize: int = 1200  # 50ms blocks @ 24kHz (was 4800=200ms — too laggy)
     ):
         """
         Initialize streaming audio player.
-        
+
         Args:
             sample_rate: Input PCM sample rate (24000 Hz from Gemini)
             channels: Number of audio channels (1 = mono)
             dtype: Audio data type ('int16' for PCM)
             device: Output device ID (None = default)
-            blocksize: Audio block size in samples (4800 = 200ms @ 24kHz)
+            blocksize: Audio block size in samples. 1200 = 50ms @ 24kHz.
+                Was 4800 (200ms) which made Gemini's first audio chunk
+                take ~200ms to start playing. 50ms is the sweet spot for
+                Bluetooth HSP/HFP output on RPi5 — low enough to feel
+                realtime, high enough to avoid constant underflow.
         """
         self.sample_rate = sample_rate
         self.channels = channels
@@ -253,12 +257,18 @@ class StreamingAudioPlayer:
         my_generation = self._stream_generation  # Capture at thread start
         try:
             # Open audio output stream
+            # latency='low' asks PortAudio for the smallest buffer it can
+            # safely negotiate with the hardware (typically 20-40ms on
+            # Bluetooth HSP/HFP). Combined with blocksize=1200 (50ms),
+            # the first Gemini audio chunk starts playing ~70ms after
+            # arrival instead of the old ~250ms.
             self.stream = sd.OutputStream(
                 samplerate=self.sample_rate,
                 channels=self.channels,
                 dtype=self.dtype,
                 device=self.device,
                 blocksize=self.blocksize,
+                latency='low',
                 callback=self._audio_callback
             )
             
