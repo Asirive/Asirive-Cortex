@@ -335,6 +335,25 @@ except ImportError as e:
     USBCameraHandler = None
 
 try:
+    from rpi5.camera.stereo_camera_handler import StereoCameraHandler
+    logger.info("[DEBUG] ✅ StereoCameraHandler imported successfully")
+except ImportError as e:
+    logger.warning(f"[DEBUG] ⚠️ StereoCameraHandler import failed: {e}")
+    StereoCameraHandler = None
+
+
+def _stereo_device_present(device_idx: int = 0) -> bool:
+    """Quick probe: does the WITMOTION composite V4L2 node exist?
+
+    The WITMOTION 400W exposes both lenses as a single side-by-side
+    MJPG stream on ONE /dev/videoN node. /dev/videoN+1 is a metadata
+    node, not a stream. So the only check we need is whether the
+    composite node exists.
+    """
+    import os
+    return os.path.exists(f"/dev/video{device_idx}")
+
+try:
     from rpi5.layer3_guide.detection_aggregator import DetectionAggregator
     logger.info("[DEBUG] ✅ DetectionAggregator imported successfully")
 except ImportError as e:
@@ -1559,6 +1578,10 @@ class CortexSystem:
                 - "none": no on-system dashboard
         """
         logger.info("Initializing Asirive Cortex v2.0...")
+        # FIX-HAILO-DIAG-2: bracket the init with print() so we see
+        # exactly which phase the system is in, even if the normal
+        # logger is being buffered or swallowed by the TUI.
+        # FIX-HAILO-EARLY: run the Hailo init IMMEDIATELY after the
         self.standalone = standalone
         if dashboard_mode not in ("old", "2.4", "full", "none"):
             logger.warning(f"Unknown dashboard_mode={dashboard_mode!r}, falling back to 'old'")
@@ -1609,6 +1632,45 @@ class CortexSystem:
         else:
             self.config = get_config()
 
+        # FIX-HAILO-EARLY: run the Hailo init IMMEDIATELY after the
+        # config is loaded, before any other subsystem init. The
+        # original ordering put Hailo between Camera init and
+        # SafetyMonitor init (~line 3104), and something in the
+        # 1100+ lines between was crashing silently — the user saw
+        # `depth_estimator is None` with no log entry. Running it
+        # here means a failure will surface BEFORE any other init
+        # has had a chance to crash.
+        self.depth_estimator = None
+        self.audio_alerts = None
+        self.ocr_pipeline = None
+        self._shared_hailo_vdevice = None
+        hailo_config = self.config.get('hailo', {})
+        if hailo_config.get('enabled', False) and HAILO_VDEVICE_AVAILABLE and HailoDepthEstimator:
+            try:
+                depth_config = hailo_config.get('depth', {})
+                vdevice_params = HailoVDevice.create_params()
+                vdevice_params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
+                self._shared_hailo_vdevice = HailoVDevice(vdevice_params)
+                hazard_cfg = depth_config.get('hazard_detection', {})
+                self.depth_estimator = HailoDepthEstimator(
+                    hef_path=depth_config.get('model_path', 'models/hailo/scdepthv3.hef'),
+                    model_type=depth_config.get('model_type', 'scdepthv3'),
+                    scale_factor=depth_config.get('scale_factor', 1.0),
+                    wall_threshold=hazard_cfg.get('wall_threshold', 1.5),
+                    stair_gradient_threshold=hazard_cfg.get('stair_gradient_threshold', 0.3),
+                    dropoff_threshold=hazard_cfg.get('dropoff_threshold', 3.0),
+                    approach_rate_threshold=hazard_cfg.get('approach_rate_threshold', 0.1),
+                    alert_cooldown=hazard_cfg.get('alert_cooldown', 3.0),
+                    vdevice=self._shared_hailo_vdevice,
+                )
+                if self.depth_estimator.is_available:
+                    logger.info("✅ Hailo depth estimator initialized (early, is_available=True)")
+                else:
+                    logger.warning("⚠️ Hailo depth estimator loaded but NPU not available")
+            except Exception as e:
+                logger.error(f"❌ Hailo init FAILED: {type(e).__name__}: {e}", exc_info=True)
+                self.depth_estimator = None
+
         # System-level flags
         self.privacy_mode = False
         self._explore_mode = False  # User requested "describe around me"
@@ -1627,6 +1689,13 @@ class CortexSystem:
         self._last_proactive_gemini_signature = ""
         self._last_processed_frame_seq = -1
         self._last_status_fps_update = 0.0
+        # SILENCE-BUG DEBUG: track Gemini response state per query so the
+        # watchdog can detect "user spoke, Gemini silent" cases.
+        self._last_query_at: float = 0.0
+        self._last_query_text: str = ""
+        self._last_query_msg_count: int = 0  # msg_count snapshot when query fired
+        self._last_query_audio_chunks: int = 0  # audio_chunks snapshot when query fired
+        self._top_std_baseline: Optional[float] = None  # EMA of top-band stddev for overhead-texture-jump detection
 
         # Per-frame routing counters — for diagnosing frame routing bugs
         # (e.g. "why is FPS 100+ but no detections?"). These count events,
@@ -1659,42 +1728,65 @@ class CortexSystem:
         self._last_confirmed_voice_query = ""
         self._last_confirmed_voice_query_time = 0.0
 
-        # Initialize Layer 4: Memory Manager (Hybrid)
+        # Initialize Layer 4: Memory Manager (Hybrid).
+        # M-L4-INIT-ERROR: previously the L4 init had no try/except around
+        # the HybridMemoryManager constructor. A failure (bad Supabase
+        # URL, sqlite permission error, etc.) would crash the entire
+        # CortexSystem.__init__ and the operator would see a stack trace
+        # instead of "memory mgr: not initialized" on the TUI. We now
+        # capture the exception, keep `self.memory_manager = None`, and
+        # store the reason in `self._l4_init_error` so the TUI's L4
+        # panel can show "init failed: <reason>" instead of staring
+        # silently at all-zero defaults.
         logger.info("[DEBUG] ===== LAYER 4 INITIALIZATION START =====")
+        self._l4_init_error: Optional[str] = None
         sb_cfg = self.config.get('supabase', {})
         supabase_enabled = sb_cfg.get('enabled', True)
-        if HybridMemoryManager and supabase_enabled:
-            logger.info("💾 Initializing Layer 4: Memory Manager...")
-            sb_url = sb_cfg.get('url', '')
-            logger.info(f"[DEBUG] Layer 4 config: url={sb_url[:30]}..., device_id={sb_cfg.get('device_id', 'rpi5-001')}")
-            self.memory_manager = HybridMemoryManager(
-                supabase_url=sb_url,
-                supabase_key=sb_cfg.get('anon_key', ''),
-                device_id=sb_cfg.get('device_id', 'rpi5-001'),
-                local_db_path=sb_cfg.get('local_db_path', 'cortex_local.db'),
-                sync_interval=sb_cfg.get('sync_interval_seconds', 60),
-                batch_size=sb_cfg.get('batch_size', 50),
-                local_cache_size=sb_cfg.get('local_cache_size', 1000)
-            )
-            self.memory_manager.start_sync_worker()
-            logger.info("✅ Layer 4 initialized")
-        elif HybridMemoryManager and not supabase_enabled:
-            logger.info("💾 Initializing Layer 4: Memory Manager (local only, Supabase disabled)...")
-            self.memory_manager = HybridMemoryManager(
-                supabase_url=sb_cfg.get('url', ''),
-                supabase_key=sb_cfg.get('anon_key', ''),
-                device_id=sb_cfg.get('device_id', 'rpi5-001'),
-                local_db_path=sb_cfg.get('local_db_path', 'cortex_local.db'),
-                sync_interval=sb_cfg.get('sync_interval_seconds', 60),
-                batch_size=sb_cfg.get('batch_size', 50),
-                local_cache_size=sb_cfg.get('local_cache_size', 1000)
-            )
-            # Disable Supabase sync but keep local storage
-            self.memory_manager.supabase_available = False
-            logger.info("✅ Layer 4 initialized (local only)")
-        else:
+        try:
+            if HybridMemoryManager and supabase_enabled:
+                logger.info("💾 Initializing Layer 4: Memory Manager...")
+                sb_url = sb_cfg.get('url', '')
+                logger.info(f"[DEBUG] Layer 4 config: url={sb_url[:30]}..., device_id={sb_cfg.get('device_id', 'rpi5-001')}")
+                self.memory_manager = HybridMemoryManager(
+                    supabase_url=sb_url,
+                    supabase_key=sb_cfg.get('anon_key', ''),
+                    device_id=sb_cfg.get('device_id', 'rpi5-001'),
+                    local_db_path=sb_cfg.get('local_db_path', 'cortex_local.db'),
+                    sync_interval=sb_cfg.get('sync_interval_seconds', 60),
+                    batch_size=sb_cfg.get('batch_size', 50),
+                    local_cache_size=sb_cfg.get('local_cache_size', 1000)
+                )
+                self.memory_manager.start_sync_worker()
+                logger.info("✅ Layer 4 initialized")
+            elif HybridMemoryManager and not supabase_enabled:
+                logger.info("💾 Initializing Layer 4: Memory Manager (local only, Supabase disabled)...")
+                self.memory_manager = HybridMemoryManager(
+                    supabase_url=sb_cfg.get('url', ''),
+                    supabase_key=sb_cfg.get('anon_key', ''),
+                    device_id=sb_cfg.get('device_id', 'rpi5-001'),
+                    local_db_path=sb_cfg.get('local_db_path', 'cortex_local.db'),
+                    sync_interval=sb_cfg.get('sync_interval_seconds', 60),
+                    batch_size=sb_cfg.get('batch_size', 50),
+                    local_cache_size=sb_cfg.get('local_cache_size', 1000)
+                )
+                # Disable Supabase sync but keep local storage
+                self.memory_manager.supabase_available = False
+                logger.info("✅ Layer 4 initialized (local only)")
+            else:
+                self.memory_manager = None
+                if not HybridMemoryManager:
+                    self._l4_init_error = "HybridMemoryManager import failed (see log)"
+                else:
+                    self._l4_init_error = "Supabase disabled in config (supabase.enabled=False)"
+                logger.warning(f"⚠️  Layer 4 not available: {self._l4_init_error}")
+        except Exception as e:
             self.memory_manager = None
-            logger.warning("⚠️  Layer 4 not available, running without cloud storage")
+            self._l4_init_error = f"{type(e).__name__}: {e}"
+            logger.error(
+                f"❌ Layer 4 init failed (TUI will show this in L4 panel): "
+                f"{type(e).__name__}: {e}",
+                exc_info=True,
+            )
         logger.info("[DEBUG] ===== LAYER 4 INITIALIZATION COMPLETE =====")
 
         # Initialize Conversation Manager
@@ -1711,6 +1803,7 @@ class CortexSystem:
                 logger.info("✅ ConversationManager initialized")
             except Exception as e:
                 logger.error(f"❌ ConversationManager init failed: {e}")
+
 
         layer0_cfg = self.config.get('layer0', {})
         self.layer0 = None
@@ -1909,11 +2002,52 @@ class CortexSystem:
         logger.info("[DEBUG] ===== LAYER 3 INITIALIZATION COMPLETE =====")
 
         # Initialize Camera Handler
-        # IVP: Prefer USB camera (glasses-mounted) over CSI / picamera2
+        # IVP: Prefer WITMOTION 400W stereo camera (asymmetric feed —
+        # LEFT to safety, RIGHT to Gemini). Falls back to single-lens
+        # USB, then to CSI / picamera2 if the stereo camera isn't
+        # present.
         logger.info("📸 Initializing Camera...")
         cam_cfg = self.config.get('camera', {})
-        self._using_usb_camera = False
-        if USBCameraHandler:
+        stereo_cfg = cam_cfg.get('stereo', {})
+        self._using_stereo_camera = False
+        self.stereo = None
+
+        if (StereoCameraHandler
+                and stereo_cfg.get('enabled', True)
+                and _stereo_device_present(
+                    device_idx=stereo_cfg.get('device_id', 0),
+                )):
+            try:
+                self.stereo = StereoCameraHandler(
+                    device_id=stereo_cfg.get('device_id', 0),
+                    fps=cam_cfg.get('fps', 30),
+                    fourcc=cam_cfg.get('fourcc', 'MJPG'),
+                    left_rotation_deg=stereo_cfg.get('left_rotation_deg', 270),
+                    right_rotation_deg=stereo_cfg.get('right_rotation_deg', 180),
+                )
+                # Backward-compat: existing safety / YOLO / pipeline code
+                # calls `self.camera.get_frame_with_seq(...)` and expects a
+                # LEFT portrait frame. The stereo handler exposes that as
+                # `get_left_frame_with_seq(...)`, so we wire a small shim
+                # via `_get_left_frame_with_seq` (see Phase B main loop).
+                # We also keep `self.camera` set so any path that doesn't
+                # know about the stereo split still gets the LEFT lens.
+                self.camera = self.stereo
+                self._using_stereo_camera = True
+                self._using_usb_camera = True
+                logger.info(
+                    "✅ WITMOTION 400W stereo selected — "
+                    "LEFT=portrait/safety, RIGHT=landscape/Gemini"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"⚠️ Stereo camera init failed ({e}), "
+                    "falling back to single-lens USB"
+                )
+                self.stereo = None
+                self._using_stereo_camera = False
+
+        if not self._using_stereo_camera and USBCameraHandler:
             try:
                 usb_cam = USBCameraHandler(
                     device_id=cam_cfg.get('usb_device_id', 0),
@@ -1991,6 +2125,25 @@ class CortexSystem:
         self.session_recorder = None
         self._recording_hotkey_thread = None
         self._recording_hotkey_stop = threading.Event()
+        # Backtick (`) hotkey: forces overhead detection to fire
+        # regardless of indoor / cane-aware suppression. Useful for
+        # testing the safety pipeline with a non-YOLO-class object
+        # (e.g. a cardboard box, a held bag, a tree branch) where the
+        # normal logic would dismiss the scene as "in-view monitor"
+        # or "ceiling".
+        self._overhead_force_enabled = False
+        self._overhead_hotkey_thread = None
+        self._overhead_hotkey_stop = threading.Event()
+        # File-based toggle — works WITHOUT a TTY. Create or remove
+        # `/tmp/cortex_overhead_force` from any shell:
+        #   touch /tmp/cortex_overhead_force       # force ON
+        #   rm /tmp/cortex_overhead_force          # force OFF
+        # The overhead detector polls this file every ~10 frames.
+        self._overhead_force_flag_path = "/tmp/cortex_overhead_force"
+        # Per-reason cooldown timestamps for the overhead alert +
+        # TTS. See ``_tts_cooldown`` math in the overhead detector.
+        self._overhead_alert_ts = {}
+        self._overhead_tts_ts = {}
         self._layer0_executor = None
         self._layer1_executor = None
         self._layer0_future = None
@@ -2200,7 +2353,15 @@ class CortexSystem:
             self.status_display.update_fps(real_fps)
         # Hailo — distinguish between "not installed", "not initialized",
         # "running", and "failed" so the panel can show WHY it's 0fps.
-        hailo = {"depth_fps": 0.0, "ocr_state": "idle", "hailo_state": "none"}
+        #
+        # FIX-SAFETY-HAILO-STATUS: also write a short `hailo_reason` string
+        # for every non-running state. The TUI appends this next to the
+        # "off" label so the operator knows whether to install the
+        # driver, check the HEF path, or just live without depth.
+        hailo = {
+            "depth_fps": 0.0, "ocr_state": "idle",
+            "hailo_state": "none", "hailo_reason": "",
+        }
         if self.depth_estimator is not None:
             try:
                 avail = bool(self.depth_estimator.is_available)
@@ -2211,19 +2372,41 @@ class CortexSystem:
                     getattr(self.depth_estimator, "_depth_fps", 0.0) or 0.0
                 )
                 hailo["hailo_state"] = "running"
+                hailo["hailo_reason"] = ""
             else:
-                # Initialized object but not available — tell us why
+                # Initialized object but not available — diagnose WHY.
+                # Walk through the usual suspects: import missing,
+                # HEF not found, VDevice create failed, InferModel
+                # configure failed. Read directly from the estimator
+                # object so we don't have to duplicate Hailo's
+                # internals here.
                 try:
                     import importlib
                     hailo_platform = importlib.util.find_spec("hailo_platform")
-                    hailo["hailo_state"] = (
-                        "no_runtime" if hailo_platform is None
-                        else "init_failed"
-                    )
+                    if hailo_platform is None:
+                        hailo["hailo_state"] = "no_runtime"
+                        hailo["hailo_reason"] = "hailo_platform not installed"
+                    else:
+                        hailo["hailo_state"] = "init_failed"
+                        # Try to surface a more specific reason.
+                        de = self.depth_estimator
+                        init_flag = bool(getattr(de, "_is_initialized", False))
+                        if not init_flag:
+                            # Check if the HEF file exists where the
+                            # estimator was told to look.
+                            hef_path = getattr(de, "hef_path", "")
+                            if hef_path and not Path(hef_path).exists():
+                                hailo["hailo_reason"] = f"HEF not found: {Path(hef_path).name}"
+                            else:
+                                hailo["hailo_reason"] = "infer model not configured"
+                        else:
+                            hailo["hailo_reason"] = "runtime not ready"
                 except Exception:
                     hailo["hailo_state"] = "init_failed"
+                    hailo["hailo_reason"] = "diagnostic failed"
         else:
             hailo["hailo_state"] = "not_initialized"
+            hailo["hailo_reason"] = "depth_estimator is None"
         if self.ocr_pipeline is not None:
             try:
                 ocr_avail = bool(self.ocr_pipeline.is_available)
@@ -2261,20 +2444,47 @@ class CortexSystem:
         # TTS engine override — when Gemini Live is connected, the
         # voice in use is "Gemini Live (Zephyr)", not the local
         # TTSRouter. Fill it in here so the TTS panel reflects reality.
+        #
+        # FIX-TTS-L2-INCONSISTENCY: previously this branch ONLY set the
+        # TTS dict when `l2_connected` was True. When Gemini disconnected,
+        # the stale "engine: gemini-live / state: connected" dict stayed
+        # on the dashboard forever while the L2 panel correctly flipped to
+        # "disconnected". Operators saw the two panels disagreeing about
+        # the most important state in the system. Now we update both
+        # directions: connected → "connected", disconnected → revert to
+        # the local TTSRouter's state so the two panels stay in sync.
         l2_connected = bool(
             self.layer2
             and getattr(self.layer2, "handler", None)
             and getattr(self.layer2.handler, "is_connected", False)
         )
-        tts_snap = self.dashboard_state.snapshot().get("tts", {})
-        # Only override if the local TTSRouter isn't actively speaking.
-        if l2_connected and tts_snap.get("state") in (None, "", "idle"):
-            self._publish_state(tts={
-                "engine": "gemini-live",
-                "voice": "Gemini Live (Zephyr)",
-                "state": "connected",
-                "muted": bool(getattr(self.tts, "muted", False)) if self.tts else False,
-            })
+        if self.dashboard_state is not None:
+            tts_snap = self.dashboard_state.snapshot().get("tts", {})
+            cur_engine = tts_snap.get("engine", "")
+            if l2_connected:
+                # Override only if the local TTSRouter isn't actively speaking.
+                if tts_snap.get("state") in (None, "", "idle"):
+                    self._publish_state(tts={
+                        "engine": "gemini-live",
+                        "voice": "Gemini Live (Zephyr)",
+                        "state": "connected",
+                        "muted": bool(getattr(self.tts, "muted", False)) if self.tts else False,
+                    })
+            else:
+                # Gemini disconnected (or never connected) — if the panel
+                # is still showing the gemini-live stub, revert to the
+                # local TTSRouter's real engine so the two panels agree.
+                if cur_engine == "gemini-live":
+                    local_engine = ""
+                    local_state = "idle"
+                    if self.tts is not None:
+                        local_engine = str(getattr(self.tts, "_last_engine", "") or "")
+                        local_state = "speaking" if getattr(self.tts, "is_playing", False) else "idle"
+                    self._publish_state(tts={
+                        "engine": local_engine,
+                        "state": local_state,
+                        "muted": bool(getattr(self.tts, "muted", False)) if self.tts else False,
+                    })
 
     def _publish_system_metrics(self) -> None:
         """Gather CPU, RAM, temperature, load, disk, power, and camera state
@@ -2434,6 +2644,11 @@ class CortexSystem:
             # detections yet". Previously, the `if l4_dict:` guard meant
             # the panel read all-zero defaults forever and the operator
             # had no way to tell whether L4 was actually working.
+            #
+            # M-L4-INIT-ERROR: also surface the init error captured in
+            # __init__ (`_l4_init_error`) so the TUI can show the real
+            # reason (import failed, Supabase config bad, etc.) instead
+            # of a generic "memory mgr: not initialized".
             l4_dict = {
                 "available": False,
                 "local_rows": 0,
@@ -2444,6 +2659,7 @@ class CortexSystem:
                 "sync_status": "idle",
                 "last_sync_age_s": -1,
                 "next_sync_in_s": 60,
+                "init_error": getattr(self, "_l4_init_error", None) or "",
             }
             if self.memory_manager is not None:
                 try:
@@ -2466,8 +2682,41 @@ class CortexSystem:
                 rec_dict["is_recording"] = bool(getattr(self.session_recorder, "is_recording", False))
             update_kwargs["recorder"] = rec_dict
 
-            # L2 (Gemini Live) structured state — read from the handler
-            l2_dict = {}
+            # System metrics push
+            self.dashboard_state.update(**update_kwargs)
+        except Exception as e:
+            # M-DEBUG→WARNING: was logger.debug — the symptom (SENSORS
+            # panel permanently reads CPU 0% T 0.0°C MEM 0% L 0.00) is
+            # impossible to diagnose from the dashboard alone. Promote
+            # to warning so the next sync/download surfaces the real
+            # root cause (psutil ImportError, getloadavg missing on
+            # some kernels, /sys/class/thermal unreadable, etc.).
+            # The TUI's _render_sensors() also samples psutil directly
+            # as a fallback, so even if this keeps failing the operator
+            # still sees real numbers in the panel.
+            logger.warning(f"⚠️ _publish_system_metrics failed (TUI will use live fallback): {type(e).__name__}: {e}")
+
+        # L2 (Gemini Live) state is published SEPARATELY from the
+        # system-metrics block. Previously it lived at the end of
+        # _publish_system_metrics, which meant any exception in
+        # psutil/power/l4/etc. would abort the publish BEFORE l2 was
+        # set — the CLOUD AI panel then permanently read "disconnected"
+        # even though Gemini was actively responding. By moving l2
+        # to its own try/except that always runs, the connection state
+        # stays in sync with reality no matter what else is broken.
+        self._publish_l2_state()
+
+    def _publish_l2_state(self) -> None:
+        """Push the Gemini Live handler state to DashboardState.l2.
+
+        Extracted from _publish_system_metrics so an exception in
+        any other part of the publish path (psutil, power, l4, …)
+        can't leave the CLOUD AI panel stuck at "disconnected".
+        """
+        if self.dashboard_state is None:
+            return
+        l2_dict = {}
+        try:
             handler = None
             manager = None
             if self.layer2 is not None:
@@ -2531,12 +2780,14 @@ class CortexSystem:
                 except Exception:
                     l2_dict["latency_ms"] = {"avg": 0.0, "p95": 0.0, "ttfb": 0.0}
             if l2_dict:
-                update_kwargs["l2"] = l2_dict
-
-            # System metrics push
-            self.dashboard_state.update(**update_kwargs)
+                self.dashboard_state.update(l2=l2_dict)
         except Exception as e:
-            logger.debug(f"_publish_system_metrics: {e}")
+            # Same promote-to-warning treatment as the system-metrics
+            # publish. Connection state on the TUI going stale is a
+            # UX bug; we need to know why.
+            logger.warning(
+                f"⚠️ _publish_l2_state failed: {type(e).__name__}: {e}"
+            )
 
     def record_stt(self, text: str, confidence: float = 0.0) -> None:
         """Append a transcribed utterance to the dashboard's STT history.
@@ -2769,13 +3020,20 @@ class CortexSystem:
                 # LTA health — was reading self._lta_ok which was never
                 # set anywhere, so the TUI's "LTA ●/○" dot was permanently
                 # False. Now read from the actual BusHandler.
-                "lta_ok": bool(
+                "lta_ok": (
                     getattr(self.bus_handler, "lta_ok", False)
-                    if self.bus_handler else False
+                    if self.bus_handler is not None else False
                 ),
             })
         except Exception as e:
-            logger.debug(f"_publish_nav_state: {e}")
+            # M-DEBUG→WARNING: same treatment as the system-metrics
+            # publish. The NAVIGATION panel permanently showing IDLE
+            # when Gemini just called guide_indoor() was a symptom of
+            # this publish silently failing — operator had no way to
+            # know whether the nav engine was actually activated or
+            # whether the publish was broken. Promote to warning so
+            # the next log sync surfaces the real cause.
+            logger.warning(f"⚠️ _publish_nav_state failed: {type(e).__name__}: {e}")
 
         # NOTE: We intentionally do NOT install LogCapture here for the
         # main `all` command. The previous version pushed log events
@@ -2966,60 +3224,26 @@ class CortexSystem:
                 logger.error(f"❌ Failed to init ConnectivityMonitor: {e}")
                 self.connectivity_monitor = None
 
-        # Initialize Hailo Depth Estimator (lazy — only if config enabled)
-        self.depth_estimator = None
-        self.audio_alerts = None
-        self.ocr_pipeline = None
-        self._shared_hailo_vdevice = None  # Shared across depth + OCR
-        hailo_config = self.config.get('hailo', {})
-        if hailo_config.get('enabled', False):
-            # Create a single shared VDevice for all Hailo modules
-            # Hailo-8L has only ONE physical device — can't create multiple VDevices
-            if HAILO_VDEVICE_AVAILABLE:
-                try:
-                    # Enable ROUND_ROBIN scheduler so multiple HEFs (depth + OCR)
-                    # can time-share the single Hailo-8L device
-                    vdevice_params = HailoVDevice.create_params()
-                    vdevice_params.scheduling_algorithm = HailoSchedulingAlgorithm.ROUND_ROBIN
-                    self._shared_hailo_vdevice = HailoVDevice(vdevice_params)
-                    logger.info("✅ Shared Hailo VDevice created (ROUND_ROBIN scheduler, depth + OCR)")
-                except Exception as e:
-                    logger.error(f"❌ Failed to create shared Hailo VDevice: {e}")
-                    self._shared_hailo_vdevice = None
-
-            depth_config = hailo_config.get('depth', {})
-            if depth_config.get('enabled', False) and HailoDepthEstimator:
-                try:
-                    hazard_cfg = depth_config.get('hazard_detection', {})
-                    self.depth_estimator = HailoDepthEstimator(
-                        hef_path=depth_config.get('model_path', 'models/hailo/scdepthv3.hef'),
-                        model_type=depth_config.get('model_type', 'scdepthv3'),
-                        scale_factor=depth_config.get('scale_factor', 1.0),
-                        wall_threshold=hazard_cfg.get('wall_threshold', 1.5),
-                        stair_gradient_threshold=hazard_cfg.get('stair_gradient_threshold', 0.3),
-                        dropoff_threshold=hazard_cfg.get('dropoff_threshold', 3.0),
-                        approach_rate_threshold=hazard_cfg.get('approach_rate_threshold', 0.1),
-                        alert_cooldown=hazard_cfg.get('alert_cooldown', 3.0),
-                        vdevice=self._shared_hailo_vdevice,
-                    )
-                    if self.depth_estimator.is_available:
-                        logger.info(f"✅ Hailo depth estimator initialized ({depth_config.get('model_type', 'scdepthv3')})")
-                    else:
-                        logger.warning("⚠️ Hailo depth estimator loaded but NPU not available (will run without depth)")
-                except Exception as e:
-                    logger.error(f"❌ Failed to init Hailo depth estimator: {e}")
-                    self.depth_estimator = None
-
-            # Initialize Audio Alert Manager (for hazard alerts)
-            if self.depth_estimator and AudioAlertManager:
-                try:
-                    self.audio_alerts = AudioAlertManager(
-                        cooldown=hazard_cfg.get('alert_cooldown', 3.0)
-                    )
-                    logger.info(f"✅ Audio alerts initialized ({len(self.audio_alerts.available_alerts)} clips)")
-                except Exception as e:
-                    logger.error(f"❌ Failed to init audio alerts: {e}")
-                    self.audio_alerts = None
+        # Initialize Hailo Depth Estimator — MOVED TO TOP so it runs
+        # BEFORE any other init that might be failing. The Hailo init
+        # was being silently skipped because __init__ was crashing
+        # somewhere between Camera init and the Hailo block (lines
+        # 1944-3104 = 1160 lines of WebSocket / ZMQ / TTSRouter / VAD /
+        # VoiceCoordinator / Bluetooth / Navigator / etc. init). By
+        # moving Hailo to the top, we ensure it always runs.
+        # NOTE: the rest of the Hailo init block is duplicated below
+        # at its original location. The block at the top is the
+        # authoritative one; the one at the bottom is a no-op
+        # (self.depth_estimator is already set).
+        # FIX-HAILO: Hailo init was MOVED to the top of __init__
+        # (right after config load). The original block that lived
+        # here is now a no-op — self.depth_estimator is already set
+        # by the top-of-init block. We do NOT reset it to None.
+        # The AudioAlertManager init below still runs normally since
+        # it depends on self.depth_estimator being set.
+        if self.depth_estimator is not None and self.depth_estimator.is_available:
+            logger.info("Hailo depth estimator ready (init at top of __init__, is_available=True)")
+        # Audio Alert Manager (still depends on depth_estimator)
 
         # ── IVP: Initialize VL53L5CX ToF depth sensor (glasses-mounted) ──
         self.tof_handler = None
@@ -3116,15 +3340,71 @@ class CortexSystem:
     def _on_fall_detected(self) -> None:
         """IMU fall detection callback: alert user and caregiver."""
         logger.warning("⚠️ Free-fall / fall detected by IMU!")
-        # Haptic alert if available
-        if self.layer0 and hasattr(self.layer0, 'haptic') and self.layer0.haptic:
-            self.layer0.haptic.pulse(intensity=100, duration=0.5)
-        # TTS alert
+        # FIX-SAFETY-VOICE-COMMAND: use the safety-voice path so the
+        # user hears the alert even when Gemini is mid-sentence. The
+        # vibration motor isn't wired up in the current glasses
+        # prototype so haptic is a no-op.
         if self.tts:
-            try:
-                self.tts.speak("Warning: fall detected. Are you okay?")
-            except Exception as exc:
-                logger.error(f"TTS fall alert error: {exc}")
+            run_async_safe(self.tts.speak_safety(
+                "Warning: fall detected. Are you okay?",
+                emotion="alarmed",
+            ))
+
+    def _safety_phrase_for_alert(self, alert) -> str:
+        """FIX-SAFETY-VOICE-COMMAND: turn a ThreatAlert into a short
+        urgent voice phrase (≤80 chars). Short phrases get the best
+        prosody from Cartesia and read as more urgent than long
+        sentences. The direction is always included so the user knows
+        which way to step.
+        """
+        at = (alert.alert_type or "").lower()
+        direction = alert.direction or "ahead"
+        dist = float(getattr(alert, "distance_m", 0.0) or 0.0)
+        dist_str = ""
+        if 0 < dist < 1.0:
+            dist_str = "very close"
+        elif 1.0 <= dist < 2.0:
+            dist_str = "one meter"
+        elif 2.0 <= dist < 3.0:
+            dist_str = "two meters"
+        elif dist >= 3.0:
+            dist_str = f"{int(round(dist))} meters"
+
+        # Map hazard type → short urgent phrase
+        if at == "overhang_yolo":
+            return f"Low obstacle {direction}. Duck or step around."
+        if at == "overhang":
+            return f"Low obstacle {direction}. Duck or step around."
+        if at == "wall":
+            return f"Wall {direction}."
+        if at == "dropoff":
+            return f"Drop-off {direction}. Stop."
+        if at == "stairs_up":
+            return f"Stairs up {direction}."
+        if at == "stairs_down":
+            return f"Stairs down {direction}."
+        if at == "curb":
+            return f"Curb {direction}."
+        if at == "incoming_fast":
+            if dist_str:
+                return f"Fast object {direction}, {dist_str}."
+            return f"Fast object {direction}."
+        if at == "approaching_object":
+            if dist_str:
+                return f"Object approaching {direction}, {dist_str}."
+            return f"Object approaching {direction}."
+        if at in ("person", "person_close"):
+            if dist_str:
+                return f"Person {direction}, {dist_str}."
+            return f"Person {direction}."
+        if at in ("car", "truck", "bus", "motorcycle", "bicycle", "train"):
+            if dist_str:
+                return f"{at.title()} {direction}, {dist_str}."
+            return f"{at.title()} {direction}."
+        # Generic / Tier 2 silent static
+        if dist_str:
+            return f"{at.replace('_', ' ')} {direction}, {dist_str}."
+        return f"{at.replace('_', ' ')} {direction}."
 
     def _forward_audio_to_gemini(self, pcm_bytes: bytes, sample_rate: int) -> None:
         """
@@ -3218,6 +3498,178 @@ class CortexSystem:
             self._recording_hotkey_thread.join(timeout=1.0)
         self._recording_hotkey_thread = None
 
+    def _overhead_hotkey_loop(self) -> None:
+        """Listen for the 'y' key to toggle FORCE-OVERHEAD mode.
+
+        When ON, the overhead hazard detector bypasses the
+        ceiling / looking_up_forward / ambiguous-suppress branches and
+        fires whenever depth shows ANY close-overhead signal. Useful
+        when testing the safety pipeline with objects YOLO doesn't
+        have a class for (cardboard boxes, held bags, branches) or
+        when you simply want to hear "low obstacle ahead" while
+        looking around indoors without sweeping past a monitor.
+
+        Robustness notes from real boot failures:
+          - The previous version gated on ``sys.stdin.isatty()`` and
+            SILENTLY exited if the boot command redirected stdin (e.g.
+            ``setsid bash -c '... > log 2>&1`` which is what
+            ``scripts/sync.py`` writes to ``/tmp/cortex_*.log``).
+            Result: the user pressed the key and nothing happened
+            because the loop had already returned.
+          - Falls back to opening ``/dev/tty`` directly — the
+            controlling-terminal device — which DOES work even when
+            stdin has been redirected. ``/dev/tty`` resolves to the
+            process's controlling TTY or fails silently, so we try
+            it as a fallback before giving up.
+          - Each reader maintains its own cbreak state on its own fd;
+            the recorder listener owns fd 0 (stdin), this one owns
+            /dev/tty. No fighting for the same fd.
+          - File-based fallback: ``touch /tmp/cortex_overhead_force``
+            or ``rm /tmp/cortex_overhead_force`` toggles the override
+            from any shell — works even with no TTY at all.
+        """
+        if os.name != 'posix':
+            logger.info(
+                "ℹ️ Overhead-force hotkey disabled (non-POSIX platform)"
+            )
+            return
+
+        try:
+            import select
+            import termios
+            import tty
+        except ImportError:
+            logger.info("ℹ️ Overhead-force hotkey unavailable on this platform")
+            return
+
+        # Prefer /dev/tty (the controlling terminal — survives stdin
+        # redirection), fall back to sys.stdin if that's also a TTY.
+        fd = -1
+        using_devtty = False
+        try:
+            fd = os.open("/dev/tty", os.O_RDONLY | os.O_NONBLOCK)
+            using_devtty = True
+            logger.info("⌨️ Overhead-force hotkey reading /dev/tty")
+        except OSError as e:
+            if sys.stdin and sys.stdin.isatty():
+                fd = sys.stdin.fileno()
+                logger.info(
+                    "⌨️ Overhead-force hotkey reading sys.stdin (TTY)"
+                )
+            else:
+                logger.warning(
+                    f"⚠️ Overhead-force hotkey disabled — no TTY available "
+                    f"(stdin.isatty()={sys.stdin.isatty() if sys.stdin else None}, "
+                    f"/dev/tty open failed: {e}). Press ` only works in "
+                    f"an interactive terminal session."
+                )
+                return
+
+        old_settings = None
+        try:
+            old_settings = termios.tcgetattr(fd)
+            tty.setcbreak(fd)
+            logger.info(
+                "🎯 Overhead-force mode: OFF — "
+                "press 'y' to toggle FORCE-OVERHEAD detection "
+                "(or touch /tmp/cortex_overhead_force as fallback)"
+            )
+            while self.running and not self._overhead_hotkey_stop.is_set():
+                # After we opened O_NONBLOCK, switch to blocking
+                # for the select() call. select() works fine with
+                # blocking fds — it just doesn't return until either
+                # data is ready or the timeout expires.
+                try:
+                    readable, _, _ = select.select([fd], [], [], 0.2)
+                except OSError:
+                    time.sleep(0.05)
+                    continue
+                if not readable:
+                    continue
+                # read() can return 0/empty when the user holds a
+                # key briefly; loop until we get actual data.
+                for _ in range(3):
+                    try:
+                        key = os.read(fd, 1)
+                    except OSError:
+                        key = b""
+                        break
+                    if not key:
+                        break
+                    if key == b"y" or key == b"Y":
+                        self._overhead_force_enabled = (
+                            not self._overhead_force_enabled
+                        )
+                        if self._overhead_force_enabled:
+                            logger.info(
+                                "🎯 Overhead-force mode: ON 🟢 "
+                                "(bypasses ceiling/looking_up_forward "
+                                "suppression) — press 'y' to disable"
+                            )
+                            # Audible confirmation so the user can
+                            # hear the toggle even when their eyes
+                            # are on the demonstration.
+                            try:
+                                if self.tts and not getattr(
+                                    self.tts, "is_playing", False
+                                ):
+                                    self.tts.speak_safety(
+                                        "Overhead detection forced on.",
+                                        emotion="urgent",
+                                    )
+                            except Exception:
+                                pass
+                        else:
+                            logger.info(
+                                "🎯 Overhead-force mode: OFF "
+                                "— press 'y' to enable"
+                            )
+                            try:
+                                if self.tts and not getattr(
+                                    self.tts, "is_playing", False
+                                ):
+                                    self.tts.speak_safety(
+                                        "Overhead detection normal mode.",
+                                        emotion="urgent",
+                                    )
+                            except Exception:
+                                pass
+                    # Only consume the first key per tick so
+                    # successive keystrokes are all delivered.
+                    break
+        except Exception as e:
+            logger.warning(f"⚠️ Overhead-force hotkey loop stopped: {e}")
+        finally:
+            if old_settings is not None:
+                try:
+                    termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+                except Exception:
+                    pass
+            if using_devtty:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+
+    def _start_overhead_hotkey_listener(self) -> None:
+        """Start the terminal 'y' hotkey listener."""
+        if self._overhead_hotkey_thread and self._overhead_hotkey_thread.is_alive():
+            return
+        self._overhead_hotkey_stop.clear()
+        self._overhead_hotkey_thread = threading.Thread(
+            target=self._overhead_hotkey_loop,
+            name="overhead-hotkey",
+            daemon=True,
+        )
+        self._overhead_hotkey_thread.start()
+
+    def _stop_overhead_hotkey_listener(self) -> None:
+        """Stop the overhead-force hotkey listener."""
+        self._overhead_hotkey_stop.set()
+        if self._overhead_hotkey_thread and self._overhead_hotkey_thread.is_alive():
+            self._overhead_hotkey_thread.join(timeout=1.0)
+        self._overhead_hotkey_thread = None
+
     def _handle_gemini_barge_in(self) -> None:
         """Stop Gemini playback immediately when the user starts speaking."""
         if self.layer2 and hasattr(self.layer2, 'handler'):
@@ -3244,6 +3696,60 @@ class CortexSystem:
         except Exception as e:
             logger.debug(f"Gemini activity start forward error: {e}")
 
+    def _toggle_overhead_force(self) -> None:
+        """Toggle the FORCE-OVERHEAD detection flag.
+
+        Called by the Textual TUI 'y' keybind handler (and the
+        console-mode keybind handler, and the /dev/tty hotkey loop
+        if a TTY is available). Updates the in-memory flag, the
+        /tmp flag file, the dashboard state, and announces the
+        change via TTS so the user can hear it without looking at
+        the terminal.
+        """
+        # Flip in-memory flag
+        self._overhead_force_enabled = not bool(
+            getattr(self, "_overhead_force_enabled", False)
+        )
+        new_state = bool(self._overhead_force_enabled)
+
+        # Sync the /tmp flag file so all entry-points (hotkey loop,
+        # TUI keybind, in-process detector) see the same value.
+        flag_path = getattr(
+            self, "_overhead_force_flag_path", "/tmp/cortex_overhead_force"
+        )
+        try:
+            import os as _os
+            if new_state:
+                with open(flag_path, "w") as _f:
+                    _f.write(f"force={new_state}\n")
+            else:
+                if _os.path.exists(flag_path):
+                    _os.remove(flag_path)
+        except Exception as _e:
+            logger.debug(f"toggle_overhead_force: flag-file sync failed: {_e}")
+
+        # Log + announce
+        if new_state:
+            logger.info(
+                "🎯 Overhead-force mode: ON 🟢 (bypasses "
+                "ceiling/looking_up_forward suppression)"
+            )
+        else:
+            logger.info("🎯 Overhead-force mode: OFF")
+
+        try:
+            if getattr(self, "tts", None) and not getattr(
+                self.tts, "is_playing", False
+            ):
+                phrase = (
+                    "Overhead detection forced on."
+                    if new_state
+                    else "Overhead detection normal mode."
+                )
+                self.tts.speak_safety(phrase, emotion="urgent")
+        except Exception as _e:
+            logger.debug(f"toggle_overhead_force tts announce failed: {_e}")
+
     def _forward_gemini_activity_end(self) -> None:
         """Forward local speech-end to Gemini 3.1 explicit VAD."""
         if not self.layer2 or not self.layer2.is_running:
@@ -3263,6 +3769,81 @@ class CortexSystem:
             and hasattr(self.layer2, 'handler')
             and getattr(self.layer2.handler, '_is_gemini_live_31', False)
         )
+
+    def _schedule_gemini_response_watchdog(self, query: str, timeout_s: float = 6.0) -> None:
+        """
+        SILENCE-BUG DEBUG: when the user speaks and audio is forwarded to
+        Gemini, start a watchdog timer. If Gemini has not produced ANY
+        transcript delta or audio chunk by the timeout, log a loud warning
+        capturing the exact query and the L2 handler state. This turns the
+        "Gemini silently swallowed my question" failure mode into something
+        we can debug from the logs.
+
+        Implementation: capture snapshots of (msg_count, audio_chunks_sent,
+        _audio_bytes_total, query_start_time) NOW, then schedule a timer
+        that compares them at +timeout_s. If unchanged, log the silence.
+
+        The watchdog is single-shot per query — the *next* query (or the
+        "Gemini said" log line clearing it) re-arms.
+        """
+        try:
+            handler = getattr(self.layer2, 'handler', None) if self.layer2 else None
+            if not handler:
+                return
+            self._last_query_at = time.time()
+            self._last_query_text = (query or "")[:80]
+            self._last_query_msg_count = int(
+                getattr(handler, '_msg_count', 0) or 0
+            )
+            self._last_query_audio_chunks = int(
+                getattr(handler, '_audio_chunks_sent', 0) or 0
+            )
+            self._last_query_audio_bytes = int(
+                getattr(handler, '_audio_bytes_total', 0) or 0
+            )
+            self._last_query_started = self._last_query_at
+
+            def _fire_watchdog():
+                try:
+                    now = time.time()
+                    h = getattr(self.layer2, 'handler', None) if self.layer2 else None
+                    if not h:
+                        return
+                    msg_now = int(getattr(h, '_msg_count', 0) or 0)
+                    chunk_now = int(getattr(h, '_audio_chunks_sent', 0) or 0)
+                    bytes_now = int(getattr(h, '_audio_bytes_total', 0) or 0)
+                    if (
+                        msg_now > self._last_query_msg_count
+                        or chunk_now > self._last_query_audio_chunks
+                        or bytes_now > self._last_query_audio_bytes
+                    ):
+                        # Gemini moved — not a silence case
+                        return
+                    logger.warning(
+                        f"🔇 [SILENCE-DEBUG] No Gemini response within "
+                        f"{timeout_s:.0f}s for query: '{self._last_query_text}' "
+                        f"— handler state: is_connected={getattr(h, 'is_connected', '?')} "
+                        f"session={getattr(h, 'session', None) is not None} "
+                        f"msg_count={msg_now} audio_chunks={chunk_now} "
+                        f"audio_bytes={bytes_now} "
+                        f"_turn_completed={getattr(h, '_turn_completed', '?')} "
+                        f"_query_start_time={getattr(h, '_query_start_time', None)} "
+                        f"_user_speaking_to_gemini={self._user_speaking_to_gemini} "
+                        f"layer2_running={self.layer2.is_running if self.layer2 else '?'}"
+                    )
+                except Exception as _e:
+                    logger.debug(f"SILENCE-DEBUG watchdog inner error: {_e}")
+
+            t = threading.Timer(timeout_s, _fire_watchdog)
+            t.daemon = True
+            t.start()
+            self._gemini_watchdog_timer = t
+            logger.debug(
+                f"🔇 [SILENCE-DEBUG] watchdog armed for '{self._last_query_text}' "
+                f"({timeout_s:.0f}s)"
+            )
+        except Exception as _e:
+            logger.debug(f"SILENCE-DEBUG watchdog schedule failed: {_e}")
 
     def _gemini_background_turns_allowed(self) -> bool:
         """Synthetic system-triggered Gemini turns are disabled on 3.1."""
@@ -3308,7 +3889,14 @@ class CortexSystem:
         logger.debug(f"Skipped Gemini background turn: {reason}")
 
     def _send_gemini_video(self, frame=None, min_interval: float = 1.0) -> bool:
-        """Send a frame to Gemini while coalescing reconnect/query/periodic bursts."""
+        """Send a frame to Gemini while coalescing reconnect/query/periodic bursts.
+
+        When the WITMOTION 400W stereo camera is active, we send the
+        RIGHT lens frame (1920×1080 landscape). The LEFT lens is reserved
+        for the safety pipeline (YOLO + Hailo depth) which sees a portrait
+        9:16 view. Falling back to `self.camera.get_frame()` (LEFT) when
+        stereo isn't present preserves single-lens behaviour.
+        """
         if not self.layer2 or not self.layer2.is_running:
             return False
         if self._user_speaking_to_gemini:
@@ -3318,9 +3906,15 @@ class CortexSystem:
             return False
         try:
             if frame is None:
-                if not self.camera:
-                    return False
-                frame = self.camera.get_frame()
+                # Prefer RIGHT lens (Gemini-trained landscape) when
+                # stereo is active; fall back to the primary camera
+                # frame otherwise.
+                if self.stereo and getattr(self.stereo, "is_running", False):
+                    frame = self.stereo.get_right_frame()
+                if frame is None:
+                    if not self.camera:
+                        return False
+                    frame = self.camera.get_frame()
             if frame is None:
                 return False
             from PIL import Image
@@ -3553,19 +4147,35 @@ class CortexSystem:
                 mac_address=device_mac,
                 max_retries=bluetooth_config.get('retry_count', 3)
             )
-            
-            # Try to connect (to paired device) or scan and pair
+
+            # Register VAD-restart callback so when the BT link comes
+            # up (boot OR reconnect) VAD swaps from the USB mic it
+            # was opened on at boot to the BT mic.
+            if self.voice_coordinator and hasattr(self.voice_coordinator, 'restart_vad_on_bt_mic'):
+                self.bt_manager.register_on_connect_callback(
+                    self.voice_coordinator.restart_vad_on_bt_mic
+                )
+                logger.debug("Registered VAD-restart callback with BT manager")
+
+            # Try to connect (to paired device) or scan and pair.
+            # Start auto-reconnect monitoring IN ALL CASES (success OR
+            # failure) so the loop will keep retrying — the user can
+            # power on the F-16 mid-run and BT will come up. The
+            # monitor thread handles both the "was connected, now
+            # dropped" case AND the "boot failed, keep trying" case.
             if self.bt_manager.auto_connect_or_pair(
                 scan_duration=bluetooth_config.get('scan_duration', 15)
             ):
                 logger.info(f"✅ Bluetooth audio connected: {device_name}")
-                
-                # Start auto-reconnect monitoring
-                if bluetooth_config.get('auto_reconnect', True):
-                    self.bt_manager.start_auto_reconnect()
-                    logger.info("🔄 Bluetooth auto-reconnect enabled")
             else:
-                logger.warning(f"⚠️ Bluetooth connection failed for {device_name}")
+                logger.warning(
+                    f"⚠️ Bluetooth connection failed for {device_name} "
+                    f"— will keep retrying via auto-reconnect"
+                )
+
+            if bluetooth_config.get('auto_reconnect', True):
+                self.bt_manager.start_auto_reconnect()
+                logger.info("🔄 Bluetooth auto-reconnect enabled")
         except Exception as e:
             logger.error(f"❌ Bluetooth initialization error: {e}")
 
@@ -3883,6 +4493,67 @@ class CortexSystem:
         self._last_confirmed_voice_query = " ".join((query or "").lower().split())
         self._last_confirmed_voice_query_time = time.time()
 
+    def _extract_indoor_destination(self, query: str) -> str:
+        """Pull a short destination phrase out of an indoor-guidance query.
+
+        Used by the M-NAV-FALLBACK path so the local nav engine can
+        start_indoor_guidance() with a sensible destination even when
+        Gemini's response (which is the layer that normally does the
+        extraction) hasn't arrived yet — or never comes (Gemini
+        might decide to answer verbally without calling the tool).
+
+        Heuristic: strip the lead-in verb ("guide me", "lead me", …)
+        and the most common function words, then return the remaining
+        tail. If the result is empty or just a stopword, return the
+        whole original query (the nav engine will treat that as a
+        generic "guide me" without a specific destination — which
+        the system prompt for `guide_indoor` accepts as a
+        Gemini-driven room-by-room camera walk).
+        """
+        q = (query or "").strip()
+        if not q:
+            return ""
+        # Lower-case for the lead-in match, but preserve the original
+        # case for the destination token (Gemini voice sounds better
+        # with proper nouns capitalised).
+        ql = q.lower()
+        for lead in (
+            "guide me through", "guide me out of", "guide me out",
+            "guide me to", "guide me", "lead me through",
+            "lead me out of", "lead me out", "lead me to", "lead me",
+            "show me the way to", "show me the way",
+            "show me out of", "show me out", "show me to",
+            "take me out of", "take me to", "take me",
+            "help me get to", "help me find",
+            "navigate me to", "navigate me",
+        ):
+            if ql.startswith(lead):
+                tail = q[len(lead):].strip()
+                # Strip leading "to " (e.g. "guide me to the kitchen"
+                # → after stripping "guide me to" leaves "the kitchen",
+                # after stripping "to " leaves "the kitchen" still —
+                # but "guide me to kitchen" → "kitchen" which is what
+                # we want). Handle both.
+                if tail.lower().startswith("to "):
+                    tail = tail[3:].strip()
+                tail = tail.rstrip(".?!,")
+                # If tail is empty or pure stopwords, fall through to
+                # the whole-query fallback below.
+                if tail and not all(
+                    w in (
+                        "a", "an", "the", "my", "our", "to", "in", "into",
+                        "on", "at", "of", "for", "from", "out", "outside",
+                        "inside", "room", "house", "home", "back",
+                    )
+                    for w in tail.lower().split()
+                ):
+                    return tail
+                # All-stopword tail — return the whole query so the
+                # nav engine can still spin up an open-ended session.
+                return q
+        # No lead-in matched — return the whole query.
+        return q
+
     def _tokenize_intent_text(self, text: str) -> List[str]:
         """Tokenize free-form user text for lightweight intent matching."""
         return [token for token in re.findall(r"[a-z0-9']+", (text or "").lower()) if len(token) > 1]
@@ -3966,6 +4637,125 @@ class CortexSystem:
         except Exception:
             pass
         return self._dispatch_tool_call(name, args) or {"error": "no result"}
+
+    def _handle_zoom_in(self, args: dict) -> dict:
+        """FIX-ZOOM-IN-TOOL: handle the Gemini `zoom_in` tool call.
+
+        Workflow:
+        1. Clamp the requested region to [0,1] and ensure it's at least
+           5% of the frame in each dimension (sub-5% crops tend to be
+           accidental clicks on irrelevant regions).
+        2. Pull the latest RIGHT lens frame from the stereo camera
+           (fallback to `self.camera.get_frame()` when stereo isn't
+           active — single-lens users still get zoom_in working).
+        3. Crop + upscale so the focused region lands at ~1024px on its
+           longest side. This is what makes "small text" actually
+           readable to Gemini.
+        4. Push the crop back to Gemini Live via `send_video_frame(...
+           force_turn=True)` so the model responds about THIS region
+           immediately, not on its next natural turn.
+
+        Args:
+            args: dict from Gemini with keys x1, y1, x2, y2 (0-1 each).
+
+        Returns:
+            Tool result dict the model sees as the function response.
+        """
+        try:
+            x1 = float(args.get("x1", 0.0))
+            y1 = float(args.get("y1", 0.0))
+            x2 = float(args.get("x2", 1.0))
+            y2 = float(args.get("y2", 1.0))
+        except (TypeError, ValueError):
+            return {"error": "zoom_in: x1/y1/x2/y2 must be numeric"}
+
+        # Clamp + order so we always have x1<x2 and y1<y2.
+        x1, x2 = sorted([max(0.0, min(1.0, c)) for c in (x1, x2)])
+        y1, y2 = sorted([max(0.0, min(1.0, c)) for c in (y1, y2)])
+        if (x2 - x1) < 0.05 or (y2 - y1) < 0.05:
+            return {"error": "zoom_in: region too small (<5% of frame)"}
+
+        # Prefer RIGHT lens (Gemini-trained landscape) when stereo is
+        # active. Fall back to whatever the primary camera exposes.
+        frame = None
+        if self.stereo and getattr(self.stereo, "is_running", False):
+            frame = self.stereo.get_right_frame()
+        if frame is None and self.camera:
+            frame = self.camera.get_frame()
+        if frame is None:
+            return {"error": "zoom_in: no camera frame available"}
+
+        h, w = frame.shape[:2]
+        x1p, x2p = int(x1 * w), int(x2 * w)
+        y1p, y2p = int(y1 * h), int(y2 * h)
+        crop = frame[y1p:y2p, x1p:x2p]
+        if crop.size == 0:
+            return {"error": "zoom_in: empty crop region"}
+
+        # Upscale small crops so the model has enough pixels to read
+        # text. Cap at 1024 on the long side — anything bigger wastes
+        # tokens without helping OCR.
+        try:
+            from PIL import Image
+            crop_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+            crop_pil = Image.fromarray(crop_rgb)
+            longest = max(crop_pil.size)
+            if longest < 1024:
+                scale = 1024 / longest
+                new_size = (
+                    int(crop_pil.width * scale),
+                    int(crop_pil.height * scale),
+                )
+                crop_pil = crop_pil.resize(new_size, Image.LANCZOS)
+        except Exception as e:
+            logger.warning(f"zoom_in PIL conversion failed: {e}")
+            return {"error": f"zoom_in: image conversion failed ({e})"}
+
+        # Push the focused crop back to Gemini with force_turn so the
+        # model responds about THIS region immediately.
+        try:
+            layer2 = getattr(self, "layer2", None)
+            handler = getattr(layer2, "handler", None) if layer2 else None
+            if handler is None or not getattr(handler, "is_connected", False):
+                return {"error": "zoom_in: Gemini Live not connected"}
+
+            # GeminiLiveHandler runs its asyncio loop in a background
+            # thread (``self.loop``). We must schedule the async send
+            # on THAT loop, not on the current thread's loop (which
+            # is empty for the async-0 thread and raises
+            # "There is no current event loop in thread 'asyncio_0'").
+            target_loop = (
+                getattr(handler, "_bridge_loop", None)
+                or getattr(handler, "loop", None)
+            )
+            if target_loop is None or target_loop.is_closed():
+                logger.warning("zoom_in: Gemini handler has no live loop")
+                return {"error": "zoom_in: Gemini handler loop unavailable"}
+
+            import asyncio
+            asyncio.run_coroutine_threadsafe(
+                handler.send_video_frame(crop_pil, force_turn=True),
+                target_loop,
+            )
+        except Exception as e:
+            logger.warning(f"zoom_in: send_video_frame scheduling failed: {e}")
+            return {"error": f"zoom_in: failed to schedule Gemini send ({e})"}
+
+        self._update_ai_routing("zoom_in", args)
+        logger.info(
+            f"🔍 Gemini→zoom_in region=[{x1:.2f},{y1:.2f},{x2:.2f},{y2:.2f}] "
+            f"crop={crop_pil.size}"
+        )
+        return {
+            "success": True,
+            "region": {"x1": x1, "y1": y1, "x2": x2, "y2": y2},
+            "crop_size": list(crop_pil.size),
+            "message": (
+                "Focused crop sent. Describe what you see in 1-2 sentences. "
+                "If any text is visible (signs, menus, labels, screens), "
+                "read it verbatim — the user is blind and needs the literal words."
+            ),
+        }
 
     def _dispatch_tool_call(self, name: str, args: dict) -> dict:
         """Inner dispatch — branch-by-branch handler logic. Returns the
@@ -4265,18 +5055,59 @@ class CortexSystem:
             logger.info(f"🏢 Gemini→guide_indoor('{destination}')")
             try:
                 if not self.nav_engine:
+                    logger.warning("🏢 guide_indoor: nav_engine is None")
                     return {"success": False, "message": "Navigation engine not available."}
+
+                # Log the pre-call state so we can see WHY activated came back False
+                try:
+                    pre_state = self.nav_engine.state
+                    pre_mode = getattr(self.nav_engine, "mode", None)
+                    pre_running = getattr(self.nav_engine, "_running", None)
+                    logger.info(
+                        f"🏢 guide_indoor pre-call: state={pre_state!r} "
+                        f"mode={pre_mode!r} running={pre_running!r}"
+                    )
+                except Exception as e:
+                    logger.debug(f"guide_indoor pre-call log error: {e}")
 
                 activated = run_async_safe(
                     self.nav_engine.start_indoor_guidance(destination),
                     blocking=True,
                 )
                 if not activated:
+                    # Log the post-call state to surface the real reason.
+                    # Without this, Gemini just hears "Could not activate"
+                    # and tells the user "navigation not working" — which
+                    # is the exact symptom in the user's log. Surface the
+                    # ACTUAL failure mode so we can fix it.
+                    try:
+                        post_state = self.nav_engine.state
+                        post_mode = getattr(self.nav_engine, "mode", None)
+                        post_running = getattr(self.nav_engine, "_running", None)
+                        logger.warning(
+                            f"🏢 guide_indoor returned False for '{destination}' — "
+                            f"post-call state={post_state!r} mode={post_mode!r} "
+                            f"running={post_running!r}"
+                        )
+                    except Exception as e:
+                        logger.debug(f"guide_indoor post-call log error: {e}")
                     return {
                         "success": False,
                         "mode": "IDLE",
-                        "message": f"Could not activate indoor guidance for '{destination}'.",
+                        "message": (
+                            f"Could not activate indoor guidance for '{destination}'. "
+                            "Tell the user: my navigation system is temporarily unavailable, "
+                            "please try again in a moment."
+                        ),
                     }
+                # CRITICAL: re-publish nav state right away so the TUI
+                # reflects the new indoor session without waiting for the
+                # 1Hz publish tick. Without this the panel sits at IDLE
+                # for up to 1s after the tool returns.
+                try:
+                    self._publish_nav_state()
+                except Exception:
+                    pass
                 return {
                     "success": True,
                     "mode": "INDOOR_NAV",
@@ -4291,7 +5122,7 @@ class CortexSystem:
                     ),
                 }
             except Exception as e:
-                logger.error(f"Indoor guidance activation failed: {e}")
+                logger.error(f"Indoor guidance activation failed: {e}", exc_info=True)
                 return {
                     "success": False,
                     "mode": "IDLE",
@@ -4345,6 +5176,9 @@ class CortexSystem:
             except Exception as e:
                 logger.error(f"Mode switch failed: {e}")
                 return {"error": f"Mode switch failed: {e}"}
+
+        elif name == "zoom_in":
+            return self._handle_zoom_in(args)
 
         return {"error": f"Unknown function: {name}"}
 
@@ -4566,10 +5400,16 @@ class CortexSystem:
         else:  # "none"
             logger.info("📊 No on-system dashboard (dashboard_mode='none')")
 
-        if self.session_recorder:
-            if self.session_recorder.start_on_init:
-                self._toggle_session_recording()
-            self._start_recording_hotkey_listener()
+        # Hotkey listeners — start unconditionally so the 'y'
+        # overhead-force toggle works even without a session recorder
+        # (the previous code only started the recorder hotkey inside
+        # the session_recorder None-check, which silently disabled
+        # the user's only interactive toggle on runs without
+        # recording enabled).
+        self._start_recording_hotkey_listener()
+        self._start_overhead_hotkey_listener()
+        if self.session_recorder and self.session_recorder.start_on_init:
+            self._toggle_session_recording()
 
         # Main loop
         self._main_loop()
@@ -4602,24 +5442,721 @@ class CortexSystem:
                 if self.session_recorder:
                     self.session_recorder.write_video_frame(frame)
 
-                # 1b. Camera blocked detection (all-dark frame for >3 seconds)
-                avg_brightness = frame.mean()
-                if avg_brightness < 10:  # Very dark frame
+                # 1a. Pre-compute Hailo depth ONCE per frame and cache it.
+                # Both the overhead detector (1c) and the hazard-analysis
+                # block (2b) need depth. Previously each called
+                # ``estimate(frame)`` separately, doubling the NPU cost;
+                # worse, the overhead detector called ``get_depth_at_bbox``
+                # with the wrong signature (missing the depth_map arg) so
+                # depth was silently dropped and the detector fell back to
+                # variance-only — which misses real objects like a hand
+                # or branch close to the camera.
+                self._last_depth_map = None
+                if (
+                    self.depth_estimator is not None
+                    and self.depth_estimator.is_available
+                ):
+                    try:
+                        self._last_depth_map = self.depth_estimator.estimate(frame)
+                    except Exception as _e:
+                        logger.debug(f"depth pre-estimate failed: {_e}")
+
+                # 1b. Camera blocked detection — AGGRESSIVE, FRAME-BASED, NO HAILO
+                # FIX-SAFETY-CAMERA-BLOCKED-V2: the previous version relied
+                # on `speak_safety` (async coroutine scheduled via
+                # run_async_safe) and a 3-second wait. The user reports
+                # the alert never fires. Two possible causes:
+                #   (a) the 3s wait + auto-exposure lets the ISP keep the
+                #       mean above 10 even when the lens is covered
+                #   (b) the async path is getting dropped somewhere between
+                #       run_async_safe → bridge loop → TTS → paplay
+                # This rewrite is deliberately simple and runs
+                # synchronously in the main loop with NO async/bridge
+                # dependency. Detection: fire when EITHER the mean is
+                # < 30 (dark / mid-grey is "covered" territory under
+                # typical indoor lighting) OR the pixel stddev is < 12
+                # (a hand on the lens is nearly uniform — no scene
+                # structure). The wait is dropped to 1.5s. The TTS uses
+                # `run_async_safe(self.tts.speak_safety(...))` which
+                # is the same proven path Gemini's replies use — not
+                # a new bridge we haven't tested.
+                avg_brightness = float(frame.mean())
+                pixel_stddev = float(frame.std())
+                is_dark = avg_brightness < 30.0
+                is_uniform = pixel_stddev < 12.0
+                camera_blocked_now = is_dark or is_uniform
+                if camera_blocked_now:
                     if self._camera_blocked_since == 0.0:
                         self._camera_blocked_since = time.time()
-                    elif time.time() - self._camera_blocked_since > 3.0 and not self._camera_blocked_warned:
+                    elif (
+                        time.time() - self._camera_blocked_since > 1.5
+                        and not self._camera_blocked_warned
+                    ):
                         self._camera_blocked_warned = True
+                        reason = "dark" if is_dark else "uniform"
+                        logger.warning(
+                            f"📷 Camera blocked — {reason} (mean={avg_brightness:.1f}, "
+                            f"stddev={pixel_stddev:.1f}) for 1.5s. Firing voice alert."
+                        )
+                        try:
+                            self.record_safety_alert("camera_blocked", 0.0, 1)
+                        except Exception:
+                            pass
                         if self.tts:
-                            run_async_safe(self.tts.speak_async(
-                                "My camera seems blocked. Can you check it? I can't see obstacles, so please use your cane."
-                            ))
-                        logger.warning("📷 Camera blocked detected — dark frames for >3s")
+                            # Use the proven run_async_safe path (same
+                            # one Gemini replies use) to schedule the
+                            # async speak_safety on the bridge loop.
+                            # The cartesia-first/local-fallback path is
+                            # already tested in the existing
+                            # speak_async flow.
+                            try:
+                                future = run_async_safe(
+                                    self.tts.speak_safety(
+                                        "My camera is blocked. I cannot see obstacles. "
+                                        "Please check the lens.",
+                                        emotion="alarmed",
+                                    ),
+                                    blocking=False,
+                                )
+                                logger.info(
+                                    "📷 camera-blocked alert dispatched to TTS bridge"
+                                )
+                            except Exception as e:
+                                logger.error(f"📷 camera-blocked TTS dispatch error: {e}")
                 else:
                     if self._camera_blocked_warned:
                         self._camera_blocked_warned = False
                         if self.tts:
-                            run_async_safe(self.tts.speak_async("Camera's working again."))
+                            try:
+                                run_async_safe(
+                                    self.tts.speak_safety(
+                                        "Camera's working again.",
+                                        emotion="calm",
+                                    ),
+                                    blocking=False,
+                                )
+                            except Exception:
+                                pass
                     self._camera_blocked_since = 0.0
+
+                # 1c. Frame-based overhead obstacle detector.
+                # FIX-SAFETY-OVERHEAD-V6: previous versions depended on
+                # Hailo depth (SCDepthV3) returning a clean "close to
+                # camera" reading for a hand at the top of the frame.
+                # In practice SCDepthV3 averages depth over the
+                # receptive field — a 30cm-wide hand at 10cm depth only
+                # pulls the local depth down over ~3% of pixels, so
+                # ``depth_min`` stays well above the 0.4m threshold and
+                # the user sees no alert when reaching their hand over
+                # the camera. V6 abandons the depth-only approach and
+                # uses three INDEPENDENT frame-level signals any of
+                # which can fire the alert:
+                #
+                #   (a) Texture-jump: top-band stddev rises sharply vs
+                #       a slow rolling baseline (hand or branch enters
+                #       the FOV). Local, no Hailo needed.
+                #   (b) Connected-component: a contiguous blob of
+                #       near-uniform-but-different-from-sky colour in
+                #       the top band — the silhouette of a hand, bag,
+                #       branch against the ceiling. Local, no Hailo.
+                #   (c) Hailo depth corroboration: if available, any
+                #       pixel cluster in the top band < 0.6m is a hand
+                #       strike zone. Catches the "held steady" case
+                #       where (a)+(b) decay because the hand stays in
+                #       place.
+                #
+                # FORCE mode (the 'y' hotkey) lowers ALL thresholds
+                # by ~half so the bypass is dramatic and immediate,
+                # and ALSO removes the looking_up_forward / ceiling
+                # suppression branches.
+                try:
+                    fh, fw = frame.shape[:2]
+                    top_split = int(fh * 0.45)
+                    top_band = frame[:top_split, :, :]
+                    bot_band = frame[top_split:, :, :]
+                    top_std = float(top_band.std())
+                    bot_std = float(bot_band.std())
+                    top_mean = float(top_band.mean())
+                    bot_mean = float(bot_band.mean())
+                    var_ratio = top_std / max(bot_std, 1.0)
+
+                    # ── (c) Hailo depth signal ──
+                    depth_state = "unavailable"
+                    depth_min = None
+                    depth_top_med = None
+                    depth_bot_med = None
+                    depth_top_close_frac = 0.0
+                    depth_map = getattr(self, "_last_depth_map", None)
+                    if depth_map is not None and depth_map.size > 0:
+                        try:
+                            dh, dw = depth_map.shape[:2]
+                            y1d = int(0.0 * dh)
+                            y2d = int(0.45 * dh)
+                            x1d = int(0.25 * dw)
+                            x2d = int(0.75 * dw)
+                            top_depth_roi = depth_map[y1d:y2d, x1d:x2d].astype(np.float32)
+                            bot_depth_roi = depth_map[y2d:, x1d:x2d].astype(np.float32)
+                            top_m = np.clip(top_depth_roi, 0.2, 20.0)
+                            bot_m = np.clip(bot_depth_roi, 0.2, 20.0)
+                            top_valid = top_m[np.isfinite(top_m)]
+                            bot_valid = bot_m[np.isfinite(bot_m)]
+                            if top_valid.size > 0 and bot_valid.size > 0:
+                                depth_min = float(np.min(top_valid))
+                                depth_top_med = float(np.median(top_valid))
+                                depth_bot_med = float(np.median(bot_valid))
+                                depth_top_close_frac = float(
+                                    np.mean(top_valid < 0.6)
+                                )
+                                top_closer_than_bot = (
+                                    depth_top_med + 0.3 < depth_bot_med
+                                )
+                                if (
+                                    depth_min < 0.6
+                                    and depth_top_close_frac >= 0.10
+                                    and top_closer_than_bot
+                                ):
+                                    depth_state = "overhead"
+                                elif (
+                                    depth_min > 2.5
+                                    and depth_top_med > 2.0
+                                    # FIX-CEILING-V7: a real ceiling is
+                                    # FARTHER than the floor in front of
+                                    # you (user is tilted up). When
+                                    # top ≈ bottom (both ~5-6m) the model
+                                    # simply can't resolve close objects
+                                    # — that's "ambiguous", not ceiling.
+                                    # Require top to be at least 0.3m
+                                    # farther than bottom, AND both
+                                    # regions should be far (not just
+                                    # the minimum).
+                                    and depth_top_med > depth_bot_med + 0.3
+                                ):
+                                    depth_state = "ceiling"
+                                elif depth_top_med > depth_bot_med + 0.5:
+                                    depth_state = "looking_up_forward"
+                                else:
+                                    depth_state = "ambiguous"
+                        except Exception as _e:
+                            logger.debug(f"overhead-frame: depth probe error: {_e}")
+
+                    # ── (a) Texture-jump detector ──
+                    # Slow EMA of top-band stddev. When something
+                    # enters the top band (hand, branch, bird flying
+                    # past) the local variance jumps. Threshold is
+                    # generous: any sudden rise > 15 stddev-points
+                    # above baseline fires the signal.
+                    baseline = getattr(self, "_top_std_baseline", None)
+                    if baseline is None:
+                        baseline = top_std
+                    alpha = 0.05
+                    self._top_std_baseline = (
+                        baseline * (1.0 - alpha) + top_std * alpha
+                    )
+                    base = self._top_std_baseline
+                    top_std_jump = (
+                        base > 0
+                        and (top_std - base) > max(15.0, base * 0.5)
+                    )
+                    # Falling-edge: top_std drops sharply too
+                    # (occlusion — hand covering the lens).
+                    top_std_drop = (
+                        base > 0
+                        and (base - top_std) > max(20.0, base * 0.6)
+                    )
+
+                    # ── (b) Connected-component detector ──
+                    # Find the biggest connected blob in the top band
+                    # whose pixels differ from the local background
+                    # by > 25 in any colour channel. A real hand,
+                    # branch, or sign silhouette ALWAYS produces a
+                    # localised high-contrast region. This is what
+                    # catches the "hand held steady in front of camera"
+                    # case where texture-jump decays back to baseline.
+                    try:
+                        _tb_gray = cv2.cvtColor(top_band, cv2.COLOR_BGR2GRAY) \
+                            if hasattr(top_band, "shape") and top_band.ndim == 3 \
+                            else top_band
+                        # Adaptive threshold: pixels are "object"
+                        # if they deviate > 25 from a local mean.
+                        _tb_blur = cv2.GaussianBlur(_tb_gray, (31, 31), 0)
+                        _tb_diff = cv2.absdiff(_tb_gray, _tb_blur)
+                        _, _tb_mask = cv2.threshold(
+                            _tb_diff, 25, 255, cv2.THRESH_BINARY
+                        )
+                        # Dilate so finger-spaced blobs merge.
+                        _kern = np.ones((5, 5), np.uint8)
+                        _tb_mask = cv2.dilate(_tb_mask, _kern, iterations=2)
+                        _num_labels, _labels, _stats, _centroids = \
+                            cv2.connectedComponentsWithStats(_tb_mask)
+                        # Largest connected blob excluding background (label 0).
+                        if _num_labels > 1:
+                            _areas = _stats[1:, cv2.CC_STAT_AREA]
+                            _largest_area = int(_areas.max())
+                            _top_band_area = top_band.shape[0] * top_band.shape[1]
+                            top_blob_frac = (
+                                _largest_area / max(_top_band_area, 1)
+                            )
+                        else:
+                            top_blob_frac = 0.0
+                    except Exception as _e:
+                        logger.debug(f"overhead blob detect error: {_e}")
+                        top_blob_frac = 0.0
+
+                    # ── (c) FRAME-TO-FRAME MOTION detector ──
+                    # Previous versions (background-EMA) would fire on
+                    # 70% of the top band registering as "motion"
+                    # when the camera AWB/exposure jitters — which is
+                    # ALWAYS happening on auto-exposure indoor scenes.
+                    # A real overhead hazard produces a CONSOLIDATED
+                    # local frame-to-frame diff (hand moving into the
+                    # FOV), NOT a uniform whole-band change.
+                    #
+                    # We use cv2.absdiff(prev_gray, current_gray) so
+                    # exposure/colour shifts cancel out (they affect
+                    # the whole image similarly), and the DIFFERENCE
+                    # only fires on actual pixel changes. The biggest
+                    # connected high-magnitude region in the diff is
+                    # the real candidate.
+                    motion_blob_frac = 0.0
+                    motion_density = 0.0
+                    try:
+                        _cur_gray = cv2.cvtColor(
+                            top_band, cv2.COLOR_BGR2GRAY
+                        ) if top_band.ndim == 3 else top_band
+                        _prev_gray = getattr(
+                            self, "_prev_top_band_gray", None
+                        )
+                        if _prev_gray is not None and _prev_gray.shape == _cur_gray.shape:
+                            # Per-pixel difference. Use BGR space
+                            # for better sensitivity to hand colour
+                            # changes against a neutral background.
+                            _prev_bgr = getattr(
+                                self, "_prev_top_band_bgr", None
+                            )
+                            if (_prev_bgr is not None
+                                    and _prev_bgr.shape == top_band.shape):
+                                _diff = cv2.absdiff(top_band, _prev_bgr)
+                                # Sum diff across colour channels.
+                                _diff_mag = (
+                                    _diff.astype(np.int32).sum(axis=2)
+                                )
+                            else:
+                                _diff_mag = cv2.absdiff(
+                                    _cur_gray, _prev_gray
+                                ).astype(np.int32)
+                            # Threshold: pixel is "moving" if diff
+                            # magnitude > 60 (a real hand
+                            # entering the FOV typically has diff
+                            # in the 80-200 range; camera jitter
+                            # produces diffs in the 5-20 range).
+                            _motion_mask = (_diff_mag > 60).astype(
+                                np.uint8
+                            ) * 255
+                            # Dilate so partial hand silhouettes merge.
+                            _kern = np.ones((7, 7), np.uint8)
+                            _motion_mask = cv2.dilate(
+                                _motion_mask, _kern, iterations=2
+                            )
+                            # Restrict to be against a bright/light
+                            # background (hand silhouette against the
+                            # ceiling), which means the object's pixels
+                            # are DARKER than the local mean. We
+                            # already have ``_tb_mask`` = adaptive
+                            # silhouette from the blob branch — reuse
+                            # it as the "object silhouette" constraint
+                            # so camera AWB jitter (whole-band change,
+                            # no local silhouette) doesn't qualify.
+                            _motion_blob_mask = cv2.bitwise_and(
+                                _motion_mask, _tb_mask
+                            )
+                            _num_m, _labels_m, _stats_m, _centroids_m = \
+                                cv2.connectedComponentsWithStats(
+                                    _motion_blob_mask
+                                )
+                            if _num_m > 1:
+                                _areas = _stats_m[1:, cv2.CC_STAT_AREA]
+                                _largest = int(_areas.max())
+                                motion_blob_frac = (
+                                    _largest / max(_top_band_area, 1)
+                                )
+                                _total_motion = float(
+                                    (_motion_mask > 0).sum()
+                                )
+                                motion_density = (
+                                    _largest / max(_total_motion, 1)
+                                )
+                            else:
+                                motion_blob_frac = 0.0
+                                motion_density = 0.0
+                        # Cache current frame for next iteration.
+                        self._prev_top_band_gray = _cur_gray.copy()
+                        self._prev_top_band_bgr = top_band.copy()
+                    except Exception as _e:
+                        logger.debug(f"overhead motion detect error: {_e}")
+                        motion_blob_frac = 0.0
+                        motion_density = 0.0
+
+                    # ── (d) STATIC-OVERHEAD detector ──
+                    # The previous version required MOTION to fire
+                    # — but a STATIC head held 10cm above the camera
+                    # doesn't move at all and never triggers. Track
+                    # how LONG the current blob fraction has been
+                    # high: a real overhead object that you hold
+                    # steady (hand, head, bag on a shelf) sits in
+                    # the top band at >15% coverage for 30+
+                    # consecutive frames. A monitor edge stays at
+                    # 5-7% — passes NEITHER the size bar NOR the
+                    # persistence bar.
+                    sustained_blob_frac = 0.0
+                    try:
+                        _rbf = getattr(
+                            self, "_recent_top_blob_fracs", None
+                        )
+                        if _rbf is None:
+                            _rbf = []
+                        _rbf.append(float(top_blob_frac))
+                        if len(_rbf) > 30:
+                            _rbf = _rbf[-30:]
+                        self._recent_top_blob_fracs = _rbf
+                        # Sustained = fraction of last 30 frames
+                        # where top_blob_frac > 0.15.
+                        sustained_blob_frac = sum(
+                            1 for v in _rbf if v > 0.15
+                        ) / max(len(_rbf), 1)
+                    except Exception as _e:
+                        logger.debug(
+                            f"overhead sustain detect error: {_e}"
+                        )
+                        sustained_blob_frac = 0.0
+
+                    # Decide first, then dump — so the dump shows
+                    # which branch fired (or suppressed).
+                    overhead_suspected = False
+                    overhead_reason = "(decision-tree-not-run)"
+
+                    # ── Final decision tree ──
+                    # Read the force flag (in-memory + /tmp file poll).
+                    _flag_path = getattr(
+                        self, "_overhead_force_flag_path", None
+                    )
+                    if _flag_path and (self._frames_processed % 10 == 0):
+                        try:
+                            _flag_exists = os.path.exists(_flag_path)
+                        except OSError:
+                            _flag_exists = False
+                        _mem_flag = bool(
+                            getattr(self, "_overhead_force_enabled", False)
+                        )
+                        if _flag_exists != _mem_flag:
+                            self._overhead_force_enabled = _flag_exists
+                            logger.info(
+                                f"🎯 Overhead-force flag file → "
+                                f"{'ON 🟢' if _flag_exists else 'OFF'} "
+                                f"(via {_flag_path})"
+                            )
+                    force_overhead = bool(
+                        getattr(self, "_overhead_force_enabled", False)
+                    )
+
+                    # FORCE mode bypass: ANY of the three signals
+                    # above fires immediately, no ceiling suppression.
+                    force_close_frac = depth_top_close_frac >= (
+                        0.05 if force_overhead else 0.10
+                    )
+                    overhead_suspected = False
+                    overhead_reason = ""
+                    # Compute a "consolidated motion" score that
+                    # rejects camera-jitter false positives:
+                    #   motion_density * motion_blob_frac
+                    # - High density (most motion pixels are in one
+                    #   blob) = real object.
+                    # - High blob_frac = the object is large enough to
+                    #   matter (vs. sparse finger-width silhouette).
+                    # Single-frame snapshot of camera jitter has
+                    # density ≈ 0.2 (scattered) and blob_frac ≈ 0.04
+                    # (small). A hand swept into the FOV gives
+                    # density ≈ 0.7 and blob_frac ≈ 0.20.
+                    consolidated_motion = motion_density * motion_blob_frac
+
+                    # ── DEBUG PERIODIC DUMP ──
+                    # Print every ~2s so we can see exactly what
+                    # values the detector sees in real time and tune
+                    # the thresholds against actual scene numbers.
+                    # Logs ALL signals, not just firing ones — so
+                    # "why isn't it firing" is obvious from the log.
+                    _dbg_now = time.time()
+                    _dbg_last = getattr(self, "_overhead_debug_last", 0.0)
+                    if _dbg_now - _dbg_last >= 2.0:
+                        self._overhead_debug_last = _dbg_now
+                        logger.warning(
+                            f"🔍 [OVERHEAD-DEBUG] "
+                            f"force={force_overhead} "
+                            f"depth_state={depth_state} "
+                            f"depth_min={depth_min if depth_min is not None else 'n/a'}m "
+                            f"depth_top_med={depth_top_med if depth_top_med is not None else 'n/a'}m "
+                            f"depth_bot_med={depth_bot_med if depth_bot_med is not None else 'n/a'}m "
+                            f"close_frac={depth_top_close_frac:.2f} "
+                            f"top_std={top_std:.1f} bot_std={bot_std:.1f} "
+                            f"ratio={var_ratio:.2f} top_mean={top_mean:.1f} "
+                            f"top_blob={top_blob_frac:.2f} "
+                            f"motion_frac={(motion_density * 0 + motion_blob_frac / max(motion_density, 0.01)):.2f} "  # not exact, but readable
+                            f"motion_blob={motion_blob_frac:.2f} "
+                            f"motion_density={motion_density:.2f} "
+                            f"consolidated_motion={consolidated_motion:.3f} "
+                            f"sustained_blob={sustained_blob_frac:.2f} "
+                            f"top_std_jump={top_std_jump} drop={top_std_drop} "
+                            f"baseline={base:.1f} "
+                            f"frame={self._frames_processed} "
+                            f"last_reason='{getattr(self, '_last_overhead_reason', '')[:60]}'"
+                        )
+
+                    # ── Final decision tree (V7) ──
+                    # FIX-OVERHEAD-V7: completely restructured.
+                    #
+                    # The old tree used depth_state as the TOP-LEVEL
+                    # gate — but SCDepthV3 on this Hailo ALWAYS reports
+                    # 5-6m for close overhead objects, so
+                    # depth_state=="ceiling" fired on every frame and
+                    # permanently suppressed all alerts.
+                    #
+                    # V7 inverts the priority:
+                    #  1. depth_state=="overhead" → fire (depth sees it)
+                    #  2. FORCE mode → fire on any signal
+                    #  3. var_ratio check (user-confirmed: ratio < 1.0
+                    #     = nothing overhead → skip)
+                    #  4. Frame-level signals: motion, blob, sustained
+                    #     → fire if strong enough, regardless of depth
+                    #  5. Only suppress if depth TRULY says ceiling AND
+                    #     frame-level signals are quiet
+                    overhead_suspected = False
+                    overhead_reason = ""
+
+                    # Signal: var_ratio < 1.0 means the top band has
+                    # LESS variance than the bottom → no foreign object
+                    # in top band → nothing overhead. User-confirmed.
+                    frame_says_something = var_ratio >= 1.0
+
+                    if depth_state == "overhead":
+                        # ── (1) Depth sees a close overhead object ──
+                        overhead_suspected = True
+                        overhead_reason = (
+                            f"depth_state=overhead ({depth_min}m, "
+                            f"{depth_top_close_frac:.0%} close)"
+                        )
+                    elif force_overhead:
+                        # ── (2) Force mode — accept ANY signal ──
+                        if force_close_frac:
+                            overhead_suspected = True
+                            overhead_reason = (
+                                f"FORCE depth close-fraction "
+                                f"({depth_top_close_frac:.0%})"
+                            )
+                        elif consolidated_motion > 0.05:
+                            overhead_suspected = True
+                            overhead_reason = (
+                                f"FORCE consolidated-motion "
+                                f"(density={motion_density:.2f},"
+                                f" blob={motion_blob_frac:.0%})"
+                            )
+                        elif top_std_jump:
+                            overhead_suspected = True
+                            overhead_reason = (
+                                f"FORCE texture-jump "
+                                f"(top_std +{top_std - base:.1f})"
+                            )
+                        elif sustained_blob_frac > 0.5:
+                            overhead_suspected = True
+                            overhead_reason = (
+                                f"FORCE sustained-big-blob "
+                                f"({sustained_blob_frac:.0%} of last "
+                                f"30 frames > 15%)"
+                            )
+                        elif top_blob_frac > 0.25:
+                            overhead_suspected = True
+                            overhead_reason = (
+                                f"FORCE huge blob "
+                                f"({top_blob_frac:.0%} of top band)"
+                            )
+                        else:
+                            overhead_reason = (
+                                f"FORCE but no signal "
+                                f"(motion={consolidated_motion:.3f} "
+                                f"blob={top_blob_frac:.2f} "
+                                f"sustained={sustained_blob_frac:.0%})"
+                            )
+                            self._last_overhead_reason = overhead_reason
+                    elif not frame_says_something:
+                        # ── (3) var_ratio < 1.0 → top band is quieter
+                        # than bottom → nothing overhead. Skip. ──
+                        overhead_reason = (
+                            f"var_ratio={var_ratio:.2f} < 1.0 "
+                            f"(top quieter than bottom — no object)"
+                        )
+                        self._last_overhead_reason = overhead_reason
+                    elif depth_state == "looking_up_forward":
+                        overhead_reason = (
+                            "depth_state=looking_up_forward (suppressed)"
+                        )
+                        self._last_overhead_reason = overhead_reason
+                    else:
+                        # ── (4) Frame-level signals — the main path. ──
+                        # depth_state is "ceiling", "ambiguous", or
+                        # "unavailable" — all treated the same because
+                        # SCDepthV3 can't distinguish them for overhead.
+                        # Rely on blob + motion + sustained signals.
+                        if consolidated_motion > 0.10:
+                            overhead_suspected = True
+                            overhead_reason = (
+                                f"frame-signals: strong-motion "
+                                f"(density={motion_density:.2f},"
+                                f" blob={motion_blob_frac:.0%}, "
+                                f"ratio={var_ratio:.2f})"
+                            )
+                        elif sustained_blob_frac > 0.6:
+                            overhead_suspected = True
+                            overhead_reason = (
+                                f"frame-signals: sustained-blob "
+                                f"({sustained_blob_frac:.0%} of last "
+                                f"30 frames > 15%, "
+                                f"ratio={var_ratio:.2f})"
+                            )
+                        elif top_blob_frac > 0.30 and var_ratio > 1.15:
+                            # Large blob right now + clearly higher
+                            # variance in top band → real object.
+                            overhead_suspected = True
+                            overhead_reason = (
+                                f"frame-signals: big-blob+high-ratio "
+                                f"(blob={top_blob_frac:.0%}, "
+                                f"ratio={var_ratio:.2f})"
+                            )
+                        else:
+                            overhead_reason = (
+                                f"frame-signals weak "
+                                f"(motion={consolidated_motion:.3f} "
+                                f"need >0.10, sustained={sustained_blob_frac:.0%} "
+                                f"need >60%, blob={top_blob_frac:.2f}, "
+                                f"ratio={var_ratio:.2f}) "
+                                f"depth={depth_state}"
+                            )
+                            self._last_overhead_reason = overhead_reason
+
+                    if overhead_suspected:
+                        self._last_overhead_reason = overhead_reason
+                        _now_oh = time.time()
+                        # Per-reason cooldown keys. Each detection
+                        # source (depth vs blob vs texture) gets its
+                        # own timer so a "blob" alert doesn't suppress
+                        # a subsequent "texture-jump" alert for the
+                        # same actual hand — the user hears about it
+                        # even if the active reason changed mid-action.
+                        _reason_key = (
+                            overhead_reason.split(" ", 1)[0]
+                            if overhead_reason
+                            else "unknown"
+                        )
+                        _alert_key = f"overhead_alert_{_reason_key}"
+                        _tts_key = f"overhead_tts_{_reason_key}"
+                        _last_alert = getattr(self, "_overhead_alert_ts", {})
+                        _last_tts = getattr(self, "_overhead_tts_ts", {})
+                        # Cooldowns tuned via config (defaults below).
+                        # FORCE-mode uses HALF the cooldown so it
+                        # remains responsive but still doesn't
+                        # speech-spam on a stationary hand.
+                        _alert_cooldown = 8.0
+                        _tts_cooldown = 12.0
+                        try:
+                            _oc = self.config.get("safety", {}) or {}
+                            _alert_cooldown = float(
+                                _oc.get("overhead_alert_cooldown_s", _alert_cooldown)
+                            )
+                            _tts_cooldown = float(
+                                _oc.get("overhead_tts_cooldown_s", _tts_cooldown)
+                            )
+                        except Exception:
+                            pass
+                        if force_overhead:
+                            _alert_cooldown *= 0.5
+                            _tts_cooldown *= 0.5
+
+                        _alert_due = (
+                            _now_oh - _last_alert.get(_alert_key, 0.0)
+                            >= _alert_cooldown
+                        )
+                        if _alert_due:
+                            _last_alert[_alert_key] = _now_oh
+                            self._overhead_alert_ts = _last_alert
+                            force_tag = (
+                                " [FORCE-MODE]" if force_overhead else ""
+                            )
+                            logger.warning(
+                                f"⚠️ Overhead obstacle confirmed{force_tag} — "
+                                f"reason={overhead_reason} "
+                                f"top_std={top_std:.1f} bot_std={bot_std:.1f} "
+                                f"ratio={var_ratio:.2f} top_mean={top_mean:.1f} "
+                                f"depth_min={depth_min}m "
+                                f"depth_top_med={depth_top_med}m "
+                                f"depth_bot_med={depth_bot_med}m "
+                                f"depth_close_frac={depth_top_close_frac:.2f} "
+                                f"depth_state={depth_state} "
+                                f"std_jump={top_std_jump} "
+                                f"top_blob_frac={top_blob_frac:.2f} "
+                                f"consolidated_motion={consolidated_motion:.3f} "
+                                f"motion_blob_frac={motion_blob_frac:.2f} "
+                                f"baseline={base:.1f} "
+                                f"cooldown={_alert_cooldown:.0f}s"
+                            )
+                            # Fire TTS only on the first alert in each
+                            # reason's window — sub-alerts in the same
+                            # window are silent in the speaker but still
+                            # log + dashboard-recorded so the user can
+                            # see the detector is alive and what it's
+                            # tripping on.
+                            _tts_due = (
+                                _now_oh - _last_tts.get(_tts_key, 0.0)
+                                >= _tts_cooldown
+                            )
+                            try:
+                                self.record_safety_alert(
+                                    "overhead", 0.5, 1
+                                )
+                            except Exception:
+                                pass
+                            if _tts_due and self.tts:
+                                _last_tts[_tts_key] = _now_oh
+                                self._overhead_tts_ts = _last_tts
+                                try:
+                                    run_async_safe(
+                                        self.tts.speak_safety(
+                                            "Low obstacle ahead. Duck or step around.",
+                                            emotion="alarmed",
+                                        ),
+                                        blocking=False,
+                                    )
+                                    logger.info(
+                                        f"🔊 Overhead TTS dispatched "
+                                        f"(reason={_reason_key}, "
+                                        f"next in {_tts_cooldown:.0f}s)"
+                                    )
+                                except Exception as e:
+                                    logger.error(f"overhead TTS error: {e}")
+                            elif self.tts and not _tts_due:
+                                _tts_eta = _tts_cooldown - (
+                                    _now_oh - _last_tts.get(_tts_key, 0.0)
+                                )
+                                logger.debug(
+                                    f"overhead suppressed-TTS "
+                                    f"(next in {_tts_eta:.1f}s)"
+                                )
+                        else:
+                            _eta = _alert_cooldown - (
+                                _now_oh - _last_alert.get(_alert_key, 0.0)
+                            )
+                            logger.debug(
+                                f"overhead suppressed-alert "
+                                f"(reason={_reason_key}, next in {_eta:.1f}s)"
+                            )
+                except Exception as e:
+                    logger.debug(f"overhead frame check error: {e}")
 
                 # 2. Run Layer 0 + Layer 1 in parallel
                 all_detections = self._run_dual_detection(frame)
@@ -4654,10 +6191,44 @@ class CortexSystem:
                         logger.debug(f"ToF update error: {e}")
 
                 # ── Fallback to Hailo monocular depth ──
-                if not hazards and self.depth_estimator and self.depth_estimator.is_available:
-                    self._hailo_calls += 1
+                # FIX-SAFETY-HAILO-NOT-CALLED: log once per 30s WHY the
+                # Hailo block is being skipped when the depth estimator
+                # is initialized. The user saw routing log "Hailo=0"
+                # even though the init log said "✅ Hailo depth estimator
+                # initialized" — the `is_available` property was silently
+                # returning False, and there was no way to see why.
+                if not hazards and self.depth_estimator:
+                    if not self.depth_estimator.is_available:
+                        _now_h = time.time()
+                        if _now_h - getattr(self, "_last_hailo_unavail_log", 0) > 30.0:
+                            self._last_hailo_unavail_log = _now_h
+                            try:
+                                _av = self.depth_estimator.is_available
+                                _init = getattr(self.depth_estimator, "_is_initialized", "?")
+                                _hailo_rt = getattr(
+                                    __import__("rpi5.hailo_depth", fromlist=["HAILO_AVAILABLE"]),
+                                    "HAILO_AVAILABLE", "?"
+                                )
+                                logger.warning(
+                                    f"⚠️ Hailo depth estimator initialized but is_available={_av} "
+                                    f"(_is_initialized={_init}, HAILO_AVAILABLE={_hailo_rt}) — "
+                                    f"Hailo block SKIPPED. Safety alerts limited to YOLO-only."
+                                )
+                            except Exception as e:
+                                logger.warning(f"⚠️ Hailo diag error: {e}")
+                    else:
+                        self._hailo_calls += 1
                     try:
-                        depth_map = self.depth_estimator.estimate(frame)
+                        # Use the cached depth map from step 1a instead
+                        # of calling estimate() again — saves one NPU
+                        # inference per frame and keeps overhead detector
+                        # in sync with hazard analysis.
+                        depth_map = getattr(self, "_last_depth_map", None)
+                        if depth_map is None:
+                            # Depth wasn't pre-computed (e.g. privacy
+                            # mode skipped, or Hailo just came online).
+                            # Compute it now as a fallback.
+                            depth_map = self.depth_estimator.estimate(frame)
                         if depth_map is not None:
                             # Enrich YOLO detections with distance estimates
                             for det in all_detections:
@@ -4745,14 +6316,25 @@ class CortexSystem:
                             if alert.needs_tts and self.audio_alerts:
                                 self.audio_alerts.play(alert.alert_type, distance_m=alert.distance_m)
 
-                            # Haptic pulse for critical Tier 1
-                            if (alert.needs_haptic
-                                and self.layer0 and hasattr(self.layer0, 'haptic')
-                                and self.layer0.haptic):
-                                try:
-                                    self.layer0.haptic.pulse(intensity=100, duration=0.3)
-                                except Exception as e:
-                                    logger.debug(f"Haptic pulse error: {e}")
+                            # FIX-SAFETY-VOICE-COMMAND: voice command for
+                            # critical hazards. The old haptic path went
+                            # to an un-wired vibration motor so the user
+                            # felt nothing. Speak the alert through
+                            # Cartesia (with Supertonic local fallback)
+                            # instead — bypasses the echo gate so it
+                            # fires even when Gemini is mid-sentence.
+                            if alert.needs_haptic and self.tts:
+                                # Build a short, urgent phrase from the
+                                # hazard type. Short phrases (<80 chars)
+                                # get the best prosody from Cartesia.
+                                _phrase = self._safety_phrase_for_alert(alert)
+                                if _phrase:
+                                    run_async_safe(
+                                        self.tts.speak_safety(
+                                            _phrase,
+                                            emotion="alarmed" if alert.tier <= 1 else "urgent",
+                                        )
+                                    )
 
                             # Push to the live dashboard activity feed + safety history.
                             # record_safety_alert itself routes to both safety_recent
@@ -5539,13 +7121,158 @@ class CortexSystem:
             and self.layer2.handler.is_connected
         )
 
+        # M-NAV-FALLBACK-WITH-GEMINI: when Gemini is online, the old
+        # code returned immediately after forwarding the audio to
+        # Gemini, bypassing the local router. If Gemini answered with
+        # verbal directions instead of calling its `guide_indoor` or
+        # `start_navigation_with_route` tool, the nav engine was
+        # never activated — the NAVIGATION panel sat at "IDLE" and
+        # the user got directions without the system actually doing
+        # anything.
+        #
+        # Fix: BEFORE returning to "let Gemini handle it", still run
+        # the local router. If it matches an L3 nav phrase, activate
+        # the nav engine locally in parallel — Gemini's response then
+        # narrates on top of a real navigation session, and the
+        # NAVIGATION panel reflects what's actually happening. If the
+        # router doesn't match a nav command, fall through to the
+        # normal "send to Gemini only" path.
+        if gemini_online and self.intent_router:
+            try:
+                # Run the same router the offline-fallback uses. Skip
+                # if it's a known "Gemini-only" intent (greetings, L1
+                # detection queries, etc.) — those don't have a local
+                # action and we don't want false-positive nav triggers
+                # from a query like "describe the scene" matching a
+                # partial substring.
+                routing_flags = self.intent_router.route_with_flags(query)
+                if routing_flags.get("layer") == "layer3":
+                    nav_query_type = routing_flags.get("query_type", "")
+                    # Indoor-guidance phrases (no GPS available) —
+                    # activate indoor guidance so the session is real
+                    # even if Gemini narrates over it.
+                    if nav_query_type == "navigation_spatial" or any(
+                        p in query_lower for p in (
+                            "guide me", "lead me", "show me the way",
+                            "show me out", "guide me out", "guide me through",
+                            "lead me out", "navigate me", "take me",
+                        )
+                    ):
+                        # Extract a destination token — try the
+                        # longest noun-phrase after the lead-in
+                        # verb. If we can't extract anything useful
+                        # just pass the whole query as the
+                        # destination; the nav engine treats
+                        # arbitrary strings as destinations.
+                        dest = self._extract_indoor_destination(query)
+                        if dest and self.nav_engine:
+                            logger.info(
+                                f"🏠 Local nav fallback: starting indoor "
+                                f"guidance to {dest!r} (Gemini will "
+                                f"narrate on top)"
+                            )
+                            try:
+                                activated = await self.nav_engine.start_indoor_guidance(
+                                    dest
+                                )
+                                if activated:
+                                    try:
+                                        self.record_event(
+                                            "nav",
+                                            "route",
+                                            f"indoor_guidance:{dest[:40]}",
+                                        )
+                                    except Exception:
+                                        pass
+                            except Exception as e:
+                                logger.debug(
+                                    f"Local indoor-guidance fallback "
+                                    f"error (Gemini will handle): {e}"
+                                )
+                    # Outdoor nav keywords (has GPS) — start a real
+                    # navigation session so the NAVIGATION panel and
+                    # turn-by-turn work even if Gemini never calls
+                    # start_navigation_with_route.
+                    elif nav_query_type == "navigation_gps" and self.nav_engine:
+                        for prefix in (
+                            "navigate to", "take me to", "directions to",
+                            "go to", "how do i get to",
+                        ):
+                            if prefix in query_lower:
+                                dest = query_lower.split(prefix, 1)[1].strip()
+                                dest = dest.rstrip(".?!")
+                                if dest:
+                                    logger.info(
+                                        f"🧭 Local nav fallback: starting "
+                                        f"outdoor navigation to {dest!r}"
+                                    )
+                                    try:
+                                        gps_fix = (
+                                            self.gps.get_fix()
+                                            if self.gps
+                                            else None
+                                        )
+                                        origin = (
+                                            f"{gps_fix.latitude},{gps_fix.longitude}"
+                                            if (gps_fix and gps_fix.latitude != 0.0)
+                                            else "current"
+                                        )
+                                        await self.nav_engine.start_navigation(
+                                            origin, dest
+                                        )
+                                        try:
+                                            self.record_event(
+                                                "nav",
+                                                "route",
+                                                f"outdoor_nav:{dest[:40]}",
+                                            )
+                                        except Exception:
+                                            pass
+                                    except Exception as e:
+                                        logger.debug(
+                                            f"Local outdoor-nav fallback "
+                                            f"error (Gemini will handle): {e}"
+                                        )
+                                break
+            except Exception as e:
+                logger.debug(f"Nav-fallback router check error: {e}")
+
         if gemini_online:
             logger.info(f"🤖 Gemini handling: '{query[:60]}'")
             self._ai_routing_active = True
             if self.status_display:
                 self.status_display.update_ai(True, self._last_tool_call)
             logger.info("🎧 Live audio already forwarded to Gemini — suppressing duplicate text resend")
-            self._send_gemini_video(min_interval=1.0)
+            # SILENCE-BUG DEBUG: capture the L2 handler state + audio counters
+            # so when Gemini doesn't respond we can see exactly where it's stuck.
+            try:
+                _h = getattr(self.layer2, 'handler', None) if self.layer2 else None
+                if _h:
+                    logger.info(
+                        f"🔎 [SILENCE-DEBUG] gemini state: "
+                        f"is_connected={_h.is_connected} "
+                        f"session={_h.session is not None} "
+                        f"audio_chunks_sent={getattr(_h, '_audio_chunks_sent', '?')} "
+                        f"video_frames_sent={getattr(_h, '_video_frames_sent', '?')} "
+                        f"_msg_count={getattr(_h, '_msg_count', '?')} "
+                        f"_turn_completed={getattr(_h, '_turn_completed', '?')} "
+                        f"query_start_time={getattr(_h, '_query_start_time', None)} "
+                        f"_user_speaking_to_gemini={self._user_speaking_to_gemini}"
+                    )
+            except Exception as _e:
+                logger.debug(f"SILENCE-DEBUG probe failed: {_e}")
+            video_ok = self._send_gemini_video(min_interval=1.0)
+            logger.info(
+                f"🔎 [SILENCE-DEBUG] video_push_after_query={video_ok} "
+                f"activity_end_state={self._user_speaking_to_gemini}"
+            )
+            # SILENCE-BUG DEBUG: arm a 6s watchdog. If Gemini still hasn't
+            # produced any audio/text after the user spoke, log it loudly so
+            # we know which query got silenced instead of silently waiting.
+            try:
+                self._schedule_gemini_response_watchdog(query, timeout_s=6.0)
+            except Exception as _e:
+                logger.debug(f"SILENCE-DEBUG watchdog schedule failed: {_e}")
             return
 
         # ══════════════════════════════════════════════════════════════════
@@ -6092,6 +7819,7 @@ class CortexSystem:
         self.running = False
 
         self._stop_recording_hotkey_listener()
+        self._stop_overhead_hotkey_listener()
         if self.session_recorder:
             self.session_recorder.stop()
 
