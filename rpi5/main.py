@@ -5910,31 +5910,23 @@ class CortexSystem:
                             f"last_reason='{getattr(self, '_last_overhead_reason', '')[:60]}'"
                         )
 
-                    # ── Final decision tree (V7) ──
-                    # FIX-OVERHEAD-V7: completely restructured.
+                    # ── Final decision tree (V8) ──
+                    # FIX-OVERHEAD-V8: removed unreliable var_ratio gate.
                     #
-                    # The old tree used depth_state as the TOP-LEVEL
-                    # gate — but SCDepthV3 on this Hailo ALWAYS reports
-                    # 5-6m for close overhead objects, so
-                    # depth_state=="ceiling" fired on every frame and
-                    # permanently suppressed all alerts.
+                    # V7 added var_ratio >= 1.0 as a hard gate, but
+                    # real-world data shows ratio oscillates 0.6-1.35
+                    # EVEN WHEN a hand IS overhead. The gate suppressed
+                    # ~50% of valid detections.
                     #
-                    # V7 inverts the priority:
+                    # V8 priority:
                     #  1. depth_state=="overhead" → fire (depth sees it)
-                    #  2. FORCE mode → fire on any signal
-                    #  3. var_ratio check (user-confirmed: ratio < 1.0
-                    #     = nothing overhead → skip)
-                    #  4. Frame-level signals: motion, blob, sustained
-                    #     → fire if strong enough, regardless of depth
-                    #  5. Only suppress if depth TRULY says ceiling AND
-                    #     frame-level signals are quiet
+                    #  2. FORCE mode → very low thresholds (static hand
+                    #     gives sustained_blob≈0.20, motion≈0.05)
+                    #  3. looking_up_forward → suppress
+                    #  4. Frame-level signals (motion, blob, sustained)
+                    #     → fire if strong enough. No var_ratio gate.
                     overhead_suspected = False
                     overhead_reason = ""
-
-                    # Signal: var_ratio < 1.0 means the top band has
-                    # LESS variance than the bottom → no foreign object
-                    # in top band → nothing overhead. User-confirmed.
-                    frame_says_something = var_ratio >= 1.0
 
                     if depth_state == "overhead":
                         # ── (1) Depth sees a close overhead object ──
@@ -5944,97 +5936,106 @@ class CortexSystem:
                             f"{depth_top_close_frac:.0%} close)"
                         )
                     elif force_overhead:
-                        # ── (2) Force mode — accept ANY signal ──
+                        # ── (2) Force mode — very low thresholds ──
+                        # A static hand gives: consolidated_motion≈0-0.06,
+                        # top_blob≈0.04-0.13, sustained_blob≈0.20-0.33.
+                        # Thresholds tuned from real RPi5 logs.
                         if force_close_frac:
                             overhead_suspected = True
                             overhead_reason = (
                                 f"FORCE depth close-fraction "
                                 f"({depth_top_close_frac:.0%})"
                             )
-                        elif consolidated_motion > 0.05:
+                        elif consolidated_motion > 0.03:
                             overhead_suspected = True
                             overhead_reason = (
-                                f"FORCE consolidated-motion "
-                                f"(density={motion_density:.2f},"
+                                f"FORCE motion "
+                                f"(cm={consolidated_motion:.3f},"
+                                f" density={motion_density:.2f},"
                                 f" blob={motion_blob_frac:.0%})"
                             )
-                        elif top_std_jump:
+                        elif top_std_jump or top_std_drop:
                             overhead_suspected = True
                             overhead_reason = (
-                                f"FORCE texture-jump "
-                                f"(top_std +{top_std - base:.1f})"
+                                f"FORCE texture-{'jump' if top_std_jump else 'drop'} "
+                                f"(top_std={top_std:.1f} vs base={base:.1f})"
                             )
-                        elif sustained_blob_frac > 0.5:
+                        elif sustained_blob_frac > 0.20:
+                            # Static hand: blob > 15% in 20%+ of last
+                            # 30 frames. Real logs show 0.20-0.33 for
+                            # a hand held steady over the camera.
                             overhead_suspected = True
                             overhead_reason = (
-                                f"FORCE sustained-big-blob "
-                                f"({sustained_blob_frac:.0%} of last "
-                                f"30 frames > 15%)"
+                                f"FORCE sustained-blob "
+                                f"({sustained_blob_frac:.0%} of 30f, "
+                                f"blob={top_blob_frac:.0%})"
                             )
-                        elif top_blob_frac > 0.25:
+                        elif top_blob_frac > 0.10:
+                            # Current frame has a blob covering >10%
+                            # of the top band. In force mode, that's
+                            # enough — the user explicitly asked for
+                            # high sensitivity.
                             overhead_suspected = True
                             overhead_reason = (
-                                f"FORCE huge blob "
+                                f"FORCE blob "
                                 f"({top_blob_frac:.0%} of top band)"
                             )
                         else:
                             overhead_reason = (
                                 f"FORCE but no signal "
-                                f"(motion={consolidated_motion:.3f} "
+                                f"(cm={consolidated_motion:.3f} "
                                 f"blob={top_blob_frac:.2f} "
                                 f"sustained={sustained_blob_frac:.0%})"
                             )
                             self._last_overhead_reason = overhead_reason
-                    elif not frame_says_something:
-                        # ── (3) var_ratio < 1.0 → top band is quieter
-                        # than bottom → nothing overhead. Skip. ──
-                        overhead_reason = (
-                            f"var_ratio={var_ratio:.2f} < 1.0 "
-                            f"(top quieter than bottom — no object)"
-                        )
-                        self._last_overhead_reason = overhead_reason
                     elif depth_state == "looking_up_forward":
                         overhead_reason = (
                             "depth_state=looking_up_forward (suppressed)"
                         )
                         self._last_overhead_reason = overhead_reason
                     else:
-                        # ── (4) Frame-level signals — the main path. ──
+                        # ── (3) Frame-level signals — the main path. ──
                         # depth_state is "ceiling", "ambiguous", or
                         # "unavailable" — all treated the same because
                         # SCDepthV3 can't distinguish them for overhead.
-                        # Rely on blob + motion + sustained signals.
+                        # No var_ratio gate (it's unreliable: 0.6-1.35
+                        # whether or not something is overhead).
                         if consolidated_motion > 0.10:
                             overhead_suspected = True
                             overhead_reason = (
-                                f"frame-signals: strong-motion "
-                                f"(density={motion_density:.2f},"
-                                f" blob={motion_blob_frac:.0%}, "
-                                f"ratio={var_ratio:.2f})"
+                                f"strong-motion "
+                                f"(cm={consolidated_motion:.3f},"
+                                f" density={motion_density:.2f},"
+                                f" blob={motion_blob_frac:.0%})"
                             )
-                        elif sustained_blob_frac > 0.6:
+                        elif sustained_blob_frac > 0.40:
+                            # 40%+ of last 30 frames had blob > 15%.
+                            # Lower than V7's 0.60 — a static hand
+                            # at 10-30cm gives sustained≈0.20-0.33
+                            # per frame, but accumulates to 0.40+
+                            # over a few seconds.
                             overhead_suspected = True
                             overhead_reason = (
-                                f"frame-signals: sustained-blob "
-                                f"({sustained_blob_frac:.0%} of last "
-                                f"30 frames > 15%, "
-                                f"ratio={var_ratio:.2f})"
+                                f"sustained-blob "
+                                f"({sustained_blob_frac:.0%} of 30f, "
+                                f"blob={top_blob_frac:.0%})"
                             )
-                        elif top_blob_frac > 0.30 and var_ratio > 1.15:
-                            # Large blob right now + clearly higher
-                            # variance in top band → real object.
+                        elif (top_blob_frac > 0.15
+                              and sustained_blob_frac > 0.20):
+                            # Moderate blob right now AND some history
+                            # of blobs → real object, not noise.
                             overhead_suspected = True
                             overhead_reason = (
-                                f"frame-signals: big-blob+high-ratio "
+                                f"blob+history "
                                 f"(blob={top_blob_frac:.0%}, "
-                                f"ratio={var_ratio:.2f})"
+                                f"sustained={sustained_blob_frac:.0%})"
                             )
                         else:
                             overhead_reason = (
-                                f"frame-signals weak "
-                                f"(motion={consolidated_motion:.3f} "
-                                f"need >0.10, sustained={sustained_blob_frac:.0%} "
-                                f"need >60%, blob={top_blob_frac:.2f}, "
+                                f"weak "
+                                f"(cm={consolidated_motion:.3f} "
+                                f"sustained={sustained_blob_frac:.0%} "
+                                f"blob={top_blob_frac:.2f} "
                                 f"ratio={var_ratio:.2f}) "
                                 f"depth={depth_state}"
                             )
