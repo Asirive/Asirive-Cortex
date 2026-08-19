@@ -65,7 +65,7 @@ class StreamingAudioPlayer:
         
         # Audio queue (thread-safe) — large buffer for Gemini burst-mode audio
         self.audio_queue = queue.Queue(maxsize=500)
-        
+
         # Playback state
         self.is_playing = False
         self.is_interrupted = False
@@ -81,6 +81,12 @@ class StreamingAudioPlayer:
         self._silence_timeout = 5.0  # Auto-stop after N seconds of empty queue (was 8.0 — too long, user muted for 8+0.5s)
         self._drain_stop_delay = 0.35  # Stop quickly once Gemini explicitly ends the turn
         self._turn_complete = False
+        # M-AUDIO-FIRST-CHUNK: bytes buffered while we wait for a
+        # big-enough first chunk to start the player. Flushed on
+        # stop() / turn_complete so we never lose the first
+        # few samples of real audio. See add_audio_chunk() for the
+        # threshold and rationale.
+        self._pending_first_chunk: Optional[bytes] = None
         
         # Timestamp when playback last stopped (for echo cooldown)
         self._last_stop_time: float = 0.0
@@ -218,11 +224,85 @@ class StreamingAudioPlayer:
         """
         Add audio chunk to playback queue.
         Auto-starts the player if not already playing.
+
+        M-AUDIO-FIRST-CHUNK: the very first chunk Gemini sends on a
+        new turn is often 1–2 int16 samples (≈0.04–0.08 ms of audio
+        at 24 kHz) — a metadata marker, not real speech. The old
+        code auto-started the player on the first chunk of any size,
+        which triggered the blocking PortAudio stream open (50–200 ms
+        on Bluetooth). The user then heard ~50–200 ms of silence
+        before the next chunk with actual audio arrived — which they
+        reported as "the audio is cut off when I send another query
+        immediately after the previous one".
+
+        Fix: don't auto-start on a tiny first chunk. Buffer small
+        first chunks in `_pending_first_chunk` and only call
+        `start()` once the cumulative buffer crosses
+        `MIN_FIRST_CHUNK_SAMPLES` (240 = 10 ms at 24 kHz) OR a
+        second non-tiny chunk arrives. The buffer is flushed on
+        turn_complete or `stop()` so we never lose audio.
         """
+        # First-chunk buffering for the auto-start path. The
+        # threshold matches ~10 ms of audio at 24 kHz — small enough
+        # that the latency hit (~10 ms) is inaudible, but big enough
+        # to skip the Gemini metadata-marker chunks.
+        MIN_FIRST_CHUNK_SAMPLES = 240
+        n_samples = len(audio_bytes) // 2  # int16 = 2 bytes/sample
+
         if not self.is_playing:
+            # Buffer tiny first chunks instead of starting the
+            # player. The actual audio follows within ~50 ms on a
+            # healthy Gemini Live stream; we wait for either enough
+            # samples to accumulate or turn_complete to fire.
+            if (
+                not getattr(self, "_pending_first_chunk", None)
+                and n_samples < MIN_FIRST_CHUNK_SAMPLES
+            ):
+                # First tiny chunk — buffer it, don't start yet.
+                self._pending_first_chunk = audio_bytes
+                logger.debug(
+                    f"⏳ Buffering tiny first chunk "
+                    f"({n_samples} samples) — waiting for real audio"
+                )
+                return
+            if getattr(self, "_pending_first_chunk", None):
+                # We had a buffered first chunk and now have more
+                # audio — concatenate and play. Either the second
+                # chunk is big enough on its own, or the combined
+                # buffer is.
+                pending = self._pending_first_chunk
+                self._pending_first_chunk = None
+                combined = pending + audio_bytes
+                if len(combined) // 2 < MIN_FIRST_CHUNK_SAMPLES:
+                    # Still under threshold (rare — Gemini usually
+                    # sends a flood of small chunks at the start of a
+                    # turn). Re-buffer and wait for more.
+                    self._pending_first_chunk = combined
+                    return
+                # Combined buffer is large enough — start the
+                # player and queue the combined chunk.
+                logger.debug(
+                    f"🔊 Auto-starting audio player with combined "
+                    f"first chunk ({len(combined) // 2} samples)"
+                )
+                self.start()
+                try:
+                    self._turn_complete = False
+                    audio_array = np.frombuffer(combined, dtype=np.int16)
+                    self.audio_queue.put_nowait(audio_array)
+                except queue.Full:
+                    self._queue_full_count += 1
+                    if self._queue_full_count == 1:
+                        logger.warning(
+                            f"⚠️ Audio queue full "
+                            f"(qsize={self.audio_queue.maxsize}) "
+                            f"- dropping chunks"
+                        )
+                return
+            # First chunk is already big enough — start normally.
             logger.debug("🔊 Auto-starting audio player for incoming Gemini chunk")
             self.start()
-        
+
         try:
             self._turn_complete = False
             audio_array = np.frombuffer(audio_bytes, dtype=np.int16)

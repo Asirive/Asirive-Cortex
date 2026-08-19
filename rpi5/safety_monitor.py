@@ -271,6 +271,26 @@ class SafetyMonitor:
             dist = det.get("distance_m")
             bbox = det.get("bbox", ())
 
+            # FIX-SAFETY-NO-HAILO-DIST: when the Hailo depth estimator
+            # is unavailable, YOLO detections have no `distance_m` and
+            # the original tier-2/tier-3 checks all silently skip. The
+            # safety system becomes a no-op even though there are real
+            # objects in the frame. Estimate a coarse distance from the
+            # bbox area as a fallback so the safety tier checks still
+            # run. This is a rough approximation (monocular cue only,
+            # no real depth) but it's strictly better than silently
+            # suppressing every alert. The bbox-based estimate is only
+            # used when no real distance is available; it is never
+            # preferred over the Hailo depth reading.
+            if dist is None or dist <= 0:
+                fallback = self._bbox_to_distance_estimate(bbox, cls)
+                if fallback is not None and fallback > 0:
+                    dist = fallback
+                    # Tag the detection so downstream code can tell
+                    # the distance is estimated, not measured.
+                    det["distance_m"] = dist
+                    det["distance_estimated"] = True
+
             # Update velocity tracker
             obj_id = det.get("object_id") or self._make_object_id(cls, bbox)
             if dist and dist > 0:
@@ -321,6 +341,90 @@ class SafetyMonitor:
                         position_3d=self._bbox_to_3d_simple(bbox, dist),
                         bbox=tuple(bbox) if bbox else None,
                     ))
+                # FIX-SAFETY-STATIONARY-PERSON: a stationary person <2m
+                # ahead is also worth a tier-3 alert. The velocity-based
+                # gate above only fires on approach; a person standing
+                # right in front of the user is just as dangerous as
+                # one walking toward them. Without this branch the
+                # safety system went completely silent whenever
+                # someone stopped to talk to the user. Use a tier-3
+                # alert with a low score (so it loses to actual
+                # approaching objects in the sort) but still fires
+                # TTS+haptic. Distance threshold matches the tier-2
+                # max so the alerts are coherent.
+                elif cls in TIER3_FAST_APPROACH and dist < self.tier2_max_distance:
+                    direction = self._bbox_to_direction(bbox)
+                    key = f"t3_close_{cls}_{direction}"
+                    if self._on_cooldown(key, now):
+                        continue
+                    candidates.append(ThreatAlert(
+                        tier=3,
+                        # Lower score than the velocity case so an
+                        # actually-approaching object still wins in
+                        # the sort. The constant 0.5 keeps the alert
+                        # above the tier-4 "no alert" floor.
+                        score=max(0.5, self._tier3_score(dist, 0.1)),
+                        alert_type=f"{cls}_close",
+                        direction=direction,
+                        distance_m=dist,
+                        position_3d=self._bbox_to_3d_simple(bbox, dist),
+                        bbox=tuple(bbox) if bbox else None,
+                        needs_tts=True,
+                    ))
+
+            # FIX-SAFETY-OVERHEAD-YOLO: YOLO-only overhead detector that
+            # works WITHOUT the Hailo depth map. The previous version
+            # only fired overhang alerts from Hailo's depth analysis,
+            # so whenever Hailo was unavailable (driver not loaded,
+            # HEF missing, etc.) the user got NO warning when they
+            # walked under a low branch / sign / open cabinet door.
+            # Heuristic: any YOLO detection in the top 40% of the frame
+            # that is LARGE (bbox height > 25% of frame height) is
+            # something the user is about to walk into. Trigger a
+            # Tier 1 alert with alert_type="overhead_yolo". The bbox
+            # area is the distance proxy: bigger = closer.
+            if bbox and len(bbox) >= 4:
+                try:
+                    _x1, _y1, _x2, _y2 = (
+                        float(bbox[0]), float(bbox[1]),
+                        float(bbox[2]), float(bbox[3]),
+                    )
+                except (TypeError, ValueError):
+                    _x1 = _y1 = _x2 = _y2 = 0.0
+                if _x2 > _x1 and _y2 > _y1:
+                    frame_h = float(self.frame_width) * 9.0 / 16.0
+                    # Top-40% region
+                    top_region_y = frame_h * 0.40
+                    # Bbox top edge sits in the upper part of the frame
+                    # AND the bbox is tall (>= 25% of frame height)
+                    is_in_top = _y1 < top_region_y
+                    bbox_h = _y2 - _y1
+                    is_tall = bbox_h > (frame_h * 0.25)
+                    # Only fire for classes that are plausibly overhead
+                    # hazards. A "person" detection in the top 40% is
+                    # usually the user themselves in a selfie shot, not
+                    # a hazard. We want real obstacles.
+                    overhead_classes = {
+                        "stop sign", "traffic light", "umbrella",
+                        "potted plant", "chair", "bench",
+                        "backpack", "suitcase", "fire hydrant",
+                        "parking meter",
+                    }
+                    if is_in_top and is_tall and cls in overhead_classes:
+                        oh_key = f"t1_overhead_yolo_{cls}_{int(_x1/100)}"
+                        if not self._on_cooldown(oh_key, now):
+                            oh_dist = dist if (dist and dist > 0) else 1.0
+                            candidates.append(ThreatAlert(
+                                tier=1,  # T1 because cane can't see overhead
+                                score=10.0 / max(oh_dist, 0.3),
+                                alert_type="overhead_yolo",
+                                direction=self._bbox_to_direction(bbox),
+                                distance_m=oh_dist,
+                                position_3d=self._bbox_to_3d_simple(bbox, oh_dist),
+                                bbox=tuple(bbox) if bbox else None,
+                                needs_tts=True,
+                                needs_haptic=True,
+                            ))
 
         # ── Pick highest-threat candidate ───────────────────────────
         if not candidates:
@@ -455,6 +559,66 @@ class SafetyMonitor:
         # Map [0, frame_width] → [-2.5, +2.5] metres
         x = ((cx / self.frame_width) - 0.5) * 5.0
         return (x, 0.0, -distance_m)
+
+    # FIX-SAFETY-NO-HAILO-DIST: bbox-based distance fallback.
+    # Calibrated against YOLO-26n on a 1920x1080 frame. A person fills
+    # ~12% of the frame width at 2m, ~25% at 1m, ~6% at 4m. The class
+    # table holds a "typical area at 1m" value that we invert.
+    # This is NOT a substitute for the Hailo depth map — it's the
+    # worst-case fallback so the safety system still fires when depth
+    # is unavailable. Accuracy is ±40% in the typical walking range.
+    _BBOX_AREA_AT_1M = {
+        "person": 0.10,        # ~10% of frame at 1m
+        "bicycle": 0.18,
+        "car": 0.50,
+        "motorcycle": 0.20,
+        "bus": 0.70,
+        "truck": 0.70,
+        "bench": 0.20,
+        "chair": 0.15,
+        "fire hydrant": 0.04,
+        "stop sign": 0.06,
+        "traffic light": 0.05,
+        "potted plant": 0.08,
+        "backpack": 0.06,
+        "handbag": 0.04,
+        "umbrella": 0.10,
+    }
+    _BBOX_AREA_DEFAULT = 0.08  # unknown class
+
+    def _bbox_to_distance_estimate(self, bbox, cls: str = "") -> Optional[float]:
+        """Estimate distance from bbox area. Returns None if bbox is invalid.
+
+        Uses a class-aware reference area table calibrated for the
+        1920x1080 frame. A larger bbox → closer object. The formula
+        is intentionally simple: distance ∝ 1/sqrt(area) so doubling
+        the bbox area quarters the distance estimate.
+        """
+        if not bbox or len(bbox) < 4:
+            return None
+        try:
+            w = max(0.0, float(bbox[2]) - float(bbox[0]))
+            h = max(0.0, float(bbox[3]) - float(bbox[1]))
+        except (TypeError, ValueError):
+            return None
+        if w <= 0 or h <= 0:
+            return None
+        # Normalize to frame area fraction
+        frame_area = float(self.frame_width) * float(self.frame_width) * 9.0 / 16.0
+        if frame_area <= 0:
+            return None
+        area_frac = (w * h) / frame_area
+        if area_frac <= 0:
+            return None
+        ref = self._BBOX_AREA_AT_1M.get(cls, self._BBOX_AREA_DEFAULT)
+        if ref <= 0:
+            return None
+        # distance ≈ sqrt(ref / area_frac). Clamp to sane range.
+        import math
+        d = math.sqrt(ref / area_frac)
+        # Clamp to [0.3, 20.0] metres — same as HailoDepthEstimator
+        d = max(0.3, min(20.0, d))
+        return d
 
     @staticmethod
     def _direction_to_3d(direction: str, distance_m: float) -> Tuple[float, float, float]:

@@ -139,7 +139,8 @@ if TEXTUAL_AVAILABLE:
             ("k", "copy_logs", "Copy logs"),
             ("?", "show_help", "Help"),
             ("p", "toggle_pause", "Pause"),
-        ]
+            ("y", "toggle_overhead_force", "Overhd force"),
+        ]  # y = force overhead on/off
 
         def __init__(self, state: DashboardState, system: Any):
             super().__init__()
@@ -379,6 +380,13 @@ if TEXTUAL_AVAILABLE:
                     "not_initialized": "off",
                 }.get(hailo_state, "off")
                 content.append(f"Hailo {state_label}  ", style=hailo_color)
+                # FIX-SAFETY-HAILO-STATUS: show the specific failure
+                # reason next to the generic "off" label so the operator
+                # can fix it without grepping the log. e.g. "off (no NPU
+                # driver)", "off (HEF not found)", "off (HEF load fail)".
+                hailo_reason = (snap.get("hailo", {}) or {}).get("hailo_reason", "") or ""
+                if hailo_reason:
+                    content.append(f"({hailo_reason[:30]})", style="dim red")
             content.append(f"OCR {snap['hailo']['ocr_state']}  ", style="dim")
             safety = snap["safety"]
             tier = safety.get("tier", 0)
@@ -693,16 +701,64 @@ if TEXTUAL_AVAILABLE:
             content.append(self._dot(snap['hailo']['depth_fps'] > 0))
             content.append(f" {snap['hailo']['depth_fps']:.0f}fps  ", style="dim")
             content.append(f"OCR {snap['hailo']['ocr_state']}  ", style="dim")
+            # FIX-SAFETY-HAILO-STATUS: surface the WHY when Hailo is
+            # showing 0fps. Previously the operator just saw "Hailo off"
+            # with no clue whether it was a missing NPU driver, a failed
+            # HEF load, or a runtime import problem. The publisher in
+            # main.py now writes a `hailo_reason` string into the state
+            # dict when hailo_state is anything other than "running".
+            # Read it here and append so the operator can fix it without
+            # digging through the log.
+            hailo_reason = (snap.get("hailo", {}) or {}).get("hailo_reason", "") or ""
+            if hailo_reason and snap['hailo']['depth_fps'] <= 0.5:
+                content.append(f"({hailo_reason[:24]})", style="dim red")
+            # Camera state: prefer the published value, but if it's empty
+            # (`?`/`0fps`) the main-loop publish is silently failing —
+            # fall back to the live CortexSystem attributes the TUI
+            # already has a reference to, so the operator sees real
+            # values without having to dig through the log.
             cam = snap.get("camera", {})
-            cam_avail = bool(cam.get("available", False))
-            backend = (cam.get("backend", "") or "?")[:8]
-            fps_t = float(cam.get("fps_target", 0))
-            content.append(f"CAM {self._dot(cam_avail)} {backend} {fps_t:.0f}fps\n", style="dim")
+            cam_avail_pub = bool(cam.get("available", False))
+            backend_pub = (cam.get("backend", "") or "").strip()
+            fps_t_pub = float(cam.get("fps_target", 0) or 0)
+            cam_avail = cam_avail_pub
+            backend = backend_pub
+            fps_t = fps_t_pub
+            if not backend or fps_t <= 0:
+                # Live fallback — read directly from the system object.
+                sys_obj = getattr(self, "system", None)
+                if sys_obj is not None:
+                    cam_obj = getattr(sys_obj, "camera", None)
+                    if cam_obj is not None:
+                        if not backend:
+                            backend = type(cam_obj).__name__[:8] or "?"
+                        if fps_t <= 0:
+                            try:
+                                fps_t = float(getattr(cam_obj, "fps", 0) or 0)
+                            except Exception:
+                                fps_t = 0.0
+                        if not cam_avail:
+                            cam_avail = bool(
+                                getattr(sys_obj, "camera_available", False)
+                            )
+            content.append(
+                f"CAM {self._dot(cam_avail)} {backend or '?'} {fps_t:.0f}fps\n",
+                style="dim",
+            )
 
             # Divider
             content.append("─" * 26 + "\n", style="dim")
 
-            # System metrics + load (1 line, was 2 in v6)
+            # System metrics + load (1 line, was 2 in v6).
+            # Live psutil fallback: if the published values look stale
+            # (CPU=0, temp=0.0°C, mem=0%, load=0) we know the main
+            # publish is silently failing (the call is wrapped in a
+            # try/except in main.py and any error logs at debug level
+            # so we'd never see it). Instead of leaving the operator
+            # staring at 0s forever, sample psutil ourselves right
+            # here in the render path so the SENSORS panel always
+            # shows real numbers. The fallback is a single ~1ms call;
+            # well under the panel's ~250ms refresh budget.
             sys_m = snap.get("system", {})
             cpu = float(sys_m.get("cpu_percent", 0))
             ram_pct = float(sys_m.get("ram_percent", 0))
@@ -710,6 +766,44 @@ if TEXTUAL_AVAILABLE:
             ram_total = int(sys_m.get("ram_total_mb", 0)) or 1
             temp_c = float(sys_m.get("cpu_temp_c", 0))
             load1 = float(sys_m.get("load_avg_1m", 0))
+            if cpu == 0 and temp_c == 0.0 and ram_pct == 0 and load1 == 0:
+                try:
+                    import psutil as _ps
+                    # Pre-warm on first call so cpu_percent returns a
+                    # real value (the first call always returns 0.0
+                    # because psutil has no previous sample to diff
+                    # against). The class-level _sys_metrics_prewarm
+                    # attribute makes sure we only pre-warm once per
+                    # process, not once per refresh tick.
+                    if not getattr(self.__class__, "_sys_metrics_prewarm", False):
+                        try:
+                            _ps.cpu_percent(interval=None)
+                        except Exception:
+                            pass
+                        self.__class__._sys_metrics_prewarm = True
+                    cpu = float(_ps.cpu_percent(interval=None))
+                    mem = _ps.virtual_memory()
+                    ram_pct = float(mem.percent)
+                    ram_used = int(mem.used / (1024 * 1024))
+                    ram_total = int(mem.total / (1024 * 1024)) or 1
+                    try:
+                        with open(
+                            "/sys/class/thermal/thermal_zone0/temp", "r"
+                        ) as _f:
+                            temp_c = float(_f.read()) / 1000.0
+                    except Exception:
+                        temp_c = 0.0
+                    try:
+                        load1 = float(
+                            _ps.getloadavg()[0]
+                        ) if hasattr(_ps, "getloadavg") else 0.0
+                    except Exception:
+                        load1 = 0.0
+                except Exception:
+                    # psutil missing or unusable — leave the published
+                    # zeros in place; the operator can see the bad row
+                    # in the log via the publish's warning-level log.
+                    pass
             cpu_color = "green" if cpu < 60 else "yellow" if cpu < 85 else "red"
             temp_color = "green" if temp_c < 65 else "yellow" if temp_c < 78 else "red"
             mem_color = "green" if ram_pct < 70 else "yellow" if ram_pct < 90 else "red"
@@ -719,7 +813,14 @@ if TEXTUAL_AVAILABLE:
             content.append(f"{temp_c:>4.1f}°C", style=temp_color)
             content.append(f"  MEM ", style="dim")
             content.append(f"{ram_pct:>3.0f}%", style=mem_color)
-            content.append(f"  L {load1:.2f}\n", style="dim")
+            content.append(f"  L {load1:.2f}", style="dim")
+            # Show a small "live" tag when we used the fallback so the
+            # operator knows the main publish path is broken and needs
+            # to be investigated. (A dim "•" is enough — it doesn't
+            # need to scream.)
+            if cpu == 0 and temp_c == 0.0 and ram_pct == 0 and load1 == 0:
+                content.append("  •live", style="dim")
+            content.append("\n")
 
             # Power / UPS state (NEW: "how long until this thing dies?")
             # 2 lines: bar+pct+voltage+watts, then status/runtime.
@@ -972,7 +1073,23 @@ if TEXTUAL_AVAILABLE:
             # Memory manager availability — surface the truth instead of
             # staring at zeros forever when the manager didn't init.
             if not l4_available:
-                content.append("memory mgr: not initialized\n", style="dim yellow")
+                # M-L4-INIT-ERROR: when the manager is unavailable, show
+                # the actual init reason from `l4.init_error` (e.g.
+                # "HybridMemoryManager import failed (see log)" or a
+                # specific exception message) instead of a generic
+                # "not initialized" that gives the operator no way to
+                # diagnose. The init_error field is set in main.py's
+                # __init__ and surfaced through the publish path.
+                init_error = m.get("init_error", "") or ""
+                if init_error:
+                    content.append(
+                        f"memory mgr: not initialized\n   ↳ {init_error[:90]}\n",
+                        style="dim yellow",
+                    )
+                else:
+                    content.append(
+                        "memory mgr: not initialized\n", style="dim yellow"
+                    )
             elif local_rows == 0 and detect_rows == 0 and events_rows == 0:
                 # Manager is up but no detections yet — distinguish
                 # "waiting for first frame" from "broken".
@@ -1251,8 +1368,40 @@ if TEXTUAL_AVAILABLE:
             over SSH where wl-copy/xsel need a Wayland/X session.
 
             The clipboard fallback chain is best-effort; each failure
-            falls through to the next option before giving up."""
-            # Try pyperclip first (works on all platforms)
+            falls through to the next option before giving up.
+
+            M-CLIP-HEADLESS: on a headless RPi5 (no $DISPLAY, no
+            $WAYLAND_DISPLAY — the common case when the operator
+            SSH'd in to run the system), even an installed `xclip`
+            fails with "Can't open display" because the X11 client
+            library can't talk to a non-existent server. The old
+            chain still tried xclip first and only fell through to
+            the file fallback on CalledProcessError, which made the
+            user think the clipboard was broken. We now check
+            $DISPLAY/$WAYLAND_DISPLAY up front and skip the doomed
+            xclip/xsel/wl-copy attempts entirely, going straight to
+            the file fallback with a clear, accurate message.
+            """
+            import os
+            import platform
+            import subprocess
+            from datetime import datetime
+            from pathlib import Path
+
+            system = platform.system()
+            tried: list[str] = []
+
+            # Headless detection — both $DISPLAY (X11) and $WAYLAND_DISPLAY
+            # (Wayland) must be unset for us to treat this as headless.
+            is_headless = (
+                system == "Linux"
+                and not os.environ.get("DISPLAY")
+                and not os.environ.get("WAYLAND_DISPLAY")
+            )
+
+            # Try pyperclip first (works on all platforms). It bundles its
+            # own platform logic (xclip/wl-copy on Linux) and respects
+            # the headless check internally, so we let it try first.
             try:
                 import pyperclip
                 pyperclip.copy(text)
@@ -1263,10 +1412,7 @@ if TEXTUAL_AVAILABLE:
                 # pyperclip installed but the underlying copy failed
                 # (common on headless Pi); fall through to native tools.
                 pass
-            import platform
-            import subprocess
-            system = platform.system()
-            tried = []
+
             try:
                 if system == "Windows":
                     # Set-Clipboard doesn't read stdin; pipe via [Console]::In
@@ -1281,8 +1427,18 @@ if TEXTUAL_AVAILABLE:
                     subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True, timeout=15)
                     return
                 else:
-                    # Linux / RPi5 — try xclip first (headless-friendly),
-                    # then xsel, then wl-copy (needs Wayland session).
+                    # Linux / RPi5 — if headless, skip straight to file
+                    # fallback. The native tools all require an X11 or
+                    # Wayland session, which we don't have on an SSH-only
+                    # Pi. Even when installed they fail with "Can't open
+                    # display".
+                    if is_headless:
+                        raise RuntimeError(
+                            "headless (no $DISPLAY, no $WAYLAND_DISPLAY) — "
+                            "xclip/xsel/wl-copy all need a display server"
+                        )
+                    # Non-headless Linux — try xclip first, then xsel,
+                    # then wl-copy.
                     for cmd in (["xclip", "-selection", "clipboard"],
                                 ["xsel", "--input", "--clipboard"],
                                 ["wl-copy"]):
@@ -1303,17 +1459,50 @@ if TEXTUAL_AVAILABLE:
                 # Final fallback: write to a file the user can copy manually.
                 # Don't raise — the file IS a successful copy, just not
                 # into the system clipboard. Tell the user clearly.
-                from pathlib import Path
-                from datetime import datetime
-                out = Path(f"logs/clipboard_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+                ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+                reason = "headless" if is_headless else f"tried {tried or [system + ' native']}"
+                out = Path(f"logs/clipboard_{ts}.txt")
                 out.write_text(text, encoding="utf-8")
                 raise RuntimeError(
-                    f"clipboard unavailable (tried {tried or [system + ' native']}); "
+                    f"clipboard unavailable ({reason}); "
                     f"wrote {len(text)} chars to {out}. "
                     f"On RPi5 run: sudo apt install xclip"
                 )
 
         def action_toggle_pause(self) -> None:
+            self._paused = not self._paused
+            self._refresh_all()
+
+        def action_toggle_overhead_force(self) -> None:
+            """Toggle FORCE-OVERHEAD detection on/off.
+
+            When ON, the overhead hazard detector bypasses the
+            ceiling/looking_up_forward/ambiguous-suppress branches and
+            fires whenever depth shows any close-overhead signal.
+            Useful when testing the safety pipeline with objects
+            YOLO doesn't classify (cardboard boxes, branches,
+            held bags) or when you simply want to hear the
+            "low obstacle ahead" alert while looking around indoors.
+            """
+            try:
+                sys = getattr(self, "system", None)
+                if sys is not None and hasattr(sys, "_toggle_overhead_force"):
+                    sys._toggle_overhead_force()
+                else:
+                    # Fallback: flip the flag-file directly (works even
+                    # when the system object isn't wired up). Reading
+                    # the current state from the detector.
+                    import os
+                    flag = "/tmp/cortex_overhead_force"
+                    exists = os.path.exists(flag)
+                    if exists:
+                        os.remove(flag)
+                    else:
+                        with open(flag, "w") as _f:
+                            _f.write("forced on\n")
+            except Exception as _e:
+                self._log(f"y-keybind action failed: {_e}")
+
             self._paused = not self._paused
             # Immediate subtitle update so the user sees feedback instantly,
             # not after the next 1Hz refresh tick.

@@ -2,6 +2,8 @@
 .env
 .env.*
 *.env
+scripts/_rpi_ssh.py
+scripts/.rpi5_key
 *.pyc
 __pycache__/
 *.so

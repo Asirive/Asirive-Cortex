@@ -1,4 +1,4 @@
-"""
+﻿"""
 Keybind registry for the live dashboard.
 
 Single source of truth for which keys do what. Both the 2.4 mode and the
@@ -11,7 +11,7 @@ Why this exists:
     We carry that forward.
   - The new system has ~12 keybinds. Keeping them in one place makes
     it easy to add/remove and to render the footer hint consistently.
-  - Some keys are FULL-mode-only (e.g. Tab, `1`–`7` for panel focus).
+  - Some keys are FULL-mode-only (e.g. Tab, `1`â€“`7` for panel focus).
     `is_full_only()` lets a caller no-op gracefully.
 """
 
@@ -37,6 +37,7 @@ class KeyAction(str, Enum):
     COPY_LOGS = "copy_logs"
     HELP = "help"
     PAUSE = "pause"
+    TOGGLE_OVERHEAD_FORCE = "toggle_overhead_force"  # 'y' key â€” bypass ceiling/looking_up_forward suppression
 
     # FULL mode only (Textual UI)
     TOGGLE_LOG_FOLLOW = "toggle_log_follow"
@@ -73,6 +74,7 @@ KEYBIND_MAP: Dict[str, KeyAction] = {
     "?":         KeyAction.HELP,
     "f1":        KeyAction.HELP,
     "p":         KeyAction.PAUSE,
+    "y":         KeyAction.TOGGLE_OVERHEAD_FORCE,  # force overhead detection on/off
     # === FULL mode (Textual) ===
     "f":         KeyAction.TOGGLE_LOG_FOLLOW,
     "l":         KeyAction.CYCLE_LOG_LEVEL,
@@ -86,7 +88,7 @@ KEYBIND_MAP: Dict[str, KeyAction] = {
     "-":         KeyAction.SPARKLINE_WINDOW_DOWN,
     "_":         KeyAction.SPARKLINE_WINDOW_DOWN, # shift+- on US keyboard
     "g":         KeyAction.ASK_CORTEX,         # alias for `r`
-    # === FULL mode: panel jump keys (1..7) — M40 fix ===
+    # === FULL mode: panel jump keys (1..7) â€” M40 fix ===
     "1": KeyAction.FOCUS_PANEL_1,
     "2": KeyAction.FOCUS_PANEL_2,
     "3": KeyAction.FOCUS_PANEL_3,
@@ -161,9 +163,11 @@ FOOTER_HINTS = [
     ("r", "ask"),
     ("s", "save"),
     ("k", "copy"),
+    ("y", "overhd"),
     ("?", "help"),
-]
+]  # y = force overhead detection
 
 FOOTER_HINTS_FULL = FOOTER_HINTS + [
     ("p", "pause"),
 ]
+

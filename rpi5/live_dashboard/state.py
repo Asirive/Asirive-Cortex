@@ -151,6 +151,12 @@ def _default_state() -> Dict[str, Any]:
             "depth_fps": 0.0,
             "ocr_state": "idle",
             "hailo_state": "none",          # "running" | "init_failed" | "no_runtime" | "not_initialized" | "none"
+            # FIX-SAFETY-HAILO-STATUS: short human-readable WHY when state
+            # isn't "running". e.g. "no NPU driver", "HEF not found",
+            # "VDevice create failed". Empty string when running. The TUI
+            # appends this next to the "off" label so the operator can
+            # fix it without grepping the log.
+            "hailo_reason": "",
         },
         # AI / routing
         "ai": {

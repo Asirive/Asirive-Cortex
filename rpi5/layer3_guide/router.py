@@ -73,9 +73,18 @@ class IntentRouter:
         # These are ACTION commands that need specific system handlers
         # ===============================================================
         # Phrase patterns (checked as substrings in text)
+        # M-ROUTER-GUIDE: "guide me" (without "to") wasn't matched here, so
+        # "guide me outside my room" fell through to L2/Gemini. With
+        # Gemini, that meant the nav engine was never activated and the
+        # user got verbal directions only — no actual indoor-guidance
+        # session started. Added the bare "guide me" / "lead me" /
+        # "show me the way" forms so the local router catches them and
+        # triggers the nav engine (Gemini still gets the audio + narrates).
         self._l3_phrases = [
             "where am i", "take me to", "go to", "navigate to",
-            "guide me to", "lead me to", "point me to",
+            "guide me to", "guide me out", "guide me through",
+            "guide me", "lead me to", "lead me out", "lead me",
+            "point me to", "show me the way", "show me out",
             "how do i get to", "directions to",
             "start navigation", "stop navigation", "cancel navigation",
             "resume navigation", "pause navigation",

@@ -224,6 +224,22 @@ camera:
   format: "RGB888"  # Picamera2 output format; main.py converts RGB frames back to OpenCV BGR
   rotation: -90  # Degrees: 0, 90, -90, 180 (for sideways-mounted camera)
 
+  # WITMOTION 400W stereo camera (preferred when present).
+  # Asymmetric feed: LEFT lens (rotated 270° → portrait 9:16) feeds the
+  # safety pipeline (YOLO + Hailo depth). RIGHT lens (rotated 180° →
+  # landscape 16:9) feeds Gemini Live. Set enabled=false to force the
+  # single-lens USB / CSI fallback.
+  #
+  # The WITMOTION 400W exposes BOTH lenses as one side-by-side MJPG
+  # stream on a single /dev/videoN node (3840×1080 binocular mode).
+  # We split the composite into LEFT/RIGHT in software.
+  stereo:
+    enabled: true   # Auto-detect: if WITMOTION 400W present, used; else fall back to USB
+    device_id: 0           # /dev/videoN for the composite stream
+    left_rotation_deg: 270
+    right_rotation_deg: 180
+    fourcc: "MJPG"          # MJPG recommended for USB2/3 bandwidth
+
   tuning:
     use_explicit_wide_tuning: false  # Prefer libcamera auto-detect unless testing a known IMX708-wide override
     file: ""  # Optional absolute path to a libcamera tuning JSON
@@ -245,20 +261,36 @@ camera:
 # AUDIO CONFIGURATION
 # =====================================================
 audio:
-  # Input (USB Lavalier Microphone)
-  # A2DP Bluetooth is output-only, so mic must be a separate USB device
+  # Input device priority.
+  # prefer_bt_mic=true → use the F-16 earbuds' built-in mic via
+  #   Bluetooth HFP/HSP profile (full duplex). Mono 16kHz, but the
+  #   earbud sits at the user's mouth so SNR is much better than any
+  #   camera-mounted mic. This is the default for glasses use.
+  # prefer_bt_mic=false → use a USB mic (e.g. camera-mounted analog
+  #   stereo mic) with A2DP output-only on the earbuds.
+  # Note: when prefer_bt_mic=true the BT profile is forced to HFP/HSP
+  #   regardless of any USB mic presence, since A2DP cannot carry mic
+  #   audio upstream.
   input_device:
+    prefer_bt_mic: true
     sample_rate: 16000  # Whisper STT sample rate
     channels: 1  # Mono
-    # Name patterns to match when auto-detecting the USB mic (case-insensitive, partial match)
-    # Run `python -c "import sounddevice; print(sounddevice.query_devices())"` to list devices
+    # Name patterns to match when auto-detecting the input device
+    # (case-insensitive, partial match). The BT mic patterns come
+    # first so prefer_bt_mic=true picks them over any USB mic.
+    # Run `python -c "import sounddevice; print(sounddevice.query_devices())"`
+    # to list devices on the RPi5.
     name_patterns:
+      - "bluez"          # PipeWire BT input source prefix (HFP mic)
+      - "F-16"           # our BT earbud name
+      - "headset"        # generic HFP headset
+      - "hfp"            # generic HFP profile name
       - "USB Composite Device"  # Actual device on RPi5 (hw:2,0)
-      - "USB"         # Generic USB mic
-      - "lavalier"    # Lavalier-style mic
-      - "Lav"         # Abbreviated
-      - "USB PnP"     # Common USB-PnP audio device
-      - "USB Audio"   # Generic USB audio
+      - "USB"            # Generic USB mic
+      - "lavalier"       # Lavalier-style mic
+      - "Lav"            # Abbreviated
+      - "USB PnP"        # Common USB-PnP audio device
+      - "USB Audio"      # Generic USB audio
     # Or set a specific ALSA device name (overrides name_patterns if set)
     # alsa_device: "hw:2,0"
 
@@ -398,6 +430,10 @@ data_recorder:
 
   # Sensors to record
   record_camera: true
+  # Dual-lens (WITMOTION 400W stereo): also record the RIGHT lens (Gemini
+  # view) to its own `camera_right.avi` alongside the LEFT `camera.avi`.
+  # Ignored on the single-lens USB / CSI fallback.
+  record_stereo_right: true
   record_mic: true
   record_ai_audio: true
   record_events: true
@@ -464,7 +500,7 @@ development:
 # LAPTOP SERVER CONFIGURATION
 # =====================================================
 laptop_server:
-  host: "10.87.97.101"  # Laptop IP address - UPDATE THIS for your network
+  host: "10.127.61.101"  # Laptop IP address - UPDATE THIS for your network
   port: 8765
 
 # =====================================================
@@ -479,7 +515,7 @@ zmq:
 # RPI5 DEVICE CONFIGURATION (for sync tools)
 # =====================================================
 rpi5_device:
-  host: "10.87.97.31"  # RPi5 IP address - used by sync tools
+  host: "10.127.61.31"  # RPi5 IP address - used by sync tools
   user: "cortex"  # SSH username for sync
   path: "/home/cortex/ProjectCortex"  # Remote path for sync
 
@@ -618,6 +654,25 @@ safety:
   alert_cooldown: 3.0            # Seconds between repeated alerts of the same type
   tts_cooldown: 8.0              # Seconds between TTS voice announcements
   haptic_cooldown: 2.0           # Seconds between haptic pulses
+  # ── Overhead obstacle specific cooldowns (v6) ──
+  # Multiple detection reasons (depth_overhead, blob, texture_jump,
+  # texture_drop) each have their own per-reason cooldown timer so a
+  # blob alert doesn't suppress a subsequent texture-jump alert.
+  # FIX-OVERHEAD-V9: 2s — user hand sweeps faster than the old 8s/12s
+  # so the cooldown swallowed every second alert. FORCE-mode halves
+  # both for snappier feedback in demos.
+  overhead_alert_cooldown_s: 2.0  # Min seconds between overhead alerts (same reason)
+  overhead_tts_cooldown_s: 2.0    # Min seconds between overhead TTS voice messages
+  # ── Safety audio coordinator (FIX-OVERLAP) ──
+  # Serializes safety TTS so two alarms never overlap. Path A frame-level
+  # overhead + Path B/C safety_monitor overhang for the same physical
+  # hazard previously fired two TTS calls in parallel (and Path B/C also
+  # fired a pre-recorded WAV). The coordinator drops redundant same-source
+  # requests within the coalesce window and queues different ones to play
+  # sequentially. Max queue depth caps pending alerts so a static hazard
+  # can't pile up 10 phrases while one 3-second TTS plays.
+  safety_audio_coalesce_window_s: 0.5  # Drop duplicate-source requests within this window
+  safety_audio_max_queue_depth: 2      # Max queued safety phrases (drop overflow)
 
 # =====================================================
 # HARDWARE SPECIFIC CONFIGURATIONS

@@ -56,6 +56,17 @@ class SessionAVRecorder:
         self._video_writer = None
         self._video_size: Optional[Tuple[int, int]] = None
         self._last_video_write = 0.0
+
+        # Dual-lens recording (WITMOTION 400W stereo). The legacy
+        # `_video_writer`/`_video_size`/`_last_video_write` above are the
+        # LEFT-lens (safety) stream — kept as-is so existing behaviour and
+        # the `camera.avi` filename never change. The members below add the
+        # RIGHT lens (Gemini view) as a SECOND video file when the recorder
+        # is attached to a stereo camera.
+        self.record_stereo_right = bool(cfg.get("record_stereo_right", True))
+        self._video_writer_right = None
+        self._video_size_right: Optional[Tuple[int, int]] = None
+        self._last_video_write_right = 0.0
         self._mic_wave = None
         self._ai_wave = None
         self._events_file = None
@@ -98,6 +109,10 @@ class SessionAVRecorder:
                 self._video_writer.release()
                 self._video_writer = None
 
+            if self._video_writer_right is not None:
+                self._video_writer_right.release()
+                self._video_writer_right = None
+
             if self._mic_wave is not None:
                 self._mic_wave.close()
                 self._mic_wave = None
@@ -139,6 +154,53 @@ class SessionAVRecorder:
 
             self._video_writer.write(frame)
             self._last_video_write = now
+
+    def write_video_frame_right(self, frame, timestamp: Optional[float] = None) -> None:
+        """Write the RIGHT-lens (Gemini view) frame to its own video file.
+
+        Records to ``camera_right.avi`` alongside the LEFT ``camera.avi``.
+        No-op unless the recorder was built from a stereo camera (i.e.
+        ``record_stereo_right`` is enabled) — when the system runs on the
+        single-lens USB / CSI fallback this is simply never called.
+        """
+        if not self.is_recording or not self.record_stereo_right or frame is None:
+            return
+
+        with self._video_lock:
+            if not self.is_recording:
+                return
+
+            now = timestamp or time.time()
+            min_interval = 1.0 / self.video_fps if self.video_fps > 0 else 0.0
+            if min_interval and (now - self._last_video_write_right) < min_interval:
+                return
+
+            if self._video_writer_right is None:
+                self._video_size_right = (int(frame.shape[1]), int(frame.shape[0]))
+                self._ensure_video_writer_right()
+
+            if self._video_writer_right is None:
+                return
+
+            if self._video_size_right != (int(frame.shape[1]), int(frame.shape[0])):
+                frame = cv2.resize(frame, self._video_size_right, interpolation=cv2.INTER_AREA)
+
+            self._video_writer_right.write(frame)
+            self._last_video_write_right = now
+
+    def _ensure_video_writer_right(self) -> None:
+        if self._video_writer_right is not None or self.session_dir is None or self._video_size_right is None:
+            return
+
+        video_path = self.session_dir / f"camera_right.{self.video_container}"
+        fourcc = cv2.VideoWriter_fourcc(*self.video_codec)
+        writer = cv2.VideoWriter(str(video_path), fourcc, self.video_fps, self._video_size_right)
+        if writer is None or not writer.isOpened():
+            logger.error(f"❌ Failed to open right-lens video writer: {video_path}")
+            self._video_writer_right = None
+            return
+        self._video_writer_right = writer
+        logger.info(f"🎥 Right-lens (Gemini) recording: {video_path}")
 
     def write_mic_audio(self, audio_bytes: bytes, sample_rate: int) -> None:
         """Append microphone PCM bytes to the session WAV file."""

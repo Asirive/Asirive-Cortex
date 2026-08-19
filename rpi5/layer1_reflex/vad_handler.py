@@ -403,7 +403,11 @@ class VADHandler:
                 
             except Exception as e:
                 if not self.stop_event.is_set():
-                    logger.error(f"❌ Error processing audio chunk: {e}")
+                    logger.error(
+                        f"❌ Error processing audio chunk: "
+                        f"{type(e).__name__}: {e}",
+                        exc_info=True,
+                    )
         
         logger.info("🛑 Audio processing thread stopped")
     
@@ -434,16 +438,35 @@ class VADHandler:
 
     def _find_usb_mic(self) -> Optional[int]:
         """
-        Auto-detect USB lavalier microphone from available input devices.
-        
-        Searches by name patterns from config.yaml, then falls back to
-        any USB input device, then to system default.
-        
+        Auto-detect the input microphone from available devices.
+
+        When audio.input_device.prefer_bt_mic=true (the default) this
+        picks the F-16's Bluetooth HFP mic first — it's mounted at the
+        user's mouth, so SNR is much better than any camera-mounted mic.
+        Falls back to USB mic patterns when BT mic isn't present.
+
+        Selection order:
+          1. ``pipewire`` (the PipeWire ALSA plugin) when BT is
+             connected — this routes to the PipeWire default source,
+             which the bluetooth_handler set to the BT mic source.
+             Why prefer this over a name match? PyAudio on RPi5+PipeWire
+             does NOT expose bluez/HFP inputs by name — the BT mic
+             only shows up via the ``pipewire`` device. So name
+             matching alone won't find it.
+          2. ``bluez`` / ``F-16`` / ``headset`` / ``hfp`` name match
+             (covers BT mics that DO show up by name on some setups)
+          3. USB mic patterns (camera-mounted fallback)
+          4. Last device in the list as a last resort
+
         Returns:
             PyAudio device index, or None for system default
         """
-        # Load name patterns from config
-        name_patterns = ['USB', 'lavalier', 'Lav', 'USB PnP', 'USB Audio']
+        # Load name patterns from config — BT mic patterns come first
+        # so prefer_bt_mic=true picks them before any USB mic.
+        name_patterns = [
+            'bluez', 'F-16', 'headset', 'hfp',  # BT mic (preferred)
+            'USB Composite Device', 'USB', 'lavalier', 'Lav', 'USB PnP', 'USB Audio',  # USB mic fallback
+        ]
         try:
             from pathlib import Path
             import yaml
@@ -458,45 +481,89 @@ class VADHandler:
                     name_patterns = patterns
         except Exception:
             pass  # Use hardcoded defaults
-        
+
+        # Decide whether to prefer the PipeWire default source.
+        # The bluetooth_handler (when its auto-reconnect fires
+        # ``connect_and_setup``) sets the PipeWire default source to
+        # the BT mic. If BT is connected, opening the ``pipewire``
+        # ALSA device routes through PipeWire → BT mic.
+        prefer_bt_mic = True
+        try:
+            config_path = Path(__file__).parent.parent / 'config' / 'config.yaml'
+            if config_path.exists():
+                with open(config_path, 'r') as f:
+                    cfg = yaml.safe_load(f)
+                prefer_bt_mic = bool(
+                    (cfg.get('audio', {})
+                       .get('input_device', {})
+                       .get('prefer_bt_mic', True))
+                )
+        except Exception:
+            pass
+
+        bt_connected = False
+        if prefer_bt_mic:
+            try:
+                # Lazy import — bluetooth_handler imports bluetooth stuff
+                # which we don't want at module load time.
+                from rpi5.bluetooth_handler import BluetoothAudioManager
+                bt = BluetoothAudioManager()
+                bt_connected = bool(bt.is_connected())
+            except Exception as e:
+                logger.debug(f"BT connection probe failed: {e}")
+
         try:
             count = self.pyaudio_instance.get_device_count()
             input_devices = []
-            
+
             for i in range(count):
                 info = self.pyaudio_instance.get_device_info_by_index(i)
                 if info.get('maxInputChannels', 0) <= 0:
                     continue
                 name = info.get('name', '')
                 input_devices.append((i, name))
-            
+
             if not input_devices:
                 logger.warning("⚠️ No input devices found, falling back to default")
                 return None
-            
+
             # Log all available input devices for debugging
             logger.info(f"🔍 Available input devices ({len(input_devices)}):")
             for idx, name in input_devices:
                 logger.info(f"   [{idx}] {name}")
-            
-            # Search by config name patterns (case-insensitive)
+
+            # Step 1: If BT is up, prefer the PipeWire ALSA device
+            # (routes to the BT mic source that bluetooth_handler
+            # set as the PipeWire default). Only do this if the
+            # 'pipewire' device is actually present.
+            if prefer_bt_mic and bt_connected:
+                for idx, name in input_devices:
+                    if name.strip().lower() == 'pipewire':
+                        logger.info(
+                            f"🎙️ Auto-selected PipeWire default "
+                            f"(BT mic upstream): [{idx}] {name}"
+                        )
+                        return idx
+
+            # Step 2: BT-by-name match (covers setups where
+            # bluez_input.XX shows up in PyAudio by name)
             for pattern in name_patterns:
                 pat_lower = pattern.lower()
                 for idx, name in input_devices:
                     if pat_lower in name.lower():
                         logger.info(f"🎙️ Auto-selected USB mic: [{idx}] {name} (matched '{pattern}')")
                         return idx
-            
+
             # Fallback: pick first non-default input device (likely the USB one)
             if len(input_devices) > 1:
                 # Skip device 0 (usually built-in/default), prefer the added USB
                 idx, name = input_devices[-1]
                 logger.info(f"🎙️ Fallback: selected last input device: [{idx}] {name}")
                 return idx
-            
+
             logger.info(f"🎙️ Using single available input: [{input_devices[0][0]}] {input_devices[0][1]}")
             return input_devices[0][0]
-            
+
         except Exception as e:
             logger.warning(f"⚠️ USB mic auto-detect failed: {e}, using default")
             return None

@@ -61,7 +61,7 @@ def print_banner():
 {Colors.CYAN}{Colors.BOLD}  ╚██████╗╚██████╔╝██║  ██║   ██║   ███████╗██╔╝ ██╗{Colors.RESET}
 {Colors.CYAN}{Colors.BOLD}   ╚═════╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝{Colors.RESET}
 {Colors.YELLOW}  Asirive Cortex v2.0 — YIA 2026 — Visually Impaired AI Wearable{Colors.RESET}
-{Colors.DIM}  RPi5: 10.<REDACTED-RPI-IP>  |  Laptop: 10.<REDACTED-LAPTOP-IP>{Colors.RESET}
+{Colors.DIM}  RPi5: 10.127.61.31  |  Laptop: 10.127.61.101{Colors.RESET}
 """)
 
 # ─── Status Check ─────────────────────────────────────────────────

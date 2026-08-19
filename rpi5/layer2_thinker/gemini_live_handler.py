@@ -166,6 +166,15 @@ class GeminiLiveHandler:
         self._turn_started_unix: float = 0.0  # when we last sent text
         self._last_ttfb_unix: float = 0.0  # when first audio arrived after send
         self._ttfb_samples: "_deque[float]" = _deque(maxlen=60)
+        # True after a turn_complete event arrives in the current outer
+        # receive-loop iteration. Reset at the start of each iteration so
+        # the post-loop log can tell whether the inner loop ended because
+        # the server sent turn_complete or because the iterator stopped
+        # mid-session. (Was a local var before — promoted to attribute so
+        # _process_incoming_response can flip it across the helper-method
+        # boundary introduced by the realtime-audio fix.)
+        self._turn_completed: bool = False
+        self._last_response = None  # Last response processed (debug aid)
         # Tool / audio state — read by main.py -> DashboardState -> TUI.
         # Defaulted to safe values so a fresh handler doesn't AttributeError.
         self._tool_call_count: int = 0
@@ -695,7 +704,7 @@ Safety always comes first. Overhead hazards are your highest priority."""
                                 "required": ["item_name"],
                             },
                         },
-                        {
+{
                             "name": "set_system_mode",
                             "description": (
                                 "Switch the system operating mode. "
@@ -709,10 +718,36 @@ Safety always comes first. Overhead hazards are your highest priority."""
                                     "mode": {
                                         "type": "string",
                                         "enum": ["PRODUCTION", "DEV"],
-                                        "description": "The mode to switch to",
+                                        "description": "The system mode to switch to",
                                     },
                                 },
                                 "required": ["mode"],
+                            },
+                        },
+                        {
+                            "name": "zoom_in",
+                            "description": (
+                                "Crop the current camera frame to a region of interest "
+                                "and re-analyze it at higher effective resolution. Use this "
+                                "when the user asks about small text (signs, menus, labels, "
+                                "screens) or wants a specific object described in detail "
+                                "(a face, a price tag, a button). Coordinates are NORMALIZED "
+                                "0-1 relative to the camera frame (NOT pixel coordinates), "
+                                "with (0,0) at top-left and (1,1) at bottom-right. Example: "
+                                "to zoom on a sign in the upper-right, call "
+                                "zoom_in(0.55, 0.10, 0.95, 0.40). Returns a focused JPEG "
+                                "and asks you to describe the region in 1-2 sentences; if "
+                                "text is visible, read it verbatim."
+                            ),
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "x1": {"type": "number", "description": "Left edge, 0-1"},
+                                    "y1": {"type": "number", "description": "Top edge, 0-1"},
+                                    "x2": {"type": "number", "description": "Right edge, 0-1"},
+                                    "y2": {"type": "number", "description": "Bottom edge, 0-1"},
+                                },
+                                "required": ["x1", "y1", "x2", "y2"],
                             },
                         },
                     ])],
@@ -926,300 +961,62 @@ Safety always comes first. Overhead hazards are your highest priority."""
                     # notice is_connected==False.
                     continue
 
-                # We have the first response. Process remaining items in
-                # the same turn AS THEY ARRIVE (not all at once). Collecting
-                # the whole turn in _to_process before processing caused
-                # audio chunks to be queued in handler.audio_queue but NOT
-                # drained by _process_audio_queue until turn_complete fired,
-                # so the speaker heard nothing for the entire response. Now
-                # each response is processed inline + we yield to the event
-                # loop after every response so the audio drain task can run
-                # and forward chunks to StreamingAudioPlayer in realtime.
-                _to_process = [response]
-                async for response in receive_iter:
-                    _to_process.append(response)
+                # REALTIME-AUDIO FIX: process each response INLINE as it
+                # arrives — DO NOT buffer the whole turn in a list first.
+                #
+                # The previous code did:
+                #     _to_process = [response]
+                #     async for response in receive_iter:
+                #         _to_process.append(response)   # BLOCKS until turn ends
+                #     for response in _to_process:
+                #         ... process ...                # never runs until above done
+                #
+                # That meant every audio chunk sat in `_to_process` for the
+                # entire turn (~1-2 s) before being put into
+                # `handler.audio_queue`. The sibling `_process_audio_queue`
+                # task (same event loop) couldn't drain because
+                # `_receive_loop` never yielded. Result: silent until
+                # turn_complete, then a burst — exactly the "waits after
+                # full generation" symptom.
+                #
+                # Now each response is processed + enqueued to
+                # `handler.audio_queue` as it arrives, then we yield so
+                # `_process_audio_queue` can drain → `audio_callback`
+                # → `StreamingAudioPlayer.add_audio_chunk` → speaker. Audio
+                # plays in realtime as Gemini streams it.
 
-                # L-FIX-REALTIME-AUDIO: process each response inline with
-                # an event-loop yield between them. Without this, the
-                # async for above fills _to_process with every chunk in
-                # the turn before we process any of them — and since
-                # audio_callback (add_audio_chunk) is only called from
-                # _process_audio_queue after we've already put audio in
-                # handler.audio_queue, the user perceived ~2s latency
-                # between speech-end and first speaker output.
-                for response in _to_process:
+                # Process the first response (already received via wait_for)
+                turn_message_count += 1
+                self._msg_count += 1
+                self._turn_completed = False
+                self._last_response = response
+                should_break = self._process_incoming_response(response)
+                # Yield so _process_audio_queue can start draining immediately
+                await asyncio.sleep(0)
+                if should_break:
+                    server_requested_close = True
+                    break
+
+                # Process subsequent responses INLINE as they arrive —
+                # no buffering. Each `await asyncio.sleep(0)` lets the
+                # audio drain task pull chunks from handler.audio_queue
+                # and forward them to the player.
+                async for response in receive_iter:
                     turn_message_count += 1
                     self._msg_count += 1
-
-                    # === DEBUG: Log raw response structure ===
-                    populated = []
-                    for attr in ['data', 'text', 'server_content', 'go_away',
-                                 'session_resumption_update', 'tool_call',
-                                 'tool_call_cancellation', 'usage_metadata']:
-                        val = getattr(response, attr, None)
-                        if val is not None:
-                            populated.append(attr)
-                    logger.debug(
-                        f"📨 [MSG #{self._msg_count}] Response fields: {populated}"
-                    )
-
-                    # Handle server go_away message (graceful shutdown)
-                    if hasattr(response, 'go_away') and response.go_away:
-                        ga = response.go_away
-                        time_left = getattr(ga, 'time_left', None)
-                        logger.warning(
-                            f"⚠️ Server go_away: time_left={time_left}, "
-                            f"has_handle={bool(getattr(ga, 'new_handle', None))}"
-                        )
-                        if getattr(ga, 'new_handle', None):
-                            self.session_handle = ga.new_handle
-                            logger.info("📝 Saved session handle for resumption")
-                        server_requested_close = True
+                    self._last_response = response
+                    should_break = self._process_incoming_response(response)
+                    # CRITICAL: yield every iteration. Without this, a
+                    # burst of responses in one turn (typical for Gemini
+                    # Live) blocks the loop and audio chunks wait in
+                    # handler.audio_queue until turn_complete.
+                    await asyncio.sleep(0)
+                    if should_break:
                         break
 
-                    # Capture session resumption handles sent DURING the session
-                    # (these arrive periodically, not just at disconnect)
-                    sru = getattr(response, 'session_resumption_update', None)
-                    if sru:
-                        if getattr(sru, 'resumable', False) and getattr(sru, 'new_handle', None):
-                            self.session_handle = sru.new_handle
-                            now = time.time()
-                            if now - self._last_session_handle_log_time >= 30.0:
-                                logger.debug("📝 Session resumption handle refreshed")
-                                self._last_session_handle_log_time = now
-
-                    # Handle function calls from Gemini
-                    tc = getattr(response, 'tool_call', None)
-                    if tc:
-                        function_calls = getattr(tc, 'function_calls', []) or []
-                        logger.info(
-                            f"🔧 Gemini tool_call: {[fc.name for fc in function_calls]}"
-                        )
-                        # Push to the dashboard activity feed
-                        for fc in function_calls:
-                            fc_name = getattr(fc, 'name', '?')
-                            fc_args = getattr(fc, 'args', {}) or {}
-                            args_preview = ", ".join(
-                                f"{k}={str(v)[:24]}" for k, v in list(fc_args.items())[:3]
-                            )
-                            self._emit_event("l2", "tool", f"{fc_name}({args_preview})")
-                            # Count + log the tool call so the TUI's
-                            # `tools:N` and "most recent tool" line update.
-                            self._tool_call_count = int(
-                                getattr(self, "_tool_call_count", 0)
-                            ) + 1
-                            from collections import deque as _deque_tc
-                            if not hasattr(self, "_tool_call_log"):
-                                self._tool_call_log = _deque_tc(maxlen=10)
-                            self._tool_call_log.append({
-                                "name": fc_name,
-                                "args_preview": args_preview[:80],
-                                "result_preview": "",
-                                "ts": time.time(),
-                            })
-                        asyncio.create_task(self._handle_tool_calls_async(function_calls))
-                        continue
-
-                    # Handle tool call cancellation
-                    tcc = getattr(response, 'tool_call_cancellation', None)
-                    if tcc:
-                        logger.info(f"🔧 Tool call cancelled: {tcc}")
-                        continue
-
-                    # Gemini 3.1 can return payload + metadata in the SAME event.
-                    # Process convenience payloads additively, then always inspect
-                    # server_content for turn state, interruptions, and transcripts.
-                    top_level_audio = getattr(response, 'data', None)
-                    if top_level_audio:
-                        try:
-                            self.audio_queue.put_nowait(top_level_audio)
-                        except asyncio.QueueFull:
-                            logger.debug("🗑️ Audio queue full — dropping chunk to keep receive loop alive")
-                        self._store_response("[Audio response]", 'gemini_live_audio')
-
-                    top_level_text = None
-                    if not self._audio_only_response:
-                        top_level_text = getattr(response, 'text', None)
-                        if top_level_text:
-                            logger.info(f"💬 Gemini text response: {top_level_text[:100]}")
-                            self._store_response(top_level_text, 'gemini_live')
-
-                    # Parse server_content on every event to avoid missing
-                    # turn_complete / interrupted / transcription metadata.
-                    sc = getattr(response, 'server_content', None)
-                    if sc:
-                        # Interrupted by user speech — flush queued audio immediately
-                        if getattr(sc, 'interrupted', False):
-                            if not self.barge_in_enabled:
-                                logger.info("🛡️ Barge-in SUPPRESSED (barge_in_enabled=false — ignoring server interrupted)")
-                                continue
-                            if time.time() < self._barge_in_cooldown_until:
-                                logger.info("🛡️ Barge-in SUPPRESSED (cooldown active — likely false positive from trailing audio)")
-                                continue
-                            logger.info("🛑 Barge-in detected, flushing audio queue")
-                            self.interrupted = True
-                            flushed = 0
-                            while not self.audio_queue.empty():
-                                try:
-                                    self.audio_queue.get_nowait()
-                                    flushed += 1
-                                except asyncio.QueueEmpty:
-                                    break
-                            if flushed:
-                                logger.debug(f"🗑️ Flushed {flushed} obsolete audio chunks")
-                            if self._on_barge_in_callback:
-                                try:
-                                    self._on_barge_in_callback()
-                                except Exception as cb_err:
-                                    logger.debug(f"Barge-in callback error: {cb_err}")
-
-                        it = getattr(sc, 'input_transcription', None)
-                        if it and getattr(it, 'text', None):
-                            logger.info(f"👂 User said (Gemini heard): {it.text}")
-                            # Buffer the chunk — only emit joined text on
-                            # turn_complete so the TUI shows one "YOU → " per
-                            # turn instead of one per audio frame.
-                            self._current_user_input_parts.append(it.text)
-                            # NOTE: do NOT push per-chunk to the activity feed
-                            # here. That used to flood the timeline with
-                            # 6+ events per sentence ("the hallway", "you're
-                            # in", "know when", "Let me"...). The joined
-                            # event is emitted on turn_complete below.
-
-                        ot = getattr(sc, 'output_transcription', None)
-                        if ot and getattr(ot, 'text', None):
-                            logger.info(f"🗣️ Gemini said: {ot.text}")
-                            self._store_response(ot.text, 'gemini_live')
-                            self._current_model_response_parts.append(ot.text)
-                            self._recent_gemini_outputs.append((time.time(), ot.text))
-                            cutoff = time.time() - self._echo_buffer_seconds
-                            self._recent_gemini_outputs = [
-                                (t, txt) for t, txt in self._recent_gemini_outputs if t > cutoff
-                            ]
-                            # NOTE: do NOT call self.on_text("model", ...) here.
-                            # The output transcription arrives in chunks as
-                            # audio is decoded. We only emit the joined final
-                            # response on turn_complete (see below) so the
-                            # CLOUD AI panel's "CORTEX SAID" shows the whole
-                            # turn in one shot, not 4 fragments.
-                            # NOTE: do NOT _emit_event() per chunk either —
-                            # the activity timeline used to be a wall of
-                            # 3-word fragments. Joined emit happens at
-                            # turn_complete so each turn = exactly one event.
-
-                        gc = getattr(sc, 'generation_complete', None)
-                        if gc is True:
-                            logger.debug(f"📨 [MSG #{self._msg_count}] Generation complete")
-
-                        model_turn = getattr(sc, 'model_turn', None)
-                        if model_turn and hasattr(model_turn, 'parts'):
-                            for part in model_turn.parts:
-                                if hasattr(part, 'inline_data') and part.inline_data and not top_level_audio:
-                                    audio_bytes = part.inline_data.data
-                                    # TTFB: first audio byte after send_text.
-                                    # Record once per turn.
-                                    if self._turn_started_unix > 0 and self._last_ttfb_unix == 0.0:
-                                        self._last_ttfb_unix = time.time()
-                                        ttfb_ms = (self._last_ttfb_unix - self._turn_started_unix) * 1000
-                                        self._ttfb_samples.append(ttfb_ms)
-                                    logger.debug(f"📥 Received {len(audio_bytes)} bytes of audio (parts)")
-                                    try:
-                                        self.audio_queue.put_nowait(audio_bytes)
-                                    except asyncio.QueueFull:
-                                        logger.debug("🗑️ Audio queue full (parts path) — dropping chunk")
-                                    self._store_response("[Audio response]", 'gemini_live_audio')
-                                elif hasattr(part, 'text') and part.text and not top_level_text:
-                                    logger.debug(f"💬 Text part: {part.text[:100]}...")
-                                    self._store_response(part.text, 'gemini_live')
-
-                        tc = getattr(sc, 'turn_complete', None)
-                        if tc is not None:
-                            turn_completed = True
-                            reason = getattr(sc, 'turn_complete_reason', None)
-                            self.interrupted = False
-                            # L-FIX-REALTIME-AUDIO: reset per-turn drain flag
-                            # so the next turn logs again.
-                            self._drain_log_emitted = False
-                            logger.info(
-                                f"📨 [MSG #{self._msg_count}] Turn complete "
-                                f"(reason={reason})"
-                            )
-                            if self._on_turn_complete_callback:
-                                try:
-                                    self._on_turn_complete_callback()
-                                except Exception as cb_err:
-                                    logger.debug(f"Turn-complete callback error: {cb_err}")
-                            if self._current_model_response_parts:
-                                full_response = "".join(self._current_model_response_parts)
-                                self._add_to_history("model", full_response)
-                                # Now that the turn is complete, push the
-                                # JOINED final response to the CLOUD AI
-                                # panel so the headline shows the whole
-                                # response in one shot, not 4 fragments.
-                                if self.on_text:
-                                    try:
-                                        self.on_text("model", full_response.strip())
-                                    except Exception:
-                                        pass
-                                # Emit ONE joined "said" event to the activity
-                                # timeline per turn — the per-chunk emits were
-                                # removed above because they flooded the feed
-                                # with 3-word fragments.
-                                try:
-                                    preview = full_response.strip()
-                                    if len(preview) > 80:
-                                        preview = preview[:77] + "…"
-                                    self._emit_event("l2", "said", f'"{preview}"')
-                                except Exception:
-                                    pass
-                                # Latency tracking: turn_complete = turn
-                                # end → record total turn latency.
-                                if self._turn_started_unix > 0:
-                                    turn_ms = (time.time() - self._turn_started_unix) * 1000
-                                    self._latency_samples.append(turn_ms)
-                                    self._turn_started_unix = 0.0
-                                self._current_model_response_parts.clear()
-
-                            # Joined user input — emit the buffered chunks
-                            # as one "YOU → " line so the transcript isn't
-                            # dominated by per-chunk rows.
-                            if self._current_user_input_parts:
-                                joined_user = "".join(self._current_user_input_parts).strip()
-                                if joined_user and joined_user != self._last_user_input_text:
-                                    if self.on_text:
-                                        try:
-                                            self.on_text("user", joined_user)
-                                        except Exception:
-                                            pass
-                                    # Emit ONE joined "heard" event to the
-                                    # activity timeline per turn — paired
-                                    # with the "said" emit above so each turn
-                                    # is exactly one heard/one said pair.
-                                    try:
-                                        preview = joined_user
-                                        if len(preview) > 80:
-                                            preview = preview[:77] + "…"
-                                        self._emit_event("l2", "heard", f'"{preview}"')
-                                    except Exception:
-                                        pass
-                                    self._last_user_input_text = joined_user
-                                self._current_user_input_parts.clear()
-
-                        if not getattr(sc, 'interrupted', False) and not ot and not model_turn:
-                            logger.debug(
-                                f"📨 [MSG #{self._msg_count}] Unhandled server_content: "
-                                f"attrs={[a for a in dir(sc) if not a.startswith('_')]}"
-                            )
-
-                    # L-FIX-REALTIME-AUDIO: yield to the event loop after
-                    # every response so _process_audio_queue can drain
-                    # handler.audio_queue → audio_callback → StreamingAudioPlayer.
-                    # Without this, a burst of responses in one turn (typical
-                    # for Gemini Live) would block the loop until all are
-                    # processed, so audio chunks sat in handler.audio_queue
-                    # and only reached the speaker AT turn_complete (~1-2s after
-                    # the user's speech ended).
-                    await asyncio.sleep(0)
+                # One more yield to let any final drain happen after the
+                # inner loop exits (e.g. turn_complete flush).
+                await asyncio.sleep(0)
 
                 if server_requested_close or not self.is_connected or not self.session:
                     break
@@ -1228,7 +1025,7 @@ Safety always comes first. Overhead hazards are your highest priority."""
                     logger.warning("⚠️ Receive iterator ended with no messages — treating session as closed")
                     break
 
-                if turn_completed:
+                if self._turn_completed:
                     logger.debug("🔁 Turn iterator ended after turn_complete — keeping session open")
                 else:
                     logger.debug("🔁 Receive iterator ended mid-session — re-entering receive stream")
@@ -1266,6 +1063,286 @@ Safety always comes first. Overhead hazards are your highest priority."""
                     logger.warning(f"⚠️ Clearing session handle after {e.code} in receive loop")
                     self.session_handle = None
             self.is_connected = False
+
+    def _process_incoming_response(self, response) -> bool:
+        """
+        Process a single Gemini Live response.
+
+        Returns True if the receive loop should break (e.g. go_away received),
+        False to continue with the next response.
+
+        CRITICAL (realtime-audio fix): this MUST be called inline as each
+        response arrives — never buffer the whole turn into a list first.
+        The receive loop yields to the event loop after every call so the
+        sibling `_process_audio_queue` task can drain `self.audio_queue` →
+        `audio_callback` → `StreamingAudioPlayer.add_audio_chunk` → speaker.
+
+        The body is the same logic that used to live in the inner for-loop
+        over `_to_process`. Pulling it into a method makes the inline
+        pattern tractable (no duplicated giant body).
+        """
+        self._msg_count += 1
+
+        # === DEBUG: Log raw response structure ===
+        populated = []
+        for attr in ['data', 'text', 'server_content', 'go_away',
+                     'session_resumption_update', 'tool_call',
+                     'tool_call_cancellation', 'usage_metadata']:
+            val = getattr(response, attr, None)
+            if val is not None:
+                populated.append(attr)
+        logger.debug(
+            f"📨 [MSG #{self._msg_count}] Response fields: {populated}"
+        )
+
+        # Handle server go_away message (graceful shutdown)
+        if hasattr(response, 'go_away') and response.go_away:
+            ga = response.go_away
+            time_left = getattr(ga, 'time_left', None)
+            logger.warning(
+                f"⚠️ Server go_away: time_left={time_left}, "
+                f"has_handle={bool(getattr(ga, 'new_handle', None))}"
+            )
+            if getattr(ga, 'new_handle', None):
+                self.session_handle = ga.new_handle
+                logger.info("📝 Saved session handle for resumption")
+            return True  # break the receive loop
+
+        # Capture session resumption handles sent DURING the session
+        # (these arrive periodically, not just at disconnect)
+        sru = getattr(response, 'session_resumption_update', None)
+        if sru:
+            if getattr(sru, 'resumable', False) and getattr(sru, 'new_handle', None):
+                self.session_handle = sru.new_handle
+                now = time.time()
+                if now - self._last_session_handle_log_time >= 30.0:
+                    logger.debug("📝 Session resumption handle refreshed")
+                    self._last_session_handle_log_time = now
+
+        # Handle function calls from Gemini
+        tc = getattr(response, 'tool_call', None)
+        if tc:
+            function_calls = getattr(tc, 'function_calls', []) or []
+            logger.info(
+                f"🔧 Gemini tool_call: {[fc.name for fc in function_calls]}"
+            )
+            # Push to the dashboard activity feed
+            for fc in function_calls:
+                fc_name = getattr(fc, 'name', '?')
+                fc_args = getattr(fc, 'args', {}) or {}
+                args_preview = ", ".join(
+                    f"{k}={str(v)[:24]}" for k, v in list(fc_args.items())[:3]
+                )
+                self._emit_event("l2", "tool", f"{fc_name}({args_preview})")
+                # Count + log the tool call so the TUI's
+                # `tools:N` and "most recent tool" line update.
+                self._tool_call_count = int(
+                    getattr(self, "_tool_call_count", 0)
+                ) + 1
+                from collections import deque as _deque_tc
+                if not hasattr(self, "_tool_call_log"):
+                    self._tool_call_log = _deque_tc(maxlen=10)
+                self._tool_call_log.append({
+                    "name": fc_name,
+                    "args_preview": args_preview[:80],
+                    "result_preview": "",
+                    "ts": time.time(),
+                })
+            asyncio.create_task(self._handle_tool_calls_async(function_calls))
+            return False  # continue
+
+        # Handle tool call cancellation
+        tcc = getattr(response, 'tool_call_cancellation', None)
+        if tcc:
+            logger.info(f"🔧 Tool call cancelled: {tcc}")
+            return False  # continue
+
+        # Gemini 3.1 can return payload + metadata in the SAME event.
+        # Process convenience payloads additively, then always inspect
+        # server_content for turn state, interruptions, and transcripts.
+        top_level_audio = getattr(response, 'data', None)
+        if top_level_audio:
+            try:
+                self.audio_queue.put_nowait(top_level_audio)
+            except asyncio.QueueFull:
+                logger.debug("🗑️ Audio queue full — dropping chunk to keep receive loop alive")
+            self._store_response("[Audio response]", 'gemini_live_audio')
+
+        top_level_text = None
+        if not self._audio_only_response:
+            top_level_text = getattr(response, 'text', None)
+            if top_level_text:
+                logger.info(f"💬 Gemini text response: {top_level_text[:100]}")
+                self._store_response(top_level_text, 'gemini_live')
+
+        # Parse server_content on every event to avoid missing
+        # turn_complete / interrupted / transcription metadata.
+        sc = getattr(response, 'server_content', None)
+        if sc:
+            # Interrupted by user speech — flush queued audio immediately
+            if getattr(sc, 'interrupted', False):
+                if not self.barge_in_enabled:
+                    logger.info("🛡️ Barge-in SUPPRESSED (barge_in_enabled=false — ignoring server interrupted)")
+                    return False  # continue
+                if time.time() < self._barge_in_cooldown_until:
+                    logger.info("🛡️ Barge-in SUPPRESSED (cooldown active — likely false positive from trailing audio)")
+                    return False  # continue
+                logger.info("🛑 Barge-in detected, flushing audio queue")
+                self.interrupted = True
+                flushed = 0
+                while not self.audio_queue.empty():
+                    try:
+                        self.audio_queue.get_nowait()
+                        flushed += 1
+                    except asyncio.QueueEmpty:
+                        break
+                if flushed:
+                    logger.debug(f"🗑️ Flushed {flushed} obsolete audio chunks")
+                if self._on_barge_in_callback:
+                    try:
+                        self._on_barge_in_callback()
+                    except Exception as cb_err:
+                        logger.debug(f"Barge-in callback error: {cb_err}")
+
+            it = getattr(sc, 'input_transcription', None)
+            if it and getattr(it, 'text', None):
+                logger.info(f"👂 User said (Gemini heard): {it.text}")
+                # Buffer the chunk — only emit joined text on
+                # turn_complete so the TUI shows one "YOU → " per
+                # turn instead of one per audio frame.
+                self._current_user_input_parts.append(it.text)
+                # NOTE: do NOT push per-chunk to the activity feed
+                # here. That used to flood the timeline with
+                # 6+ events per sentence ("the hallway", "you're
+                # in", "know when", "Let me"...). The joined
+                # event is emitted on turn_complete below.
+
+            ot = getattr(sc, 'output_transcription', None)
+            if ot and getattr(ot, 'text', None):
+                logger.info(f"🗣️ Gemini said: {ot.text}")
+                self._store_response(ot.text, 'gemini_live')
+                self._current_model_response_parts.append(ot.text)
+                self._recent_gemini_outputs.append((time.time(), ot.text))
+                cutoff = time.time() - self._echo_buffer_seconds
+                self._recent_gemini_outputs = [
+                    (t, txt) for t, txt in self._recent_gemini_outputs if t > cutoff
+                ]
+                # NOTE: do NOT call self.on_text("model", ...) here.
+                # The output transcription arrives in chunks as
+                # audio is decoded. We only emit the joined final
+                # response on turn_complete (see below) so the
+                # CLOUD AI panel's "CORTEX SAID" shows the whole
+                # turn in one shot, not 4 fragments.
+                # NOTE: do NOT _emit_event() per chunk either —
+                # the activity timeline used to be a wall of
+                # 3-word fragments. Joined emit happens at
+                # turn_complete so each turn = exactly one event.
+
+            gc = getattr(sc, 'generation_complete', None)
+            if gc is True:
+                logger.debug(f"📨 [MSG #{self._msg_count}] Generation complete")
+
+            model_turn = getattr(sc, 'model_turn', None)
+            if model_turn and hasattr(model_turn, 'parts'):
+                for part in model_turn.parts:
+                    if hasattr(part, 'inline_data') and part.inline_data and not top_level_audio:
+                        audio_bytes = part.inline_data.data
+                        # TTFB: first audio byte after send_text.
+                        # Record once per turn.
+                        if self._turn_started_unix > 0 and self._last_ttfb_unix == 0.0:
+                            self._last_ttfb_unix = time.time()
+                            ttfb_ms = (self._last_ttfb_unix - self._turn_started_unix) * 1000
+                            self._ttfb_samples.append(ttfb_ms)
+                        logger.debug(f"📥 Received {len(audio_bytes)} bytes of audio (parts)")
+                        try:
+                            self.audio_queue.put_nowait(audio_bytes)
+                        except asyncio.QueueFull:
+                            logger.debug("🗑️ Audio queue full (parts path) — dropping chunk")
+                        self._store_response("[Audio response]", 'gemini_live_audio')
+                    elif hasattr(part, 'text') and part.text and not top_level_text:
+                        logger.debug(f"💬 Text part: {part.text[:100]}...")
+                        self._store_response(part.text, 'gemini_live')
+
+            tc = getattr(sc, 'turn_complete', None)
+            if tc is not None:
+                self._turn_completed = True
+                reason = getattr(sc, 'turn_complete_reason', None)
+                self.interrupted = False
+                # L-FIX-REALTIME-AUDIO: reset per-turn drain flag
+                # so the next turn logs again.
+                self._drain_log_emitted = False
+                logger.info(
+                    f"📨 [MSG #{self._msg_count}] Turn complete "
+                    f"(reason={reason})"
+                )
+                if self._on_turn_complete_callback:
+                    try:
+                        self._on_turn_complete_callback()
+                    except Exception as cb_err:
+                        logger.debug(f"Turn-complete callback error: {cb_err}")
+                if self._current_model_response_parts:
+                    full_response = "".join(self._current_model_response_parts)
+                    self._add_to_history("model", full_response)
+                    # Now that the turn is complete, push the
+                    # JOINED final response to the CLOUD AI
+                    # panel so the headline shows the whole
+                    # response in one shot, not 4 fragments.
+                    if self.on_text:
+                        try:
+                            self.on_text("model", full_response.strip())
+                        except Exception:
+                            pass
+                    # Emit ONE joined "said" event to the activity
+                    # timeline per turn — the per-chunk emits were
+                    # removed above because they flooded the feed
+                    # with 3-word fragments.
+                    try:
+                        preview = full_response.strip()
+                        if len(preview) > 80:
+                            preview = preview[:77] + "…"
+                        self._emit_event("l2", "said", f'"{preview}"')
+                    except Exception:
+                        pass
+                    # Latency tracking: turn_complete = turn
+                    # end → record total turn latency.
+                    if self._turn_started_unix > 0:
+                        turn_ms = (time.time() - self._turn_started_unix) * 1000
+                        self._latency_samples.append(turn_ms)
+                        self._turn_started_unix = 0.0
+                    self._current_model_response_parts.clear()
+
+                # Joined user input — emit the buffered chunks
+                # as one "YOU → " line so the transcript isn't
+                # dominated by per-chunk rows.
+                if self._current_user_input_parts:
+                    joined_user = "".join(self._current_user_input_parts).strip()
+                    if joined_user and joined_user != self._last_user_input_text:
+                        if self.on_text:
+                            try:
+                                self.on_text("user", joined_user)
+                            except Exception:
+                                pass
+                        # Emit ONE joined "heard" event to the
+                        # activity timeline per turn — paired
+                        # with the "said" emit above so each turn
+                        # is exactly one heard/one said pair.
+                        try:
+                            preview = joined_user
+                            if len(preview) > 80:
+                                preview = preview[:77] + "…"
+                            self._emit_event("l2", "heard", f'"{preview}"')
+                        except Exception:
+                            pass
+                        self._last_user_input_text = joined_user
+                    self._current_user_input_parts.clear()
+
+            if not getattr(sc, 'interrupted', False) and not ot and not model_turn:
+                logger.debug(
+                    f"📨 [MSG #{self._msg_count}] Unhandled server_content: "
+                    f"attrs={[a for a in dir(sc) if not a.startswith('_')]}"
+                )
+
+        return False  # continue with the next response
 
     def _emit_event(self, source: str, kind: str, message: str) -> None:
         """Fire-and-forget emit to the dashboard activity feed.
@@ -1519,20 +1596,25 @@ Safety always comes first. Overhead hazards are your highest priority."""
             self.is_connected = False
             return False
     
-    async def send_video_frame(self, frame: Image.Image) -> bool:
+    async def send_video_frame(self, frame: Image.Image, force_turn: bool = False) -> bool:
         """
         Send JPEG video frame to Gemini Live API.
-        
+
         Args:
             frame: PIL Image (RGB format recommended)
-        
+            force_turn: When True, end the activity window and inject a
+                        short prompt after the JPEG so Gemini responds
+                        about THIS frame immediately instead of waiting
+                        for the next natural turn. Used by zoom_in() to
+                        get a quick focused description.
+
         Returns:
             bool: True if sent successfully, False otherwise
         """
         if not self.is_connected or not self.session:
             logger.debug("Video send skipped: not connected")
             return False
-        
+
         try:
             # Offload CPU-heavy JPEG encoding to thread pool executor
             # so the Gemini event loop stays free for audio sends.
@@ -1559,12 +1641,29 @@ Safety always comes first. Overhead hazards are your highest priority."""
                     f"{frame.width}x{frame.height}, {len(jpeg_bytes)}B JPEG, "
                     f"elapsed={elapsed:.1f}s"
                 )
+
+            # FIX-ZOOM-IN-FORCE-TURN: when the caller wants an immediate
+            # response (e.g. the user just asked "what does that sign
+            # say?" and Gemini called zoom_in), end the activity window
+            # and inject a short nudge so the model responds about THIS
+            # frame instead of waiting for the next ambient audio turn.
+            if force_turn:
+                try:
+                    await self.session.send_realtime_input(
+                        activity_end=types.ActivityEnd()
+                    )
+                    await self.session.send_realtime_input(
+                        text="(focused zoom frame — describe what you see in 1-2 sentences; read any text verbatim)"
+                    )
+                except Exception as e:
+                    logger.debug(f"force_turn nudge failed (non-fatal): {e}")
+
             return True
-            
+
         except Exception as e:
             if not self._send_error_logged:
                 logger.warning(f"⚠️ Gemini send failed (video), suppressing further: {e}")
-                self._send_error_logged = True
+            self._send_error_logged = True
             self.is_connected = False
             return False
     

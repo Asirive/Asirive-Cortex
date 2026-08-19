@@ -262,7 +262,7 @@ ZAI_API_KEY=your_zai_glm_key_here
 
 API key rotation pool is supported — add `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`, etc. The handler rotates through them on 429/503.
 
-The laptop's IP goes in `rpi5/config/config.yaml` under `laptop_server.host` (current production: `10.87.97.101`). The RPi5's `.env` is gitignored — push it via the included `scripts/fix_rpi5_env.py` (uses `scripts/.rpi5_key`, also gitignored).
+The laptop's IP goes in `rpi5/config/config.yaml` under `laptop_server.host` (current production: `10.127.61.101`). The RPi5's `.env` is gitignored — push it via the included `scripts/fix_rpi5_env.py` (uses `scripts/.rpi5_key`, also gitignored).
 
 ### Run
 

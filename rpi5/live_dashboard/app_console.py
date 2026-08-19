@@ -355,6 +355,8 @@ class ConsoleApp:
             self._action_save_log()
         elif action == KeyAction.PAUSE:
             self._action_toggle_pause()
+        elif action == KeyAction.TOGGLE_OVERHEAD_FORCE:
+            self._action_toggle_overhead_force()
         elif action == KeyAction.HELP:
             self._action_help()
         elif is_full_only(action):
@@ -411,6 +413,11 @@ class ConsoleApp:
         self._paused = not self._paused
         sys.stdout.write(f"\n[2.4: status updates {'PAUSED' if self._paused else 'RESUMED'}]\n")
         sys.stdout.flush()
+
+    def _action_toggle_overhead_force(self) -> None:
+        if hasattr(self.system, "_toggle_overhead_force"):
+            self.system._toggle_overhead_force()
+
 
     def _action_help(self) -> None:
         keys = "\n".join(f"  [{k:^4}] {v}" for k, v in FOOTER_HINTS)

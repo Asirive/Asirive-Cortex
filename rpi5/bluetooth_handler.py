@@ -17,7 +17,10 @@ import subprocess
 import re
 import time
 import logging
-from typing import Optional, List, Dict, Tuple
+from pathlib import Path
+from typing import Optional, List, Dict, Tuple, Callable
+
+import yaml
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +97,10 @@ class BluetoothAudioManager:
         # storm. Cleared on disconnect.
         self._last_connected_check_ts: float = 0.0
         self._last_connected_check_result: bool = False
+        # Optional callbacks fired when the BT link transitions to
+        # "audio ready" (sink + source both verified). Used by the
+        # voice coordinator to swap VAD from USB mic to BT mic.
+        self._on_connect_callbacks: List[Callable[[], None]] = []
         self._initialized = True
         
         logger.info(f"BluetoothAudioManager initialized (device='{device_name}', mac={mac_address or 'auto-detect'})")
@@ -737,23 +744,41 @@ class BluetoothAudioManager:
             logger.warning(f"Bluetooth audio not ready - attempt {attempt}/3, retrying in 3s...")
             time.sleep(3)
         
-        # Decide BT audio profile based on USB mic availability:
-        # - USB mic present → A2DP (high-quality stereo output, mic via USB)
-        # - No USB mic      → HSP/HFP (mono output + BT mic)
+        # Decide BT audio profile based on input_device.prefer_bt_mic
+        # (default true) and USB mic availability:
+        # - prefer_bt_mic=true  → HSP/HFP (mono output + BT mic, always)
+        # - prefer_bt_mic=false + USB mic → A2DP (high-quality stereo output,
+        #                                   mic via USB)
+        # - prefer_bt_mic=false + no USB mic → HSP/HFP (BT mic as fallback)
+        prefer_bt_mic = True  # default — BT mic is the right answer for glasses
+        try:
+            cfg_path = Path(__file__).parent / 'config' / 'config.yaml'
+            if cfg_path.exists():
+                with open(cfg_path, 'r') as _f:
+                    _cfg = yaml.safe_load(_f)
+                prefer_bt_mic = bool(
+                    _cfg.get('audio', {})
+                        .get('input_device', {})
+                        .get('prefer_bt_mic', True)
+                )
+        except Exception as _e:
+            logger.debug(f"prefer_bt_mic config read failed: {_e}, defaulting to True")
+
         usb_mic_connected = self._detect_usb_mic()
-        
-        if usb_mic_connected:
-            logger.info("🎙️ USB mic detected → using A2DP profile (high-quality output)")
+
+        if prefer_bt_mic or not usb_mic_connected:
+            reason = "prefer_bt_mic=true" if prefer_bt_mic else "no USB mic detected"
+            logger.info(f"🎙️ {reason} → using HSP/HFP profile (BT mic + earbud speaker)")
+            self.ensure_hfp_profile(mac)
+            # Re-detect audio devices after profile switch
+            sink_id, source_id = self.find_bluetooth_audio(mac)
+        else:
+            logger.info("🎙️ USB mic preferred → using A2DP profile (high-quality output)")
             self.ensure_a2dp_profile(mac)
             # Re-detect audio devices — PipeWire node IDs change after profile switch
             sink_id, source_id = self.find_bluetooth_audio(mac)
             if sink_id is not None and source_id is None:
                 logger.info("A2DP output only (mic via USB) — skipping HFP/HSP switch")
-        else:
-            logger.info("🎙️ No USB mic detected → using HSP/HFP profile (BT mic)")
-            self.ensure_hfp_profile(mac)
-            # Re-detect audio devices after profile switch
-            sink_id, source_id = self.find_bluetooth_audio(mac)
         
         success = True
         
@@ -789,6 +814,10 @@ class BluetoothAudioManager:
             # wrong sink (or no sink at all).
             self.connected_mac = mac
             logger.info(f"Bluetooth audio setup complete for '{search_name}'")
+            # Fire on_connect callbacks (e.g. VAD restart on BT mic).
+            # Best-effort: failures inside callbacks are logged but do
+            # not affect the BT setup result.
+            self._fire_on_connect()
         else:
             # Sink verification failed — leave connected_mac unset so
             # is_connected() and the TUI honestly report the broken state.
@@ -953,37 +982,78 @@ class BluetoothAudioManager:
         """Stop the auto-reconnect monitoring thread."""
         self._reconnect_running = False
         logger.info("🛑 Bluetooth auto-reconnect stopped")
+
+    def register_on_connect_callback(self, callback) -> None:
+        """
+        Register a callback fired when the BT audio link becomes ready
+        (sink + source verified) — including the first-time boot path
+        AND any reconnect. Used by the voice coordinator to restart
+        VAD on the BT mic.
+        """
+        if callback not in self._on_connect_callbacks:
+            self._on_connect_callbacks.append(callback)
+            logger.debug(f"Registered on_connect callback: {callback}")
+
+    def _fire_on_connect(self) -> None:
+        """Fire all registered on_connect callbacks (best-effort)."""
+        for cb in self._on_connect_callbacks:
+            try:
+                cb()
+            except Exception as e:
+                logger.error(f"on_connect callback {cb} failed: {e}")
     
     def _monitor_connection(self, interval: float):
         """
-        Background thread to monitor Bluetooth connection.
-        
+        Background thread to monitor and (re)connect Bluetooth.
+
+        Handles three cases:
+          1. Was connected, now disconnected  → call connect_and_setup() again
+          2. Never connected at boot (known_mac set, connected_mac=None) →
+             keep trying connect_and_setup() so the user can power on the
+             earbuds mid-run
+          3. Fully healthy                   → just poll, no action
+
         Args:
-            interval: Seconds between checks
+            interval: Seconds between connection checks
         """
         consecutive_failures = 0
-        max_failures = 3  # Back off after 3 consecutive failures
-        
+        max_failures = 6  # Back off after 6 consecutive failures (~60s at 10s interval)
+
         while self._reconnect_running:
             try:
+                needs_connect = False
                 if self.connected_mac and not self.is_connected(self.connected_mac):
                     logger.warning("🔌 Bluetooth disconnected, attempting reconnect...")
+                    needs_connect = True
+                elif self.known_mac and not self.connected_mac:
+                    # Boot-time failure path: F-16 was off when we tried,
+                    # give the user time to turn it on and retry.
+                    logger.debug("🔄 BT not yet connected (known_mac set), polling...")
+                    needs_connect = True
+
+                if needs_connect:
                     if self.connect_and_setup():
-                        logger.info("✅ Bluetooth reconnected")
+                        logger.info("✅ Bluetooth (re)connected")
                         consecutive_failures = 0
                     else:
                         consecutive_failures += 1
                         if consecutive_failures >= max_failures:
-                            backoff = min(interval * consecutive_failures, 120)
-                            logger.warning(f"⚠️ Reconnect failed {consecutive_failures}x, backing off {backoff:.0f}s")
+                            backoff = min(interval * consecutive_failures, 180)
+                            logger.warning(
+                                f"⚠️ Reconnect failed {consecutive_failures}x, "
+                                f"backing off {backoff:.0f}s"
+                            )
                             time.sleep(backoff - interval)  # Extra wait on top of normal interval
                         else:
-                            logger.warning(f"⚠️ Reconnect failed ({consecutive_failures}/{max_failures}), will retry")
+                            logger.warning(
+                                f"⚠️ Reconnect failed ({consecutive_failures}/{max_failures}), "
+                                f"will retry in {interval:.0f}s"
+                            )
                 else:
                     consecutive_failures = 0  # Reset on successful check
             except Exception as e:
                 logger.error(f"Reconnect check error: {e}")
-            
+
             time.sleep(interval)
     
     def auto_connect_or_pair(self, scan_duration: int = 15) -> bool:

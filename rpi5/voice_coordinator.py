@@ -320,6 +320,73 @@ class VoiceCoordinator:
             self._ws_loop = None
             logger.info("🛑 Cartesia WebSocket STT closed")
 
+    def restart_vad_on_bt_mic(self):
+        """
+        Restart VAD so it picks up the BT mic (or the best available
+        mic — BT mic first, then USB fallback).
+
+        Called by the BT audio manager's on_connect callback when the
+        F-16 links up mid-run. The previous VAD stream was opened at
+        boot on whatever mic was available then (usually the camera's
+        USB mic). After this restart, VAD will pick the BT mic.
+
+        Implementation note: do NOT call ``self.vad._find_usb_mic()``
+        here directly — that method uses ``self.vad.pyaudio_instance``,
+        which ``stop_listening()`` has just set to None. Instead, hand
+        device_index=None to ``start_listening()`` and let IT build a
+        fresh PyAudio instance inside its ``with suppress_alsa_errors()``
+        block, then re-detect the best mic from that fresh instance.
+
+        After ``stop_listening()`` we also sleep ~1s before reopening
+        the stream — PipeWire needs a moment to fully tear down the old
+        audio node and register the new HFP/HSP mic source. Without
+        the sleep, ``pyaudio.open()`` can race and fail with
+        ``[Errno 9] Bad file descriptor``.
+        """
+        if not self.vad:
+            logger.debug("VAD not initialized; nothing to restart")
+            return
+        if not self.is_active:
+            logger.debug("VAD not active; nothing to restart")
+            return
+
+        was_active = self.is_active
+        try:
+            self.vad.stop_listening()
+        except Exception as e:
+            logger.error(f"❌ stop_listening during BT-mic swap failed: {e}", exc_info=True)
+
+        # Give PipeWire a moment to settle the new HFP source/sink.
+        # Empirically ~700ms is enough on RPi5; we use 1.0s for safety.
+        time.sleep(1.0)
+
+        try:
+            logger.info(
+                "🎙️ Restarting VAD on best mic after BT link "
+                "(device_index=None → auto-detect inside start_listening)"
+            )
+            ok = self.vad.start_listening(device_index=None)
+            if ok:
+                self.is_active = True
+            else:
+                logger.warning("⚠️ VAD restart returned False — keeping is_active=False")
+        except Exception as e:
+            logger.error(f"❌ Failed to restart VAD on BT mic: {e}", exc_info=True)
+
+        # Belt-and-suspenders: if start_listening raised, try one more
+        # time after another short sleep. The first attempt often hits
+        # a transient EBADF during the HFP profile transition.
+        if was_active and not self.is_active:
+            time.sleep(2.0)
+            try:
+                logger.info("🎙️ Retrying VAD restart after 2s settle...")
+                ok = self.vad.start_listening(device_index=None)
+                if ok:
+                    self.is_active = True
+                    logger.info("✅ VAD restart succeeded on retry")
+            except Exception as e:
+                logger.error(f"❌ VAD restart retry failed: {e}", exc_info=True)
+
     async def _ws_drain_loop(self):
         """Async task: pull PCM chunks from the queue and send to WS.
 

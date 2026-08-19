@@ -391,6 +391,13 @@ except ImportError as e:
     SafetyMonitor = None
 
 try:
+    from rpi5.safety_audio_coordinator import SafetyAudioCoordinator
+    logger.info("[DEBUG] ✅ SafetyAudioCoordinator imported successfully")
+except ImportError as e:
+    logger.warning(f"[DEBUG] ⚠️ SafetyAudioCoordinator import failed: {e}")
+    SafetyAudioCoordinator = None
+
+try:
     from rpi5.hailo_ocr import HailoOCRPipeline
     logger.info("[DEBUG] ✅ HailoOCRPipeline imported successfully")
 except ImportError as e:
@@ -2140,6 +2147,15 @@ class CortexSystem:
         #   rm /tmp/cortex_overhead_force          # force OFF
         # The overhead detector polls this file every ~10 frames.
         self._overhead_force_flag_path = "/tmp/cortex_overhead_force"
+        # FORCE mode is a live diagnostic override, not persisted system
+        # state. A stale flag left behind by a previous run made the next
+        # boot silently enter high-sensitivity mode and spam safety TTS.
+        try:
+            if os.path.exists(self._overhead_force_flag_path):
+                os.remove(self._overhead_force_flag_path)
+                logger.info("Cleared stale overhead-force flag from a previous run")
+        except OSError as _e:
+            logger.debug(f"Could not clear stale overhead-force flag: {_e}")
         # Per-reason cooldown timestamps for the overhead alert +
         # TTS. See ``_tts_cooldown`` math in the overhead detector.
         self._overhead_alert_ts = {}
@@ -3303,6 +3319,31 @@ class CortexSystem:
                 logger.error(f"❌ Failed to init SafetyMonitor: {e}")
                 self.safety_monitor = None
 
+        # Initialize SafetyAudioCoordinator — serializes safety TTS so two
+        # alarms never overlap. Routes every speak_safety(...) call through
+        # a single worker thread + queue, so Path A (frame-level overhead)
+        # and Path B/C (safety_monitor overhang) can't play simultaneously.
+        # Also finally un-orphanizes audio_queue.interrupt() so Gemini Live
+        # audio actually stops mid-sentence when a hazard fires.
+        self.safety_audio = None
+        if SafetyAudioCoordinator:
+            try:
+                from rpi5.cli.audio_queue import audio_queue as _aq
+                self.safety_audio = SafetyAudioCoordinator(
+                    tts_router=self.tts,
+                    audio_queue=_aq,
+                    coalesce_window_s=float(
+                        safety_cfg.get('safety_audio_coalesce_window_s', 0.5)
+                    ),
+                    max_queue_depth=int(
+                        safety_cfg.get('safety_audio_max_queue_depth', 2)
+                    ),
+                )
+                logger.info("✅ SafetyAudioCoordinator initialized (serialized TTS)")
+            except Exception as e:
+                logger.error(f"❌ Failed to init SafetyAudioCoordinator: {e}")
+                self.safety_audio = None
+
         # Initialize PowerMonitor (battery / UPS state for the dashboard)
         # Reads from /sys/class/power_supply/* on Linux, psutil as a
         # cross-platform fallback, or config.manual for demos.
@@ -3344,7 +3385,13 @@ class CortexSystem:
         # user hears the alert even when Gemini is mid-sentence. The
         # vibration motor isn't wired up in the current glasses
         # prototype so haptic is a no-op.
-        if self.tts:
+        if self.safety_audio:
+            self.safety_audio.enqueue(
+                "Warning: fall detected. Are you okay?",
+                emotion="alarmed",
+                source="fall_detected",
+            )
+        elif self.tts:
             run_async_safe(self.tts.speak_safety(
                 "Warning: fall detected. Are you okay?",
                 emotion="alarmed",
@@ -3443,6 +3490,12 @@ class CortexSystem:
         frame_shape = frame.shape if frame is not None else None
         if self.session_recorder.start(frame_shape=frame_shape) and frame is not None:
             self.session_recorder.write_video_frame(frame)
+            # Seed the RIGHT-lens writer on session start too, so both
+            # videos begin on the same frame.
+            if self._using_stereo_camera and self.stereo is not None:
+                right_frame = self.stereo.get_right_frame()
+                if right_frame is not None:
+                    self.session_recorder.write_video_frame_right(right_frame)
 
     def _recording_hotkey_loop(self) -> None:
         """Listen for a single-key terminal toggle on Linux TTY sessions."""
@@ -3613,10 +3666,17 @@ class CortexSystem:
                                 if self.tts and not getattr(
                                     self.tts, "is_playing", False
                                 ):
-                                    self.tts.speak_safety(
-                                        "Overhead detection forced on.",
-                                        emotion="urgent",
-                                    )
+                                    if self.safety_audio:
+                                        self.safety_audio.enqueue(
+                                            "Overhead detection forced on.",
+                                            emotion="urgent",
+                                            source="overhead_force_toggle",
+                                        )
+                                    else:
+                                        self.tts.speak_safety(
+                                            "Overhead detection forced on.",
+                                            emotion="urgent",
+                                        )
                             except Exception:
                                 pass
                         else:
@@ -3628,10 +3688,17 @@ class CortexSystem:
                                 if self.tts and not getattr(
                                     self.tts, "is_playing", False
                                 ):
-                                    self.tts.speak_safety(
-                                        "Overhead detection normal mode.",
-                                        emotion="urgent",
-                                    )
+                                    if self.safety_audio:
+                                        self.safety_audio.enqueue(
+                                            "Overhead detection normal mode.",
+                                            emotion="urgent",
+                                            source="overhead_force_toggle",
+                                        )
+                                    else:
+                                        self.tts.speak_safety(
+                                            "Overhead detection normal mode.",
+                                            emotion="urgent",
+                                        )
                             except Exception:
                                 pass
                     # Only consume the first key per tick so
@@ -3746,7 +3813,14 @@ class CortexSystem:
                     if new_state
                     else "Overhead detection normal mode."
                 )
-                self.tts.speak_safety(phrase, emotion="urgent")
+                if self.safety_audio:
+                    self.safety_audio.enqueue(
+                        phrase,
+                        emotion="urgent",
+                        source="overhead_force_toggle",
+                    )
+                else:
+                    self.tts.speak_safety(phrase, emotion="urgent")
         except Exception as _e:
             logger.debug(f"toggle_overhead_force tts announce failed: {_e}")
 
@@ -5441,6 +5515,14 @@ class CortexSystem:
                 self._last_frame_ts = time.time()
                 if self.session_recorder:
                     self.session_recorder.write_video_frame(frame)
+                    # Dual-lens: also record the RIGHT (Gemini) view when the
+                    # active camera is the WITMOTION 400W stereo. On the
+                    # single-lens USB / CSI fallback `self.stereo` is None so
+                    # this is a cheap no-op.
+                    if self._using_stereo_camera and self.stereo is not None:
+                        right_frame = self.stereo.get_right_frame()
+                        if right_frame is not None:
+                            self.session_recorder.write_video_frame_right(right_frame)
 
                 # 1a. Pre-compute Hailo depth ONCE per frame and cache it.
                 # Both the overhead detector (1c) and the hazard-analysis
@@ -5510,14 +5592,22 @@ class CortexSystem:
                             # already tested in the existing
                             # speak_async flow.
                             try:
-                                future = run_async_safe(
-                                    self.tts.speak_safety(
+                                if self.safety_audio:
+                                    self.safety_audio.enqueue(
                                         "My camera is blocked. I cannot see obstacles. "
                                         "Please check the lens.",
                                         emotion="alarmed",
-                                    ),
-                                    blocking=False,
-                                )
+                                        source="ui_ack",
+                                    )
+                                else:
+                                    future = run_async_safe(
+                                        self.tts.speak_safety(
+                                            "My camera is blocked. I cannot see obstacles. "
+                                            "Please check the lens.",
+                                            emotion="alarmed",
+                                        ),
+                                        blocking=False,
+                                    )
                                 logger.info(
                                     "📷 camera-blocked alert dispatched to TTS bridge"
                                 )
@@ -5528,13 +5618,20 @@ class CortexSystem:
                         self._camera_blocked_warned = False
                         if self.tts:
                             try:
-                                run_async_safe(
-                                    self.tts.speak_safety(
+                                if self.safety_audio:
+                                    self.safety_audio.enqueue(
                                         "Camera's working again.",
                                         emotion="calm",
-                                    ),
-                                    blocking=False,
-                                )
+                                        source="ui_ack",
+                                    )
+                                else:
+                                    run_async_safe(
+                                        self.tts.speak_safety(
+                                            "Camera's working again.",
+                                            emotion="calm",
+                                        ),
+                                        blocking=False,
+                                    )
                             except Exception:
                                 pass
                     self._camera_blocked_since = 0.0
@@ -5829,6 +5926,26 @@ class CortexSystem:
                         )
                         sustained_blob_frac = 0.0
 
+                    # FIX-OVERHEAD-V13: background-subtraction detector
+                    # REMOVED. The per-pixel EMA background model was
+                    # fundamentally incompatible with the camera's
+                    # auto-exposure/AWB convergence — every exposure
+                    # adjustment made 84-96% of the top band read as
+                    # "foreign object", and no threshold or global-shift
+                    # valve could reliably separate that from a real
+                    # hand. The sustained_bg_blob history then kept
+                    # firing for seconds after the exposure settled,
+                    # producing the continuous false "Overhead obstacle"
+                    # TTS spam seen in production logs. The remaining
+                    # detectors (lens-occlusion via top_std<20, depth
+                    # overhead, motion, blob, sustained-blob) cover all
+                    # real overhead scenarios without this false-positive
+                    # pathway.
+                    bg_blob_frac = 0.0
+                    bg_global_shift = False
+                    bg_object_signal = False
+                    sustained_bg_blob_frac = 0.0
+
                     # Decide first, then dump — so the dump shows
                     # which branch fired (or suppressed).
                     overhead_suspected = False
@@ -5928,7 +6045,29 @@ class CortexSystem:
                     overhead_suspected = False
                     overhead_reason = ""
 
-                    if depth_state == "overhead":
+                    # FIX-OVERHEAD-V10: lens-occlusion detector.
+                    # The most reliable signal for "hand/object
+                    # covering the camera" is a VERY LOW top_std.
+                    # A hand pressed over the lens produces a near-
+                    # uniform top band (top_std = 8-15). Normal
+                    # scenes — wall, ceiling, textured fan, outdoor
+                    # — always have top_std > 30. The threshold of
+                    # 20 cleanly separates and fires CONTINUOUSLY
+                    # while the occlusion persists (the EMA baseline
+                    # catches up to a sustained high reading, killing
+                    # the top_std_jump signal, but it can NEVER catch
+                    # up to a low reading because a uniform top band
+                    # keeps top_std < 20 forever).
+                    # This is checked FIRST, before depth_state gates,
+                    # because a covered lens is always a hazard
+                    # regardless of what the depth model thinks.
+                    if top_std < 20.0:
+                        overhead_suspected = True
+                        overhead_reason = (
+                            f"lens-occluded "
+                            f"(top_std={top_std:.1f} < 20)"
+                        )
+                    elif depth_state == "overhead":
                         # ── (1) Depth sees a close overhead object ──
                         overhead_suspected = True
                         overhead_reason = (
@@ -5946,7 +6085,12 @@ class CortexSystem:
                                 f"FORCE depth close-fraction "
                                 f"({depth_top_close_frac:.0%})"
                             )
-                        elif consolidated_motion > 0.03:
+                        elif consolidated_motion > 0.05:
+                            # FIX-OVERHEAD-V9: was 0.03 — too low, AWB
+                            # jitter on a static wall produced cm=0.03-0.04
+                            # and false-fired in FORCE mode. Real hand
+                            # motion gives cm=0.05-0.10; jitter tops out
+                            # around 0.04. 0.05 cleanly separates.
                             overhead_suspected = True
                             overhead_reason = (
                                 f"FORCE motion "
@@ -5985,6 +6129,7 @@ class CortexSystem:
                                 f"FORCE but no signal "
                                 f"(cm={consolidated_motion:.3f} "
                                 f"blob={top_blob_frac:.2f} "
+                                f"std={top_std:.1f} base={base:.1f} "
                                 f"sustained={sustained_blob_frac:.0%})"
                             )
                             self._last_overhead_reason = overhead_reason
@@ -6000,7 +6145,41 @@ class CortexSystem:
                         # SCDepthV3 can't distinguish them for overhead.
                         # No var_ratio gate (it's unreliable: 0.6-1.35
                         # whether or not something is overhead).
-                        if consolidated_motion > 0.10:
+                        #
+                        # FIX-OVERHEAD-V9 (Pi Camera Module 3 Wide):
+                        # Real RPi logs showed top_std_drop=True on 6 of
+                        # the 30 frames while the user held their hand
+                        # over the lens — but the previous tree only
+                        # checked drop in FORCE mode, so normal mode
+                        # stayed silent on those exact frames. The drop
+                        # signal means the top band just got occluded
+                        # (hand/branch covering the FOV) — the same UX
+                        # outcome as an overhead hit — so it should
+                        # fire in normal mode too.
+                        #
+                        # FIX-OVERHEAD-V9-ceiling: when the depth model
+                        # says "ceiling" (top_med > bot_med + 0.3 AND
+                        # both are >2m away) the user is looking up at
+                        # a flat surface — textured ceiling fans,
+                        # popcorn paint, lights all produce top_std=75+
+                        # and top_blob=0.15+ without anything being
+                        # actually overhead. Skip the frame-level
+                        # triggers entirely in that case; only depth
+                        # itself can override (already handled in
+                        # branch 1 above).
+                        if depth_state == "ceiling":
+                            overhead_reason = (
+                                "depth_state=ceiling (suppressed — "
+                                "flat surface confirmed)"
+                            )
+                            self._last_overhead_reason = overhead_reason
+                        elif top_std_drop:
+                            overhead_suspected = True
+                            overhead_reason = (
+                                f"std-drop "
+                                f"(top_std={top_std:.1f} vs base={base:.1f})"
+                            )
+                        elif consolidated_motion > 0.10:
                             overhead_suspected = True
                             overhead_reason = (
                                 f"strong-motion "
@@ -6008,12 +6187,12 @@ class CortexSystem:
                                 f" density={motion_density:.2f},"
                                 f" blob={motion_blob_frac:.0%})"
                             )
-                        elif sustained_blob_frac > 0.40:
-                            # 40%+ of last 30 frames had blob > 15%.
-                            # Lower than V7's 0.60 — a static hand
-                            # at 10-30cm gives sustained≈0.20-0.33
-                            # per frame, but accumulates to 0.40+
-                            # over a few seconds.
+                        elif sustained_blob_frac > 0.30:
+                            # FIX-OVERHEAD-V9: was 0.40 — Pi Cam v3 logs
+                            # show a static hand produces 0.20-0.33
+                            # sustained coverage. 0.40 was unreachable.
+                            # Over 30 frames this still rejects random
+                            # noise (which gives ~0.03-0.10 sustained).
                             overhead_suspected = True
                             overhead_reason = (
                                 f"sustained-blob "
@@ -6021,14 +6200,29 @@ class CortexSystem:
                                 f"blob={top_blob_frac:.0%})"
                             )
                         elif (top_blob_frac > 0.15
-                              and sustained_blob_frac > 0.20):
-                            # Moderate blob right now AND some history
-                            # of blobs → real object, not noise.
+                              and sustained_blob_frac >= 0.20):
+                            # FIX-OVERHEAD-V9: was strict `>` on both.
+                            # Frame-47 log was top_blob=0.17, sustained
+                            # =0.20 — exactly at the boundary, missed by
+                            # one tick. Use `>=` so equal values count.
                             overhead_suspected = True
                             overhead_reason = (
                                 f"blob+history "
                                 f"(blob={top_blob_frac:.0%}, "
                                 f"sustained={sustained_blob_frac:.0%})"
+                            )
+                        elif top_blob_frac > 0.20:
+                            # FIX-OVERHEAD-V9: standalone big-blob trigger.
+                            # A single-frame blob covering >20% of the top
+                            # band is hard to produce without an actual
+                            # overhead object (monitor edge tops out at
+                            # ~7%). This catches the brief-moment-of-
+                            # detection case where motion has already
+                            # decayed but the blob is still huge.
+                            overhead_suspected = True
+                            overhead_reason = (
+                                f"large-blob "
+                                f"({top_blob_frac:.0%} of top band)"
                             )
                         else:
                             overhead_reason = (
@@ -6050,21 +6244,31 @@ class CortexSystem:
                         # a subsequent "texture-jump" alert for the
                         # same actual hand — the user hears about it
                         # even if the active reason changed mid-action.
+                        # FIX-OVERHEAD-V9: strip the leading "FORCE "
+                        # prefix so a FORCE-mode alert and a normal-mode
+                        # alert with the same underlying reason share a
+                        # single cooldown bucket (the user doesn't need
+                        # to hear "FORCE sustained-blob" and then
+                        # "sustained-blob" 1s apart for the same hand).
+                        _reason = overhead_reason or ""
+                        if _reason.startswith("FORCE "):
+                            _reason = _reason[6:]
                         _reason_key = (
-                            overhead_reason.split(" ", 1)[0]
-                            if overhead_reason
-                            else "unknown"
+                            _reason.split(" ", 1)[0] if _reason else "unknown"
                         )
                         _alert_key = f"overhead_alert_{_reason_key}"
                         _tts_key = f"overhead_tts_{_reason_key}"
                         _last_alert = getattr(self, "_overhead_alert_ts", {})
                         _last_tts = getattr(self, "_overhead_tts_ts", {})
                         # Cooldowns tuned via config (defaults below).
+                        # FIX-OVERHEAD-V9: 2s default — the user's hand
+                        # sweeps in and out faster than 8s/12s, so the
+                        # old cooldowns swallowed every second alert.
                         # FORCE-mode uses HALF the cooldown so it
                         # remains responsive but still doesn't
                         # speech-spam on a stationary hand.
-                        _alert_cooldown = 8.0
-                        _tts_cooldown = 12.0
+                        _alert_cooldown = 2.0
+                        _tts_cooldown = 2.0
                         try:
                             _oc = self.config.get("safety", {}) or {}
                             _alert_cooldown = float(
@@ -6078,6 +6282,43 @@ class CortexSystem:
                         if force_overhead:
                             _alert_cooldown *= 0.5
                             _tts_cooldown *= 0.5
+
+                        # FIX-OVERHEAD-V9: escalating cooldown for
+                        # sustained-presence scenarios. A static hand
+                        # over the camera qualifies for the same
+                        # reason 30+ times in a row, so even a 1-2s
+                        # base cooldown produces 1 alert per second
+                        # forever — that's spam, not safety. Track
+                        # consecutive fires of this reason and grow
+                        # the cooldown exponentially so the first
+                        # few reminders are quick and subsequent
+                        # ones are spaced out:
+                        #   fire 1-3:  1x cooldown (1s FORCE / 2s normal)
+                        #   fire 4:    2x (2s / 4s)
+                        #   fire 5:    3x (3s / 6s)
+                        #   fire 6+:   5x (5s / 10s)
+                        # The counter resets if the reason hasn't
+                        # fired in the last 60s (hand went away).
+                        _consec_map = getattr(
+                            self, "_overhead_consec_count", {}
+                        )
+                        _last_fire_t = _last_alert.get(_alert_key, 0.0)
+                        if _now_oh - _last_fire_t < 60.0:
+                            _consec = _consec_map.get(_reason_key, 0) + 1
+                        else:
+                            _consec = 0
+                        _consec_map[_reason_key] = _consec
+                        self._overhead_consec_count = _consec_map
+                        if _consec <= 3:
+                            _scale = 1.0
+                        elif _consec == 4:
+                            _scale = 2.0
+                        elif _consec == 5:
+                            _scale = 3.0
+                        else:
+                            _scale = 5.0
+                        _alert_cooldown *= _scale
+                        _tts_cooldown *= _scale
 
                         _alert_due = (
                             _now_oh - _last_alert.get(_alert_key, 0.0)
@@ -6126,13 +6367,24 @@ class CortexSystem:
                                 _last_tts[_tts_key] = _now_oh
                                 self._overhead_tts_ts = _last_tts
                                 try:
-                                    run_async_safe(
-                                        self.tts.speak_safety(
+                                    if self.safety_audio:
+                                        # Route through coordinator so
+                                        # Path A doesn't overlap Path B/C
+                                        # safety_monitor overhang alert
+                                        # on the same hazard.
+                                        self.safety_audio.enqueue(
                                             "Low obstacle ahead. Duck or step around.",
                                             emotion="alarmed",
-                                        ),
-                                        blocking=False,
-                                    )
+                                            source="frame_overhead",
+                                        )
+                                    else:
+                                        run_async_safe(
+                                            self.tts.speak_safety(
+                                                "Low obstacle ahead. Duck or step around.",
+                                                emotion="alarmed",
+                                            ),
+                                            blocking=False,
+                                        )
                                     logger.info(
                                         f"🔊 Overhead TTS dispatched "
                                         f"(reason={_reason_key}, "
@@ -6314,8 +6566,16 @@ class CortexSystem:
                                     sa.play_directional_alert(alert.position_3d, alert.alert_type, urgency)
 
                             # TTS voice for first-time Tier 1 hazards
-                            if alert.needs_tts and self.audio_alerts:
-                                self.audio_alerts.play(alert.alert_type, distance_m=alert.distance_m)
+                            # FIX-OVERLAP: the pre-recorded WAV is now
+                            # redundant — the synthesized TTS below
+                            # carries the same hazard + distance + direction
+                            # with much better prosody. Drop the WAV path
+                            # so we don't get two voices stacked on the
+                            # same hazard. audio_alerts remains initialized
+                            # for any future use but is no longer called
+                            # from the safety block.
+                            # if alert.needs_tts and self.audio_alerts:
+                            #     self.audio_alerts.play(alert.alert_type, distance_m=alert.distance_m)
 
                             # FIX-SAFETY-VOICE-COMMAND: voice command for
                             # critical hazards. The old haptic path went
@@ -6330,12 +6590,23 @@ class CortexSystem:
                                 # get the best prosody from Cartesia.
                                 _phrase = self._safety_phrase_for_alert(alert)
                                 if _phrase:
-                                    run_async_safe(
-                                        self.tts.speak_safety(
+                                    if self.safety_audio:
+                                        # Route through coordinator so
+                                        # Path B/C doesn't overlap Path A
+                                        # frame-level overhead on the
+                                        # same hazard.
+                                        self.safety_audio.enqueue(
                                             _phrase,
                                             emotion="alarmed" if alert.tier <= 1 else "urgent",
+                                            source=f"safety_monitor_{alert.alert_type}",
                                         )
-                                    )
+                                    else:
+                                        run_async_safe(
+                                            self.tts.speak_safety(
+                                                _phrase,
+                                                emotion="alarmed" if alert.tier <= 1 else "urgent",
+                                            )
+                                        )
 
                             # Push to the live dashboard activity feed + safety history.
                             # record_safety_alert itself routes to both safety_recent
@@ -7922,6 +8193,13 @@ class CortexSystem:
             self.depth_estimator.cleanup()
         if self.audio_alerts:
             self.audio_alerts.cleanup()
+        # Stop the safety audio coordinator so its worker thread joins.
+        # Without this, daemon thread keeps running after stop() returns.
+        if getattr(self, "safety_audio", None):
+            try:
+                self.safety_audio.stop(timeout=2.0)
+            except Exception as e:
+                logger.debug(f"safety_audio stop error: {e}")
         if self.ocr_pipeline:
             self.ocr_pipeline.cleanup()
         if self.layer0 and hasattr(self.layer0, 'cleanup'):

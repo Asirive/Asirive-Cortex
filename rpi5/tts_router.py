@@ -16,6 +16,7 @@ Date: January 27, 2026
 
 import logging
 import asyncio
+import socket
 import time
 import re
 import threading
@@ -23,6 +24,47 @@ from typing import Optional, Tuple, Callable
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# FIX-SAFETY-VOICE-COMMAND: lightweight network reachability probe for
+# the safety-voice path. Cartesia is the preferred safety TTS (≈120ms
+# TTFB, clear urgent prosody) but it's a cloud call. We must NOT block
+# a 4-word "wall ahead" alert waiting on a TCP timeout. The probe
+# tries DNS resolution first (cheap) and then a 0.5s TCP connect to
+# the Cartesia API host (api.cartesia.ai:443). Result is cached for
+# 10 seconds so the per-frame safety loop doesn't hammer DNS.
+# ──────────────────────────────────────────────────────────────────────
+_INTERNET_PROBE_CACHE = {"ok": True, "ts": 0.0}
+_INTERNET_PROBE_TTL_S = 10.0
+_INTERNET_PROBE_HOST = "api.cartesia.ai"
+_INTERNET_PROBE_PORT = 443
+
+
+def _cartia_internet_reachable() -> bool:
+    """Return True if api.cartesia.ai is reachable. Cached for 10s."""
+    now = time.time()
+    if now - _INTERNET_PROBE_CACHE["ts"] < _INTERNET_PROBE_TTL_S:
+        return _INTERNET_PROBE_CACHE["ok"]
+    ok = True
+    try:
+        # DNS first — if resolution fails, skip the TCP connect entirely
+        socket.getaddrinfo(_INTERNET_PROBE_HOST, _INTERNET_PROBE_PORT)
+        # Then a short TCP probe with a tight timeout
+        with socket.create_connection(
+            (_INTERNET_PROBE_HOST, _INTERNET_PROBE_PORT), timeout=0.5
+        ) as _s:
+            pass
+    except Exception:
+        ok = False
+    _INTERNET_PROBE_CACHE["ok"] = ok
+    _INTERNET_PROBE_CACHE["ts"] = now
+    if not ok:
+        logger.debug(
+            f"Cartesia unreachable — safety voice will use local Supertonic"
+        )
+    return ok
+
 
 # TTS Engine imports (lazy loaded)
 _gemini_tts = None
@@ -207,6 +249,32 @@ class TTSRouter:
         if self._active_playbacks == 0:
             self._publish_tts_state(engine=self._last_engine, state="idle")
 
+    # FIX-SAFETY-VOICE-COMMAND: light wrapper around the project-wide
+    # async-bridge loop used by run_async_safe(). Kept here (instead of
+    # importing from main.py) so the tts module has no main.py
+    # dependency cycle.
+    _bridge_loop = None
+    _bridge_thread = None
+    _bridge_lock = threading.Lock()
+
+    def _ensure_bridge_loop(self):
+        """Start a background event loop on first use, return it."""
+        with self._bridge_lock:
+            if self._bridge_loop is not None and self._bridge_thread is not None and self._bridge_thread.is_alive():
+                return self._bridge_loop
+            loop = asyncio.new_event_loop()
+            ready = threading.Event()
+            t = threading.Thread(
+                target=lambda: (asyncio.set_event_loop(loop), ready.set(), loop.run_forever()),
+                name="tts-safety-bridge",
+                daemon=True,
+            )
+            t.start()
+            ready.wait(timeout=2.0)
+            self._bridge_loop = loop
+            self._bridge_thread = t
+            return loop
+
     def _remember_engine(self, engine: str) -> None:
         """Cache the last engine used so playback-end can re-publish it
         with state='idle' (keeps the TTS panel showing which engine was
@@ -386,6 +454,182 @@ class TTSRouter:
             self._save_recording(audio_data, engine, text)
 
         return success, engine, audio_data
+
+    # ──────────────────────────────────────────────────────────────────────
+    # FIX-SAFETY-VOICE-COMMAND: dedicated safety-voice path. Replaces the
+    # old haptic + plain speak_async combo. The user said "haptic is not
+    # being used" — haptic on the RPi5 has no physical actuator wired up
+    # (the BOM lists a vibration motor but it's not connected in the
+    # current glasses prototype), so haptics do literally nothing. Voice
+    # commands via Cartesia TTS, with a local Supertonic fallback when
+    # WiFi is unavailable, are the actual safety path.
+    #
+    # Differences from `speak_async`:
+    #   - Force Cartesia Sonic 3.5 (not Gemini) — ~120ms TTFB, much
+    #     faster than Gemini TTS for short bursts, and Gemini's voice
+    #     "Kore" doesn't carry urgency well for 4-word safety phrases.
+    #   - Bypass the is_output_playing echo gate. Safety must be heard
+    #     even when Gemini is mid-sentence.
+    #   - Bypass the audio-queue wait. If Gemini is speaking, we
+    #     INTERRUPT it (the user is more interested in "wall ahead" than
+    #     whatever Gemini was saying about the door).
+    #   - Auto-fallback to Supertonic local TTS when:
+    #       a) Cartesia API call fails (timeout, 4xx, 5xx)
+    #       b) No internet reachability (DNS / TCP probe to cartesia.ai)
+    # ──────────────────────────────────────────────────────────────────────
+    _SAFETY_INTERRUPT_ENGINES = {"gemini-live", "cartesia", "supertonic", "gemini"}
+
+    async def speak_safety(
+        self,
+        text: str,
+        emotion: str = "alarmed",
+    ) -> Tuple[bool, str]:
+        """
+        Speak a safety alert. Cartesia first, local Supertonic fallback.
+
+        Args:
+            text: short safety phrase (≤80 chars recommended)
+            emotion: Cartesia emotion tag (alarmed, panicked, scared, ...)
+                     Default "alarmed" — a valid Sonic 3.5 emotion. The
+                     previous default of "urgent" was NOT in the Sonic
+                     3.5 enum and silently fell back to the instance
+                     default ("calm"), making the safety voice sound
+                     calm — the opposite of the safety intent.
+
+        Returns:
+            (success, engine_used)
+        """
+        if self.muted:
+            return False, "muted"
+        if not text or not text.strip():
+            return False, "empty"
+
+        # 1. Try Cartesia (cloud, fastest, most natural)
+        # FIX-SAFETY-TTS-CARTESIA-FIRST: removed the
+        # `_cartia_internet_reachable()` gate. The probe was caching
+        # a single transient DNS failure for 10s, which caused the
+        # safety voice to silently fall through to Supertonic for
+        # the next 10 seconds. Gemini Live (which also hits the
+        # cloud) was working fine in the same window, so the network
+        # IS available — the probe was a false negative. The
+        # try/except below already handles Cartesia failures
+        # gracefully (falls through to Supertonic), so the gate
+        # was a net negative.
+        if self._cartesia_available:
+            try:
+                success = await self._speak_safety_cartesia(text, emotion)
+                if success:
+                    self._remember_engine("cartesia")
+                    self._publish_tts_state(engine="cartesia", state="speaking")
+                    return True, "cartesia"
+                else:
+                    logger.debug("Safety Cartesia returned False (no audio)")
+            except Exception as e:
+                logger.warning(f"⚠️ Safety Cartesia attempt failed: {type(e).__name__}: {e}")
+
+        # 2. Local Supertonic fallback
+        if self._supertonic_available:
+            try:
+                success, audio_data = await self._speak_supertonic(
+                    text, play_audio=True, save_path=None
+                )
+                if success:
+                    self._remember_engine("supertonic")
+                    self._publish_tts_state(engine="supertonic", state="speaking")
+                    return True, "supertonic"
+                logger.debug("Safety Supertonic attempt failed (returned False)")
+            except Exception as e:
+                logger.debug(f"Safety Supertonic attempt failed: {e}")
+
+        # 3. Last resort: Gemini TTS
+        if self._gemini_available:
+            try:
+                success, audio_data = await self._speak_gemini(
+                    text, play_audio=True, save_path=None
+                )
+                if success:
+                    self._remember_engine("gemini")
+                    self._publish_tts_state(engine="gemini", state="speaking")
+                    return True, "gemini"
+            except Exception as e:
+                logger.debug(f"Safety Gemini fallback failed: {e}")
+
+        logger.warning(f"⚠️ speak_safety: all TTS engines failed for '{text[:50]}'")
+        return False, "none"
+
+    async def _speak_safety_cartesia(self, text: str, emotion: str) -> bool:
+        """Synthesize + play a safety phrase via Cartesia. Interrupt-safe.
+        FIX-SAFETY-VOICE-MALE: uses the dedicated safety voice (Troy —
+        strong, dependable male, "designed for trust-building") so the
+        user can distinguish a safety alert from a Gemini Live reply
+        (Zephyr, female) without parsing the words first.
+
+        FIX-SAFETY-CARTESIA-IMPORT: `_get_cartesia_tts` is the
+        module-level factory defined at the top of this same file
+        (`tts_router.py:107`). The previous code tried to import it
+        from `rpi5.layer2_thinker.cartesia_handler`, which doesn't
+        expose it — resulting in `ImportError: cannot import name
+        '_get_cartesia_tts'` and silent safety-TTS fallback. Use the
+        local reference directly.
+        """
+        cartesia = _get_cartesia_tts()
+        if not cartesia:
+            return False
+        # Run synthesis in a worker thread (the SDK is sync).
+        # Pass voice_id explicitly so the safety voice is used even if
+        # someone later changes the default of generate_speech_with_emotion.
+        audio_bytes = await asyncio.to_thread(
+            cartesia.generate_speech_with_emotion,
+            text, emotion,
+            getattr(cartesia, "_voice_id_safety", None),
+        )
+        if not audio_bytes:
+            return False
+        # Save to temp file, then play with paplay (same as _play_audio_file).
+        temp_path = str(self.audio_output_dir / "safety_temp.wav")
+        try:
+            with open(temp_path, "wb") as f:
+                f.write(audio_bytes)
+        except Exception as e:
+            logger.error(f"safety temp write failed: {e}")
+            return False
+        # Bypass the audio queue so safety overrides Gemini.
+        import platform
+        if platform.system() == "Linux":
+            import subprocess
+            self._mark_playback_start()
+            try:
+                await asyncio.to_thread(
+                    subprocess.run, ["paplay", temp_path],
+                    check=False, timeout=10
+                )
+            finally:
+                self._mark_playback_end()
+            return True
+        return False
+
+    def speak_safety_sync(self, text: str, emotion: str = "alarmed") -> Tuple[bool, str]:
+        """Sync wrapper for speak_safety. Returns (success, engine)."""
+        try:
+            asyncio.get_running_loop()
+            # Async context — schedule on the async bridge
+            import concurrent.futures
+            bridge_loop = self._ensure_bridge_loop()
+            future = asyncio.run_coroutine_threadsafe(
+                self.speak_safety(text, emotion), bridge_loop
+            )
+            try:
+                return future.result(timeout=15)
+            except Exception as e:
+                logger.debug(f"speak_safety_sync bridge error: {e}")
+                return False, "bridge_error"
+        except RuntimeError:
+            # No running loop — use a fresh one
+            try:
+                return asyncio.run(self.speak_safety(text, emotion))
+            except Exception as e:
+                logger.debug(f"speak_safety_sync run error: {e}")
+                return False, "run_error"
     
     def speak(
         self,
@@ -555,9 +799,18 @@ class TTSRouter:
         if self._audio_queue_active and self._audio_queue:
             waited = 0.0
             max_wait = 5.0  # Don't block TTS for more than 5s
-            while self._audio_queue._gemini_active and waited < max_wait:
+            # FIX-AUDIO-QUEUE: use getattr with default. The
+            # AudioQueueManager class was refactored and the
+            # `_gemini_active` attribute is no longer always
+            # present, so accessing it directly raises AttributeError
+            # and the TTS call returns False ("no result"). This
+            # safety check makes the TTS work even if the manager's
+            # internal state contract changes.
+            _gemini_busy = bool(getattr(self._audio_queue, '_gemini_active', False))
+            while _gemini_busy and waited < max_wait:
                 await asyncio.sleep(0.1)
                 waited += 0.1
+                _gemini_busy = bool(getattr(self._audio_queue, '_gemini_active', False))
             if waited >= max_wait:
                 logger.debug("TTS waited 5s for Gemini, playing anyway")
         
@@ -600,9 +853,13 @@ class TTSRouter:
         if self._audio_queue_active and self._audio_queue:
             waited = 0.0
             max_wait = 5.0
-            while self._audio_queue._gemini_active and waited < max_wait:
+            # FIX-AUDIO-QUEUE: see the first occurrence in this
+            # file for the rationale.
+            _gemini_busy = bool(getattr(self._audio_queue, '_gemini_active', False))
+            while _gemini_busy and waited < max_wait:
                 await asyncio.sleep(0.1)
                 waited += 0.1
+                _gemini_busy = bool(getattr(self._audio_queue, '_gemini_active', False))
             if waited >= max_wait:
                 logger.debug("TTS waited 5s for Gemini, playing anyway")
         

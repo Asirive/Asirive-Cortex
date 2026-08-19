@@ -16,6 +16,7 @@ Project: Cortex v2.0 — YIA 2026
 """
 
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -258,7 +259,25 @@ class HailoDepthEstimator:
             self._configured_cm = self._infer_model.configure()
             self._configured_infer_model = self._configured_cm.__enter__()
             logger.info("  Configured InferModel (persistent, context entered)")
-            
+
+            # CRITICAL: must explicitly activate() before run/run_async — BUT
+            # only when we own the VDevice. On a SHARED VDevice the
+            # core-op scheduler is already running (e.g. for the OCR
+            # pipeline) and calling ``activate()`` raises
+            # "Manually activate a core-op is not allowed when the
+            # core-op scheduler is active" (HAILO_INVALID_OPERATION(6)).
+            # When sharing, the scheduler activates each model on
+            # demand as inference is submitted, so we don't need to.
+            if self._owns_vdevice:
+                try:
+                    self._configured_infer_model.activate()
+                    logger.info("  ConfiguredInferModel activated (own VDevice)")
+                except Exception as _e:
+                    logger.error(f"ConfiguredInferModel.activate() failed: {_e}")
+                    raise
+            else:
+                logger.info("  Skipping activate() — shared VDevice scheduler handles it")
+
             self._is_initialized = True
             logger.info(f"✅ Hailo depth estimator initialized ({self.model_type})")
             
@@ -273,6 +292,11 @@ class HailoDepthEstimator:
 
     def cleanup(self) -> None:
         """Release Hailo resources and exit configured model context."""
+        if self._configured_infer_model is not None:
+            try:
+                self._configured_infer_model.deactivate()
+            except Exception:
+                pass
         if self._configured_cm is not None:
             try:
                 self._configured_cm.__exit__(None, None, None)
@@ -337,12 +361,118 @@ class HailoDepthEstimator:
             # Ensure contiguous memory layout (required by Hailo bindings)
             input_data = np.ascontiguousarray(input_data)
 
-            # Run inference using modern API with bindings
+            # Run inference using the validated HailoRT 4.x async pattern.
+            #
+            # The pre-allocated ``output_buffer`` we hand to
+            # ``set_buffer()`` STAYS ZERO-FILLED after the call. The
+            # real dequantized float32 result comes back through
+            # ``bindings.output().get_buffer()`` — HailoRT allocates
+            # a NEW host-side array for the dequantized result and
+            # returns it from that accessor. (See hailo_depth research
+            # notes — host-side format conversion bypasses the
+            # user-provided buffer.)
+            #
+            # API requirements (HailoRT 4.x):
+            #   - ``infer_model.configure()`` context manager (we did this)
+            #   - ``configured.activate()`` BEFORE first run (we did this)
+            #   - ``bindings`` argument to run_async MUST be a list
+            #   - ``wait_for_async_ready()`` to avoid queue full
+            #   - Buffers should be np.zeros / np.full, NOT np.empty
+            #   - Retrieve result via ``bindings.output().get_buffer()``
             bindings = self._configured_infer_model.create_bindings()
             bindings.input().set_buffer(input_data)
-            output_buffer = np.empty(self._infer_model.output().shape, dtype=np.float32)
+            output_buffer = np.zeros(
+                self._infer_model.output().shape, dtype=np.float32
+            )
             bindings.output().set_buffer(output_buffer)
-            self._configured_infer_model.run([bindings], 5000)
+
+            # Don't pile up jobs faster than the NPU can drain them
+            try:
+                self._configured_infer_model.wait_for_async_ready(
+                    timeout_ms=5000, frames_count=1
+                )
+            except Exception as _e:
+                logger.debug(f"wait_for_async_ready: {_e}")
+
+            _infer_done = threading.Event()
+            _infer_result: Dict[str, object] = {}
+
+            def _infer_callback(*args, **kwargs) -> None:
+                # HailoRT 4.x callback receives completion_info as kwarg.
+                # The bindings list isn't passed through; we recover the
+                # result via the closure-captured bindings.
+                try:
+                    ci = kwargs.get('completion_info') or (
+                        args[0] if args else None
+                    )
+                    if ci is not None and hasattr(ci, 'exception'):
+                        exc = ci.exception()
+                        if exc is not None:
+                            _infer_result['error'] = str(exc)
+                except Exception as _e:
+                    logger.debug(f"infer_callback inner error: {_e}")
+                finally:
+                    _infer_done.set()
+
+            try:
+                # MUST pass [bindings] (list of one) — bare Bindings
+                # throws "'Bindings' object is not iterable"
+                self._configured_infer_model.run_async(
+                    [bindings], _infer_callback
+                )
+            except Exception as _e:
+                logger.error(f"infer_model.run_async submit failed: {_e}")
+                return None
+
+            if not _infer_done.wait(timeout=5.0):
+                logger.error("Depth inference timed out after 5s")
+                return None
+
+            if 'error' in _infer_result:
+                logger.error(
+                    f"Depth inference callback reported error: "
+                    f"{_infer_result['error']}"
+                )
+                return None
+
+            # *** THE KEY FIX ***
+            # The real dequantized float32 result is allocated by
+            # HailoRT on the host side and exposed via
+            # ``bindings.output().get_buffer()``. The buffer we passed
+            # via ``set_buffer()`` is just a DMA target for the raw
+            # quantized bytes; the dequantization step writes to a NEW
+            # array we retrieve here.
+            try:
+                result = bindings.output().get_buffer()
+            except Exception as _e:
+                logger.error(f"Failed to get output buffer: {_e}")
+                return None
+            if result is None:
+                logger.error("get_buffer() returned None")
+                return None
+
+            # result may be a list (one entry per output layer) or
+            # a single ndarray — SCDepthV3 has 1 output so it's ndarray
+            if isinstance(result, list):
+                result = result[0]
+            output_buffer = np.asarray(result)
+
+            # ── SCDepthV3 ON HAILO-8L SIGN CONVENTION ──
+            # The compiled SCDepthV3 HEF on Hailo-8L emits NEGATIVE
+            # log-disparity values (typically -3 to -6 on indoor
+            # scenes). Convention: LESS NEGATIVE = CLOSER. So:
+            #   raw = -5.5 → 5.5 m (real depth)
+            #   raw = -3.5 → 3.5 m (further)
+            # Negate so the depth map handed to ALL downstream
+            # consumers is in positive meters. Without this fix:
+            #   - ``np.clip(depth_map, 0.3, 20.0)`` clipped every
+            #     negative to 0.3, making _detect_walls think every
+            #     pixel was a wall AND _detect_overhangs see no
+            #     "protrusion" (because bottom strip was also 0.3,
+            #     not far) → ZERO safety alerts.
+            #   - ``classify_distance()`` returned wrong labels.
+            if self.model_type == "scdepthv3":
+                output_buffer = -output_buffer
             
             # Extract depth map from pre-allocated output buffer
             depth_map = output_buffer

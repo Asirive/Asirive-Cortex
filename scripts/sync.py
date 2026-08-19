@@ -30,9 +30,41 @@ import argparse
 import hashlib
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
+
+
+# ─── UTF-8 stdio shim ──────────────────────────────────────────────
+# Windows cp1252 can't encode the box-drawing chars in print_banner()
+# (╔══╗ etc.). Without this shim, the first print() in cmd_to()
+# raises UnicodeEncodeError and the script looks "stuck" because no
+# output ever reaches the terminal. Mirrors main.py:_ensure_utf8_stdio().
+def _ensure_utf8_stdio() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+        enc = (getattr(stream, "encoding", None) or "").lower()
+        if "utf" in enc:
+            continue
+        try:
+            new_stream = open(
+                stream.fileno(),
+                mode="w",
+                buffering=1,
+                encoding="utf-8",
+                errors="replace",
+                closefd=False,
+            )
+            setattr(sys, stream_name, new_stream)
+        except (AttributeError, OSError, ValueError):
+            pass
+
+
+_ensure_utf8_stdio()
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 import tempfile
 import time
 from datetime import datetime
@@ -67,19 +99,19 @@ def load_config() -> Dict:
             with open(CONFIG_PATH) as f:
                 cfg = yaml.safe_load(f)
             return {
-                "host": cfg.get("rpi5_device", {}).get("host", "10.<REDACTED-RPI-IP>"),
+                "host": cfg.get("rpi5_device", {}).get("host", "10.127.61.31"),
                 "user": cfg.get("rpi5_device", {}).get("user", "cortex"),
                 "path": cfg.get("rpi5_device", {}).get("path", "/home/cortex/ProjectCortex"),
-                "laptop_host": cfg.get("laptop_server", {}).get("host", "10.<REDACTED-LAPTOP-IP>"),
+                "laptop_host": cfg.get("laptop_server", {}).get("host", "10.127.61.101"),
             }
         except Exception as e:
             print(_c(f"Warning: could not load config.yaml: {e}", Colors.YELLOW))
     
     return {
-        "host": "10.<REDACTED-RPI-IP>",
+        "host": "10.127.61.31",
         "user": "cortex",
         "path": "/home/cortex/ProjectCortex",
-        "laptop_host": "10.<REDACTED-LAPTOP-IP>",
+        "laptop_host": "10.127.61.101",
     }
 
 _cfg = load_config()
@@ -205,17 +237,33 @@ class RPiSSH:
         if not PARAMIKO_OK:
             print(_c("❌ paramiko not installed. Run: pip install paramiko", Colors.RED))
             return False
-        
+
+        # TCP pre-check — fail fast with a clear message if the host
+        # is unreachable, instead of waiting for paramiko's internal
+        # timeouts (which can feel like a hang to the user).
+        print(_c(f"   → probing {RPI_HOST}:22 (TCP)…", Colors.DIM))
+        try:
+            with socket.create_connection((RPI_HOST, 22), timeout=5):
+                pass
+        except (socket.timeout, ConnectionRefusedError, OSError) as e:
+            print(_c(f"❌ Cannot reach {RPI_HOST}:22 — {e}", Colors.RED))
+            print(_c(f"   Check that RPi5 is online, on the same network, "
+                     f"and SSH is listening (systemctl status ssh).", Colors.YELLOW))
+            return False
+
         self.client = paramiko.SSHClient()
         self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:
+            print(_c(f"   → SSH handshake as {RPI_USER}@{RPI_HOST}…", Colors.DIM))
             self.client.connect(
                 RPI_HOST,
                 username=RPI_USER,
                 password=RPI_PASSWORD,
                 timeout=10,
                 banner_timeout=10,
+                auth_timeout=10,
             )
+            print(_c(f"   ✅ connected", Colors.GREEN))
             return True
         except Exception as e:
             print(_c(f"❌ SSH connection failed: {e}", Colors.RED))
