@@ -3,7 +3,7 @@ Make A2DP the default Bluetooth profile on RPi5 via PipeWire/WirePlumber config.
 Disables HFP/HSP so the system always uses A2DP (stereo) for the CMF Buds.
 Temporary script - delete after use.
 """
-from scripts._rpi_ssh import (
+from tools._rpi_ssh import (
     RPI_HOST,
     RPI_PASSWORD,
     RPI_USER,

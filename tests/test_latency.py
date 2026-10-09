@@ -3,7 +3,7 @@ import time
 import json
 import asyncio
 from datetime import datetime
-from shared.api import BaseMessage, MessageType
+from infra.api import BaseMessage, MessageType
 
 def test_detection_serialization_latency():
     """Measure latency of creating and serializing a detection message."""

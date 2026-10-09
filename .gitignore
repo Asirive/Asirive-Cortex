@@ -2,8 +2,8 @@
 .env
 .env.*
 *.env
-scripts/_rpi_ssh.py
-scripts/.rpi5_key
+tools/_rpi_ssh.py
+tools/.rpi5_key
 *.pyc
 __pycache__/
 *.so
@@ -60,10 +60,21 @@ AGENTS.md
 ContextHistory.md
 
 # Textual TUI screenshots from save_screenshot() debugging
-scripts/cortex_full_tui_*.png
-scripts/*.tui.png
+tools/cortex_full_tui_*.png
+tools/*.tui.png
 
 # Windows reserved filename artifact
 nul
 .worktrees/
-scripts/.cartesia_key 
+tools/.cartesia_key
+
+# V4 additions — runtime data, local artifacts, unpushed deliverables
+temp_audio/*
+!temp_audio/.gitkeep
+local_cortex.db
+memory_storage/
+memory/
+logs/
+archive/session-ses_*.md
+media/presentations/
+!.env.example

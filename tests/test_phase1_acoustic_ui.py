@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from rpi5.layer3_guide.spatial_audio.manager import SpatialAudioManager  # noqa: E402
+from core.layer3_guide.spatial_audio.manager import SpatialAudioManager  # noqa: E402
 
 
 def test_update_from_depth_generates_left_hum_params_for_near_wall():

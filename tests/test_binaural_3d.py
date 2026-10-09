@@ -38,7 +38,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("binaural_test")
 
-from rpi5.layer3_guide.spatial_audio.binaural_engine import (
+from core.layer3_guide.spatial_audio.binaural_engine import (
     BinauralEngine,
     generate_chirp,
     generate_melody_ping,
@@ -166,7 +166,7 @@ def imu_test(engine: BinauralEngine):
 
     # Start IMU
     try:
-        from rpi5.hardware.imu_handler import IMUHandler
+        from device.hardware.imu_handler import IMUHandler
     except ImportError:
         print("  ERROR: IMUHandler not available (not on RPi5?)")
         return

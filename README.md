@@ -207,7 +207,7 @@ Multi-leg routes (Walk → Bus → Walk) are supported. Saved locations (Home / 
 
 ## 📊 Live Dashboard
 
-Three modes available via `python -m rpi5 all`:
+Three modes available via `python -m apps.cortex all`:
 
 - **`--old-dashboard`** — Legacy Rich `Live` panel + log scroll on stderr
 - **default (Textual TUI)** — full-screen terminal UI: layers, system sensors, hailo, GPS, IMU, BT, AI routing, L0/L1/L2/L3/L4 panels, recent alerts, activity feed, transcript. Logs tailed from file (TUI owns the terminal)
@@ -262,21 +262,21 @@ ZAI_API_KEY=your_zai_glm_key_here
 
 API key rotation pool is supported — add `GEMINI_API_KEY_2`, `GEMINI_API_KEY_3`, etc. The handler rotates through them on 429/503.
 
-The laptop's IP goes in `rpi5/config/config.yaml` under `laptop_server.host` (current production: `10.127.61.101`). The RPi5's `.env` is gitignored — push it via the included `scripts/fix_rpi5_env.py` (uses `scripts/.rpi5_key`, also gitignored).
+The laptop's IP goes in `core/config/config.yaml` under `laptop_server.host` (current production: `10.127.61.101`). The RPi5's `.env` is gitignored — push it via the included `tools/fix_rpi5_env.py` (uses `tools/.rpi5_key`, also gitignored).
 
 ### Run
 
 ```bash
 # Production (RPi5) — full system with Textual TUI
-python -m rpi5 all
+python -m apps.cortex all
 
 # Standalone (no laptop dashboard)
-python -m rpi5 all --standalone
+python -m apps.cortex all --standalone
 
 # Debug a single subsystem
-python -m rpi5 test-live          # minimal Gemini Live probe (prints real close codes)
-python -m rpi5 layer0             # Guardian only
-python -m rpi5 status             # print env / config / layer availability
+python -m apps.cortex test-live          # minimal Gemini Live probe (prints real close codes)
+python -m apps.cortex layer0             # Guardian only
+python -m apps.cortex status             # print env / config / layer availability
 
 # Laptop dashboard
 python -m laptop all --fastapi    # opens on http://localhost:8000

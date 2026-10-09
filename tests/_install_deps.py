@@ -2,7 +2,7 @@
 Install sounddevice + deps on RPi5 and sync code.
 Temporary script - delete after use.
 """
-from scripts._rpi_ssh import (
+from tools._rpi_ssh import (
     RPI_HOST,
     RPI_PASSWORD,
     RPI_USER,

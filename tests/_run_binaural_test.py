@@ -3,7 +3,7 @@ Run the binaural 3D audio sweep test on RPi5 via SSH.
 Plays a tone that rotates 360 degrees around your head.
 Temporary script - delete after use.
 """
-from scripts._rpi_ssh import (
+from tools._rpi_ssh import (
     RPI_HOST,
     RPI_PASSWORD,
     RPI_USER,

@@ -20,7 +20,7 @@ import sys, time
 sys.path.insert(0, "/home/cortex/ProjectCortex/rpi5")
 sys.path.insert(0, "/home/cortex/ProjectCortex")
 
-from rpi5.layer3_guide.spatial_audio.binaural_engine import BinauralEngine
+from core.layer3_guide.spatial_audio.binaural_engine import BinauralEngine
 
 engine = BinauralEngine(sr=48000, gain=0.5)
 engine.start()

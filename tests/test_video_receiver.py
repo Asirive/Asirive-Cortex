@@ -5,7 +5,7 @@ import struct
 import numpy as np
 import cv2
 import threading
-from laptop.server.video_receiver import VideoReceiver
+from apps.laptop_dashboard.server.video_receiver import VideoReceiver
 
 def test_video_receiver_initialization():
     """Test that VideoReceiver initializes correctly."""

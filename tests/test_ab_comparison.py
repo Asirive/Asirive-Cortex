@@ -35,7 +35,7 @@ logging.basicConfig(
 logger = logging.getLogger("ab_test")
 
 # ─── Import both engines ────────────────────────────────────────
-from rpi5.layer3_guide.spatial_audio.binaural_engine import (
+from core.layer3_guide.spatial_audio.binaural_engine import (
     BinauralEngine,
     generate_chirp,
 )

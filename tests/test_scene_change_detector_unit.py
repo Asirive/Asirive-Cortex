@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from rpi5.layer2_thinker.scene_change_detector import SceneChangeDetector  # noqa: E402
+from core.layer2_thinker.scene_change_detector import SceneChangeDetector  # noqa: E402
 
 
 def test_nav_event_triggers_narration_immediately():

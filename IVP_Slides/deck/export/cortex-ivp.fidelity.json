@@ -1,0 +1,276 @@
+{
+  "deck": "cortex-ivp",
+  "pages": 27,
+  "totalElements": 751,
+  "byKind": {
+    "Box": 170,
+    "ImageFallback": 30,
+    "TextRun": 397,
+    "SvgIcon": 104,
+    "Line": 44,
+    "Image": 6
+  },
+  "editablePercent": 96,
+  "fallbacks": [
+    {
+      "pageIndex": 0,
+      "pageName": "Cover",
+      "leafId": "pg0-Rings-1:0",
+      "reasons": [
+        "decor:box",
+        "fallback-image-attached"
+      ]
+    },
+    {
+      "pageIndex": 0,
+      "pageName": "Cover",
+      "leafId": "pg0-Rings-1:1",
+      "reasons": [
+        "decor:box",
+        "fallback-image-attached"
+      ]
+    },
+    {
+      "pageIndex": 0,
+      "pageName": "Cover",
+      "leafId": "pg0-Rings-1:2",
+      "reasons": [
+        "decor:box",
+        "fallback-image-attached"
+      ]
+    },
+    {
+      "pageIndex": 0,
+      "pageName": "Cover",
+      "leafId": "pg0-Rings-1:3",
+      "reasons": [
+        "decor:box",
+        "fallback-image-attached"
+      ]
+    },
+    {
+      "pageIndex": 0,
+      "pageName": "Cover",
+      "leafId": "pg0-Rings-1:4",
+      "reasons": [
+        "decor:box",
+        "fallback-image-attached"
+      ]
+    },
+    {
+      "pageIndex": 0,
+      "pageName": "Cover",
+      "leafId": "pg0-Halftone-2",
+      "reasons": [
+        "primitive:non-native-background"
+      ]
+    },
+    {
+      "pageIndex": 1,
+      "pageName": "Contents",
+      "leafId": "pg1-Halftone-2",
+      "reasons": [
+        "primitive:non-native-background"
+      ]
+    },
+    {
+      "pageIndex": 3,
+      "pageName": "DividerEmpathize",
+      "leafId": "pg3-Halftone-3",
+      "reasons": [
+        "primitive:non-native-background"
+      ]
+    },
+    {
+      "pageIndex": 4,
+      "pageName": "BillionStat",
+      "leafId": "pg4-Rings-2:0",
+      "reasons": [
+        "decor:box",
+        "fallback-image-attached"
+      ]
+    },
+    {
+      "pageIndex": 4,
+      "pageName": "BillionStat",
+      "leafId": "pg4-Rings-2:1",
+      "reasons": [
+        "decor:box",
+        "fallback-image-attached"
+      ]
+    },
+    {
+      "pageIndex": 4,
+      "pageName": "BillionStat",
+      "leafId": "pg4-Rings-2:2",
+      "reasons": [
+        "decor:box",
+        "fallback-image-attached"
+      ]
+    },
+    {
+      "pageIndex": 4,
+      "pageName": "BillionStat",
+      "leafId": "pg4-Rings-2:3",
+      "reasons": [
+        "decor:box",
+        "fallback-image-attached"
+      ]
+    },
+    {
+      "pageIndex": 7,
+      "pageName": "DividerDefine",
+      "leafId": "pg7-Halftone-3",
+      "reasons": [
+        "primitive:non-native-background"
+      ]
+    },
+    {
+      "pageIndex": 8,
+      "pageName": "ProblemStatement",
+      "leafId": "pg8-Halftone-2",
+      "reasons": [
+        "primitive:non-native-background"
+      ]
+    },
+    {
+      "pageIndex": 9,
+      "pageName": "DividerResearch",
+      "leafId": "pg9-Halftone-3",
+      "reasons": [
+        "primitive:non-native-background"
+      ]
+    },
+    {
+      "pageIndex": 12,
+      "pageName": "DividerIdeate",
+      "leafId": "pg12-Halftone-3",
+      "reasons": [
+        "primitive:non-native-background"
+      ]
+    },
+    {
+      "pageIndex": 14,
+      "pageName": "DividerPrototype",
+      "leafId": "pg14-Halftone-3",
+      "reasons": [
+        "primitive:non-native-background"
+      ]
+    },
+    {
+      "pageIndex": 21,
+      "pageName": "DividerTest",
+      "leafId": "pg21-Halftone-3",
+      "reasons": [
+        "primitive:non-native-background"
+      ]
+    },
+    {
+      "pageIndex": 22,
+      "pageName": "ThePivot",
+      "leafId": "pg22-Rings-2:0",
+      "reasons": [
+        "decor:box",
+        "fallback-image-attached"
+      ]
+    },
+    {
+      "pageIndex": 22,
+      "pageName": "ThePivot",
+      "leafId": "pg22-Rings-2:1",
+      "reasons": [
+        "decor:box",
+        "fallback-image-attached"
+      ]
+    },
+    {
+      "pageIndex": 22,
+      "pageName": "ThePivot",
+      "leafId": "pg22-Rings-2:2",
+      "reasons": [
+        "decor:box",
+        "fallback-image-attached"
+      ]
+    },
+    {
+      "pageIndex": 22,
+      "pageName": "ThePivot",
+      "leafId": "pg22-Rings-2:3",
+      "reasons": [
+        "decor:box",
+        "fallback-image-attached"
+      ]
+    },
+    {
+      "pageIndex": 22,
+      "pageName": "ThePivot",
+      "leafId": "pg22-Rings-2:4",
+      "reasons": [
+        "decor:box",
+        "fallback-image-attached"
+      ]
+    },
+    {
+      "pageIndex": 24,
+      "pageName": "Proof",
+      "leafId": "pg24-Halftone-2",
+      "reasons": [
+        "primitive:non-native-background"
+      ]
+    },
+    {
+      "pageIndex": 26,
+      "pageName": "Closing",
+      "leafId": "pg26-Rings-2:0",
+      "reasons": [
+        "decor:box",
+        "fallback-image-attached"
+      ]
+    },
+    {
+      "pageIndex": 26,
+      "pageName": "Closing",
+      "leafId": "pg26-Rings-2:1",
+      "reasons": [
+        "decor:box",
+        "fallback-image-attached"
+      ]
+    },
+    {
+      "pageIndex": 26,
+      "pageName": "Closing",
+      "leafId": "pg26-Rings-2:2",
+      "reasons": [
+        "decor:box",
+        "fallback-image-attached"
+      ]
+    },
+    {
+      "pageIndex": 26,
+      "pageName": "Closing",
+      "leafId": "pg26-Rings-2:3",
+      "reasons": [
+        "decor:box",
+        "fallback-image-attached"
+      ]
+    },
+    {
+      "pageIndex": 26,
+      "pageName": "Closing",
+      "leafId": "pg26-Rings-2:4",
+      "reasons": [
+        "decor:box",
+        "fallback-image-attached"
+      ]
+    },
+    {
+      "pageIndex": 26,
+      "pageName": "Closing",
+      "leafId": "pg26-Halftone-3",
+      "reasons": [
+        "primitive:non-native-background"
+      ]
+    }
+  ],
+  "generatedAt": "2026-08-31T20:11:48Z"
+}

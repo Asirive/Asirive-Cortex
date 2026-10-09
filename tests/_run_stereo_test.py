@@ -4,7 +4,7 @@ Plays a tone in left ear only, then right ear only.
 You should hear L then R. If both ears sound the same, still mono.
 Temporary script - delete after use.
 """
-from scripts._rpi_ssh import (
+from tools._rpi_ssh import (
     RPI_HOST,
     RPI_PASSWORD,
     RPI_USER,

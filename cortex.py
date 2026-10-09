@@ -2,7 +2,7 @@
 """
 Cortex CLI — Unified Command-Line Interface for Asirive Cortex
 
-Replaces: python -m rpi5 all
+Replaces: python -m apps.cortex all
 Usage:    python cortex [command] [options]
 
 Commands:
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # ─── Constants ──────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).parent
-RPI5_DIR = PROJECT_ROOT / "rpi5"
+CORE_DIR = PROJECT_ROOT / "core"
 
 # ─── ANSI Colors ──────────────────────────────────────────────────
 class Colors:
@@ -80,7 +80,7 @@ def cmd_status(args):
     print(f"   Platform: {Colors.CYAN}{sys.platform}{Colors.RESET}")
     
     # Load config
-    config_path = RPI5_DIR / "config" / "config.yaml"
+    config_path = CORE_DIR / "config" / "config.yaml"
     config = {}
     try:
         import yaml
@@ -119,7 +119,7 @@ def cmd_status(args):
     }
     for name, module in layers.items():
         try:
-            __import__(f"rpi5.{module}")
+            __import__(f"core.{module}")
             print(f"   {Colors.GREEN}✅{Colors.RESET} {name}")
         except ImportError:
             print(f"   {Colors.RED}❌{Colors.RESET} {name}")
@@ -167,9 +167,9 @@ def cmd_run(args):
     print_banner()
     
     # Setup logging level
-    # Setup Rich-based colored logging (matches `python -m rpi5 all` style)
+    # Setup Rich-based colored logging (matches `python -m apps.cortex all` style)
     sys.path.insert(0, str(PROJECT_ROOT))
-    from rpi5.cli.log_setup import setup_logging
+    from apps.cortex.cli.log_setup import setup_logging
     log_level = "DEBUG" if args.debug else "INFO"
     setup_logging(level=log_level, log_file="logs/cortex.log")
     
@@ -185,7 +185,7 @@ def cmd_run(args):
     # Standard run — just import and run main
     try:
         sys.path.insert(0, str(PROJECT_ROOT))
-        from rpi5.main import main
+        from core.system import main
         
         if asyncio.iscoroutinefunction(main):
             asyncio.run(main())
@@ -229,7 +229,7 @@ def _run_with_monitor(args):
     # sampler that pulls from the running CortexSystem if available.
     print(f"{Colors.YELLOW}⚠️  cortex --monitor is a thin placeholder.{Colors.RESET}")
     print(f"{Colors.YELLOW}   For real-time monitoring, the Textual TUI is the default dashboard.{Colors.RESET}")
-    print(f"{Colors.YELLOW}   Run: python -m rpi5 tui  (in a second terminal while 'all' runs){Colors.RESET}")
+    print(f"{Colors.YELLOW}   Run: python -m apps.cortex tui  (in a second terminal while 'all' runs){Colors.RESET}")
     print(f"{Colors.YELLOW}   Falling through to mock below…{Colors.RESET}\n")
 
     # For now, show a mock monitor
@@ -300,7 +300,7 @@ def cmd_test(args):
 def _test_layer0(args):
     print(f"{Colors.BOLD}🛡️ Testing Layer 0 (Guardian)...{Colors.RESET}")
     try:
-        from rpi5.layer0_guardian import YOLOGuardian
+        from core.layer0_guardian import YOLOGuardian
         g = YOLOGuardian(enable_haptic=False)
         print(f"   {Colors.GREEN}✅{Colors.RESET} YOLOGuardian initialized")
         
@@ -324,7 +324,7 @@ def _test_layer1(args):
 def _test_layer2(args):
     print(f"{Colors.BOLD}💭 Testing Layer 2 (Thinker)...{Colors.RESET}")
     try:
-        from rpi5.layer2_thinker.gemini_live_handler import GeminiLiveHandler
+        from core.layer2_thinker.gemini_live_handler import GeminiLiveHandler
         api_key = os.getenv("GEMINI_API_KEY", "")
         if not api_key:
             print(f"   {Colors.YELLOW}⚠️ GEMINI_API_KEY not set — cannot test connection{Colors.RESET}")
@@ -342,7 +342,7 @@ def _test_tts(args):
     
     # Test Supertonic
     try:
-        from rpi5.layer1_reflex.supertonic_handler import SupertonicTTS
+        from core.layer1_reflex.supertonic_handler import SupertonicTTS
         tts = SupertonicTTS()
         if tts.available:
             wav = tts.generate_speech("Supertonic test successful")
@@ -354,7 +354,7 @@ def _test_tts(args):
     
     # Test Cartesia
     try:
-        from rpi5.layer2_thinker.cartesia_handler import CartesiaTTS
+        from core.layer2_thinker.cartesia_handler import CartesiaTTS
         ct = CartesiaTTS()
         if ct.available:
             print(f"   {Colors.GREEN}✅{Colors.RESET} Cartesia Sonic 3.5 ready")
@@ -370,7 +370,7 @@ def _test_stt(args):
     
     # Test Cartesia batch
     try:
-        from rpi5.layer1_reflex.cartesia_stt import CartesiaSTT
+        from core.layer1_reflex.cartesia_stt import CartesiaSTT
         stt = CartesiaSTT()
         print(f"   {'✅' if stt.available else '❌'} Cartesia batch STT: {'ready' if stt.available else 'no API key'}")
     except Exception as e:
@@ -378,7 +378,7 @@ def _test_stt(args):
     
     # Test WebSocket
     try:
-        from rpi5.layer1_reflex.cartesia_stt_ws import CartesiaSTTWebSocket
+        from core.layer1_reflex.cartesia_stt_ws import CartesiaSTTWebSocket
         ws = CartesiaSTTWebSocket()
         print(f"   {'✅' if ws.available else '❌'} Cartesia Ink 2 WebSocket: {'ready' if ws.available else 'no API key'}")
     except Exception as e:
@@ -386,7 +386,7 @@ def _test_stt(args):
     
     # Test Whisper
     try:
-        from rpi5.layer1_reflex.whisper_handler import WhisperSTT
+        from core.layer1_reflex.whisper_handler import WhisperSTT
         w = WhisperSTT()
         print(f"   ✅ Whisper STT: {w.model_size} model loaded")
     except Exception as e:
@@ -419,7 +419,7 @@ def _test_audio(args):
     print(f"{Colors.BOLD}🎙️ Testing Audio...{Colors.RESET}")
     
     try:
-        from rpi5.layer1_reflex.vad_handler import VADHandler
+        from core.layer1_reflex.vad_handler import VADHandler
         vad = VADHandler()
         print(f"   ✅ Silero VAD loaded")
     except Exception as e:
@@ -445,7 +445,7 @@ def _test_hailo(args):
         return 1
     
     try:
-        from rpi5.hailo_depth import HailoDepthEstimator
+        from core.hailo_depth import HailoDepthEstimator
         est = HailoDepthEstimator(str(hef_path))
         if est.is_available:
             print(f"   {Colors.GREEN}✅{Colors.RESET} Hailo depth estimator ready")
@@ -492,7 +492,7 @@ def _test_all(args):
 # ─── Config Command ───────────────────────────────────────────────
 def cmd_config(args):
     """View/edit configuration."""
-    config_path = RPI5_DIR / "config" / "config.yaml"
+    config_path = CORE_DIR / "config" / "config.yaml"
     
     if args.edit:
         editor = os.getenv("EDITOR", "nano")
@@ -655,13 +655,13 @@ Examples:
         parser.print_help()
         return 0
     
-    # Handle sync subcommands by delegating to scripts.sync
+    # Handle sync subcommands by delegating to tools.sync
     if args.command == "sync":
         if not args.sync_cmd:
             sync_parser.print_help()
             return 0
-        # Pass through to scripts.sync
-        import scripts.sync as sync_mod
+        # Pass through to tools.sync
+        import tools.sync as sync_mod
         sync_args = argparse.Namespace()
         sync_args.command = args.sync_cmd
         sync_args.models = getattr(args, "models", False)

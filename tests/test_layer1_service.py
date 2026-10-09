@@ -1,7 +1,7 @@
 import pytest
 import torch
 import os
-from laptop.layer1_service import Layer1Service
+from apps.laptop_dashboard.layer1_service import Layer1Service
 
 def test_layer1_service_initialization():
     """Test that Layer1Service initializes correctly with a model."""

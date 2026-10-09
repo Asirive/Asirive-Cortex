@@ -1,5 +1,5 @@
 """Quick SSH diagnostic for Bluetooth audio on RPi5."""
-from scripts._rpi_ssh import (
+from tools._rpi_ssh import (
     RPI_HOST,
     RPI_PASSWORD,
     RPI_USER,

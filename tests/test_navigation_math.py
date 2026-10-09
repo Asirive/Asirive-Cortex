@@ -15,7 +15,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from rpi5.layer3_guide.navigation_engine import (  # noqa: E402
+from core.layer3_guide.navigation_engine import (  # noqa: E402
     angle_to_hrtf_position,
     bearing_between,
     haversine_distance,
