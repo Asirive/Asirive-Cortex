@@ -1680,6 +1680,7 @@ class CortexSystem:
 
         # System-level flags
         self.privacy_mode = False
+        self._system_paused = threading.Event()
         self._explore_mode = False  # User requested "describe around me"
         self._battery_warned = set()  # Track which battery thresholds have been warned
         self._last_battery_check = 0.0
@@ -1910,6 +1911,8 @@ class CortexSystem:
 
             def _on_gemini_audio(audio_bytes: bytes):
                 """Callback: play Gemini audio responses via StreamingAudioPlayer."""
+                if self._system_paused.is_set():
+                    return
                 if self.session_recorder:
                     self.session_recorder.write_ai_audio(audio_bytes, sample_rate=24000)
                 # Compute RMS level of incoming 24kHz PCM int16 audio so the
@@ -2173,6 +2176,7 @@ class CortexSystem:
 
         # TTS singleton (M1 fix: avoid re-instantiation on every voice command)
         self.tts = TTSRouter() if TTSRouter else None
+        self._tts_muted_before_pause = False
         # Wire TTS to push engine/state to DashboardState so the TUI's
         # TTS + VOICE panel reflects what's actually playing in real time
         # (without this the panel always reads "[idle]").
@@ -2194,6 +2198,18 @@ class CortexSystem:
         recorder_cfg = self.config.get('data_recorder', {})
         if SessionAVRecorder and recorder_cfg.get('enabled', False):
             self.session_recorder = SessionAVRecorder(recorder_cfg)
+            # Attach the camera so the recorder pulls frames in its OWN thread
+            # at a steady video_fps. The main loop is too busy (YOLO/depth/
+            # Gemini) to feed it steadily, which starved the video and made it
+            # play back sped-up. Passing stereo too so the RIGHT (Gemini) lens
+            # is recorded to camera_right.avi.
+            try:
+                self.session_recorder.attach_camera(
+                    self.camera,
+                    stereo=(self.stereo if self._using_stereo_camera else None),
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ Could not attach camera to session recorder: {e}")
             self.voice_coordinator.on_mic_audio = self._on_mic_audio
             logger.info(
                 f"✅ Session recorder ready (press '{self.session_recorder.toggle_key}' to toggle recording)"
@@ -3381,6 +3397,8 @@ class CortexSystem:
     def _on_fall_detected(self) -> None:
         """IMU fall detection callback: alert user and caregiver."""
         logger.warning("⚠️ Free-fall / fall detected by IMU!")
+        if self._system_paused.is_set():
+            return
         # FIX-SAFETY-VOICE-COMMAND: use the safety-voice path so the
         # user hears the alert even when Gemini is mid-sentence. The
         # vibration motor isn't wired up in the current glasses
@@ -3466,6 +3484,8 @@ class CortexSystem:
         ground truth for "did the user say something". C7 fix.
         """
         if not self.layer2 or not self.layer2.is_running:
+            return
+        if self._system_paused.is_set():
             return
         try:
             self.layer2.send_audio(pcm_bytes, sample_rate)
@@ -3756,6 +3776,10 @@ class CortexSystem:
     def _forward_gemini_activity_start(self) -> None:
         """Forward local speech-start to Gemini 3.1 explicit VAD."""
         if not self.layer2 or not self.layer2.is_running:
+            self._user_speaking_to_gemini = False
+            return
+        if self._system_paused.is_set():
+            self._user_speaking_to_gemini = False
             return
         self._user_speaking_to_gemini = True
         try:
@@ -3765,7 +3789,6 @@ class CortexSystem:
 
     def _toggle_overhead_force(self) -> None:
         """Toggle the FORCE-OVERHEAD detection flag.
-
         Called by the Textual TUI 'y' keybind handler (and the
         console-mode keybind handler, and the /dev/tty hotkey loop
         if a TTY is available). Updates the in-memory flag, the
@@ -3805,8 +3828,10 @@ class CortexSystem:
             logger.info("🎯 Overhead-force mode: OFF")
 
         try:
-            if getattr(self, "tts", None) and not getattr(
-                self.tts, "is_playing", False
+            if (
+                getattr(self, "tts", None)
+                and not self._system_paused.is_set()
+                and not getattr(self.tts, "is_playing", False)
             ):
                 phrase = (
                     "Overhead detection forced on."
@@ -3824,9 +3849,82 @@ class CortexSystem:
         except Exception as _e:
             logger.debug(f"toggle_overhead_force tts announce failed: {_e}")
 
+    def is_system_paused(self) -> bool:
+        return self._system_paused.is_set()
+
+    def _speak_allowed(self) -> bool:
+        """Central mute gate — no TTS of any kind while system-paused.
+
+        The mute flag set in set_system_paused() covers TTSRouter paths
+        (they check self.muted). This covers direct _speak_safety_cartesia
+        callers and future paths that bypass the router check.
+        """
+        return not self._system_paused.is_set()
+
+    def set_system_paused(self, paused: bool) -> bool:
+        """Freeze mic->Gemini, Gemini video/text, safety TTS, voice routing.
+
+        Camera keeps capturing and the Gemini WS stays connected so resume
+        is instant. Silent — no TTS ack, or it talks over your explanation.
+        """
+        if bool(paused) == self._system_paused.is_set():
+            return self._system_paused.is_set()
+        if paused:
+            self._system_paused.set()
+            self._user_speaking_to_gemini = False
+            try:
+                if self.gemini_audio_player:
+                    self.gemini_audio_player.request_stop(interrupted=True)
+            except Exception:
+                pass
+            try:
+                if self.safety_audio:
+                    self.safety_audio.clear()
+            except Exception:
+                pass
+            try:
+                if self.tts is not None:
+                    self._tts_muted_before_pause = bool(getattr(self.tts, "muted", False))
+                    self.tts.muted = True
+            except Exception:
+                pass
+            logger.info("⏸️ SYSTEM PAUSED — mic/Gemini/safety frozen (press * to resume)")
+        else:
+            try:
+                if self.safety_audio:
+                    self.safety_audio.clear()
+            except Exception:
+                pass
+            try:
+                if self.tts is not None:
+                    self.tts.muted = bool(getattr(self, "_tts_muted_before_pause", False))
+            except Exception:
+                pass
+            self._last_gemini_frame_time = time.time()
+            self._last_gemini_context_time = time.time()
+            self._system_paused.clear()
+            logger.info("▶️ SYSTEM RESUMED")
+        try:
+            self._publish_state(paused=self._system_paused.is_set())
+        except Exception:
+            pass
+        try:
+            self.record_event(
+                "sys", "info",
+                "system paused" if self._system_paused.is_set() else "system resumed",
+            )
+        except Exception:
+            pass
+        return self._system_paused.is_set()
+
+    def toggle_system_paused(self) -> bool:
+        return self.set_system_paused(not self._system_paused.is_set())
+
     def _forward_gemini_activity_end(self) -> None:
         """Forward local speech-end to Gemini 3.1 explicit VAD."""
         if not self.layer2 or not self.layer2.is_running:
+            return
+        if self._system_paused.is_set():
             self._user_speaking_to_gemini = False
             return
         try:
@@ -3973,6 +4071,8 @@ class CortexSystem:
         """
         if not self.layer2 or not self.layer2.is_running:
             return False
+        if self._system_paused.is_set():
+            return False
         if self._user_speaking_to_gemini:
             return False
         now = time.time()
@@ -4039,6 +4139,8 @@ class CortexSystem:
         min_interval: float = 6.0,
     ) -> bool:
         """Send a proactive indoor-guidance turn when the active runtime supports it."""
+        if self._system_paused.is_set():
+            return False
         if not self._can_send_proactive_gemini_guidance():
             return False
         if self._gemini_is_live_31() and reason.endswith("periodic_update"):
@@ -4401,6 +4503,8 @@ class CortexSystem:
         except Exception:
             pass
         if not self.layer2 or not self.layer2.is_running:
+            return
+        if self._system_paused.is_set():
             return
         # TB1 fix: previously this branch dropped [NAV_EVENT] messages
         # for Gemini 3.1 because the live API's realtime_input_config
@@ -5499,6 +5603,10 @@ class CortexSystem:
             while self.running:
                 loop_start = time.time()
                 self._loop_iterations += 1
+
+                if self._system_paused.is_set():
+                    time.sleep(0.2)
+                    continue
 
                 # Privacy mode: skip all vision, keep sensors running
                 if self.privacy_mode or not self.camera_available:
@@ -7326,6 +7434,14 @@ class CortexSystem:
 
         logger.info(f"🎤 Voice command: '{query}'")
         query_lower = query.lower().strip()
+
+        if self._system_paused.is_set():
+            logger.info(f"⏸️ Discarding query during SYSTEM pause: '{query[:50]}'")
+            try:
+                self.record_event("sys", "info", f"paused — discarded: \"{query[:40]}\"")
+            except Exception:
+                pass
+            return
 
         # CRITICAL: Remember the user's intent BEFORE any discard/filter logic
         # runs. Otherwise high-impact Gemini tool calls (guide_indoor,

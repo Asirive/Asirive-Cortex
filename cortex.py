@@ -640,6 +640,10 @@ Examples:
     
     sync_from = sync_sub.add_parser("from", help="Sync data FROM RPi5")
     sync_from.add_argument("--paths", type=str, help="Comma-separated paths")
+
+    sync_pullnew = sync_sub.add_parser("pull-new", help="Pull NEW data from RPi5 + prune OLD on both")
+    sync_pullnew.add_argument("--days", type=int, default=60, help="Prune files older than N days (default 60)")
+    sync_pullnew.add_argument("--yes", "-y", action="store_true", help="Actually download/delete (default: dry-run)")
     
     sync_install = sync_sub.add_parser("install", help="Install deps on RPi5")
     sync_full = sync_sub.add_parser("full", help="Sync TO + install")
@@ -663,6 +667,8 @@ Examples:
         sync_args.models = getattr(args, "models", False)
         sync_args.dry_run = getattr(args, "dry_run", False)
         sync_args.paths = getattr(args, "paths", None)
+        sync_args.days = getattr(args, "days", 60)
+        sync_args.yes = getattr(args, "yes", False)
         sync_args.verify = False
         return sync_mod.commands[args.sync_cmd](sync_args)
     

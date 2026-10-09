@@ -139,6 +139,7 @@ if TEXTUAL_AVAILABLE:
             ("k", "copy_logs", "Copy logs"),
             ("?", "show_help", "Help"),
             ("p", "toggle_pause", "Pause"),
+            ("*", "system_pause", "SysPause"),
             ("y", "toggle_overhead_force", "Overhd force"),
         ]  # y = force overhead on/off
 
@@ -297,6 +298,15 @@ if TEXTUAL_AVAILABLE:
             feel responsive — without this, pressing `p` or `m` is silent."""
             try:
                 parts = ["FULL mode (Textual)"]
+                sys_paused = False
+                try:
+                    sys_paused = bool(
+                        self.dashboard_state.snapshot().get("paused", False)
+                    )
+                except Exception:
+                    pass
+                if sys_paused:
+                    parts.append("SYSTEM PAUSED — press * to resume")
                 if self._paused:
                     parts.append("PAUSED — press p to resume")
                 tts_snap = self.dashboard_state.snapshot().get("tts", {}) if self.dashboard_state else {}
@@ -1473,6 +1483,18 @@ if TEXTUAL_AVAILABLE:
             self._paused = not self._paused
             self._refresh_all()
 
+        def action_system_pause(self) -> None:
+            try:
+                sys = getattr(self, "system", None)
+                if sys is not None and hasattr(sys, "toggle_system_paused"):
+                    sys.toggle_system_paused()
+            except Exception as _e:
+                try:
+                    self._write_log(f"*-keybind action failed: {_e}")
+                except Exception:
+                    pass
+            self._update_subtitle()
+
         def action_toggle_overhead_force(self) -> None:
             """Toggle FORCE-OVERHEAD detection on/off.
 
@@ -1501,11 +1523,11 @@ if TEXTUAL_AVAILABLE:
                         with open(flag, "w") as _f:
                             _f.write("forced on\n")
             except Exception as _e:
-                self._log(f"y-keybind action failed: {_e}")
+                try:
+                    self._write_log(f"y-keybind action failed: {_e}")
+                except Exception:
+                    pass
 
-            self._paused = not self._paused
-            # Immediate subtitle update so the user sees feedback instantly,
-            # not after the next 1Hz refresh tick.
             self._update_subtitle()
 
         def action_show_help(self) -> None:

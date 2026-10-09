@@ -56,6 +56,12 @@ class SessionAVRecorder:
         self._video_writer = None
         self._video_size: Optional[Tuple[int, int]] = None
         self._last_video_write = 0.0
+        # Real-time pacing: track when the FIRST frame of a session was
+        # written and how many have been written, so the AVI container FPS
+        # matches reality (prevents sped-up/slowed playback when the capture
+        # rate differs from the configured video_fps).
+        self._video_first_ts: Optional[float] = None
+        self._video_frame_count: int = 0
 
         # Dual-lens recording (WITMOTION 400W stereo). The legacy
         # `_video_writer`/`_video_size`/`_last_video_write` above are the
@@ -67,9 +73,98 @@ class SessionAVRecorder:
         self._video_writer_right = None
         self._video_size_right: Optional[Tuple[int, int]] = None
         self._last_video_write_right = 0.0
+        self._video_first_ts_right: Optional[float] = None
+        self._video_frame_count_right: int = 0
         self._mic_wave = None
         self._ai_wave = None
         self._events_file = None
+
+        # ── Dedicated capture thread ─────────────────────────────────────
+        # The main loop is too busy (YOLO/depth/Gemini) to feed the recorder
+        # frames steadily, so the video starved and played back sped-up. We
+        # instead PULL frames directly from the camera in our own thread at a
+        # steady video_fps, fully decoupled from main-loop load. Attach the
+        # camera via attach_camera() before start().
+        self._camera = None            # primary (LEFT / safety) camera object
+        self._stereo = None            # StereoCameraHandler for the RIGHT lens
+        self._capture_thread: Optional[threading.Thread] = None
+        self._capture_running = False
+
+    def attach_camera(self, camera, stereo=None) -> None:
+        """Give the recorder a camera to pull frames from in its own thread.
+
+        camera: the primary (LEFT/safety) camera — must expose get_frame().
+        stereo: optional StereoCameraHandler — when given, the RIGHT
+                (landscape/Gemini) lens is recorded to camera_right.avi.
+        """
+        self._camera = camera
+        self._stereo = stereo
+
+    def _capture_loop(self) -> None:
+        """Pull frames from the camera at a steady video_fps, in real time.
+
+        Runs in its own thread so the busy main loop can't starve the
+        recording. Pacing is by wall-clock schedule: each iteration targets the
+        next 1/video_fps tick, so the AVI frame count matches elapsed time and
+        playback is true speed.
+        """
+        interval = 1.0 / self.video_fps if self.video_fps > 0 else 0.1
+        next_tick = time.monotonic()
+        while self._capture_running:
+            now = time.monotonic()
+            if now < next_tick:
+                time.sleep(next_tick - now)
+                continue
+            next_tick = now + interval
+
+            if not self.is_recording:
+                continue
+
+            # LEFT / primary lens
+            if self._camera is not None and self.record_camera:
+                try:
+                    frame = self._camera.get_frame()
+                except Exception:
+                    frame = None
+                if frame is not None:
+                    self._write_frame_now(frame, side="left")
+
+            # RIGHT / Gemini lens (stereo only)
+            if self._stereo is not None and self.record_stereo_right:
+                try:
+                    rframe = self._stereo.get_right_frame()
+                except Exception:
+                    rframe = None
+                if rframe is not None:
+                    self._write_frame_now(rframe, side="right")
+
+    def _write_frame_now(self, frame, side: str) -> None:
+        """Write one frame immediately (called by the steady capture thread)."""
+        with self._video_lock:
+            if not self.is_recording:
+                return
+            if side == "left":
+                if self._video_writer is None:
+                    self._video_size = (int(frame.shape[1]), int(frame.shape[0]))
+                    self._ensure_video_writer()
+                if self._video_writer is None:
+                    return
+                if self._video_size != (int(frame.shape[1]), int(frame.shape[0])):
+                    frame = cv2.resize(frame, self._video_size, interpolation=cv2.INTER_AREA)
+                self._video_writer.write(frame)
+                self._video_frame_count += 1
+                self._last_video_write = time.time()
+            else:
+                if self._video_writer_right is None:
+                    self._video_size_right = (int(frame.shape[1]), int(frame.shape[0]))
+                    self._ensure_video_writer_right()
+                if self._video_writer_right is None:
+                    return
+                if self._video_size_right != (int(frame.shape[1]), int(frame.shape[0])):
+                    frame = cv2.resize(frame, self._video_size_right, interpolation=cv2.INTER_AREA)
+                self._video_writer_right.write(frame)
+                self._video_frame_count_right += 1
+                self._last_video_write_right = time.time()
 
     def start(self, frame_shape: Optional[Tuple[int, int, int]] = None) -> bool:
         """Open a new recording session directory and prepare output files."""
@@ -92,6 +187,15 @@ class SessionAVRecorder:
 
             self.is_recording = True
             self._last_video_write = 0.0
+
+            # Start the dedicated camera capture thread (real-time pacing).
+            if self._camera is not None and self._capture_thread is None:
+                self._capture_running = True
+                self._capture_thread = threading.Thread(
+                    target=self._capture_loop, name="av-recorder-capture", daemon=True
+                )
+                self._capture_thread.start()
+
             self._log_event("recording_started", session_dir=str(self.session_dir))
             logger.info(f"🎥 Session recorder started: {self.session_dir}")
             return True
@@ -105,6 +209,12 @@ class SessionAVRecorder:
             self._log_event("recording_stopped")
             self.is_recording = False
 
+            # Stop the dedicated capture thread.
+            self._capture_running = False
+            if self._capture_thread is not None:
+                self._capture_thread.join(timeout=2.0)
+                self._capture_thread = None
+
             if self._video_writer is not None:
                 self._video_writer.release()
                 self._video_writer = None
@@ -112,6 +222,12 @@ class SessionAVRecorder:
             if self._video_writer_right is not None:
                 self._video_writer_right.release()
                 self._video_writer_right = None
+
+            # Reset real-time pacing state for the next session.
+            self._video_first_ts = None
+            self._video_first_ts_right = None
+            self._video_frame_count = 0
+            self._video_frame_count_right = 0
 
             if self._mic_wave is not None:
                 self._mic_wave.close()
@@ -129,31 +245,19 @@ class SessionAVRecorder:
             logger.info("🛑 Session recorder stopped")
 
     def write_video_frame(self, frame, timestamp: Optional[float] = None) -> None:
-        """Write a BGR OpenCV frame when the recorder is active."""
+        """Legacy hook kept for backward compatibility.
+
+        Video is now captured by the recorder's own thread (see _capture_loop),
+        which pulls frames directly from the camera at a steady video_fps. When
+        that thread is active this is a no-op so we never double-write. If no
+        camera was attached (thread inactive), fall back to writing the frame
+        the caller passed in.
+        """
+        if self._capture_thread is not None:
+            return  # dedicated thread owns video capture
         if not self.is_recording or not self.record_camera or frame is None:
             return
-
-        with self._video_lock:
-            if not self.is_recording:
-                return
-
-            now = timestamp or time.time()
-            min_interval = 1.0 / self.video_fps if self.video_fps > 0 else 0.0
-            if min_interval and (now - self._last_video_write) < min_interval:
-                return
-
-            if self._video_writer is None:
-                self._video_size = (int(frame.shape[1]), int(frame.shape[0]))
-                self._ensure_video_writer()
-
-            if self._video_writer is None:
-                return
-
-            if self._video_size != (int(frame.shape[1]), int(frame.shape[0])):
-                frame = cv2.resize(frame, self._video_size, interpolation=cv2.INTER_AREA)
-
-            self._video_writer.write(frame)
-            self._last_video_write = now
+        self._write_frame_now(frame, side="left")
 
     def write_video_frame_right(self, frame, timestamp: Optional[float] = None) -> None:
         """Write the RIGHT-lens (Gemini view) frame to its own video file.
@@ -162,31 +266,15 @@ class SessionAVRecorder:
         No-op unless the recorder was built from a stereo camera (i.e.
         ``record_stereo_right`` is enabled) — when the system runs on the
         single-lens USB / CSI fallback this is simply never called.
+
+        Like write_video_frame, this is a legacy hook: when the dedicated
+        capture thread is active it owns the RIGHT lens too, so this no-ops.
         """
+        if self._capture_thread is not None:
+            return  # dedicated thread owns video capture
         if not self.is_recording or not self.record_stereo_right or frame is None:
             return
-
-        with self._video_lock:
-            if not self.is_recording:
-                return
-
-            now = timestamp or time.time()
-            min_interval = 1.0 / self.video_fps if self.video_fps > 0 else 0.0
-            if min_interval and (now - self._last_video_write_right) < min_interval:
-                return
-
-            if self._video_writer_right is None:
-                self._video_size_right = (int(frame.shape[1]), int(frame.shape[0]))
-                self._ensure_video_writer_right()
-
-            if self._video_writer_right is None:
-                return
-
-            if self._video_size_right != (int(frame.shape[1]), int(frame.shape[0])):
-                frame = cv2.resize(frame, self._video_size_right, interpolation=cv2.INTER_AREA)
-
-            self._video_writer_right.write(frame)
-            self._last_video_write_right = now
+        self._write_frame_now(frame, side="right")
 
     def _ensure_video_writer_right(self) -> None:
         if self._video_writer_right is not None or self.session_dir is None or self._video_size_right is None:

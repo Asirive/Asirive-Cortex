@@ -236,8 +236,13 @@ camera:
   stereo:
     enabled: true   # Auto-detect: if WITMOTION 400W present, used; else fall back to USB
     device_id: 0           # /dev/videoN for the composite stream
-    left_rotation_deg: 270
-    right_rotation_deg: 180
+    # Orientation (2026-08-19 field fix): the handler applies flip_v first,
+    # then this rotation. flip_v alone = 180°, so rotation 0 lands the lens
+    # upright (180°). Both lenses now output LANDSCAPE 16:9 (1920x1080).
+    #   LEFT  rot 0 -> landscape, upright  (was 270 = 9:16 portrait)
+    #   RIGHT rot 0 -> landscape, upright  (was 180 = upside-down 0 net)
+    left_rotation_deg: 0
+    right_rotation_deg: 0
     fourcc: "MJPG"          # MJPG recommended for USB2/3 bandwidth
 
   tuning:
@@ -607,7 +612,11 @@ conversation:
 # HAILO NPU CONFIGURATION (Hailo-8L M.2 HAT)
 # =====================================================
 hailo:
-  enabled: true
+  # DISABLED (2026-08-19): NPU load was causing the RPi5 to brown out /
+  # power off under sustained load. Disabling the whole Hailo subsystem
+  # (depth + OCR) removes the M.2 HAT's power draw. Safety falls back to
+  # YOLO bbox-area distance; OCR is unavailable until re-enabled.
+  enabled: false
   device_id: null  # Auto-detect (null = first available device)
 
   # Depth Estimation (SCDepthV3 model — metric depth output)

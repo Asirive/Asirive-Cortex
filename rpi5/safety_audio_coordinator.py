@@ -132,6 +132,11 @@ class SafetyAudioCoordinator:
             t.join(timeout=timeout)
         self._worker_thread = None
 
+    def clear(self) -> None:
+        """Drain pending safety phrases so resume doesn't burst stale alerts."""
+        with self._lock:
+            self._queue.clear()
+
     def enqueue(
         self,
         text: str,

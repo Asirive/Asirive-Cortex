@@ -66,3 +66,4 @@ scripts/*.tui.png
 # Windows reserved filename artifact
 nul
 .worktrees/
+scripts/.cartesia_key 

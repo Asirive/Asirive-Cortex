@@ -209,9 +209,10 @@ class ConsoleApp:
     def _print_status(self) -> None:
         snap = self.state.snapshot()
         ts = datetime.now().strftime("%H:%M:%S")
+        sys_paused = bool(snap.get("paused", False))
         lines = [
             "",
-            f"─── STATUS @ {ts} ───".center(SEP_WIDTH, " "),
+            f"─── STATUS @ {ts}{'  ⏸ SYSTEM PAUSED — press * to resume' if sys_paused else ''} ───".center(SEP_WIDTH, " "),
             f"Mode    : {snap['mode']:11}  FPS      : {snap['fps']:.1f}",
             f"L0      : {snap['l0_count']:>2} {self._fmt_classes(snap['l0_classes'])} {snap['l0_latency_ms']:.0f}ms",
             f"L1      : {'laptop only' if not snap.get('l1_mode') else f'{snap['l1_count']:>2} {self._fmt_classes(snap['l1_classes'])} {snap['l1_latency_ms']:.0f}ms'}",
@@ -355,6 +356,8 @@ class ConsoleApp:
             self._action_save_log()
         elif action == KeyAction.PAUSE:
             self._action_toggle_pause()
+        elif action == KeyAction.SYSTEM_PAUSE:
+            self._action_system_pause()
         elif action == KeyAction.TOGGLE_OVERHEAD_FORCE:
             self._action_toggle_overhead_force()
         elif action == KeyAction.HELP:
@@ -412,6 +415,14 @@ class ConsoleApp:
     def _action_toggle_pause(self) -> None:
         self._paused = not self._paused
         sys.stdout.write(f"\n[2.4: status updates {'PAUSED' if self._paused else 'RESUMED'}]\n")
+        sys.stdout.flush()
+
+    def _action_system_pause(self) -> None:
+        if hasattr(self.system, "toggle_system_paused"):
+            paused = self.system.toggle_system_paused()
+            sys.stdout.write(f"\n[2.4: SYSTEM {'PAUSED — press * to resume' if paused else 'RESUMED'}]\n")
+        else:
+            sys.stdout.write("\n[2.4: system pause not available]\n")
         sys.stdout.flush()
 
     def _action_toggle_overhead_force(self) -> None:

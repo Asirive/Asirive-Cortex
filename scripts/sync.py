@@ -688,6 +688,131 @@ def cmd_install(args):
         print(_c(f"\n❌ Install failed: {e}", Colors.RED))
         return 1
 
+def cmd_pull_new(args):
+    """Pull NEW data files from RPi5 and prune OLD ones on both machines.
+
+    Step 1 PULL: download only files on the RPi5 NEWER than the laptop's
+    newest file in the same data dir (existing local files never overwritten).
+    Step 2 PRUNE: delete data files older than --days (default 60, ~two
+    months) on BOTH the laptop and the RPi5.
+
+    DRY-RUN by default -- pass --yes to actually download/delete.
+    """
+    print_banner()
+    if not PARAMIKO_OK:
+        print(_c("x paramiko required. Install: pip install paramiko", Colors.RED))
+        return 1
+
+    days = int(getattr(args, "days", 60) or 60)
+    execute = bool(getattr(args, "yes", False))
+    cutoff = time.time() - (days * 86400)
+    mode = _c("EXECUTE", Colors.YELLOW) if execute else _c("DRY-RUN (use --yes to apply)", Colors.DIM)
+    print(_c("\n[sync] Pull NEW + prune OLD (>%dd)  [%s]\n" % (days, mode), Colors.BOLD))
+    data_dirs = ["logs", "recordings", "tts_recordings", "memory_images"]
+
+    try:
+        with RPiSSH() as ssh:
+            sftp = ssh.sftp()
+            total_pulled = 0
+            total_pull_bytes = 0
+            pruned_local = 0
+            pruned_remote = 0
+            for rel in data_dirs:
+                local_dir = PROJECT_ROOT / rel
+                remote_dir = "%s/%s" % (RPI_PATH, rel)
+                print("   " + _c(">", Colors.CYAN) + " " + _c(rel + "/", Colors.BOLD))
+
+                # Laptop's newest mtime here (the 'new' watermark) + old files.
+                local_newest = 0.0
+                local_old = []
+                if local_dir.exists():
+                    for fp in local_dir.rglob("*"):
+                        if not fp.is_file():
+                            continue
+                        try:
+                            st = fp.stat()
+                        except OSError:
+                            continue
+                        local_newest = max(local_newest, st.st_mtime)
+                        if st.st_mtime < cutoff:
+                            local_old.append(fp)
+
+                # Remote listing: "mtime_epoch size path" per file.
+                find_cmd = "find %s -type f -printf '%%T@ %%s %%p\\n' 2>/dev/null || true" % remote_dir
+                _, out, _ = ssh.exec(find_cmd, verbose=False)
+                remote_files = []
+                for line in out.splitlines():
+                    parts = line.split(" ", 2)
+                    if len(parts) != 3:
+                        continue
+                    try:
+                        remote_files.append((parts[2], float(parts[0]), int(parts[1])))
+                    except ValueError:
+                        continue
+                # PULL: remote files newer than the laptop's newest. If the
+                # laptop has nothing here yet, treat ALL remote files as new.
+                if local_newest == 0.0:
+                    new_remote = remote_files
+                else:
+                    new_remote = [f for f in remote_files if f[1] > local_newest]
+
+                for r_path, r_mtime, r_size in new_remote:
+                    rel_sub = os.path.relpath(r_path, RPI_PATH).replace("\\", "/")
+                    dest = PROJECT_ROOT / rel_sub
+                    if dest.exists():
+                        continue  # never overwrite an existing local file
+                    total_pulled += 1
+                    total_pull_bytes += r_size
+                    if execute:
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            sftp.get(r_path, str(dest))
+                            print("      " + _c("v new", Colors.GREEN) + " " + rel_sub + " (" + human_size(r_size) + ")")
+                        except Exception as e:
+                            print("      " + _c("x pull failed", Colors.RED) + " " + rel_sub + ": " + str(e))
+                            total_pulled -= 1
+                            total_pull_bytes -= r_size
+                    else:
+                        print("      " + _c("v new", Colors.GREEN) + " " + rel_sub + " (" + human_size(r_size) + ")")
+                if not new_remote:
+                    print("      " + _c("o no new files", Colors.DIM))
+                # PRUNE local files older than the cutoff.
+                for fp in local_old:
+                    pruned_local += 1
+                    if execute:
+                        try:
+                            fp.unlink()
+                            print("      " + _c("- old local", Colors.MAGENTA) + " " + str(fp.relative_to(PROJECT_ROOT)))
+                        except OSError as e:
+                            print("      " + _c("x", Colors.RED) + " " + fp.name + ": " + str(e))
+                            pruned_local -= 1
+                    else:
+                        print("      " + _c("- old local", Colors.MAGENTA) + " " + str(fp.relative_to(PROJECT_ROOT)))
+
+                # PRUNE remote files older than the cutoff.
+                for r_path, r_mtime, r_size in remote_files:
+                    if r_mtime < cutoff:
+                        pruned_remote += 1
+                        rel_sub = os.path.relpath(r_path, RPI_PATH).replace("\\", "/")
+                        if execute:
+                            ssh.exec("rm -f '%s'" % r_path, verbose=False)
+                        print("      " + _c("- old rpi", Colors.MAGENTA) + " " + rel_sub)
+            sftp.close()
+
+        print()
+        verb = "Pulled" if execute else "Would pull"
+        pverb = "Pruned" if execute else "Would prune"
+        print(_c("[ok] %s %d new file(s) (%s) - %s %d local + %d rpi file(s) older than %dd"
+                 % (verb, total_pulled, human_size(total_pull_bytes), pverb,
+                    pruned_local, pruned_remote, days), Colors.GREEN))
+        if not execute:
+            print(_c("   Re-run with --yes to apply these changes.", Colors.YELLOW))
+        return 0
+    except Exception as e:
+        print(_c("\n[fail] pull-new failed: %s" % e, Colors.RED))
+        return 1
+
+
 def cmd_full(args):
     """Sync TO RPi5 + install deps (one step)."""
     print_banner()
@@ -736,6 +861,11 @@ Examples:
     from_parser = subparsers.add_parser("from", help="Sync data FROM RPi5")
     from_parser.add_argument("--paths", type=str, help="Comma-separated paths to download (default: all)")
     
+    # pull-new
+    pullnew_parser = subparsers.add_parser("pull-new", help="Pull NEW data from RPi5 + prune OLD on both")
+    pullnew_parser.add_argument("--days", type=int, default=60, help="Prune files older than N days (default 60)")
+    pullnew_parser.add_argument("--yes", "-y", action="store_true", help="Actually download/delete (default: dry-run)")
+
     # install
     subparsers.add_parser("install", help="Install deps on RPi5")
     
@@ -758,6 +888,7 @@ COMMANDS = {
     "status": cmd_status,
     "to": cmd_to,
     "from": cmd_from,
+    "pull-new": cmd_pull_new,
     "install": cmd_install,
     "full": cmd_full,
 }

@@ -65,8 +65,12 @@ class MockSystem:
         self.tts = type("FakeTTS", (), {"muted": False})()
         self.recording_toggle_count = 0
         self.vision_query_handler = None
+        self._sys_paused = False
     def _toggle_session_recording(self):
         self.recording_toggle_count += 1
+    def toggle_system_paused(self):
+        self._sys_paused = not self._sys_paused
+        return self._sys_paused
 
 
 def test_format_functions() -> None:
@@ -419,6 +423,31 @@ def test_pause() -> None:
         fail(f"paused log watcher printed anyway")
 
 
+def test_system_pause_keybind() -> None:
+    section("System pause keybind (*)")
+    if _keys.resolve_key("*") == _keys.KeyAction.SYSTEM_PAUSE:
+        ok(f"'*' resolves to SYSTEM_PAUSE")
+    else:
+        fail(f"'*' resolved to {_keys.resolve_key('*')!r}")
+    state = _state.DashboardState()
+    if "paused" in state.keys():
+        ok(f"DashboardState has 'paused' flag")
+    else:
+        fail(f"DashboardState missing 'paused' flag")
+    mock = MockSystem()
+    app = _app.ConsoleApp(state, mock, log_path="/tmp/fake.log", status_interval_s=99)
+    app._handle_keypress("*")
+    if mock._sys_paused:
+        ok(f"'*' pauses system")
+    else:
+        fail(f"'*' did not pause system")
+    app._handle_keypress("*")
+    if not mock._sys_paused:
+        ok(f"second '*' resumes system")
+    else:
+        fail(f"second '*' did not resume system")
+
+
 def main() -> int:
     print(f"{YELLOW}Round 2a tests — 2.4 mode (ConsoleApp){RESET}")
     try:
@@ -428,6 +457,7 @@ def main() -> int:
         test_keybind_handlers()
         test_save_log()
         test_pause()
+        test_system_pause_keybind()
         print(f"\n{GREEN}All Round 2a tests passed.{RESET}")
         return 0
     except AssertionError as e:

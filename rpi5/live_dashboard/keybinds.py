@@ -37,6 +37,7 @@ class KeyAction(str, Enum):
     COPY_LOGS = "copy_logs"
     HELP = "help"
     PAUSE = "pause"
+    SYSTEM_PAUSE = "system_pause"
     TOGGLE_OVERHEAD_FORCE = "toggle_overhead_force"  # 'y' key â€” bypass ceiling/looking_up_forward suppression
 
     # FULL mode only (Textual UI)
@@ -74,6 +75,7 @@ KEYBIND_MAP: Dict[str, KeyAction] = {
     "?":         KeyAction.HELP,
     "f1":        KeyAction.HELP,
     "p":         KeyAction.PAUSE,
+    "*":         KeyAction.SYSTEM_PAUSE,
     "y":         KeyAction.TOGGLE_OVERHEAD_FORCE,  # force overhead detection on/off
     # === FULL mode (Textual) ===
     "f":         KeyAction.TOGGLE_LOG_FOLLOW,
@@ -164,6 +166,7 @@ FOOTER_HINTS = [
     ("s", "save"),
     ("k", "copy"),
     ("y", "overhd"),
+    ("*", "syspause"),
     ("?", "help"),
 ]  # y = force overhead detection
 

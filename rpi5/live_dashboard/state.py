@@ -277,6 +277,7 @@ def _default_state() -> Dict[str, Any]:
         # Flags
         "privacy_mode": False,
         "running": True,
+        "paused": False,
     }
 
 
