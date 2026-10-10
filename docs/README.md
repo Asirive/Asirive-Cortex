@@ -1,115 +1,28 @@
-# 📚 Project-Cortex Documentation
+# Asirive Cortex — Documentation
 
-**Last Updated:** 2025-12-22  
-**Status:** Organized & Production-Ready
+Fresh V4 documentation set. All pre-V4 docs (V1/V2/V3 plans, fix reports,
+session logs, deprecated dashboards) were removed in the 2026-10 docs cleanup —
+they live in git history if you need them.
 
----
+## Start here
 
-## 📁 Documentation Structure
+- **[architecture/V4-ECOSYSTEM.md](architecture/V4-ECOSYSTEM.md)** — the V4
+  product + ecosystem source of truth: device, app, cloud infra, contracts,
+  agent harness, privacy model, decision log.
 
-### 🏛️ **architecture/**
-System design and architectural decisions.
+## Reference
 
-- **system-architecture.md** - Overall system design (4-layer architecture)
-- **hybrid-ai-design.md** - Hybrid AI implementation (local + cloud)
+- [website-faq.md](website-faq.md) — product FAQ (navigation-first framing)
+- [reference/YOLOE-THREE-MODES-QUICK-REF.md](reference/YOLOE-THREE-MODES-QUICK-REF.md) —
+  YOLOE API quick reference (matches current `core/layer1_learner`)
 
-### 🔬 **research/**
-Research findings and planning documents.
+## Research / vendor references
 
-- **initial-findings.md** - Early research on RPi 5, cameras, and AI models
-- **slam-vio-navigation.md** - SLAM/VIO system research (VIO + GPS + IMU)
-- **memory-slam-navigation.md** - Memory + SLAM integration with Google Maps
+- [research/LTA_DataMall_API_User_Guide.pdf](research/LTA_DataMall_API_User_Guide.pdf)
+- [research/Extended_OBU_Library_SDK_Developer_Guide.pdf](research/Extended_OBU_Library_SDK_Developer_Guide.pdf)
 
-### 🛠️ **implementation/**
-Implementation plans and integration guides.
+## Conventions
 
-- **layer1-reflex-plan.md** - Layer 1 (Reflex) implementation details
-- **spatial-audio-guide.md** - 3D spatial audio system (PyOpenAL + HRTF)
-- **gemini-tts-integration.md** - Google Gemini 2.5 Flash TTS integration
-- **voice-navigation-plan.md** - Voice-guided spatial navigation
-
-### 🔧 **troubleshooting/**
-Bug fixes and debugging guides.
-
-- **fixes-applied.md** - Historical bug fixes and patches
-- **flickering-fix.md** - GUI flickering resolution
-- **vad-debugging.md** - Voice Activity Detection debugging guide
-
-### 📋 **project-management/**
-Project tracking, changelogs, and BOMs.
-
-- **bill-of-materials.md** - Hardware components and costs
-- **changelog-2025-11-17.md** - Version 2.0 changelog
-- **todo-full-implementation.md** - Full implementation roadmap
-- **migration-summary.md** - v1.0 → v2.0 migration summary
-
-### 🧪 **testing/**
-Testing protocols and validation procedures.
-
-- **test-protocol.md** - Comprehensive testing procedures
-
----
-
-## 🗺️ Quick Navigation
-
-### New to Project-Cortex?
-1. Start with [architecture/system-architecture.md](architecture/system-architecture.md)
-2. Review [project-management/bill-of-materials.md](project-management/bill-of-materials.md)
-3. Check [implementation/layer1-reflex-plan.md](implementation/layer1-reflex-plan.md)
-
-### Working on SLAM/Navigation?
-1. [research/slam-vio-navigation.md](research/slam-vio-navigation.md) - VIO system research
-2. [research/memory-slam-navigation.md](research/memory-slam-navigation.md) - Navigation integration
-3. [implementation/spatial-audio-guide.md](implementation/spatial-audio-guide.md) - 3D audio
-
-### Debugging Issues?
-1. [troubleshooting/vad-debugging.md](troubleshooting/vad-debugging.md) - Voice detection issues
-2. [troubleshooting/flickering-fix.md](troubleshooting/flickering-fix.md) - GUI problems
-3. [troubleshooting/fixes-applied.md](troubleshooting/fixes-applied.md) - Historical fixes
-
-### Planning Next Steps?
-1. [project-management/todo-full-implementation.md](project-management/todo-full-implementation.md)
-2. [research/memory-slam-navigation.md](research/memory-slam-navigation.md) - Next features
-3. [testing/test-protocol.md](testing/test-protocol.md) - Validation checklist
-
----
-
-## 📊 Documentation Coverage
-
-| Category | Files | Status |
-|----------|-------|--------|
-| Architecture | 2 | ✅ Complete |
-| Research | 3 | ✅ Complete |
-| Implementation | 4 | ✅ Complete |
-| Troubleshooting | 3 | ✅ Complete |
-| Project Management | 4 | ✅ Complete |
-| Testing | 1 | ✅ Complete |
-| **TOTAL** | **17** | **✅ Organized** |
-
----
-
-## 🔄 Naming Conventions
-
-- **Folders:** lowercase-with-hyphens
-- **Files:** lowercase-with-hyphens.md
-- **Internal References:** Use relative paths (e.g., `[Link](../research/slam-vio-navigation.md)`)
-
----
-
-## 🚀 Quick Links
-
-### External Documentation
-- [Raspberry Pi 5 Docs](https://www.raspberrypi.com/documentation/computers/raspberry-pi-5.html)
-- [Google Gemini API](https://ai.google.dev/docs)
-- [OpenAL-Soft](https://github.com/kcat/openal-soft)
-- [YOLOv8 Ultralytics](https://docs.ultralytics.com/)
-
-### Project Resources
-- **GitHub Repo:** [IRSPlays/ProjectCortexV2](https://github.com/IRSPlays/ProjectCortexV2)
-- **Main README:** [../README.md](../README.md)
-- **Source Code:** [../src/](../src/)
-
----
-
-**Founder:** Haziq (@IRSPlays)  
-**Mission:** Gold Medal @ YIA 2026 🏆
+- Code is the source of truth. When docs and code disagree, code wins.
+- New docs must reference V4 paths only (`core/`, `device/`, `infra/`, `apps/`,
+  `tools/`) — never `rpi5/`, `laptop/`, `shared/`, `scripts/`, `src/`.
