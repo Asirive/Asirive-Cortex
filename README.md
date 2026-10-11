@@ -1,217 +1,233 @@
 <div align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=timeGradient&height=250&section=header&text=Asirive%20Cortex&fontSize=80&fontColor=ffffff&animation=fadeIn&fontAlignY=35&desc=The%20AI%20Wearable%20for%20Independent%20Navigation&descAlignY=55&descSize=18" width="100%" />
+  <img src="https://capsule-render.vercel.app/api?type=waving&color=000000&height=260&section=header&text=ASIRIVE%20CORTEX&fontSize=84&fontColor=FFD700&animation=fadeIn&fontAlignY=35&desc=INDEPENDENT%20NAVIGATION%20FOR%20THE%20VISUALLY%20IMPAIRED&descAlignY=56&descSize=16" width="100%" />
 
   <br/>
 
-  <img src="https://img.shields.io/badge/STATUS-V4%20ALPHA-FF6B6B?style=for-the-badge&logo=rocket&logoColor=white" />
-  <img src="https://img.shields.io/badge/Compute-Qualcomm%20Snapdragon-3253A8?style=for-the-badge&logo=qualcomm&logoColor=white" />
-  <img src="https://img.shields.io/badge/Safety_Latency-%3C100ms-00C853?style=for-the-badge&logo=shield&logoColor=white" />
-  <img src="https://img.shields.io/badge/Glasses_BOM-~S%2459-FF9800?style=for-the-badge&logo=dollar-sign&logoColor=white" />
-  <img src="https://img.shields.io/badge/iOS-Android-9C27B0?style=for-the-badge&logo=flutter&logoColor=white" />
-  <img src="https://img.shields.io/badge/License-GPLv3-blue?style=for-the-badge" />
+  <img src="https://img.shields.io/badge/STATUS-V4%20ALPHA-FFD700?style=for-the-badge&labelColor=000000" />
+  <img src="https://img.shields.io/badge/COMPUTE-QUALCOMM%20SNAPDRAGON-FFD700?style=for-the-badge&labelColor=000000" />
+  <img src="https://img.shields.io/badge/SAFETY-%3C100%20MS-FFD700?style=for-the-badge&labelColor=000000" />
+  <img src="https://img.shields.io/badge/GLASSES%20BOM-~S%2459-FFD700?style=for-the-badge&labelColor=000000" />
+  <img src="https://img.shields.io/badge/iOS-ANDROID-FFD700?style=for-the-badge&labelColor=000000" />
+  <img src="https://img.shields.io/badge/LICENSE-GPLv3-FFD700?style=for-the-badge&labelColor=000000" />
 
   <br/>
   <br/>
 
-  **From your front door to the hawker centre — completely on your own.**
-  *Cane-aware safety · conversational AI · indoor navigation · built with the visually impaired community*
+  <b>DOOR TO DOOR. ON YOUR OWN.</b>
 </div>
 
 ---
 
-## 🌟 The Problem
-
-> Visually impaired users are forced to choose between their **white cane** (safety) and a **smartphone** (navigation). Both hands, two tools, constant trade-off — and neither tool can read a sign, call out a bus number, or guide you through a shopping mall.
-
-**Asirive Cortex** removes that trade-off: a pair of minimal custom glasses, a pocket compute module, and a companion app — with an AI brain that talks to you, keeps you safe, and knows the difference between what the cane already handles and what it can't.
+**CONTENTS**
+[01 THE PRODUCT](#01-the-product) | [02 THE JOURNEY](#02-the-journey) | [03 SYSTEM](#03-system) | [04 SAFETY](#04-safety) | [05 VOICE](#05-voice) | [06 NAVIGATION](#06-navigation) | [07 HARDWARE](#07-hardware) | [08 APP](#08-app) | [09 INFRASTRUCTURE](#09-infrastructure) | [10 PRIVACY](#10-privacy) | [11 NUMBERS](#11-numbers) | [12 ROADMAP](#12-roadmap) | [13 REPO](#13-repo) | [14 SETUP](#14-setup) | [15 ABOUT](#15-about)
 
 ---
 
-## 🚶 The Journey
+## 01 THE PRODUCT
 
-The product exists for one journey: **door-to-door, independently.**
+Asirive Cortex is a wearable navigation system for blind and low-vision users. Custom glasses, a pocket compute module, a companion app, and a cloud control plane. It reads signs, calls out hazards the cane cannot detect, announces bus arrivals, and guides you through places where GPS dies.
 
-> House → walk to the bus stop → *“Bus 161 arriving in 3 minutes”* → ride → *“Next stop: Bukit Panjang, 2 stops”* → MRT → walk into the mall → *“Escalator ahead, slightly left”* → *“Your table is the third one on the right.”*
+The white cane already covers the ground. Cortex does not duplicate it. It speaks only for what the cane cannot perceive: overhead obstacles, stairs up, fast-approaching objects, and visual information. One core rule across the whole system:
 
-Outdoor walking. Indoor spaces. Trains. Buses. Sign-heavy environments where GPS dies and spatial understanding is everything. **That** is what "independent navigation" means, and every architecture decision below serves it.
+> **Indoors, the cane handles the ground. Cortex handles head-height and beyond.**
 
 ---
 
-## 🧠 The 5-Layer Hybrid Brain
+## 02 THE JOURNEY
 
-Cortex runs an edge-first, cloud-augmented architecture. Safety-critical layers stay on-device; deep scene understanding goes to the cloud — and the device never becomes useless without internet.
+The product exists for one journey. Origin to destination, alone.
 
-| Layer | Name | Role | Where |
-|:---:|:---|:---|:---:|
-| **L0** | **Guardian** | Safety-critical hazard detection + haptic | On-device, offline, **<100ms** |
-| **L1** | **Learner** | Open-vocabulary detection (YOLO-World on NPU) | On-device |
-| **L2** | **Thinker** | Scene understanding, conversation, agent function calling | Gemini Live (cloud) **+ local sub-1B model (offline)** |
-| **L3** | **Guide** | Intent routing, navigation, transit, indoor guidance | On-device + phone relay |
-| **L4** | **Memory** | Recall, conversation history, telemetry | Local-first, retention-aware sync |
+| Segment | What Cortex does |
+|:---|:---|
+| House to bus stop | Turn-by-turn walking guidance, curb and vehicle alerts |
+| At the stop | "Bus 161, arriving in 3 minutes" |
+| On board | Stop counting. "Next stop: Bukit Panjang, two stops" |
+| MRT transfer | Overhead sign reading, platform guidance |
+| Inside the mall | Visual guidance. "Escalator ahead, slightly left" |
+| Arrival | "Your table is the third one on the right" |
 
-```mermaid
-graph TD
-    Glasses[👓 Glasses · ToF + Camera + Mics] -->|USB-C| Hub[ESP32-S3 · dumb I/O bridge]
-    Hub -->|USB-C: frames + ToF + audio| Compute[🧠 Compute Module]
+Outdoor walking, indoor space, trains, buses. Sign-heavy environments where GPS fails and spatial understanding decides everything. That is the target and every architecture decision below serves it.
 
-    subgraph Compute Module
-        Safety[L0 Safety Monitor<br/>hard-coded, model-independent]
-        Vision[L1 YOLO-World · NPU]
-        Wake[Wake word “Hey Cortex” · VAD · AEC]
-        Harness[Agent Harness · one toolset]
-    end
+---
 
-    Compute <-->|USB tether · internet + GPS| Phone[📱 Companion App<br/>Flutter · iOS + Android]
-    Phone <-->|E2E encrypted| Cloud[☁️ Cloud Infrastructure<br/>Go gateway · OTA · dashboard]
+## 03 SYSTEM
 
-    Harness <-->|function calling| Gemini[Gemini Live · primary brain]
-    Harness <-->|function calling| Local[Local sub-1B model · offline brain]
+Five layers. Safety stays local. Reasoning can go to the cloud. The device never depends on the network to keep you safe.
 
-    Safety -->|haptic + voice cues| Cues[🔊 Open-ear speakers<br/>“obstacle at 10 o’clock”]
-    Harness --> Cues
+| Layer | Name | Role | Where it runs |
+|:---:|:---|:---|:---|
+| **L0** | Guardian | Hazard detection, haptic and voice alerts | Device, offline, **under 100 ms** |
+| **L1** | Learner | Open-vocabulary detection (YOLO-World on NPU) | Device |
+| **L2** | Thinker | Scene understanding, conversation, function calling | Gemini Live (cloud) and local sub-1B model (offline) |
+| **L3** | Guide | Intent routing, navigation, transit, indoor guidance | Device with phone relay |
+| **L4** | Memory | Recall, conversation history, telemetry | Local first, retention-aware sync |
+
+```
+ GLASSES               COMPUTE MODULE             PHONE             CLOUD
+┌─────────────┐  usb-c ┌───────────────┐  usb-c ┌───────────┐ e2e ┌───────────┐
+│ VL53L7CX    │───────▶│ SAFETY <100ms │◀──────▶│ COMPANION │◀───▶│ FLEET GW  │
+│ OV5640 AF   │bridge  │ AGENT HARNESS │ data   │    APP    │     │ OTA/RINGS │
+│ 2x PDM MIC  │esp32-s3│ SUB-1B LOCAL  │ + GPS  │ iOS/DART  │     │ DASHBOARD │
+│ OPEN-EAR    │        │ GEMINI ONLINE │        └───────────┘     └───────────┘
+│ HAPTIC      │        └───────────────┘
+└─────────────┘
 ```
 
-**Dual brain, one toolset:** the same agent tools (navigate, bus-arrivals, describe-scene, camera-snap…) are callable by Gemini Live *or* by the local model via function calling. Connected → Gemini leads (indoor malls, bus interchanges, signs). Offline → local model keeps you moving.
+One agent toolset. Two interchangeable brains. The same functions (navigate, bus-arrivals, describe-scene, camera-snap) are callable by Gemini Live or by the local model through function calling. Connected, Gemini leads on malls, interchanges and signage. Offline, the local model keeps you moving.
 
 ---
 
-## 🛡️ The Core Insight: Cane-Aware Safety
+## 04 SAFETY
 
-The white cane already covers the ground. Cortex does **not** duplicate it — it speaks up only for what the cane cannot perceive:
+What the cane covers and what Cortex covers do not overlap.
 
-| Hazard | Cane covers it? | AI alerts? |
+| Hazard | Cane covers | Cortex alerts |
 |:---|:---:|:---:|
-| Walls, benches, curbs, steps **down** | ✅ | ❌ indoors |
-| **Overhead** obstacles (signs, branches, low ceilings) | ❌ | ✅ |
-| **Stairs going up** | ❌ | ✅ |
-| **Fast-approaching** objects (vehicles, runners, e-scooters) | ❌ | ✅ |
-| Visual information (signs, bus numbers, prices, faces) | ❌ | ✅ |
+| Walls, benches, curbs, stairs down | Yes | No, indoors |
+| Overhead obstacles, signs, branches | No | Yes |
+| Stairs going up | No | Yes |
+| Fast-approaching vehicles, runners, e-scooters | No | Yes |
+| Text, bus numbers, prices, faces | No | Yes |
 
-- **Tier 0** — cane-invisible trap → haptic + voice, always
-- **Tier 1–3** — environmental / static / fast-approaching → voice cues with anti-spam cooldowns
-- Safety alerts are **hard-coded and model-independent** — no AI sits between a hazard and its warning, and they work with no phone, no cloud, no internet.
+Threat tiers run from critical (cane-invisible trap: haptic plus voice, always) down to fast-approaching objects at range. Cooldowns prevent alert spam. Safety alerts are hard-coded and model-independent. No AI model sits between a hazard and its warning. They fire with no phone, no cloud and no internet.
 
 ---
 
-## 🎤 Voice & Audio — the primary UX
+## 05 VOICE
 
-- **Glasses-integrated audio:** 2× PDM MEMS mics + open-ear speakers (ears stay open for traffic).
-- **Wake word “Hey Cortex”** on the compute module — plus a hands-free privacy story: *“I’m going to the door”* mutes the mic (confirmed by **haptic**), and the wake word brings it back.
-- **Two voices:** *Katie* for conversation, *Troy* for safety — different gender = instantly distinguishable in the split second before you've parsed any words.
-- **Cloud voices when connected** (Cartesia — fast), **Supertonic local TTS** offline. Whisper-class local STT as the offline floor.
-- **Barge-in** — speak over Cortex and it stops talking. Echo cancellation is mandatory (open-ear speakers beside the bridge mics).
+Audio is the primary interface.
+
+- Two PDM MEMS microphones and open-ear speakers built into the glasses. Ears stay open for traffic.
+- Wake word "Hey Cortex" runs on the compute module. A voice command ("I'm going to the door") mutes the microphone, confirmed by haptic. The wake word brings it back.
+- Two voices. Conversation and safety never sound alike, so a warning is recognized before a single word is parsed.
+- Cloud voices when connected (Cartesia, low latency). Supertonic local speech synthesis when offline. Whisper-class recognition as the offline floor.
+- Speak over Cortex and it stops talking. Echo cancellation is mandatory: the speakers sit next to the microphones.
 
 ---
 
-## 🗺️ Navigation & the Agent Harness
+## 06 NAVIGATION
 
 | Mode | Trigger | Behavior |
 |:---|:---|:---|
-| **IDLE** | Default | Silent unless a hazard fires |
-| **OUTDOOR_NAV** | GPS fix + active route | Turn-by-turn, reads landmarks & signs at turns |
-| **INDOOR_NAV** | GPS lost | Visual guidance — “door left”, “escalator ahead” |
-| **BUS_STOP** | Near a stop | LTA DataMall arrivals + on-device bus-number reading |
-| **TRANSIT** | On bus/MRT | Stop counting, overhead sign reading |
+| IDLE | Default | Silent unless a hazard fires |
+| OUTDOOR_NAV | GPS fix, active route | Turn-by-turn, reads landmarks and signs at turns |
+| INDOOR_NAV | GPS lost | Visual guidance: "door left", "escalator ahead" |
+| BUS_STOP | Within 50 m of a stop | LTA DataMall arrivals, on-device bus number reading |
+| TRANSIT | On bus or MRT | Stop counting, overhead sign reading |
 
-14+ agent functions: `search_places`, `get_directions`, `guide_indoor`, `get_bus_arrival`, `zoom_in`, `search_memory`, `report_obstacle`, … Multi-leg routes (Walk → Bus → MRT → Walk). Saved locations as default origin.
+Fourteen agent functions and counting: search_places, get_directions, guide_indoor, get_bus_arrival, zoom_in, search_memory, report_obstacle. Multi-leg routes (Walk to Bus to MRT to Walk). Saved locations act as default origin when GPS is unavailable.
 
 ---
 
-## 👓 Hardware — V4
+## 07 HARDWARE
 
-### The glasses (~S$59 sensor BOM)
+### Glasses (sensor BOM: about S$59)
+
 | Part | Role |
 |:---|:---|
-| **VL53L7CX** 8×8 ToF (64 zones, 90° FoV, 3.5 m), nose bridge | Overhead + ground hazards |
-| **OV5640** 5 MP 120° **autofocus** camera, 78 mm brow ribbon | Scene stream + close-up reading (signs, prices) |
-| **ESP32-S3** N16R8, temple arm | Dumb I/O bridge: camera + ToF + audio over one USB-C |
-| 2× **MP34DT01** PDM MEMS mics | Voice + ambient capture |
-| **MAX98357A** I2S amp + 2× **1511** open-ear speakers | Voice cues, hearing stays open |
-| Haptic motor | Mic state + device status |
+| **VL53L7CX** 8x8 ToF, 90 degree field of view, 3.5 m, nose bridge | Overhead and ground hazard ranging |
+| **OV5640** 5 MP 120 degree autofocus camera, 78 mm brow ribbon | Scene stream, close-up reading of signs and prices |
+| **ESP32-S3** N16R8, temple arm | I/O bridge. Camera, ToF and audio over one USB-C |
+| 2x **MP34DT01** PDM MEMS microphones | Voice and ambient capture |
+| **MAX98357A** I2S amplifier, 2x **1511** open-ear speakers | Voice output without blocking hearing |
+| Haptic motor | Microphone state, device status |
 
-Design rules: **no-fold frame**, all sensors on the brow/bridge line, and the lower visual field **always clear** — partially-sighted users keep their remaining sight.
+Design rules: no folding frame (the ribbon must never flex at a hinge). All sensors sit on the brow and bridge line. The lower visual field stays clear, because partially-sighted users keep their remaining sight.
 
-### The compute module
-- **Alpha:** Radxa **Dragon Q8B** — Snapdragon 8cx Gen 3, 29+ TOPS AI Engine, 8 GB RAM, own battery (pogo-pin charging dock).
-- **V4-Final:** custom SoM + custom carrier board — smaller, more powerful, production-ready.
-- The phone is **data only** (USB-C tether: internet + GPS). It never powers the device.
+### Compute module
 
----
+| | Alpha | V4 Final |
+|:---|:---|:---|
+| Board | Radxa Dragon Q8B | Custom SoM, custom carrier |
+| Silicon | Snapdragon 8cx Gen 3, 29+ TOPS AI Engine | Smaller, faster, production |
+| Memory | 8 GB, quantized sub-1B models | TBD |
+| Power | Own battery, pogo-pin dock | TBD |
 
-## 📱 The Companion App
-
-One Flutter app (iOS-first, Android in mind), two modes:
-
-- **User mode** — pair the device (QR or USB claim), settings, beta opt-in, feedback, and **per-companion permission grants** for exactly who you choose — friends, family, certified medical professionals.
-- **Companion mode** — see the user's **location** (30-day TTL) and make a **voice call**, WhatsApp-style. Never a live camera feed. Never stored photos or video.
+The phone is a data pipe only (USB tether for internet and GPS). It never powers the device.
 
 ---
 
-## ☁️ Infrastructure — the control plane
+## 08 APP
 
-- **Go fleet gateway** — device registry, E2E encrypted channels, dev-only remote commands (alpha bench only — production devices are **never remotely breakable**).
-- **OTA with update rings** — `ALPHA (dev team)` → `BETA (opt-in)` → `STABLE`, signed artifacts, staged rollout, rollback. Firmware updates cover the compute module **and** the glasses MCU, delivered through the app.
-- **Web dashboard** — fleet view, update rings, feedback tab.
-- **In-app feedback** in every ring (text + trimmed logs), mirrored to the dashboard.
+One Flutter application (iOS first, Android in scope). Two modes.
 
-### 🔐 Privacy by design
+**User mode.** Pair the device by QR code or USB claim. Settings. Beta opt-in. Feedback. Per-companion permission grants to exactly who you choose: friends, family, certified medical professionals.
+
+**Companion mode.** See the user's location (retained 30 days) and make a voice call, WhatsApp style. No live camera feed. No stored photos or video.
+
+---
+
+## 09 INFRASTRUCTURE
+
+- **Fleet gateway (Go).** Device registry. End-to-end encrypted channels. Remote commands exist for the development bench only. Shipped devices are provisionable and updatable but never remotely breakable.
+- **OTA with update rings.** ALPHA (dev team) to BETA (opt-in users) to STABLE. Signed artifacts, staged rollout, rollback. Updates cover the compute module and the glasses MCU, delivered through the app.
+- **Web dashboard.** Fleet view, update rings, feedback tab.
+- **Feedback** from every ring, in the app and on the dashboard. Text plus trimmed logs.
+
+---
+
+## 10 PRIVACY
+
 | Data | Policy |
 |:---|:---|
-| Images / video | **Never stored.** Zero retention — even on our own infrastructure. |
-| Location | Retained 30 days, per-companion consent |
+| Images and video | Never stored. Zero retention, including on our own infrastructure |
+| Location | Retained 30 days, shared per companion with your consent |
 | Calls, transit data, activity logs | Stored |
-| Companion access | Location + call only. No live feed. Ever. |
+| Companion access | Location and calls only. No live feed, ever |
+
+Encryption end to end on every device, app and infrastructure path.
 
 ---
 
-## 📊 By the Numbers (V3 measured)
+## 11 NUMBERS
 
 | Metric | Value |
 |:---|---:|
-| Safety latency (on-device) | **< 100 ms** (80.7 ms avg measured) |
-| Intent routing accuracy | **97.7%** (14 intents) |
-| Prototype BOM | **~USD 156** vs **USD 2,500–3,000** commercial AI glasses |
-| Glasses sensor BOM (V4) | **~S$59** |
-| Community trials | Singapore Association for the Visually Handicapped (SAVH) |
+| Safety latency, on-device | Under 100 ms (80.7 ms average measured) |
+| Intent routing accuracy | 97.7 percent across 14 intents |
+| V3 prototype BOM | About USD 156 |
+| Commercial AI glasses | USD 2,500 to 3,000 |
+| V4 glasses sensor BOM | About S$59 |
+| Community trials | Singapore Association for the Visually Handicapped |
 
 ---
 
-## 🛣️ Roadmap
+## 12 ROADMAP
 
-- ✅ **V3 — the proof** (2026): Raspberry Pi 5 prototype, 5-layer brain, cane-aware safety, Gemini Live agent harness, real-world trials. YIA 2026 finalist.
-- 🔨 **V4 Alpha — the ecosystem** (now): custom glasses + Dragon Q8B + companion app + Go infrastructure. Built in the lab first; field-tested (MRT, real routes) only once lab-proven.
-- 🎯 **V4 Final — the product**: custom SoM + carrier board, manufacturing via NTU partnership (injection molding / 3D printing), grant-funded, update rings for real users.
-- 🔬 **The horizon**: an in-house **sub-1B non-transformer scene model** — scene understanding small enough to run locally, smart enough to lead.
+| Stage | Scope | Status |
+|:---|:---|:---|
+| **V3, the proof** | Raspberry Pi 5 prototype, five-layer brain, cane-aware safety, live agent harness, community trials | Complete. YIA 2026 finalist |
+| **V4 Alpha, the ecosystem** | Custom glasses, Dragon Q8B, companion app, Go infrastructure. Lab first, field tested only once lab-proven | In progress |
+| **V4 Final, the product** | Custom SoM and carrier board. Manufacturing through the NTU partnership (injection molding, 3D printing). Grant funded | Planned |
+| **Horizon** | In-house sub-1B non-transformer scene model. Scene understanding small enough to run locally, accurate enough to lead | Research |
 
 ---
 
-## 📂 Repository Layout
+## 13 REPO
 
 ```
 ProjectCortex/
 ├── apps/
-│   ├── cortex/              # Device CLI + Textual TUI (python -m apps.cortex)
-│   └── laptop_dashboard/    # (deprecated V3 dashboard — being replaced by app + web)
-├── core/                    # The 5-layer brain — being refactored for V4
-│   ├── system.py            # CortexSystem orchestrator
-│   ├── layer0_guardian/ … layer4_memory/
-│   ├── safety_monitor.py    # Tiered hazard fusion
-│   ├── live_dashboard/      # Full Textual TUI + 2.4 console mode
+│   ├── cortex/              Device CLI and Textual TUI (python -m apps.cortex)
+│   └── laptop_dashboard/    Deprecated V3 dashboard, being replaced
+├── core/                    The five-layer brain, being refactored for V4
+│   ├── system.py            CortexSystem orchestrator
+│   ├── layer0_guardian/ .. layer4_memory/
+│   ├── safety_monitor.py    Tiered hazard fusion
 │   └── config/config.yaml
-├── device/                  # Cameras, sensors, GPS, BT, power (RPi-specific; V4 = new firmware)
-├── infra/                   # Protocol + schema seeds → Go fleet gateway lives here
-├── tools/                   # Sync, converters, setup, training
-├── docs/
-│   └── architecture/V4-ECOSYSTEM.md   # ← start here
-├── media/ · archive/        # Assets, presentations, V1/V2/V3 history
+├── device/                  Cameras, sensors, GPS, power (RPi-specific today)
+├── infra/                   Protocol and schema seeds, Go gateway lives here
+├── tools/                   Sync, converters, setup, training
+├── docs/architecture/       V4-ECOSYSTEM.md, start here
+├── media/  archive/         Assets, presentations, V1-V3 history
 └── tests/
 ```
 
-> Heads-up: this repo contains **deprecated V2/V3 systems** being refactored out. `docs/architecture/V4-ECOSYSTEM.md` is the source of truth for what's next.
+This repository still contains deprecated V2 and V3 systems being refactored out. `docs/architecture/V4-ECOSYSTEM.md` is the reference for what comes next.
 
 ---
 
-## ⚙️ Setup & Run (V3 runtime, current)
+## 14 SETUP
 
 ```bash
 git clone https://github.com/Asirive/Asirive-Cortex.git
@@ -223,45 +239,30 @@ pip install -r requirements.txt
 python -m apps.cortex all
 
 # Subsystem checks
-python -m apps.cortex test-live   # minimal Gemini Live probe
-python -m apps.cortex status      # env / config / layer availability
+python -m apps.cortex test-live    # minimal Gemini Live probe
+python -m apps.cortex status       # env, config, layer availability
 ```
 
-`.env` (gitignored): `GEMINI_API_KEY`, `GOOGLE_MAPS_API_KEY`, `LTA_API_KEY`, `CARTESIA_API_KEY`, `SUPABASE_URL`, `SUPABASE_KEY`. Key-rotation pool supported (`GEMINI_API_KEY_2`…`_10`).
+`.env` (gitignored): GEMINI_API_KEY, GOOGLE_MAPS_API_KEY, LTA_API_KEY, CARTESIA_API_KEY, SUPABASE_URL, SUPABASE_KEY. A key-rotation pool is supported (GEMINI_API_KEY_2 through _10).
 
-> ⚠️ `numpy<2.0` is pinned for HailoRT 4.20 compatibility.
-
----
-
-## 🧪 Engineering Highlights
-
-- **No safety feature requires the network.** <100 ms local, forever.
-- **Cane-aware fusion** — an explicit model of what the user already perceives; indoor vs outdoor alert sets.
-- **Dual-brain agent harness** — one function-calling toolset, cloud or local brain, no rewrites between them.
-- **Silence-substitution echo handling + manual VAD** — hard-won fixes that keep Gemini Live sessions alive.
-- **Two-voice TTS strategy** — safety and conversation never get confused.
-- **API key rotation with local fallback** — degraded gracefully, never dead.
+Note: `numpy<2.0` is pinned for HailoRT 4.20 compatibility.
 
 ---
 
-## 👤 About
+## 15 ABOUT
 
-**Asirive Cortex** is built by **Asirive** — Haziq Shah (lead engineering), Muhammad Irfan Nuafal, and Eryna Natasha — finalists at the **Tan Kah Kee Young Inventors' Award 2026**, designed with and for the visually impaired community in Singapore.
+Asirive Cortex is built by **Asirive**: Haziq Shah (lead engineering), Muhammad Irfan Nuafal and Eryna Natasha. Finalists at the Tan Kah Kee Young Inventors' Award 2026. Designed with and for the visually impaired community in Singapore.
 
-*Asir* (Arabic: difficult) + *-ive* → **making the difficult navigable.** Cortex is the brain that connects cane, camera, microphone and cloud into one conversational companion.
+*Asir* (Arabic: difficult) plus *-ive*. Making the difficult navigable. Cortex is the system that connects cane, camera, microphone and cloud into one companion.
 
-🌐 [asirive.com/cortex](https://www.asirive.com/cortex) · 🐙 [github.com/Asirive](https://github.com/Asirive)
-
----
-
-## 📄 License
-
-GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
+[asirive.com/cortex](https://www.asirive.com/cortex) | [github.com/Asirive](https://github.com/Asirive)
 
 ---
 
 <div align="center">
-  <p><b>From door to door, on your own.</b></p>
-  <p><i>Built by Asirive. Designed with the visually impaired community.</i></p>
-  <p><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="GNU GPL v3 License" /></p>
+  <img src="https://capsule-render.vercel.app/api?type=rect&color=000000&height=80&section=footer&text=DOOR%20TO%20DOOR.%20ON%20YOUR%20OWN.&fontSize=22&fontColor=FFD700" width="100%" />
+
+  <br/>
+
+  <img src="https://img.shields.io/badge/LICENSE-GPLv3-FFD700?style=for-the-badge&labelColor=000000" />
 </div>
