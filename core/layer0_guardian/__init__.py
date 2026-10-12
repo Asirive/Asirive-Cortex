@@ -75,7 +75,7 @@ class YOLOGuardian:
     
     def __init__(
         self,
-        model_path: str = "models/converted/yolo26n_ncnn_model",
+        model_path: str = "miscellaneous/models/converted/yolo26n_ncnn_model",
         device: str = "cpu",
         confidence: float = 0.5,
         enable_haptic: bool = True,

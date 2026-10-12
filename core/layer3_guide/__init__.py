@@ -188,7 +188,7 @@ class Navigator:
         Returns:
             (latitude, longitude) or None if unavailable
         """
-        # GPS hardware is handled externally via device.hardware.GPSHandler;
+        # GPS hardware is handled externally via core.device.hardware.GPSHandler;
         # CortexSystem passes the handler in here via set_gps_handler().
         if self._gps_handler is not None:
             return self._gps_handler.get_location()
@@ -200,7 +200,7 @@ class Navigator:
         Attach an active GPSHandler so get_gps_location() returns real data.
 
         Args:
-            gps_handler: device.hardware.gps_handler.GPSHandler instance
+            gps_handler: core.device.hardware.gps_handler.GPSHandler instance
         """
         self._gps_handler = gps_handler
         logger.info("✅ GPS handler attached to Navigator")

@@ -74,7 +74,7 @@ class YOLOELearner:
     
     def __init__(
         self,
-        model_path: str = "models/yoloe-11m-seg.pt",
+        model_path: str = "miscellaneous/models/yoloe-11m-seg.pt",
         device: str = "cpu",
         confidence: float = 0.25,
         mode: YOLOEMode = YOLOEMode.TEXT_PROMPTS,
@@ -193,10 +193,10 @@ class YOLOELearner:
         # Define specific paths based on user requirement
         # Adjusted to match the directory structure: models/converted/yolo26s_ncnn_model
         # FALLBACK: Using Detection Model (160ms) vs Segmentation (9000ms)
-        self.path_ncnn = "models/converted/yolo26s_ncnn_model"
+        self.path_ncnn = "miscellaneous/models/converted/yolo26s_ncnn_model"
         
         # Look for the PF model file (PT or ONNX)
-        pf_dir = Path("models/converted/yoloe_26s_seg_pf")
+        pf_dir = Path("miscellaneous/models/converted/yoloe_26s_seg_pf")
         # ONNX Export Failed, so we disable it for now and use NCNN for everything
         self.path_pf_onnx = str(pf_dir / "yoloe-26s-seg-pf.onnx")
 
@@ -662,7 +662,7 @@ class YOLOELearner:
         # Reset mode-specific state
         if new_mode == YOLOEMode.PROMPT_FREE:
             # Switching TO Prompt Free -> Load ONNX
-            self._load_model_with_fallback("models/converted/yoloe_26s_seg_pf", self.device)
+            self._load_model_with_fallback("miscellaneous/models/converted/yoloe_26s_seg_pf", self.device)
             
             self.current_classes = []
             self.text_embeddings = None
@@ -672,7 +672,7 @@ class YOLOELearner:
         
         elif new_mode == YOLOEMode.TEXT_PROMPTS:
             # Switching TO Text Prompts -> Load NCNN
-            self._load_model_with_fallback("models/converted/yoloe_26s_seg_ncnn_model", self.device)
+            self._load_model_with_fallback("miscellaneous/models/converted/yoloe_26s_seg_ncnn_model", self.device)
             
             if old_mode == YOLOEMode.PROMPT_FREE:
                 # Initialize prompt manager if needed
@@ -687,7 +687,7 @@ class YOLOELearner:
              # Switching TO Visual Prompts -> Load NCNN (Same as Text Prompts usually)
              # Ensure NCNN is loaded (if coming from PF)
              if old_mode == YOLOEMode.PROMPT_FREE:
-                 self._load_model_with_fallback("models/converted/yoloe_26s_seg_ncnn_model", self.device)
+                 self._load_model_with_fallback("miscellaneous/models/converted/yoloe_26s_seg_ncnn_model", self.device)
             
              self.current_classes = []
              self.text_embeddings = None

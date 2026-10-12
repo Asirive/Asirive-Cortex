@@ -1,0 +1,899 @@
+#!/usr/bin/env python3
+"""
+Cortex Sync — Modern RPi5 ↔ Laptop Synchronization Tool
+
+Replaces: python sync_rpi5.py full
+Usage:    python -m miscellaneous.tools.sync <command> [options]
+          cortex sync <command> [options]   (when integrated)
+
+Commands:
+  to        Sync code TO RPi5
+  from      Sync data FROM RPi5 (logs, recordings)
+  install   Install/update deps on RPi5
+  full      to + install in one step
+  check     Test SSH connection without syncing
+  status    Show what would be synced (dry-run)
+
+Examples:
+  python -m miscellaneous.tools.sync to                    # Fast code-only sync
+  python -m miscellaneous.tools.sync to --models           # Include models/
+  python -m miscellaneous.tools.sync from --logs           # Download only logs
+  python -m miscellaneous.tools.sync full --models         # Everything
+  python -m miscellaneous.tools.sync check                 # Verify connectivity
+  python -m miscellaneous.tools.sync status                # Preview changes
+
+Author: Haziq (@IRSPlays)
+Project: Cortex v2.0 — YIA 2026
+"""
+
+import argparse
+import hashlib
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import tarfile
+
+
+# ─── UTF-8 stdio shim ──────────────────────────────────────────────
+# Windows cp1252 can't encode the box-drawing chars in print_banner()
+# (╔══╗ etc.). Without this shim, the first print() in cmd_to()
+# raises UnicodeEncodeError and the script looks "stuck" because no
+# output ever reaches the terminal. Mirrors main.py:_ensure_utf8_stdio().
+def _ensure_utf8_stdio() -> None:
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+        enc = (getattr(stream, "encoding", None) or "").lower()
+        if "utf" in enc:
+            continue
+        try:
+            new_stream = open(
+                stream.fileno(),
+                mode="w",
+                buffering=1,
+                encoding="utf-8",
+                errors="replace",
+                closefd=False,
+            )
+            setattr(sys, stream_name, new_stream)
+        except (AttributeError, OSError, ValueError):
+            pass
+
+
+_ensure_utf8_stdio()
+os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+import tempfile
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+# ─── ANSI Colors ──────────────────────────────────────────────────
+class Colors:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RED = "\033[91m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    BLUE = "\033[94m"
+    CYAN = "\033[96m"
+    MAGENTA = "\033[95m"
+
+def _c(text: str, color: str) -> str:
+    return f"{color}{text}{Colors.RESET}"
+
+# ─── Configuration ────────────────────────────────────────────────
+PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+RPI5_DIR = PROJECT_ROOT / "rpi5"
+CONFIG_PATH = RPI5_DIR / "config" / "config.yaml"
+
+def load_config() -> Dict:
+    """Load network config from config.yaml."""
+    if CONFIG_PATH.exists():
+        try:
+            import yaml
+            with open(CONFIG_PATH) as f:
+                cfg = yaml.safe_load(f)
+            return {
+                "host": cfg.get("rpi5_device", {}).get("host", "10.127.61.31"),
+                "user": cfg.get("rpi5_device", {}).get("user", "cortex"),
+                "path": cfg.get("rpi5_device", {}).get("path", "/home/cortex/ProjectCortex"),
+                "laptop_host": cfg.get("laptop_server", {}).get("host", "10.127.61.101"),
+            }
+        except Exception as e:
+            print(_c(f"Warning: could not load config.yaml: {e}", Colors.YELLOW))
+    
+    return {
+        "host": "10.127.61.31",
+        "user": "cortex",
+        "path": "/home/cortex/ProjectCortex",
+        "laptop_host": "10.127.61.101",
+    }
+
+_cfg = load_config()
+RPI_HOST = _cfg["host"]
+RPI_USER = _cfg["user"]
+RPI_PATH = _cfg["path"]
+LAPTOP_PATH = str(PROJECT_ROOT)
+SSH_TARGET = f"{RPI_USER}@{RPI_HOST}"
+
+# Pull SSH password from the shared helper. It will raise CredentialError
+# if RPI_PASSWORD is missing, so we never silently fall back to a
+# hardcoded default.
+try:
+    from miscellaneous.tools._rpi_ssh import RPI_PASSWORD as _SSH_PASSWORD  # noqa: E402
+except Exception:
+    _SSH_PASSWORD = os.environ.get("RPI_PASSWORD")
+RPI_PASSWORD = _SSH_PASSWORD
+if not RPI_PASSWORD:
+    raise RuntimeError(
+        "RPI_PASSWORD is not set. Add it to .env (gitignored) or your shell, "
+        "then re-run. See tools/_rpi_ssh.py for details."
+    )
+
+# Sync paths
+CODE_PATHS = [
+    "core/",
+    "infra/",
+    "apps/",
+    "miscellaneous/",
+    "requirements.txt",
+    ".env",
+    "cortex",
+    "cortex.py",
+    "cortex.bat",
+]
+
+MODEL_PATHS = [
+    "miscellaneous/models/converted/",
+    "miscellaneous/models/hailo/",
+]
+
+DOWNLOAD_PATHS = [
+    "logs/",
+    "tts_recordings/",
+    "memory_images/",
+    "recordings/",
+    "nav_cache.db",
+    "local_cortex.db",
+]
+
+EXCLUDE = [
+    "__pycache__/",
+    "*.pyc",
+    "*.pyo",
+    ".git/",
+    "*.log",
+    "*.db-shm",
+    "*.db-wal",
+    "venv/",
+    ".venv/",
+    "node_modules/",
+]
+
+# ─── Paramiko Detection ───────────────────────────────────────────
+try:
+    import paramiko
+    PARAMIKO_OK = True
+except ImportError:
+    PARAMIKO_OK = False
+
+# ─── Helpers ──────────────────────────────────────────────────────
+def has_tool(name: str) -> bool:
+    return shutil.which(name) is not None
+
+def run_shell(cmd: str, check: bool = True, capture: bool = True) -> Tuple[int, str, str]:
+    """Run a shell command and return (returncode, stdout, stderr)."""
+    result = subprocess.run(cmd, shell=True, capture_output=capture, text=True)
+    if check and result.returncode != 0:
+        raise subprocess.CalledProcessError(result.returncode, cmd, result.stdout, result.stderr)
+    return result.returncode, result.stdout, result.stderr
+
+def human_size(bytes_size: int) -> str:
+    for unit in ["B", "KB", "MB", "GB"]:
+        if bytes_size < 1024:
+            return f"{bytes_size:.1f} {unit}"
+        bytes_size /= 1024
+    return f"{bytes_size:.1f} TB"
+
+def format_time(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes = int(seconds // 60)
+    secs = int(seconds % 60)
+    return f"{minutes}m {secs}s"
+
+def ssh_cmd(password: str = RPI_PASSWORD) -> str:
+    if has_tool("sshpass"):
+        return f"sshpass -p '{password}' ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5"
+    return "ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5"
+
+def scp_cmd(password: str = RPI_PASSWORD) -> str:
+    if has_tool("sshpass"):
+        return f"sshpass -p '{password}' scp -o StrictHostHostKeyChecking=no -o ConnectTimeout=5"
+    return "scp -o StrictHostKeyChecking=no -o ConnectTimeout=5"
+
+def print_banner():
+    print(f"""
+{_c('   ╔══════════════════════════════════════════════════════════╗', Colors.CYAN)}
+{_c('   ║           CORTEX SYNC  —  RPi5 ↔ Laptop                 ║', Colors.CYAN)}
+{_c('   ╚══════════════════════════════════════════════════════════╝', Colors.CYAN)}
+   RPi5:   {_c(RPI_HOST, Colors.GREEN)}  |  Laptop: {_c(_cfg['laptop_host'], Colors.GREEN)}
+""")
+
+# ─── SSH Client ───────────────────────────────────────────────────
+class RPiSSH:
+    """SSH connection manager for RPi5."""
+    
+    def __init__(self):
+        self.client: Optional[paramiko.SSHClient] = None
+    
+    def connect(self) -> bool:
+        if not PARAMIKO_OK:
+            print(_c("❌ paramiko not installed. Run: pip install paramiko", Colors.RED))
+            return False
+
+        # TCP pre-check — fail fast with a clear message if the host
+        # is unreachable, instead of waiting for paramiko's internal
+        # timeouts (which can feel like a hang to the user).
+        print(_c(f"   → probing {RPI_HOST}:22 (TCP)…", Colors.DIM))
+        try:
+            with socket.create_connection((RPI_HOST, 22), timeout=5):
+                pass
+        except (socket.timeout, ConnectionRefusedError, OSError) as e:
+            print(_c(f"❌ Cannot reach {RPI_HOST}:22 — {e}", Colors.RED))
+            print(_c(f"   Check that RPi5 is online, on the same network, "
+                     f"and SSH is listening (systemctl status ssh).", Colors.YELLOW))
+            return False
+
+        self.client = paramiko.SSHClient()
+        self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            print(_c(f"   → SSH handshake as {RPI_USER}@{RPI_HOST}…", Colors.DIM))
+            self.client.connect(
+                RPI_HOST,
+                username=RPI_USER,
+                password=RPI_PASSWORD,
+                timeout=10,
+                banner_timeout=10,
+                auth_timeout=10,
+            )
+            print(_c(f"   ✅ connected", Colors.GREEN))
+            return True
+        except Exception as e:
+            print(_c(f"❌ SSH connection failed: {e}", Colors.RED))
+            return False
+    
+    def exec(self, cmd: str, verbose: bool = True) -> Tuple[int, str, str]:
+        if not self.client:
+            raise RuntimeError("Not connected")
+        stdin, stdout, stderr = self.client.exec_command(cmd, timeout=300)
+        exit_code = stdout.channel.recv_exit_status()
+        out = stdout.read().decode("utf-8", errors="replace")
+        err = stderr.read().decode("utf-8", errors="replace")
+        if verbose and out.strip():
+            for line in out.strip().splitlines():
+                print(f"   {_c('→', Colors.DIM)} {line}")
+        return exit_code, out, err
+    
+    def sftp(self):
+        if not self.client:
+            raise RuntimeError("Not connected")
+        return self.client.open_sftp()
+    
+    def close(self):
+        if self.client:
+            self.client.close()
+            self.client = None
+    
+    def __enter__(self):
+        if not self.connect():
+            raise ConnectionError("Failed to connect to RPi5")
+        return self
+    
+    def __exit__(self, *args):
+        self.close()
+
+# ─── Tarball Sync ─────────────────────────────────────────────────
+def make_tarball(paths: List[str], exclude: List[str] = None) -> str:
+    """Create a gzipped tarball of the given paths."""
+    ts = int(time.time())
+    tar_path = tempfile.mktemp(suffix=f"_cortex_{ts}.tar.gz")
+    
+    print(_c(f"\n📦 Creating tarball...", Colors.BOLD))
+    
+    with tarfile.open(tar_path, "w:gz") as tar:
+        for rel_path in paths:
+            full = PROJECT_ROOT / rel_path
+            if full.exists():
+                # Handle files vs directories
+                if full.is_file():
+                    tar.add(full, arcname=rel_path)
+                else:
+                    for item in full.rglob("*"):
+                        # Skip excluded patterns
+                        skip = False
+                        for pat in (exclude or EXCLUDE):
+                            if pat.endswith("/"):
+                                if item.is_dir() and item.name == pat[:-1]:
+                                    skip = True
+                                    break
+                            else:
+                                if item.match(pat):
+                                    skip = True
+                                    break
+                        if not skip and item.is_file():
+                            arcname = str(item.relative_to(PROJECT_ROOT))
+                            tar.add(item, arcname=arcname)
+                print(f"   {_c('✓', Colors.GREEN)} {rel_path}")
+            else:
+                print(f"   {_c('○', Colors.DIM)} {rel_path} (not found, skipped)")
+    
+    size = os.path.getsize(tar_path)
+    print(f"   {_c('→', Colors.CYAN)} Tarball: {human_size(size)}")
+    return tar_path
+
+def upload_and_extract(tar_path: str, ssh: RPiSSH) -> bool:
+    """Upload tarball to RPi5 and extract it."""
+    remote_tar = f"/tmp/{os.path.basename(tar_path)}"
+    
+    print(_c(f"\n🚀 Uploading to {SSH_TARGET}...", Colors.BOLD))
+    sftp = ssh.sftp()
+    
+    # Upload with progress
+    local_size = os.path.getsize(tar_path)
+    uploaded = 0
+    
+    def progress_callback(sent, total):
+        nonlocal uploaded
+        uploaded = sent
+        pct = (sent / total) * 100
+        bar = "█" * int(pct // 5) + "░" * (20 - int(pct // 5))
+        sys.stdout.write(f"\r   {_c('→', Colors.CYAN)} [{bar}] {pct:.0f}% ({human_size(sent)} / {human_size(total)})")
+        sys.stdout.flush()
+    
+    sftp.put(tar_path, remote_tar, callback=progress_callback)
+    sftp.close()
+    print()  # newline after progress
+    
+                # Extract
+    print(_c(f"\n📂 Extracting on RPi5...", Colors.BOLD))
+    # M-SYNC-FIX-PYCACHE: after extracting the new .py sources, wipe all
+    # stale __pycache__ directories on the Pi. Without this, Python can
+    # load a stale .pyc file whose source has been replaced, and the
+    # user sees the old code running (e.g. blocksize=4800 instead of
+    # 1200) even after a successful sync. We only remove cache dirs
+    # under core/, infra/, apps/, miscellaneous/ — NOT under
+    # third-party packages installed in venv/.
+    cmd = (
+        f"cd {RPI_PATH} && "
+        f"cp .env /tmp/cortex_env_backup 2>/dev/null; true && "
+        f"tar -xzf {remote_tar} && "
+        f"mv /tmp/cortex_env_backup .env 2>/dev/null; true && "
+        f"chmod +x cortex 2>/dev/null; true && "
+        # Wipe stale .pyc files matching extracted sources so the
+        # next `python -m apps.cortex all` recompiles from the new .py.
+        f"find rpi5 laptop shared tests scripts cortex.py -type d -name __pycache__ -prune -exec rm -rf {{}} + 2>/dev/null; true && "
+        f"find rpi5 laptop shared tests scripts cortex.py -type f -name '*.pyc' -delete 2>/dev/null; true && "
+        f"rm -f {remote_tar}"
+    )
+    exit_code, out, err = ssh.exec(cmd)
+
+    if exit_code == 0:
+        print(_c("   ✓ Extraction complete", Colors.GREEN))
+        # M-SYNC-FIX-PYCACHE: detect a running python -m apps.cortex process
+        # and warn the user that in-memory modules are still the OLD
+        # version — they need to restart the program to pick up the
+        # new code. The sync tool only writes new files to disk; it
+        # can't hot-reload a running interpreter.
+        try:
+            check_cmd = (
+                f"pgrep -af 'python.*rpi5' | grep -v pgrep | head -3"
+            )
+            _, pout, _ = ssh.exec(check_cmd, capture=True)
+            if pout.strip():
+                print(_c(
+                    f"\n⚠️  WARNING: a running rpi5 process was detected:",
+                    Colors.YELLOW,
+                ))
+                for line in pout.strip().splitlines()[:3]:
+                    print(_c(f"   {line}", Colors.YELLOW))
+                print(_c(
+                    "   The new code is on disk but the running process\n"
+                    "   still has the OLD modules in memory. Restart it:\n"
+                    "     Ctrl+C, then: python -m apps.cortex all --standalone",
+                    Colors.YELLOW,
+                ))
+        except Exception:
+            pass
+        return True
+    else:
+        print(_c(f"   ✗ Extraction failed: {err}", Colors.RED))
+        return False
+
+# ─── Commands ─────────────────────────────────────────────────────
+def cmd_check(args):
+    """Test SSH connectivity without syncing."""
+    print_banner()
+    
+    print(_c("🔍 Testing connectivity to RPi5...\n", Colors.BOLD))
+    
+    # Test 1: Ping
+    print(f"   {_c('Ping', Colors.BOLD)} {RPI_HOST}...")
+    try:
+        run_shell(f"ping -c 1 -W 2 {RPI_HOST}", check=True, capture=True)
+        print(f"   {_c('✅', Colors.GREEN)} Host is reachable")
+    except subprocess.CalledProcessError:
+        print(f"   {_c('❌', Colors.RED)} Host unreachable")
+        return 1
+    
+    # Test 2: SSH
+    print(f"\n   {_c('SSH', Colors.BOLD)} {SSH_TARGET}...")
+    if PARAMIKO_OK:
+        try:
+            with RPiSSH() as ssh:
+                exit_code, out, _ = ssh.exec("uname -a", verbose=False)
+                print(f"   {_c('✅', Colors.GREEN)} SSH OK — {out.strip()[:60]}...")
+                
+                # Check disk space
+                exit_code, out, _ = ssh.exec("df -h . | tail -1", verbose=False)
+                parts = out.strip().split()
+                if len(parts) >= 4:
+                    print(f"   {_c('💾', Colors.CYAN)} Disk: {parts[3]} available on {RPI_PATH}")
+                
+                # Check Python
+                exit_code, out, _ = ssh.exec("python3 --version", verbose=False)
+                print(f"   {_c('🐍', Colors.CYAN)} Python: {out.strip()}")
+                
+                # Check if cortex is installed
+                exit_code, out, _ = ssh.exec(f"ls {RPI_PATH}/cortex 2>/dev/null && echo yes || echo no", verbose=False)
+                has_cortex = out.strip() == "yes"
+                print(f"   {_c('🎮', Colors.CYAN)} CLI: {'installed' if has_cortex else 'not installed'}")
+        except Exception as e:
+            print(f"   {_c('❌', Colors.RED)} SSH failed: {e}")
+            return 1
+    else:
+        print(f"   {_c('⚠️', Colors.YELLOW)} paramiko not installed — skipping SSH test")
+    
+    print(_c(f"\n✅ All connectivity checks passed!", Colors.GREEN))
+    return 0
+
+def cmd_status(args):
+    """Show what would be synced (dry-run)."""
+    print_banner()
+    
+    paths = CODE_PATHS.copy()
+    if args.models:
+        paths.extend(MODEL_PATHS)
+    
+    print(_c(f"\n📋 Sync Preview (dry-run)\n", Colors.BOLD))
+    
+    total_files = 0
+    total_size = 0
+    
+    for rel_path in paths:
+        full = PROJECT_ROOT / rel_path
+        if not full.exists():
+            print(f"   {_c('○', Colors.DIM)} {rel_path:<30s} (not found)")
+            continue
+        
+        if full.is_file():
+            size = full.stat().st_size
+            total_files += 1
+            total_size += size
+            print(f"   {_c('✓', Colors.GREEN)} {rel_path:<30s} {human_size(size):>10s}")
+        else:
+            file_count = 0
+            dir_size = 0
+            for item in full.rglob("*"):
+                if item.is_file():
+                    skip = False
+                    for pat in EXCLUDE:
+                        if pat.endswith("/"):
+                            if any(part == pat[:-1] for part in item.parts):
+                                skip = True
+                                break
+                        else:
+                            if item.match(pat):
+                                skip = True
+                                break
+                    if not skip:
+                        file_count += 1
+                        dir_size += item.stat().st_size
+            total_files += file_count
+            total_size += dir_size
+            print(f"   {_c('✓', Colors.GREEN)} {rel_path:<30s} {human_size(dir_size):>10s} ({file_count} files)")
+    
+    print(f"\n   {_c('─'*50, Colors.DIM)}")
+    print(f"   {_c('Total:', Colors.BOLD)} {total_files} files, {human_size(total_size)}")
+    
+    if args.models:
+        print(_c(f"\n⚠️ Including models/ will add ~500MB+ to the sync", Colors.YELLOW))
+    
+    return 0
+
+def cmd_to(args):
+    """Sync code TO RPi5."""
+    print_banner()
+    
+    paths = CODE_PATHS.copy()
+    if args.models:
+        paths.extend(MODEL_PATHS)
+    
+    # Build tarball
+    tar_path = make_tarball(paths, exclude=EXCLUDE)
+    
+    if args.dry_run:
+        print(_c(f"\n🏁 Dry-run mode — skipping upload", Colors.YELLOW))
+        os.remove(tar_path)
+        return 0
+    
+    # Upload
+    start = time.time()
+    success = False
+    
+    if PARAMIKO_OK:
+        try:
+            with RPiSSH() as ssh:
+                success = upload_and_extract(tar_path, ssh)
+                
+                # Verify
+                if success:
+                    print(_c(f"\n🔍 Verifying sync...", Colors.BOLD))
+                    
+                    # Check cortex.py
+                    exit_code, out, _ = ssh.exec(f"ls -la {RPI_PATH}/cortex.py 2>/dev/null && echo OK || echo MISSING", verbose=False)
+                    if "OK" in out:
+                        print(_c("   ✅ cortex.py", Colors.GREEN))
+                    else:
+                        print(_c("   ⚠️ cortex.py missing", Colors.YELLOW))
+                    
+                    # Check cortex (Unix wrapper)
+                    exit_code, out, _ = ssh.exec(f"test -x {RPI_PATH}/cortex && echo OK || echo MISSING", verbose=False)
+                    if "OK" in out:
+                        print(_c("   ✅ cortex (executable)", Colors.GREEN))
+                    else:
+                        print(_c("   ⚠️ cortex not found or not executable", Colors.YELLOW))
+                        # Fix it
+                        ssh.exec(f"chmod +x {RPI_PATH}/cortex 2>/dev/null; true", verbose=False)
+        except Exception as e:
+            print(_c(f"\n❌ Sync failed: {e}", Colors.RED))
+            success = False
+    else:
+        print(_c("\n❌ paramiko required for sync. Install: pip install paramiko", Colors.RED))
+    
+    # Cleanup
+    if os.path.exists(tar_path):
+        os.remove(tar_path)
+    
+    elapsed = time.time() - start
+    
+    if success:
+        print(_c(f"\n✅ Sync complete in {format_time(elapsed)}", Colors.GREEN))
+        print(_c(f"   Run 'python -m miscellaneous.tools.sync install' to update dependencies", Colors.DIM))
+        return 0
+    else:
+        print(_c(f"\n❌ Sync failed after {format_time(elapsed)}", Colors.RED))
+        return 1
+
+def cmd_from(args):
+    """Sync data FROM RPi5 (logs, recordings)."""
+    print_banner()
+    
+    paths = args.paths.split(",") if args.paths else DOWNLOAD_PATHS
+    
+    print(_c(f"\n📥 Downloading from {SSH_TARGET}\n", Colors.BOLD))
+    
+    if not PARAMIKO_OK:
+        print(_c("❌ paramiko required. Install: pip install paramiko", Colors.RED))
+        return 1
+    
+    start = time.time()
+    total_bytes = 0
+    total_files = 0
+    
+    try:
+        with RPiSSH() as ssh:
+            for rel_path in paths:
+                rel = rel_path.strip().rstrip("/")
+                print(f"   {_c('→', Colors.CYAN)} Downloading {rel}/...")
+                
+                # Tar remote directory
+                remote_tar = f"/tmp/rpi_dl_{int(time.time())}.tar.gz"
+                exit_code, _, _ = ssh.exec(
+                    f"cd {RPI_PATH} && tar -czf {remote_tar} {rel} 2>/dev/null; true",
+                    verbose=False,
+                )
+                
+                # Download
+                local_tar = tempfile.mktemp(suffix=".tar.gz")
+                sftp = ssh.sftp()
+                try:
+                    sftp.get(remote_tar, local_tar)
+                except Exception:
+                    print(f"      {_c('○', Colors.DIM)} Not present on RPi5")
+                    sftp.close()
+                    continue
+                sftp.close()
+                
+                # Extract
+                try:
+                    with tarfile.open(local_tar, "r:gz") as tar:
+                        members = tar.getmembers()
+                        tar.extractall(PROJECT_ROOT)
+                        bytes_extracted = sum(m.size for m in members)
+                        total_bytes += bytes_extracted
+                        total_files += len([m for m in members if m.isfile()])
+                        print(f"      {_c('✓', Colors.GREEN)} {len([m for m in members if m.isfile()])} files ({human_size(bytes_extracted)})")
+                except Exception:
+                    print(f"      {_c('✗', Colors.RED)} Extract failed")
+                
+                # Cleanup
+                ssh.exec(f"rm -f {remote_tar}", verbose=False)
+                if os.path.exists(local_tar):
+                    os.remove(local_tar)
+    
+    except Exception as e:
+        print(_c(f"\n❌ Download failed: {e}", Colors.RED))
+        return 1
+    
+    elapsed = time.time() - start
+    print(_c(f"\n✅ Downloaded {total_files} files ({human_size(total_bytes)}) in {format_time(elapsed)}", Colors.GREEN))
+    return 0
+
+def cmd_install(args):
+    """Install/update dependencies on RPi5."""
+    print_banner()
+    
+    print(_c(f"\n📦 Installing dependencies on {SSH_TARGET}\n", Colors.BOLD))
+    
+    if not PARAMIKO_OK:
+        print(_c("❌ paramiko required. Install: pip install paramiko", Colors.RED))
+        return 1
+    
+    start = time.time()
+    
+    try:
+        with RPiSSH() as ssh:
+            # Check current packages
+            print(f"   {_c('Checking current environment...', Colors.DIM)}")
+            exit_code, out, _ = ssh.exec("pip list | grep -iE 'supertonic|cartesia|ultralytics|onnxruntime' || true", verbose=False)
+            
+            # Install
+            print(f"\n   {_c('Running pip install...', Colors.BOLD)}")
+            exit_code, out, err = ssh.exec(
+                f"cd {RPI_PATH} && pip install -r requirements.txt",
+                verbose=False,
+            )
+            
+            # Stream output
+            print(out)
+            if err.strip():
+                print(_c(f"   stderr: {err.strip()[:200]}", Colors.YELLOW))
+            
+            if exit_code == 0:
+                elapsed = time.time() - start
+                print(_c(f"\n✅ Dependencies installed in {format_time(elapsed)}", Colors.GREEN))
+                return 0
+            else:
+                print(_c(f"\n❌ pip install failed (exit code {exit_code})", Colors.RED))
+                return 1
+    
+    except Exception as e:
+        print(_c(f"\n❌ Install failed: {e}", Colors.RED))
+        return 1
+
+def cmd_pull_new(args):
+    """Pull NEW data files from RPi5 and prune OLD ones on both machines.
+
+    Step 1 PULL: download only files on the RPi5 NEWER than the laptop's
+    newest file in the same data dir (existing local files never overwritten).
+    Step 2 PRUNE: delete data files older than --days (default 60, ~two
+    months) on BOTH the laptop and the RPi5.
+
+    DRY-RUN by default -- pass --yes to actually download/delete.
+    """
+    print_banner()
+    if not PARAMIKO_OK:
+        print(_c("x paramiko required. Install: pip install paramiko", Colors.RED))
+        return 1
+
+    days = int(getattr(args, "days", 60) or 60)
+    execute = bool(getattr(args, "yes", False))
+    cutoff = time.time() - (days * 86400)
+    mode = _c("EXECUTE", Colors.YELLOW) if execute else _c("DRY-RUN (use --yes to apply)", Colors.DIM)
+    print(_c("\n[sync] Pull NEW + prune OLD (>%dd)  [%s]\n" % (days, mode), Colors.BOLD))
+    data_dirs = ["logs", "recordings", "tts_recordings", "memory_images"]
+
+    try:
+        with RPiSSH() as ssh:
+            sftp = ssh.sftp()
+            total_pulled = 0
+            total_pull_bytes = 0
+            pruned_local = 0
+            pruned_remote = 0
+            for rel in data_dirs:
+                local_dir = PROJECT_ROOT / rel
+                remote_dir = "%s/%s" % (RPI_PATH, rel)
+                print("   " + _c(">", Colors.CYAN) + " " + _c(rel + "/", Colors.BOLD))
+
+                # Laptop's newest mtime here (the 'new' watermark) + old files.
+                local_newest = 0.0
+                local_old = []
+                if local_dir.exists():
+                    for fp in local_dir.rglob("*"):
+                        if not fp.is_file():
+                            continue
+                        try:
+                            st = fp.stat()
+                        except OSError:
+                            continue
+                        local_newest = max(local_newest, st.st_mtime)
+                        if st.st_mtime < cutoff:
+                            local_old.append(fp)
+
+                # Remote listing: "mtime_epoch size path" per file.
+                find_cmd = "find %s -type f -printf '%%T@ %%s %%p\\n' 2>/dev/null || true" % remote_dir
+                _, out, _ = ssh.exec(find_cmd, verbose=False)
+                remote_files = []
+                for line in out.splitlines():
+                    parts = line.split(" ", 2)
+                    if len(parts) != 3:
+                        continue
+                    try:
+                        remote_files.append((parts[2], float(parts[0]), int(parts[1])))
+                    except ValueError:
+                        continue
+                # PULL: remote files newer than the laptop's newest. If the
+                # laptop has nothing here yet, treat ALL remote files as new.
+                if local_newest == 0.0:
+                    new_remote = remote_files
+                else:
+                    new_remote = [f for f in remote_files if f[1] > local_newest]
+
+                for r_path, r_mtime, r_size in new_remote:
+                    rel_sub = os.path.relpath(r_path, RPI_PATH).replace("\\", "/")
+                    dest = PROJECT_ROOT / rel_sub
+                    if dest.exists():
+                        continue  # never overwrite an existing local file
+                    total_pulled += 1
+                    total_pull_bytes += r_size
+                    if execute:
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            sftp.get(r_path, str(dest))
+                            print("      " + _c("v new", Colors.GREEN) + " " + rel_sub + " (" + human_size(r_size) + ")")
+                        except Exception as e:
+                            print("      " + _c("x pull failed", Colors.RED) + " " + rel_sub + ": " + str(e))
+                            total_pulled -= 1
+                            total_pull_bytes -= r_size
+                    else:
+                        print("      " + _c("v new", Colors.GREEN) + " " + rel_sub + " (" + human_size(r_size) + ")")
+                if not new_remote:
+                    print("      " + _c("o no new files", Colors.DIM))
+                # PRUNE local files older than the cutoff.
+                for fp in local_old:
+                    pruned_local += 1
+                    if execute:
+                        try:
+                            fp.unlink()
+                            print("      " + _c("- old local", Colors.MAGENTA) + " " + str(fp.relative_to(PROJECT_ROOT)))
+                        except OSError as e:
+                            print("      " + _c("x", Colors.RED) + " " + fp.name + ": " + str(e))
+                            pruned_local -= 1
+                    else:
+                        print("      " + _c("- old local", Colors.MAGENTA) + " " + str(fp.relative_to(PROJECT_ROOT)))
+
+                # PRUNE remote files older than the cutoff.
+                for r_path, r_mtime, r_size in remote_files:
+                    if r_mtime < cutoff:
+                        pruned_remote += 1
+                        rel_sub = os.path.relpath(r_path, RPI_PATH).replace("\\", "/")
+                        if execute:
+                            ssh.exec("rm -f '%s'" % r_path, verbose=False)
+                        print("      " + _c("- old rpi", Colors.MAGENTA) + " " + rel_sub)
+            sftp.close()
+
+        print()
+        verb = "Pulled" if execute else "Would pull"
+        pverb = "Pruned" if execute else "Would prune"
+        print(_c("[ok] %s %d new file(s) (%s) - %s %d local + %d rpi file(s) older than %dd"
+                 % (verb, total_pulled, human_size(total_pull_bytes), pverb,
+                    pruned_local, pruned_remote, days), Colors.GREEN))
+        if not execute:
+            print(_c("   Re-run with --yes to apply these changes.", Colors.YELLOW))
+        return 0
+    except Exception as e:
+        print(_c("\n[fail] pull-new failed: %s" % e, Colors.RED))
+        return 1
+
+
+def cmd_full(args):
+    """Sync TO RPi5 + install deps (one step)."""
+    print_banner()
+    
+    ret = cmd_to(args)
+    if ret == 0:
+        print()
+        ret = cmd_install(args)
+    return ret
+
+# ─── Main ─────────────────────────────────────────────────────────
+def main():
+    parser = argparse.ArgumentParser(
+        prog="cortex-sync",
+        description="Sync Project Cortex between Laptop and RPi5",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python -m miscellaneous.tools.sync check              # Verify connectivity
+  python -m miscellaneous.tools.sync status             # Preview what would sync
+  python -m miscellaneous.tools.sync to                 # Fast code-only sync
+  python -m miscellaneous.tools.sync to --models        # Include models/ (~500MB)
+  python -m miscellaneous.tools.sync from               # Download logs, recordings
+  python -m miscellaneous.tools.sync from --paths logs  # Download only logs/
+  python -m miscellaneous.tools.sync install            # Update deps on RPi5
+  python -m miscellaneous.tools.sync full               # to + install in one step
+        """
+    )
+    
+    subparsers = parser.add_subparsers(dest="command", help="Command")
+    
+    # check
+    subparsers.add_parser("check", help="Test SSH connectivity")
+    
+    # status
+    status_parser = subparsers.add_parser("status", help="Preview sync (dry-run)")
+    status_parser.add_argument("--models", action="store_true", help="Include models/")
+    
+    # to
+    to_parser = subparsers.add_parser("to", help="Sync code TO RPi5")
+    to_parser.add_argument("--models", action="store_true", help="Include models/ (~500MB)")
+    to_parser.add_argument("--dry-run", "-n", action="store_true", help="Show what would sync without uploading")
+    to_parser.add_argument("--verify", "-v", action="store_true", help="Verify after sync")
+    
+    # from
+    from_parser = subparsers.add_parser("from", help="Sync data FROM RPi5")
+    from_parser.add_argument("--paths", type=str, help="Comma-separated paths to download (default: all)")
+    
+    # pull-new
+    pullnew_parser = subparsers.add_parser("pull-new", help="Pull NEW data from RPi5 + prune OLD on both")
+    pullnew_parser.add_argument("--days", type=int, default=60, help="Prune files older than N days (default 60)")
+    pullnew_parser.add_argument("--yes", "-y", action="store_true", help="Actually download/delete (default: dry-run)")
+
+    # install
+    subparsers.add_parser("install", help="Install deps on RPi5")
+    
+    # full
+    full_parser = subparsers.add_parser("full", help="Sync TO + install (one step)")
+    full_parser.add_argument("--models", action="store_true", help="Include models/")
+    
+    args = parser.parse_args()
+    
+    if not args.command:
+        parser.print_help()
+        return 0
+    
+    return COMMANDS[args.command](args)
+
+
+# Module-level command registry (for external callers like cortex.py)
+COMMANDS = {
+    "check": cmd_check,
+    "status": cmd_status,
+    "to": cmd_to,
+    "from": cmd_from,
+    "pull-new": cmd_pull_new,
+    "install": cmd_install,
+    "full": cmd_full,
+}
+
+# Alias for external access
+commands = COMMANDS
+
+if __name__ == "__main__":
+    sys.exit(main())

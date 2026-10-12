@@ -3,7 +3,7 @@
 
   <br/>
 
-  <img src="IVP_Slides/Pictures/asirive%20logo.svg" width="56" alt="Asirive logo" />
+  <img src="miscellaneous/IVP_Slides/Pictures/asirive%20logo.svg" width="56" alt="Asirive logo" />
 
   <br/>
 
@@ -20,7 +20,7 @@
   <b>DOOR TO DOOR. ON YOUR OWN.</b>
 </div>
 
-<img src="IVP_Slides/Pictures/Asirive%20Cortex%20Standalone.png" width="720" alt="Asirive Cortex glasses and compute module connected by USB-C" />
+<img src="miscellaneous/IVP_Slides/Pictures/Asirive%20Cortex%20Standalone.png" width="720" alt="Asirive Cortex glasses and compute module connected by USB-C" />
 
 ---
 
@@ -226,17 +226,15 @@ Measured on V3 hardware. Community trials with the Singapore Association for the
 
 ```
 ProjectCortex/
-├── apps/        Device CLI and companion surfaces
-├── core/        The five-layer brain, being refactored for V4
-├── device/      Cameras, sensors, GPS, power
-├── infra/       Protocol seeds, Go fleet gateway lives here
-├── tools/       Sync, converters, setup, training
-├── docs/        architecture/V4-ECOSYSTEM.md, start here
-├── media/       Assets and presentations
-└── tests/
+├── core/           The five-layer brain, being refactored for V4
+│   └── device/     Cameras, sensors, GPS, power
+├── infra/          Protocol seeds, Go fleet gateway lives here
+├── apps/           Device CLI and companion surfaces
+├── docs/           architecture/V4-ECOSYSTEM.md, start here
+└── miscellaneous/  Models, media, archive, tools, tests, legacy deploy
 ```
 
-Deprecated V2 and V3 systems still ship in this repository while they are refactored out.
+Deprecated V2 and V3 systems still ship in this repository while they are refactored out. Each of core/, infra/ and apps/ carries an AGENTS.md that must be updated with every change in that domain.
 
 ---
 
@@ -263,7 +261,7 @@ python -m apps.cortex status       # env, config, layer availability
 ## 14 ABOUT
 
 <div align="center">
-  <img src="IVP_Slides/Pictures/Irfan%20Wearing%20Cortex%20V3.png" width="380" alt="Cortex worn during field testing" />
+  <img src="miscellaneous/IVP_Slides/Pictures/Irfan%20Wearing%20Cortex%20V3.png" width="380" alt="Cortex worn during field testing" />
 </div>
 
 Asirive Cortex is built by **Asirive**: Haziq Shah (lead engineering), Muhammad Irfan Nuafal and Eryna Natasha. Finalists at the Tan Kah Kee Young Inventors' Award 2026. Designed with and for the visually impaired community in Singapore.
@@ -279,5 +277,5 @@ Asirive Cortex is built by **Asirive**: Haziq Shah (lead engineering), Muhammad 
 
   <br/>
 
-  <img src="IVP_Slides/Pictures/asirive%20logo.svg" width="48" alt="Asirive logo" />
+  <img src="miscellaneous/IVP_Slides/Pictures/asirive%20logo.svg" width="48" alt="Asirive logo" />
 </div>

@@ -2,8 +2,11 @@
 .env
 .env.*
 *.env
-tools/_rpi_ssh.py
-tools/.rpi5_key
+!.env.example
+!.env.template
+miscellaneous/tools/_rpi_ssh.py
+miscellaneous/tools/.rpi5_key
+miscellaneous/tools/.cartesia_key
 *.pyc
 __pycache__/
 *.so
@@ -14,14 +17,14 @@ build/
 venv/
 env/
 
-# All dotfiles/dotfolders (local config, secrets, cache)
-.*/
+# All dotfiles/dotfolders (local config, secrets, cache, tool state)
+. */
 .*
 !.gitignore
+!.gitattributes
 !.github/
-!.agents/
-!.claude/
-!.opencode/
+!.env.example
+!.env.template
 
 # IDE
 .vscode/
@@ -40,8 +43,8 @@ temp_*.mp3
 *.log
 logs.md
 
-# Model weights (too large for git)
-# models/*.pt  # Uncomment if models are >100MB
+# Model weights (too large for git; already-tracked files stay tracked)
+miscellaneous/models/
 
 # User data
 recordings/
@@ -49,32 +52,31 @@ debug_images/
 tts_recordings/
 memory_images/
 nav_cache.db
+local_cortex.db
 *.pkl
 *.cache
 
 # Old README (archived)
 README.old.md
 
-# Local agent / handoff docs (personal notes, not for the repo)
-AGENTS.md
+# Local agent / handoff docs (personal notes, not for the repo).
+# Domain AGENTS.md files under core/, infra/, apps/ ARE tracked and maintained.
+/AGENTS.md
 ContextHistory.md
 
 # Textual TUI screenshots from save_screenshot() debugging
-tools/cortex_full_tui_*.png
-tools/*.tui.png
+miscellaneous/tools/cortex_full_tui_*.png
+miscellaneous/tools/*.tui.png
 
 # Windows reserved filename artifact
 nul
 .worktrees/
-tools/.cartesia_key
 
 # V4 additions — runtime data, local artifacts, unpushed deliverables
 temp_audio/*
 !temp_audio/.gitkeep
-local_cortex.db
 memory_storage/
 memory/
 logs/
-archive/session-ses_*.md
-media/presentations/
-!.env.example
+miscellaneous/archive/session-ses_*.md
+miscellaneous/media/presentations/

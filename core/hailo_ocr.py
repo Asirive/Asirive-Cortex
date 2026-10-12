@@ -77,7 +77,7 @@ class HailoOCRPipeline:
 
     def __init__(
         self,
-        recognition_hef_path: str = "models/hailo/paddle_ocr_v3_recognition.hef",
+        recognition_hef_path: str = "miscellaneous/models/hailo/paddle_ocr_v3_recognition.hef",
         confidence_threshold: float = 0.5,
         max_text_regions: int = 20,
         vdevice=None,

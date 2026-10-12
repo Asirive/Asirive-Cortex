@@ -32,7 +32,7 @@ supabase:
 # =====================================================
 layer0:
   enabled: true
-  model_path: "models/converted/yolo26n_ncnn_model"  # YOLO v26n NCNN - user requested
+  model_path: "miscellaneous/models/converted/yolo26n_ncnn_model"  # YOLO v26n NCNN - user requested
   framework: "ncnn"  # NCNN - ARM-optimized for RPi5
   device: "cpu"  # Options: 'cpu' (RPi), 'cuda' (laptop with GPU)
   # 0.5 was too high — empty detections on most scenes. 0.35 is a
@@ -59,13 +59,13 @@ layer1:
   # TUI now shows "L1 — laptop only" instead of "0 obj 0ms".
   enabled: false
   # YOLOE-26n-seg — smallest text-prompt model, fast enough for RPi5 CPU.
-  # Was pointing to a non-existent ONNX path ("models/converted/yoloe_26n_seg_pf/model.onnx")
+  # Was pointing to a non-existent ONNX path ("miscellaneous/models/converted/yoloe_26n_seg_pf/model.onnx")
   # which silently disabled Layer 1 in main.py (the missing-file check at
   # line 1701 set self.layer1 = None and the TUI read L1=0 forever).
-  # Now points at the real *.pt file in models/.
-  model_path: "models/yoloe-26n-seg.pt"
+  # Now points at the real *.pt file in miscellaneous/models/.
+  model_path: "miscellaneous/models/yoloe-26n-seg.pt"
   # PyTorch fallback for full YOLOE features
-  pt_model_path: "models/yoloe-26n-seg.pt"
+  pt_model_path: "miscellaneous/models/yoloe-26n-seg.pt"
 
   device: "cpu"
   confidence: 0.25
@@ -77,9 +77,9 @@ layer1:
 
   # Available Models
   models:
-    ncnn: "models/converted/yolo26s_ncnn_model"
-    onnx: "models/converted/yoloe_26n_seg_pf" # User requested specifically
-    pt: "models/yolo26s.pt"
+    ncnn: "miscellaneous/models/converted/yolo26s_ncnn_model"
+    onnx: "miscellaneous/models/converted/yoloe_26n_seg_pf" # User requested specifically
+    pt: "miscellaneous/models/yolo26s.pt"
 
   mode: "TEXT_PROMPTS"  # Options: PROMPT_FREE, TEXT_PROMPTS, VISUAL_PROMPTS
 
@@ -622,7 +622,7 @@ hailo:
   # Depth Estimation (SCDepthV3 model — metric depth output)
   depth:
     enabled: true
-    model_path: "models/hailo/scdepthv3.hef"
+    model_path: "miscellaneous/models/hailo/scdepthv3.hef"
     model_type: "scdepthv3"  # "scdepthv3" (metric) or "fast_depth" (inverse)
     input_size: null  # Auto-detect from HEF
     scale_factor: 1.0  # Only used for fast_depth (inverse depth models)
@@ -647,7 +647,7 @@ hailo:
   # OCR Recognition (PaddleOCR on Hailo)
   ocr:
     enabled: true
-    recognition_model_path: "models/hailo/paddle_ocr_v3_recognition.hef"
+    recognition_model_path: "miscellaneous/models/hailo/paddle_ocr_v3_recognition.hef"
     detection_method: "paddle"   # CPU-based PaddleOCR text detection
     confidence: 0.5              # Minimum OCR confidence threshold
 

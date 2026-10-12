@@ -26,7 +26,7 @@ class ObjectDetector:
     This is the "reflex" layer - fast, offline, safety-critical.
     """
     
-    def __init__(self, model_path: str = "models/yolo11s.pt", device: str = "cpu"):
+    def __init__(self, model_path: str = "miscellaneous/models/yolo11s.pt", device: str = "cpu"):
         """
         Initialize the object detector.
         

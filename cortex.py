@@ -140,7 +140,7 @@ def cmd_status(args):
         print(f"   {Colors.RED}❌{Colors.RESET} Camera (OpenCV not available)")
     
     # Hailo NPU
-    hailo_path = PROJECT_ROOT / "models" / "hailo" / "scdepthv3.hef"
+    hailo_path = PROJECT_ROOT / "miscellaneous" / "models" / "hailo" / "scdepthv3.hef"
     if hailo_path.exists():
         print(f"   {Colors.GREEN}✅{Colors.RESET} SCDepthV3 HEF model")
     else:
@@ -149,9 +149,9 @@ def cmd_status(args):
     # Model files
     print(f"\n{Colors.BOLD}📦 Model Files{Colors.RESET}")
     models = {
-        "YOLO 26n NCNN": PROJECT_ROOT / "models" / "converted" / "yolo26n_ncnn_model",
-        "SCDepthV3 HEF": PROJECT_ROOT / "models" / "hailo" / "scdepthv3.hef",
-        "OCR HEF": PROJECT_ROOT / "models" / "hailo" / "paddle_ocr_v3_recognition.hef",
+        "YOLO 26n NCNN": PROJECT_ROOT / "miscellaneous" / "models" / "converted" / "yolo26n_ncnn_model",
+        "SCDepthV3 HEF": PROJECT_ROOT / "miscellaneous" / "models" / "hailo" / "scdepthv3.hef",
+        "OCR HEF": PROJECT_ROOT / "miscellaneous" / "models" / "hailo" / "paddle_ocr_v3_recognition.hef",
     }
     for name, path in models.items():
         exists = path.exists()
@@ -439,7 +439,7 @@ def _test_audio(args):
 def _test_hailo(args):
     print(f"{Colors.BOLD}⚡ Testing Hailo NPU...{Colors.RESET}")
     
-    hef_path = PROJECT_ROOT / "models" / "hailo" / "scdepthv3.hef"
+    hef_path = PROJECT_ROOT / "miscellaneous" / "models" / "hailo" / "scdepthv3.hef"
     if not hef_path.exists():
         print(f"   {Colors.RED}❌{Colors.RESET} SCDepthV3 HEF not found: {hef_path}")
         return 1
@@ -655,13 +655,13 @@ Examples:
         parser.print_help()
         return 0
     
-    # Handle sync subcommands by delegating to tools.sync
+    # Handle sync subcommands by delegating to miscellaneous.tools.sync
     if args.command == "sync":
         if not args.sync_cmd:
             sync_parser.print_help()
             return 0
-        # Pass through to tools.sync
-        import tools.sync as sync_mod
+        # Pass through to miscellaneous.tools.sync
+        import miscellaneous.tools.sync as sync_mod
         sync_args = argparse.Namespace()
         sync_args.command = args.sync_cmd
         sync_args.models = getattr(args, "models", False)

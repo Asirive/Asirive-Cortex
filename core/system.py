@@ -300,7 +300,7 @@ except ImportError as e:
 # IMPORT NEW VOICE PIPELINE HANDLERS
 # =====================================================
 try:
-    from device.bluetooth_handler import BluetoothAudioManager
+    from core.device.bluetooth_handler import BluetoothAudioManager
     logger.info("[DEBUG] ✅ BluetoothAudioManager imported successfully")
 except ImportError as e:
     logger.warning(f"[DEBUG] ⚠️ BluetoothAudioManager import failed: {e}")
@@ -321,21 +321,21 @@ except ImportError as e:
     TTSRouter = None
 
 try:
-    from device.sensors.vl53l5cx_handler import VL53L5CXHandler
+    from core.device.sensors.vl53l5cx_handler import VL53L5CXHandler
     logger.info("[DEBUG] ✅ VL53L5CXHandler imported successfully")
 except ImportError as e:
     logger.warning(f"[DEBUG] ⚠️ VL53L5CXHandler import failed: {e}")
     VL53L5CXHandler = None
 
 try:
-    from device.camera.usb_camera_handler import USBCameraHandler
+    from core.device.camera.usb_camera_handler import USBCameraHandler
     logger.info("[DEBUG] ✅ USBCameraHandler imported successfully")
 except ImportError as e:
     logger.warning(f"[DEBUG] ⚠️ USBCameraHandler import failed: {e}")
     USBCameraHandler = None
 
 try:
-    from device.camera.stereo_camera_handler import StereoCameraHandler
+    from core.device.camera.stereo_camera_handler import StereoCameraHandler
     logger.info("[DEBUG] ✅ StereoCameraHandler imported successfully")
 except ImportError as e:
     logger.warning(f"[DEBUG] ⚠️ StereoCameraHandler import failed: {e}")
@@ -405,7 +405,7 @@ except ImportError as e:
     HailoOCRPipeline = None
 
 try:
-    from device.hardware import GPSHandler, FusedGPSHandler, IMUHandler, ButtonHandler
+    from core.device.hardware import GPSHandler, FusedGPSHandler, IMUHandler, ButtonHandler
     logger.info("[DEBUG] ✅ Hardware peripherals (GPS, IMU, Button) imported successfully")
 except ImportError as e:
     logger.warning(f"[DEBUG] ⚠️ Hardware peripherals import failed: {e}")
@@ -3365,7 +3365,7 @@ class CortexSystem:
         # cross-platform fallback, or config.manual for demos.
         self.power_monitor = None
         try:
-            from device.power_monitor import PowerMonitor
+            from core.device.power_monitor import PowerMonitor
             power_cfg = self.config.get('power', {})
             self.power_monitor = PowerMonitor(power_cfg)
             logger.info(

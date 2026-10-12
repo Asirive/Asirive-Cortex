@@ -91,7 +91,7 @@ class YOLOEConfig:
     """YOLOE text-prompt configuration for Layer 1 (Learner) on laptop GPU"""
 
     # Model
-    model_path: str = "models/yoloe-26x-seg.pt"   # Text-prompt variant (NOT -pf)
+    model_path: str = "miscellaneous/models/yoloe-26x-seg.pt"   # Text-prompt variant (NOT -pf)
     device: str = "cuda:0"
     confidence: float = 0.40                       # Raised from 0.25 to reduce false positives
     use_half: bool = True                          # FP16 on GPU

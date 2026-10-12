@@ -506,7 +506,7 @@ class VADHandler:
             try:
                 # Lazy import — bluetooth_handler imports bluetooth stuff
                 # which we don't want at module load time.
-                from device.bluetooth_handler import BluetoothAudioManager
+                from core.device.bluetooth_handler import BluetoothAudioManager
                 bt = BluetoothAudioManager()
                 bt_connected = bool(bt.is_connected())
             except Exception as e:
