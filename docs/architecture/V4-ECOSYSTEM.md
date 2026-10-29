@@ -247,6 +247,7 @@ the team key; production = real PKI from V4-Final manufacturing.
 - One device per user (spare/multi-device later).
 - Login: Apple ID + email.
 - Infra: Go gateway + web dashboard; dev self-host → VPS at beta.
+- Core language: Python (C for measured hot paths), hardened: safety is a separate real-time process, systemd + hardware watchdog, A/B OTA with rollback. Rust not used unless measurement forces it. V4 core is built new; V3 frozen in `v3_core/`. See core/AGENTS.md. (2026-10-29)
 - Test plan: home/room lab first; field tests (MRT, real routes) only after lab-proven.
 - Partners: NTU (professor support — injection molding + 3D printing), SVH
   (visually-handicapped org collaboration). V4-Final funded via grants.
@@ -275,7 +276,7 @@ Do not build on these; they remain in the repo only until refactored out:
 
 | Area | V4 treatment |
 |---|---|
-| `v3_core/` → new V4 core | **Build new; V3 frozen as reference in `v3_core/`.** Decompose the `CortexSystem` monolith (`v3_core/system.py`, ~8.4k lines) into services: perception, safety, voice, agent harness, nav, memory. Preserve proven logic: safety T0–T3, Gemini Live handler patterns, voice pipeline. Strip every deprecated system (§12). Add: local-brain adapter, dual STT/TTS policy, wake word service, offline routing, retention-aware sync. |
+| `v3_core/` → new V4 `core/` | **Build new (Python, hardened); V3 frozen as reference in `v3_core/`.** Replace the `CortexSystem` monolith (`v3_core/system.py`, ~8.4k lines) with isolated services (process model in core/AGENTS.md): perception, safety, voice, agent harness, nav, memory. Preserve proven logic: safety T0–T3, Gemini Live handler patterns, voice pipeline. Strip every deprecated system (§12). Add: local-brain adapter, dual STT/TTS policy, wake word service, offline routing, retention-aware sync. |
 | `device/` | **Replace.** New ESP32-S3 firmware (ESP-IDF, C) for the glasses bridge + compute-module board support for Dragon Q8B. Current RPi-specific handlers are reference only. |
 | `infra/` | **Greenfield.** Go fleet gateway + OTA + contracts. Current `infra/api/protocol.py` + `infra/supabase/` schema are seeds/reference for message shapes and tables. |
 | App | **Greenfield.** Flutter (iOS-first). `apps/laptop_dashboard` is deprecated; its message protocol is the only reference worth keeping. |
