@@ -35,8 +35,12 @@ Legacy consumers: `v3_core/` (device links, hybrid memory sync),
   fleet console (`gateway/web/index.html`), `cmd/simdevice` fake devices. Dev
   token auth and in-memory state only. See `gateway/README.md`.
 - `supabase/migrations/002_fleet.sql`: V4 Postgres schema (not applied anywhere yet).
-- Not built: mTLS/PKI, sealed envelope, roles, Postgres wiring, OTA service,
-  camera relay, dataset pipeline, Python/Dart codegen.
+- `gateway/internal/ota` + `cmd/cortex-sign`: signed manifests (ed25519, offline key),
+  ring/anti-rollback checks, staged rollout engine with halt. Unit-tested and
+  run end to end against simulated devices.
+- Not built: mTLS/PKI, sealed envelope, roles, Postgres wiring, device-side OTA
+  verifier/A-B client, camera relay, dataset pipeline, Python/Dart codegen. Gap
+  table: docs/architecture/FLEET-OTA-AND-SECURITY.md.
 
 ## V4 target (greenfield)
 
@@ -81,3 +85,4 @@ psql -f supabase/migrations/001_initial_schema.sql   # schema apply (reference)
 - 2026-10-29: Added contracts/, gateway skeleton, fleet console, 002_fleet.sql. Tiered access and dataset-capture policy documented in V4-ECOSYSTEM.md 6.1 and 9.1.
 - 2026-10-12: AGENTS.md created. Directory holds V3 seeds; Go gateway to be
   created here per V4-ECOSYSTEM.md section 6.
+- 2026-10-29: Added OTA control plane (internal/ota), cortex-sign, release API, FLEET-OTA-AND-SECURITY.md.

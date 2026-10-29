@@ -12,6 +12,8 @@ they live in git history if you need them.
 
 - **[architecture/CORTEX-ENGINE.md](architecture/CORTEX-ENGINE.md)** — plan for
   the power-efficient LFM3-Omni inference engine (phased, measurement-gated).
+- **[architecture/FLEET-OTA-AND-SECURITY.md](architecture/FLEET-OTA-AND-SECURITY.md)** —
+  how updates roll out, security gaps, fleet coverage checklist.
 
 ## Reference
 

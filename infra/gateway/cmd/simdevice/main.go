@@ -67,6 +67,18 @@ func device(url, tok, id string, tier pb.Tier, ring pb.Ring, bench bool) {
 					return
 				}
 				var e pb.Envelope
+				if proto.Unmarshal(data, &e) == nil && e.Type == pb.PayloadType_PAYLOAD_TYPE_OTA_OFFER {
+					var o pb.OtaOffer
+					proto.Unmarshal(e.Payload, &o)
+					id := o.Manifest.ReleaseId
+					send(pb.PayloadType_PAYLOAD_TYPE_OTA_PROGRESS, &pb.OtaProgress{ReleaseId: id, Stage: pb.OtaStage_OTA_STAGE_DOWNLOADING, Percent: 50})
+					time.Sleep(2 * time.Second)
+					out := pb.OtaOutcome_OTA_OUTCOME_COMMITTED
+					if os.Getenv("SIM_FAIL_OTA") != "" {
+						out = pb.OtaOutcome_OTA_OUTCOME_ROLLED_BACK
+					}
+					send(pb.PayloadType_PAYLOAD_TYPE_OTA_RESULT, &pb.OtaResult{ReleaseId: id, Outcome: out, RunningVersion: "4.0.1"})
+				}
 				if proto.Unmarshal(data, &e) == nil && e.Type == pb.PayloadType_PAYLOAD_TYPE_DEBUG_COMMAND {
 					var c pb.DebugCommand
 					proto.Unmarshal(e.Payload, &c)

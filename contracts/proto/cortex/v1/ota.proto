@@ -27,9 +27,11 @@ message Manifest {
   Ring ring = 2;
   repeated Artifact artifacts = 3;
   string rollback_to_release_id = 4;
-  uint32 rollout_percent = 5;   // staged rollout within the ring
+  uint32 rollout_percent = 5;   // informational only; the gateway decides rollout and is NOT trusted to sign
   int64 not_before_ms = 6;
-  bytes manifest_signature = 7;
+  bytes manifest_signature = 7; // ed25519 over the manifest with this field cleared (deterministic encoding)
+  uint64 version_counter = 8;   // anti-rollback: device refuses a counter lower than its stored one
+  Ring max_ring = 9;            // widest ring this release may reach (a beta build can never reach STABLE)
 }
 
 message OtaOffer { Manifest manifest = 1; }

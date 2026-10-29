@@ -14,6 +14,7 @@ message Hello {
   bool bench_device = 7;         // team-owned bench unit; required for alpha camera/dataset
   uint64 resume_after_seq = 8;   // last server seq the device processed
   uint32 heartbeat_interval_s = 9;
+  uint64 version_counter = 10;   // device's stored anti-rollback counter
 }
 
 message HelloAck {

@@ -6,6 +6,7 @@ package server
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/asirive/cortex/gateway/internal/fleet"
 	pb "github.com/asirive/cortex/gateway/internal/gen/cortex/v1"
+	"github.com/asirive/cortex/gateway/internal/ota"
 	"github.com/asirive/cortex/gateway/web"
 	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/proto"
@@ -29,6 +31,7 @@ const (
 type Server struct {
 	Fleet    *fleet.Store
 	DevToken string // shared secret for device and dashboard in dev
+	OTA      *ota.Engine
 	up       websocket.Upgrader
 
 	mu    sync.Mutex
@@ -51,6 +54,9 @@ type devConn struct {
 	bench   bool
 	id      string
 	lastSeq uint64
+	ring    pb.Ring
+	counter uint64
+	offered string
 	seq     uint64
 }
 
@@ -67,6 +73,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/devices/{id}", s.auth(s.device))
 	mux.HandleFunc("POST /api/devices/{id}/command", s.auth(s.command))
 	mux.HandleFunc("GET /api/audit", s.auth(s.auditLog))
+	mux.HandleFunc("GET /api/releases", s.auth(s.releases))
+	mux.HandleFunc("POST /api/releases", s.auth(s.registerRelease))
+	mux.HandleFunc("POST /api/releases/{id}/halt", s.auth(s.haltRelease))
 	sub, _ := fs.Sub(web.FS, ".")
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 	return mux
@@ -109,6 +118,7 @@ func (s *Server) deviceWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.id, c.tier, c.bench = env.Header.DeviceId, hello.Tier, hello.BenchDevice
+	c.ring, c.counter = hello.Ring, hello.VersionCounter
 	iv := hello.HeartbeatIntervalS
 	if iv == 0 {
 		iv = defaultHBSecond
@@ -130,6 +140,7 @@ func (s *Server) deviceWS(w http.ResponseWriter, r *http.Request) {
 	s.send(c, pb.PayloadType_PAYLOAD_TYPE_HELLO_ACK, &pb.HelloAck{
 		Accepted: true, HeartbeatIntervalS: iv, LastSeenSeq: c.lastSeq, ServerTsMs: now.UnixMilli()})
 
+	s.offer(c)
 	for {
 		ws.SetReadDeadline(time.Now().Add(time.Duration(iv*4) * time.Second))
 		if !s.readEnv(c, &env) {
@@ -177,6 +188,7 @@ func (s *Server) dispatch(c *devConn, env *pb.Envelope) {
 		var m pb.Heartbeat
 		if proto.Unmarshal(env.Payload, &m) == nil {
 			s.Fleet.Heartbeat(c.id, &m, now)
+			s.offer(c)
 		}
 	case pb.PayloadType_PAYLOAD_TYPE_LOG_BATCH:
 		var m pb.LogBatch
@@ -207,6 +219,14 @@ func (s *Server) dispatch(c *devConn, env *pb.Envelope) {
 		var m pb.OtaResult
 		if proto.Unmarshal(env.Payload, &m) == nil {
 			s.Fleet.SetOta(c.id, &fleet.Ota{ReleaseID: m.ReleaseId, Stage: "DONE", Percent: 100, Outcome: m.Outcome.String()})
+			if s.OTA != nil {
+				o := map[pb.OtaOutcome]ota.Outcome{pb.OtaOutcome_OTA_OUTCOME_COMMITTED: ota.Committed,
+					pb.OtaOutcome_OTA_OUTCOME_ROLLED_BACK: ota.RolledBack, pb.OtaOutcome_OTA_OUTCOME_REJECTED: ota.Rejected}[m.Outcome]
+				s.OTA.Report(m.ReleaseId, c.id, o)
+				if o == ota.Committed {
+					c.counter = s.OTA.Counter(m.ReleaseId)
+				}
+			}
 		}
 	case pb.PayloadType_PAYLOAD_TYPE_DEBUG_RESULT:
 		var m pb.DebugResult
@@ -316,4 +336,60 @@ func (s *Server) auditLog(w http.ResponseWriter, r *http.Request) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	writeJSON(w, s.audit)
+}
+
+// ---- OTA ----
+
+func (s *Server) offer(c *devConn) {
+	if s.OTA == nil {
+		return
+	}
+	if m := s.OTA.Offer(c.id, c.ring, c.counter); m != nil && m.ReleaseId != c.offered {
+		c.offered = m.ReleaseId
+		s.send(c, pb.PayloadType_PAYLOAD_TYPE_OTA_OFFER, &pb.OtaOffer{Manifest: m})
+		s.Fleet.AddEvent(c.id, fleet.Event{TsMs: time.Now().UnixMilli(), Kind: "ota_offered", Summary: "offered release " + m.ReleaseId})
+	}
+}
+
+func (s *Server) releases(w http.ResponseWriter, r *http.Request) {
+	if s.OTA == nil {
+		writeJSON(w, []any{})
+		return
+	}
+	writeJSON(w, s.OTA.List())
+}
+
+// registerRelease takes a manifest signed OFFLINE (cortex-sign). The gateway only
+// verifies it against the public key; it cannot produce a valid one.
+func (s *Server) registerRelease(w http.ResponseWriter, r *http.Request) {
+	if s.OTA == nil {
+		http.Error(w, "ota disabled", http.StatusServiceUnavailable)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	var m pb.Manifest
+	if err != nil || proto.Unmarshal(body, &m) != nil {
+		http.Error(w, "bad manifest", http.StatusBadRequest)
+		return
+	}
+	res := "registered"
+	if err := s.OTA.Register(&m, nil, time.Now()); err != nil {
+		res = "rejected: " + err.Error()
+		w.WriteHeader(http.StatusUnprocessableEntity)
+	}
+	s.mu.Lock()
+	s.audit = append(s.audit, AuditLine{time.Now().UnixMilli(), "dev-admin", "release:register", m.ReleaseId, res})
+	s.mu.Unlock()
+	writeJSON(w, map[string]string{"result": res})
+}
+
+func (s *Server) haltRelease(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if s.OTA != nil {
+		s.OTA.Halt(id, "halted by operator")
+	}
+	s.mu.Lock()
+	s.audit = append(s.audit, AuditLine{time.Now().UnixMilli(), "dev-admin", "release:halt", id, "halted"})
+	s.mu.Unlock()
+	writeJSON(w, map[string]string{"result": "halted"})
 }
