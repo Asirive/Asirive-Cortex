@@ -6,11 +6,15 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"github.com/asirive/cortex/gateway/internal/accounts"
+	"github.com/asirive/cortex/gateway/internal/cmdsign"
 	"github.com/asirive/cortex/gateway/internal/mail"
 	"github.com/asirive/cortex/gateway/internal/push"
 	"github.com/asirive/cortex/gateway/internal/social"
@@ -52,7 +56,11 @@ type Server struct {
 	Reg      *registry.Registry
 	Accounts *accounts.Store
 	Social   *social.Store
-	Pusher   push.Pusher // nil = no wake-up
+	// CmdKey signs alpha debug commands (see internal/cmdsign). Generated on first start and kept in the state file.
+	CmdKey  ed25519.PrivateKey
+	AlertTo []string // ops email recipients for fleet alerts
+	alerts  map[string]*alertState
+	Pusher  push.Pusher // nil = no wake-up
 	// TurnSecret is coturn static-auth-secret; TurnURLs e.g. turn:turn.asirive.com:3478?transport=udp
 	TurnSecret string
 	TurnURLs   []string
@@ -94,7 +102,8 @@ type devConn struct {
 }
 
 func New(f *fleet.Store, token string) *Server {
-	s := &Server{Fleet: f, DevToken: token, Reg: registry.New(), Accounts: accounts.New(), Social: social.New(), Mailer: mail.Log{}, AppLinkBase: "asirive://", conns: map[string]*devConn{}, authFl: map[string][]time.Time{}, operators: map[string]*Operator{}}
+	_, ck, _ := ed25519.GenerateKey(rand.Reader)
+	s := &Server{CmdKey: ck, Fleet: f, DevToken: token, Reg: registry.New(), Accounts: accounts.New(), Social: social.New(), Mailer: mail.Log{}, AppLinkBase: "asirive://", conns: map[string]*devConn{}, authFl: map[string][]time.Time{}, operators: map[string]*Operator{}}
 	// devices are not browsers: refuse any browser-originated WebSocket (cross-site hijack)
 	s.up = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return r.Header.Get("Origin") == "" }}
 	return s
@@ -105,6 +114,9 @@ func (s *Server) WireOTA(e *ota.Engine) {
 	s.OTA = e
 	e.OnEvent = func(id, what string) {
 		s.record("system", "release:"+strings.SplitN(what, ":", 2)[0], id, "auto", what)
+		if strings.HasPrefix(what, "auto-halt") && len(s.AlertTo) > 0 {
+			s.alertMail("Asirive OTA: release "+id+" halted automatically", what)
+		}
 	}
 }
 
@@ -112,6 +124,9 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/device", s.deviceWS)
 	s.appRoutes(mux)
+	mux.HandleFunc("GET /api/command-key", s.auth(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]string{"command_public_key": hex.EncodeToString(s.CmdKey.Public().(ed25519.PublicKey))})
+	}))
 	mux.HandleFunc("GET /api/whoami", s.auth(RoleViewer, s.whoami))
 	mux.HandleFunc("GET /api/operators", s.auth(RoleAdmin, s.listOperators))
 	mux.HandleFunc("POST /api/operators", s.auth(RoleAdmin, s.createOperator))
@@ -561,7 +576,12 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, "not_bench", id+" is not an alpha bench device, so debug commands are refused.")
 	default:
 		cid := fmt.Sprintf("c%d-%d", time.Now().Unix(), s.cmdSeq.Add(1))
-		if err := s.send(c, pb.PayloadType_PAYLOAD_TYPE_DEBUG_COMMAND, &pb.DebugCommand{CommandId: cid, Name: req.Name, Args: req.Args}); err != nil {
+		dc := &pb.DebugCommand{CommandId: cid, Name: req.Name, Args: req.Args}
+		if err := cmdsign.Sign(dc, id, actor(r), s.CmdKey, time.Now()); err != nil {
+			writeErr(w, 500, "sign_failed", "Couldn't sign the command.")
+			return
+		}
+		if err := s.send(c, pb.PayloadType_PAYLOAD_TYPE_DEBUG_COMMAND, dc); err != nil {
 			s.record(actor(r), "command:"+req.Name, id, "send failed", string(argTxt))
 			writeErr(w, http.StatusBadGateway, "send_failed", "Could not reach the device.")
 			return
@@ -677,7 +697,7 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.record("app:"+req.AccountID, "device:claim", reg.ID, "claimed", "")
-	writeJSON(w, map[string]any{"device_id": reg.ID, "device_token": tok, "tier": reg.Tier, "ring": reg.Ring})
+	writeJSON(w, map[string]any{"command_public_key": hex.EncodeToString(s.CmdKey.Public().(ed25519.PublicKey)), "device_id": reg.ID, "device_token": tok, "tier": reg.Tier, "ring": reg.Ring})
 }
 
 // ---- OTA ----

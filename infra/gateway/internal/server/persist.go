@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"os"
@@ -19,12 +20,13 @@ type state struct {
 	Operators []*Operator       `json:"operators,omitempty"`
 	Accounts  json.RawMessage   `json:"accounts,omitempty"`
 	Social    json.RawMessage   `json:"social,omitempty"`
+	CmdKey    []byte            `json:"command_key,omitempty"`
 }
 
 // SaveState writes registrations, releases and the audit log to path atomically
 // (temp file, fsync, rename) with owner-only permissions: it holds credential hashes.
 func (s *Server) SaveState(path string) error {
-	st := state{Version: 1, SavedAt: time.Now(), Devices: s.Reg.Snapshot()}
+	st := state{Version: 1, SavedAt: time.Now(), Devices: s.Reg.Snapshot(), CmdKey: s.CmdKey}
 	if s.OTA != nil {
 		b, err := s.OTA.Snapshot()
 		if err != nil {
@@ -84,6 +86,9 @@ func (s *Server) LoadState(path string) error {
 	}
 	if st.Version != 1 {
 		return errors.New("unknown state file version")
+	}
+	if len(st.CmdKey) == ed25519.PrivateKeySize {
+		s.CmdKey = ed25519.PrivateKey(st.CmdKey)
 	}
 	s.Reg.Restore(st.Devices)
 	if len(st.Social) > 0 {

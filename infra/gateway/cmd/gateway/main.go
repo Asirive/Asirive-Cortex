@@ -70,6 +70,12 @@ func main() {
 	if u := os.Getenv("CORTEX_TURN_URLS"); u != "" {
 		srv.TurnURLs = strings.Split(u, ",")
 	}
+	if a := os.Getenv("CORTEX_ALERT_EMAILS"); a != "" {
+		srv.AlertTo = strings.Split(a, ",")
+		srv.StartAlerts()
+	} else {
+		log.Print("alerts off: set CORTEX_ALERT_EMAILS to be emailed when devices need attention")
+	}
 	if b := os.Getenv("CORTEX_APP_LINK_BASE"); b != "" {
 		srv.AppLinkBase = b
 	}

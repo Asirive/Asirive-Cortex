@@ -11,6 +11,16 @@ message DebugCommand {
   string command_id = 1;
   string name = 2;                 // "restart_service", "set_log_level", "dump_state", "reboot"
   map<string, string> args = 3;
+  // Signed so a device can refuse replayed, misdirected or stale commands.
+  // signature = ed25519(command key, deterministic proto bytes of this message with signature empty).
+  // Device MUST check: signature, device_id == own id, now < expires_ms (issued_ms..expires_ms <= 60 s),
+  // and nonce never seen before (keep the last 256).
+  string device_id = 4;
+  int64 issued_ms = 5;
+  int64 expires_ms = 6;
+  bytes nonce = 7;
+  string issuer = 8;               // operator name, for the device log
+  bytes signature = 9;
 }
 
 message DebugResult {

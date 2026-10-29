@@ -113,3 +113,8 @@ Without `RESEND_API_KEY` mail is printed to the gateway log (dev only: it expose
 - `GET /v1/calls/ice-servers` returns TURN URLs with 1-hour HMAC credentials (coturn `use-auth-secret`). The secret must match `static-auth-secret` on coturn.
 - `infra/deploy/` has a docker-compose (gateway + Caddy TLS + coturn). Written but **not run**: it was not tested in the dev container.
 - Tested against fake FCM/APNs servers only; never against the real providers.
+
+## Alerts and signed commands
+
+- **Alerts:** set `CORTEX_ALERT_EMAILS=a@x.com,b@x.com`. A live device needing attention (offline, safety fault/degraded, low battery) for 3 minutes emails once, repeats every 6 h while unresolved, and sends one all-clear. Releases that halt automatically email immediately. Uses the same Resend mailer. Pending and revoked devices never alert.
+- **Signed debug commands:** every alpha command carries `device_id`, issue/expiry (60 s), a random nonce, the operator's name and an ed25519 signature (`internal/cmdsign`, field list in `alpha.proto`). The device must check all of them and remember the last 256 nonces. The public key is returned by `/v1/claim` and `GET /api/command-key`; the private key is generated on first start and kept in the state file. **Limit:** the key is on the gateway, so this stops replay, misdirection and stale/tampered commands, not a compromised gateway. An operator-held key (WebAuthn) would be needed for that.
