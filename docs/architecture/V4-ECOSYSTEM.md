@@ -27,7 +27,8 @@ GPS cannot guide indoors. Visual and spatial understanding IS the product.
 ┌─ COMPUTE MODULE (pocket) ────────────────────────────────┐
 │  Radxa Dragon Q8B (Alpha) → custom SoM + carrier (Final) │
 │  8 GB RAM · stock Radxa OS · Python brain + C hot paths  │
-│  NPU: YOLO-World · GPU: quantized sub-1B LFM · safety    │
+│  NPU: YOLO-World · LFM3-Omni-2B (local-first brain)      │
+│  safety                                                  │
 │  wake word · VAD · AEC · dual STT/TTS · agent harness    │
 └──┬───────────────────────────────────────┬───────────────┘
    │ USB-C (data + internet; phone never    │ BLE (fallback:
@@ -90,20 +91,26 @@ Runs entirely on the compute module (Python + C hot paths):
   beside bridge mics) · STT · TTS. Mic can be muted by voice ("I'm going to the
   door"), confirmed by haptic; wake word re-enables. Wake word + all processing
   live on the compute module.
-- **Agent harness:** function-calling runtime with **two interchangeable brains**
-  (see §8).
+- **Agent harness:** function-calling runtime with **two interchangeable brains**,
+  local-first (see §8).
+- **Inference engine:** power-efficient runtime for LFM3-Omni, built in measured
+  phases (see [CORTEX-ENGINE.md](CORTEX-ENGINE.md)).
 - **Navigation:** offline OSM-based walking maps + routing on-device; LTA bus
   data when online; indoor guidance via visual understanding (headline feature).
 - **Memory:** local SQLite always; syncs to infra under the retention rules (§9).
 
 ### Voice routing policy
+LFM3-Omni-2B is speech-native (audio in, speech out), so the local path leads;
+the cloud stack is the online fallback / escalation.
+
 | State | STT | TTS |
 |---|---|---|
-| Online | Cartesia (fast) | Cloud voices (Cartesia; fast) |
-| Offline | Local Whisper-class | Local Supertonic |
+| Local-first (default) | LFM3-Omni audio encoder | LFM3-Omni speech output (24 kHz) |
+| Cloud fallback (online, local insufficient) | Cartesia | Cloud voices (Cartesia) |
+| Local floor if LFM3-Omni speech is not good enough | Local Whisper-class | Local Supertonic |
 
-Cloud voices are preferred when connected for latency/quality; the local stack
-is the guaranteed floor.
+The local stack is the guaranteed floor. Which TTS path ships as default is
+decided by measurement (see CORTEX-ENGINE.md), not assumption.
 
 ---
 
@@ -162,27 +169,34 @@ Schemas change first; generated code follows. No hand-written drift.
 
 ---
 
-## 8. Agent Harness — Dual Brain, One Toolset
+## 8. Agent Harness — Dual Brain, One Toolset, Local Leads
 
 - One tool registry — navigate, bus-arrivals, describe-scene, remember-this,
-  camera-snap, … — callable by **Gemini Live (function calling)** or by the
-  **local sub-1B model (function calling)**. The tools never know which brain
-  calls them. The local stack must support function calling too — the agent
-  harness is not a cloud luxury.
-- Selection policy: **connected → Gemini** (wins on indoor/spatial/sign
-  inference — malls, bus interchanges); **offline → local** (LFM-class quantized
-  sub-1B on the GPU now; in-house custom model later).
+  camera-snap, … — callable by the **local brain (LFM3-Omni-2B)** or by
+  **Gemini Live (function calling)**. The tools never know which brain calls them.
+- **Selection policy: local leads.** LFM3-Omni-2B (Liquid AI, ~2.17B params,
+  text/image/video/audio in; text/speech out) is the default brain for full
+  localized navigation, online or offline. **Gemini Live is the online fallback
+  and escalation path**: it is still the more powerful model, so it handles
+  cases the local brain cannot (hard indoor/spatial/sign inference in malls and
+  interchanges, low-confidence local answers). Escalation triggers and
+  thresholds are set by measurement, not by guess.
 - "No internet = useless device" is impossible by construction: safety, voice,
   memory and walking navigation all run locally.
+- The local brain must pass the same function-calling contract as Gemini. If
+  LFM3-Omni cannot meet it, Gemini stays primary for that tool until it can.
 
 ### Local model roadmap
-1. Pre-made LFM-class sub-1B (quantized, 8 GB SKU) + YOLO-World on NPU — start.
-2. Fine-tune a VLM (LFM-VL or similar) for navigation + scene description.
-3. In-house custom **non-transformer** sub-1B scene model (research goal:
-   scene understanding under 1B parameters) — replace the pre-made model when
-   validated. Needs funding, training data and architecture validation.
-
----
+1. **LFM3-Omni-2B** (released 2026-10-27) as the local brain, on stock llama.cpp
+   first, plus YOLO-World on the NPU. Measure before optimizing.
+2. Fine-tune LFM3-Omni (single-GPU fine-tuning is supported) for navigation,
+   scene description and our tool schemas.
+3. Inference engine optimized for power efficiency (CORTEX-ENGINE.md): a
+   power-aware serving layer first, a Hexagon NPU backend next, and a fully
+   custom runtime only if measurements show it is needed.
+4. In-house custom **non-transformer** sub-1B scene model (research goal) —
+   replace the pre-made model when validated. Needs funding, training data and
+   architecture validation.
 
 ## 9. Data & Privacy Model
 
@@ -219,7 +233,8 @@ the team key; production = real PKI from V4-Final manufacturing.
 
 - iOS support mandatory (majority of blind users are on iOS/VoiceOver); Android kept in mind.
 - USB-C tether to phone = primary link (data + internet; phone never powers device); BLE = fallback control link.
-- Hybrid: Gemini Live + function calling primary when connected; local stack = fallback + full offline autonomy; local does function calling too. Priority may flip local when the custom model matures.
+- Local-first: LFM3-Omni-2B is the default brain for full localized navigation (online or offline). Gemini Live stays as the online fallback/escalation because it is still more powerful. Both use one function-calling tool registry. (Supersedes the earlier "Gemini primary when connected" decision, 2026-10-29.)
+- Inference engine: staged and measurement-gated — llama.cpp baseline, power-aware serving, Hexagon NPU backend, custom runtime only if measurements justify it. See CORTEX-ENGINE.md.
 - ESP32-S3 = dumb I/O bridge; all processing on the compute module.
 - Wake word "Hey Cortex" on the compute module; voice-commandable mic mute with haptic confirmation.
 - Haptics on glasses AND compute module. Magnetic pogo charging dock.
@@ -292,5 +307,10 @@ because the ecosystem spans languages, hardware and organizations.
 - [ ] Glasses miniaturization (custom PCB vs dev board; NTU partnership)
 - [ ] Mic-off quality-of-life flows (door/toilet scenarios)
 - [ ] Custom model funding, training data pipeline, architecture validation
+- [ ] LFM3-Omni baseline on Dragon Q8B: tok/s, time-to-first-audio, RAM, watts per query
+- [ ] LFM3-Omni function-calling reliability vs Gemini Live on our tool registry
+- [ ] LFM3-Omni license check for the weights (commercial use, shipping in hardware)
+- [ ] Gemini escalation policy: triggers, thresholds, user-facing behavior
+- [ ] LFM3-Omni speech output quality vs Supertonic / Cartesia for navigation cues
 - [ ] Spare device / multi-device support (post-alpha)
 - [ ] Field-test protocol with SVH (after lab-proven)

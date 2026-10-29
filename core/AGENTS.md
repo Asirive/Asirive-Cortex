@@ -56,11 +56,15 @@ Entry point is `python -m apps.cortex all` (see `apps/AGENTS.md`).
 
 - Decompose `system.py` into services: perception, safety, voice, agent
   harness, navigation, memory.
-- Dual-brain agent harness: one function-calling tool registry, Gemini Live
-  (online) or local sub-1B model (offline). Local brain must support function
-  calling too.
-- Voice policy: cloud voices (Cartesia) when online, local Supertonic + local
-  STT when offline. AEC mandatory.
+- Dual-brain agent harness, local-first: one function-calling tool registry,
+  LFM3-Omni-2B as the default brain, Gemini Live as the online fallback and
+  escalation (still more powerful). Local brain must support function calling.
+- Inference engine: staged, measurement-gated (llama.cpp baseline, power-aware
+  serving, Hexagon NPU backend, custom runtime only if justified). See
+  `docs/architecture/CORTEX-ENGINE.md`. Safety T0-T3 must never be starved by it.
+- Voice policy: LFM3-Omni speech in/out by default; cloud voices (Cartesia) as
+  online fallback; local Supertonic + Whisper-class STT as the floor. AEC
+  mandatory.
 - Wake word ("Hey Cortex") runs here, never on the glasses MCU.
 - Offline walking navigation on bundled map data; indoor guidance via visual
   understanding.
@@ -77,4 +81,5 @@ py -3 -m compileall core            # syntax gate after changes
 
 ## Change log (append one line per meaningful change)
 
+- 2026-10-29: Direction set: LFM3-Omni-2B local-first brain, Gemini Live online fallback, staged inference engine (docs only, no code yet).
 - 2026-10-12: AGENTS.md created. device/ folded into core/device/ (monorepo layout).

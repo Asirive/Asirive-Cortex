@@ -10,6 +10,9 @@ they live in git history if you need them.
   product + ecosystem source of truth: device, app, cloud infra, contracts,
   agent harness, privacy model, decision log.
 
+- **[architecture/CORTEX-ENGINE.md](architecture/CORTEX-ENGINE.md)** — plan for
+  the power-efficient LFM3-Omni inference engine (phased, measurement-gated).
+
 ## Reference
 
 - [website-faq.md](website-faq.md) — product FAQ (navigation-first framing)
