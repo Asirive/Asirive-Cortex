@@ -386,3 +386,20 @@ func (s *Store) Restore(data []byte) error {
 	}
 	return nil
 }
+
+// Email returns the address for an account id ("" if unknown).
+func (s *Store) Email(id string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if a := s.byID[id]; a != nil {
+		return a.Email
+	}
+	return ""
+}
+
+// Exists reports whether the account id is live.
+func (s *Store) Exists(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.byID[id] != nil
+}

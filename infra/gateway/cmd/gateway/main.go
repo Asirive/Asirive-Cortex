@@ -69,6 +69,11 @@ func main() {
 		}
 	}
 	go func() {
+		for range time.Tick(10 * time.Minute) {
+			srv.Social.Sweep(time.Now())
+		}
+	}()
+	go func() {
 		for range time.Tick(3 * time.Second) {
 			save()
 		}

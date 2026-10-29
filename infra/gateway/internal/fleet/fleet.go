@@ -247,3 +247,20 @@ func (s *Store) SetVersion(id, version string, committed bool) {
 		d.Firmware = version
 	}
 }
+
+// DeleteFeedback removes feedback submitted for the given devices (account deletion).
+func (s *Store) DeleteFeedback(deviceIDs []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	drop := map[string]bool{}
+	for _, d := range deviceIDs {
+		drop[d] = true
+	}
+	kept := s.feedback[:0]
+	for _, f := range s.feedback {
+		if !drop[f.DeviceID] {
+			kept = append(kept, f)
+		}
+	}
+	s.feedback = kept
+}

@@ -85,12 +85,12 @@ paths:
         "429": { description: too many attempts from this source }
   /me/devices:
     get:
-      x-status: planned
+      x-status: implemented
       summary: The signed-in user's device(s). One device per user in alpha.
       responses: { "200": { description: ok } }
   /me/devices/{id}/settings:
     put:
-      x-status: planned
+      x-status: implemented-as-PUT-/v1/me/beta
       summary: |
         Beta opt-in and notification prefs. Tier rules (decided 2026-10-29): ALPHA is assigned only by
         the Asirive team at registration and can never be set here. A user may switch STABLE <-> BETA
@@ -98,10 +98,10 @@ paths:
         and changes the telemetry level to the BETA set. Opting out reverts to STABLE.
   /me/devices/{id}/update:
     get:
-      x-status: planned
+      x-status: implemented
       summary: Signed manifest the user's ring should install (app downloads, then hands to device over USB)
     post:
-      x-status: planned
+      x-status: implemented
       summary: Report relay result (downloaded, handed to device, device outcome)
   /me/devices/{id}/stop:
     post:
@@ -112,18 +112,25 @@ paths:
         and companions cannot stop a device. Listed here so nobody adds a cloud version.
   /feedback:
     post:
-      x-status: planned
+      x-status: implemented
       summary: Text + trimmed log excerpt. No media.
   /companions:
-    get: { x-status: planned, summary: List companions and their grants }
-    post: { x-status: planned, summary: Invite a companion (link or QR) }
+    get: { x-status: implemented, summary: List companions and their grants }
+    post: { x-status: implemented, summary: Invite a companion (link or QR) }
   /companions/{id}/grants:
     put:
-      x-status: planned
+      x-status: implemented
       summary: Set exactly what this companion may see (location, call). Revocable at any time.
   /companion/users/{id}/location:
     get:
-      x-status: planned
+      x-status: implemented
       summary: Companion mode. Latest location of a user who granted it. 30 day retention, no camera.
   /calls:
-    post: { x-status: planned, summary: WebRTC signaling for a voice call between user and companion }
+    post: { x-status: implemented, summary: WebRTC signaling for a voice call between user and companion }
+
+# Implemented 2026-10-29 beyond the paths above (all under /v1):
+#   POST /companions/accept {code}            companion redeems an invite (48 h, one use)
+#   DELETE /companions/{id}                   owner OR companion ends the link; ends open calls
+#   PUT/DELETE /me/location                   owner uploads / wipes location (history kept 30 days, 5-min granularity)
+#   GET /calls/inbox, GET /calls/{id}, POST /calls/{id}/answer|ice|end   polling signalling; SDP wiped when a call ends
+#   PUT /me/beta {enabled, consent_version}   replaces the per-device settings call

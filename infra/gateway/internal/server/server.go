@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"github.com/asirive/cortex/gateway/internal/accounts"
 	"github.com/asirive/cortex/gateway/internal/mail"
+	"github.com/asirive/cortex/gateway/internal/social"
 	"io"
 	"io/fs"
 	"log"
@@ -49,6 +50,7 @@ type Server struct {
 	OTA      *ota.Engine
 	Reg      *registry.Registry
 	Accounts *accounts.Store
+	Social   *social.Store
 	Mailer   mail.Mailer
 	// AppLinkBase prefixes deep links in emails (default asirive://).
 	AppLinkBase string
@@ -87,7 +89,7 @@ type devConn struct {
 }
 
 func New(f *fleet.Store, token string) *Server {
-	s := &Server{Fleet: f, DevToken: token, Reg: registry.New(), Accounts: accounts.New(), Mailer: mail.Log{}, AppLinkBase: "asirive://", conns: map[string]*devConn{}, authFl: map[string][]time.Time{}, operators: map[string]*Operator{}}
+	s := &Server{Fleet: f, DevToken: token, Reg: registry.New(), Accounts: accounts.New(), Social: social.New(), Mailer: mail.Log{}, AppLinkBase: "asirive://", conns: map[string]*devConn{}, authFl: map[string][]time.Time{}, operators: map[string]*Operator{}}
 	// devices are not browsers: refuse any browser-originated WebSocket (cross-site hijack)
 	s.up = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return r.Header.Get("Origin") == "" }}
 	return s

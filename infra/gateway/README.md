@@ -94,3 +94,12 @@ export CORTEX_APP_LINK_BASE='asirive://'           # deep links in emails: asiri
 ```
 
 Without `RESEND_API_KEY` mail is printed to the gateway log (dev only: it exposes links). Not built: Sign in with Apple, email change, per-device session list, companions/location/calls.
+
+## Companions, location, calls, feedback, updates (app)
+
+- **Companions:** the owner creates an invite (`POST /v1/companions`, 8-char code or `asirive://companion?code=`; 48 h, single use, max 5 open). The companion accepts it and then sees **nothing** until the owner sets grants (`location`, `call`) per companion. Either side can end the link, which ends open calls and stops location reads.
+- **Location:** `PUT /v1/me/location`. Latest point plus history at 5-minute granularity, 30-day TTL (swept every 10 min), wipeable by the owner. Timestamp is the gateway's clock. A companion with no grant and a user with no data get the same 404. No camera, no media, ever.
+- **Calls:** WebRTC signalling by polling (offer, answer, ICE) between linked accounts with the `call` grant; one call at a time per person; ringing times out at 60 s; SDP/ICE are wiped when the call ends; metadata kept 30 days. **No push notification yet**: the callee's app must poll `/v1/calls/inbox` (APNs/FCM wake-up is not built). No TURN server yet, so calls across strict NATs can fail.
+- **Feedback:** `POST /v1/feedback` text plus a clipped log excerpt, attached to the user's device; appears in the console Feedback tab.
+- **Updates:** `GET /v1/me/devices/{id}/update?counter=N` returns the signed manifest for the device's ring (204 if none); `POST` reports `committed | rolled_back | rejected`. Only the owner of the device can ask.
+- **Deleting an account** also removes its links, location, call records and device feedback.

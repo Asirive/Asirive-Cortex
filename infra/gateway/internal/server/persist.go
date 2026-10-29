@@ -18,6 +18,7 @@ type state struct {
 	Audit     []AuditLine       `json:"audit"`
 	Operators []*Operator       `json:"operators,omitempty"`
 	Accounts  json.RawMessage   `json:"accounts,omitempty"`
+	Social    json.RawMessage   `json:"social,omitempty"`
 }
 
 // SaveState writes registrations, releases and the audit log to path atomically
@@ -33,6 +34,9 @@ func (s *Server) SaveState(path string) error {
 	}
 	if b, err := s.Accounts.Snapshot(); err == nil {
 		st.Accounts = b
+	}
+	if b, err := s.Social.Snapshot(); err == nil {
+		st.Social = b
 	}
 	s.mu.Lock()
 	st.Audit = append([]AuditLine(nil), s.audit...)
@@ -82,6 +86,11 @@ func (s *Server) LoadState(path string) error {
 		return errors.New("unknown state file version")
 	}
 	s.Reg.Restore(st.Devices)
+	if len(st.Social) > 0 {
+		if err := s.Social.Restore(st.Social); err != nil {
+			return err
+		}
+	}
 	if len(st.Accounts) > 0 {
 		if err := s.Accounts.Restore(st.Accounts); err != nil {
 			return err

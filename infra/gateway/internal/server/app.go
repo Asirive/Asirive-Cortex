@@ -30,6 +30,7 @@ func (s *Server) appRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /v1/me", s.appAuth(s.appDelete))
 	mux.HandleFunc("PUT /v1/me/beta", s.appAuth(s.appBeta))
 	mux.HandleFunc("GET /v1/me/devices", s.appAuth(s.appDevices))
+	s.socialRoutes(mux)
 }
 
 func bearer(r *http.Request) string {
@@ -180,6 +181,8 @@ func (s *Server) appDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ids := s.Reg.ReleaseAccount(a.ID)
+	s.Social.DeleteAccount(a.ID)
+	s.Fleet.DeleteFeedback(ids)
 	for _, id := range ids {
 		s.mu.Lock()
 		c := s.conns[id]
