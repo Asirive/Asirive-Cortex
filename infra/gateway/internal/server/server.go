@@ -17,6 +17,7 @@ import (
 	"github.com/asirive/cortex/gateway/internal/fleet"
 	pb "github.com/asirive/cortex/gateway/internal/gen/cortex/v1"
 	"github.com/asirive/cortex/gateway/internal/ota"
+	"github.com/asirive/cortex/gateway/internal/registry"
 	"github.com/asirive/cortex/gateway/web"
 	"github.com/gorilla/websocket"
 	"google.golang.org/protobuf/proto"
@@ -32,7 +33,10 @@ type Server struct {
 	Fleet    *fleet.Store
 	DevToken string // shared secret for device and dashboard in dev
 	OTA      *ota.Engine
-	up       websocket.Upgrader
+	Reg      *registry.Registry
+	// AllowSharedDeviceToken lets devices connect with the shared dev token (simulator only).
+	AllowSharedDeviceToken bool
+	up                     websocket.Upgrader
 
 	mu    sync.Mutex
 	conns map[string]*devConn
@@ -61,7 +65,7 @@ type devConn struct {
 }
 
 func New(f *fleet.Store, token string) *Server {
-	return &Server{Fleet: f, DevToken: token, conns: map[string]*devConn{},
+	return &Server{Fleet: f, DevToken: token, Reg: registry.New(), conns: map[string]*devConn{},
 		up: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}}
 }
 
@@ -73,6 +77,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/devices/{id}", s.auth(s.device))
 	mux.HandleFunc("POST /api/devices/{id}/command", s.auth(s.command))
 	mux.HandleFunc("GET /api/audit", s.auth(s.auditLog))
+	mux.HandleFunc("POST /api/registrations", s.auth(s.register))
+	mux.HandleFunc("GET /api/registrations", s.auth(s.registrations))
+	mux.HandleFunc("POST /api/registrations/{id}/revoke", s.auth(s.revoke))
+	mux.HandleFunc("POST /v1/claim", s.claim)
 	mux.HandleFunc("GET /api/releases", s.auth(s.releases))
 	mux.HandleFunc("POST /api/releases", s.auth(s.registerRelease))
 	mux.HandleFunc("POST /api/releases/{id}/halt", s.auth(s.haltRelease))
@@ -97,7 +105,13 @@ func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) deviceWS(w http.ResponseWriter, r *http.Request) {
 	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if subtle.ConstantTimeCompare([]byte(tok), []byte(s.DevToken)) != 1 {
+	devID := r.Header.Get("X-Device-Id")
+	var reg *registry.Registration
+	if s.AllowSharedDeviceToken && subtle.ConstantTimeCompare([]byte(tok), []byte(s.DevToken)) == 1 {
+		// legacy dev path: tier comes from Hello. Never enable in production.
+	} else if rg, err := s.Reg.Authenticate(devID, tok); err == nil {
+		reg = rg
+	} else {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -116,6 +130,14 @@ func (s *Server) deviceWS(w http.ResponseWriter, r *http.Request) {
 	var hello pb.Hello
 	if proto.Unmarshal(env.Payload, &hello) != nil || env.Header.DeviceId == "" {
 		return
+	}
+	if reg != nil { // identity comes from the registry, never from the device's own claim
+		if env.Header.DeviceId != reg.ID {
+			return
+		}
+		hello.Tier = map[string]pb.Tier{"ALPHA": pb.Tier_TIER_ALPHA, "BETA": pb.Tier_TIER_BETA, "STABLE": pb.Tier_TIER_STABLE}[reg.Tier]
+		hello.Ring = map[string]pb.Ring{"ALPHA": pb.Ring_RING_ALPHA, "BETA": pb.Ring_RING_BETA, "STABLE": pb.Ring_RING_STABLE}[reg.Ring]
+		hello.BenchDevice = reg.Bench
 	}
 	c.id, c.tier, c.bench = env.Header.DeviceId, hello.Tier, hello.BenchDevice
 	c.ring, c.counter = hello.Ring, hello.VersionCounter
@@ -283,7 +305,28 @@ func (s *Server) summary(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"total": total, "online": online, "safety_not_ok": degraded, "tiers": out})
 }
 
-func (s *Server) devices(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.Fleet.List()) }
+func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
+	list := s.Fleet.List()
+	idx := map[string]int{}
+	for i := range list {
+		idx[list[i].ID] = i
+	}
+	for _, rg := range s.Reg.List() {
+		i, seen := idx[rg.ID]
+		if !seen { // registered but never connected: show it so operators can see it is waiting
+			list = append(list, fleet.Device{ID: rg.ID, Tier: rg.Tier, Ring: rg.Ring, Bench: rg.Bench})
+			i = len(list) - 1
+		}
+		list[i].RegState, list[i].Label = string(rg.State), rg.Label
+		if rg.State == registry.Pending {
+			list[i].ClaimExpires = rg.ExpiresAt.UnixMilli()
+		}
+		if rg.State == registry.Revoked {
+			list[i].Online = false
+		}
+	}
+	writeJSON(w, list)
+}
 
 func (s *Server) device(w http.ResponseWriter, r *http.Request) {
 	d, logs, events, ok := s.Fleet.Get(r.PathValue("id"))
@@ -392,4 +435,78 @@ func (s *Server) haltRelease(w http.ResponseWriter, r *http.Request) {
 	s.audit = append(s.audit, AuditLine{time.Now().UnixMilli(), "dev-admin", "release:halt", id, "halted"})
 	s.mu.Unlock()
 	writeJSON(w, map[string]string{"result": "halted"})
+}
+
+// ---- registration ----
+
+func (s *Server) record(actor, action, target, result string) {
+	s.mu.Lock()
+	s.audit = append(s.audit, AuditLine{time.Now().UnixMilli(), actor, action, target, result})
+	s.mu.Unlock()
+}
+
+func (s *Server) register(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Label string `json:"label"`
+		Tier  string `json:"tier"`
+		Bench bool   `json:"bench"`
+	}
+	if json.NewDecoder(r.Body).Decode(&req) != nil || (req.Tier != "ALPHA" && req.Tier != "BETA" && req.Tier != "STABLE") {
+		http.Error(w, "tier must be ALPHA, BETA or STABLE", http.StatusBadRequest)
+		return
+	}
+	if len(req.Label) > 80 {
+		http.Error(w, "label too long", http.StatusBadRequest)
+		return
+	}
+	reg, code := s.Reg.Register(req.Label, req.Tier, req.Tier, req.Bench, time.Now())
+	s.record("dev-admin", "device:register", reg.ID, "pending")
+	writeJSON(w, map[string]any{"registration": reg, "claim_code": code})
+}
+
+func (s *Server) registrations(w http.ResponseWriter, r *http.Request) { writeJSON(w, s.Reg.List()) }
+
+func (s *Server) revoke(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := s.Reg.Revoke(id); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	s.mu.Lock()
+	c := s.conns[id]
+	s.mu.Unlock()
+	if c != nil {
+		c.ws.Close() // drop a live connection immediately
+	}
+	s.Fleet.Disconnect(id, time.Now())
+	s.record("dev-admin", "device:revoke", id, "revoked")
+	writeJSON(w, map[string]string{"result": "revoked"})
+}
+
+// claim is called by the phone app (not an operator). Public endpoint, rate limited per source.
+func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ClaimCode string `json:"claim_code"`
+		PublicKey []byte `json:"device_public_key"`
+		AccountID string `json:"account_id"`
+	}
+	if json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req) != nil || req.ClaimCode == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	src := r.RemoteAddr
+	if i := strings.LastIndex(src, ":"); i > 0 {
+		src = src[:i]
+	}
+	reg, tok, err := s.Reg.Claim(req.ClaimCode, req.PublicKey, req.AccountID, src, time.Now())
+	if err != nil {
+		code := http.StatusUnprocessableEntity
+		if err == registry.ErrRateLimit {
+			code = http.StatusTooManyRequests
+		}
+		http.Error(w, err.Error(), code)
+		return
+	}
+	s.record("app:"+req.AccountID, "device:claim", reg.ID, "claimed")
+	writeJSON(w, map[string]any{"device_id": reg.ID, "device_token": tok, "tier": reg.Tier, "ring": reg.Ring})
 }

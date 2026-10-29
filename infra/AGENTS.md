@@ -38,6 +38,7 @@ Legacy consumers: `v3_core/` (device links, hybrid memory sync),
 - `gateway/internal/ota` + `cmd/cortex-sign`: signed manifests (ed25519, offline key),
   ring/anti-rollback checks, staged rollout engine with halt. Unit-tested and
   run end to end against simulated devices.
+- `gateway/internal/registry`: register -> claim -> revoke, one-time claim codes, per-device tokens, tier from registry. `contracts/openapi/app.yaml`: draft app API (only /claim live).
 - Not built: mTLS/PKI, sealed envelope, roles, Postgres wiring, device-side OTA
   verifier/A-B client, camera relay, dataset pipeline, Python/Dart codegen. Gap
   table: docs/architecture/FLEET-OTA-AND-SECURITY.md.
@@ -86,3 +87,4 @@ psql -f supabase/migrations/001_initial_schema.sql   # schema apply (reference)
 - 2026-10-12: AGENTS.md created. Directory holds V3 seeds; Go gateway to be
   created here per V4-ECOSYSTEM.md section 6.
 - 2026-10-29: Added OTA control plane (internal/ota), cortex-sign, release API, FLEET-OTA-AND-SECURITY.md.
+- 2026-10-29: Added device registry (register/claim/revoke), console registration UI, app API draft.

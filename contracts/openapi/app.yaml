@@ -1,0 +1,90 @@
+openapi: 3.0.3
+info:
+  title: Asirive Cortex App API
+  version: 0.1.0-draft
+  description: |
+    What the Flutter companion app (user mode and companion mode) calls on the
+    cloud. DRAFT. Only /v1/claim exists in the gateway today (x-status: implemented);
+    everything else is planned (x-status: planned) and must be agreed here before
+    the app or gateway implements it. The app is also the device's relay: device
+    traffic rides the device<->gateway WebSocket (proto contracts), not this API.
+    Privacy: no endpoint carries live camera or stored media. Location and calls
+    are per-companion, consented, location kept 30 days.
+servers: [{ url: https://gateway.example/v1 }]
+security: [{ bearer: [] }]
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer, description: "Account session token (Apple ID or email login)" }
+  schemas:
+    Device:
+      type: object
+      properties:
+        id: { type: string }
+        label: { type: string }
+        online: { type: boolean }
+        battery_pct: { type: integer }
+        firmware: { type: string }
+        update: { type: string, enum: [none, available, installing, failed] }
+        mic_muted: { type: boolean }
+    Companion:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        kind: { type: string, enum: [friend, family, medical_professional] }
+        can_see_location: { type: boolean }
+        can_call: { type: boolean }
+        status: { type: string, enum: [invited, active, revoked] }
+paths:
+  /claim:
+    post:
+      x-status: implemented
+      security: []
+      summary: Claim a registered device with its one-time code (called by the app during USB pairing)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [claim_code]
+              properties:
+                claim_code: { type: string, example: K7QM-4TXD }
+                device_public_key: { type: string, format: byte }
+                account_id: { type: string }
+      responses:
+        "200": { description: "device_id + device_token (shown once; app hands it to the device over USB)" }
+        "422": { description: invalid, used or expired code }
+        "429": { description: too many attempts from this source }
+  /me/devices:
+    get:
+      x-status: planned
+      summary: The signed-in user's device(s). One device per user in alpha.
+      responses: { "200": { description: ok } }
+  /me/devices/{id}/settings:
+    put:
+      x-status: planned
+      summary: Beta opt-in, mic controls, notification prefs
+  /me/devices/{id}/update:
+    get:
+      x-status: planned
+      summary: Signed manifest the user's ring should install (app downloads, then hands to device over USB)
+    post:
+      x-status: planned
+      summary: Report relay result (downloaded, handed to device, device outcome)
+  /feedback:
+    post:
+      x-status: planned
+      summary: Text + trimmed log excerpt. No media.
+  /companions:
+    get: { x-status: planned, summary: List companions and their grants }
+    post: { x-status: planned, summary: Invite a companion (link or QR) }
+  /companions/{id}/grants:
+    put:
+      x-status: planned
+      summary: Set exactly what this companion may see (location, call). Revocable at any time.
+  /companion/users/{id}/location:
+    get:
+      x-status: planned
+      summary: Companion mode. Latest location of a user who granted it. 30 day retention, no camera.
+  /calls:
+    post: { x-status: planned, summary: WebRTC signaling for a voice call between user and companion }

@@ -5,8 +5,8 @@ Asirive fleet console (`web/index.html`).
 
 ```bash
 export CORTEX_DEV_TOKEN=changeme
-go run ./cmd/gateway -addr :8080          # console at http://localhost:8080
-go run ./cmd/simdevice                    # fake alpha/beta/stable devices
+go run ./cmd/gateway -addr :8080 -dev-shared-device-token   # console at http://localhost:8080
+go run ./cmd/simdevice                    # fake alpha/beta/stable devices (needs the dev flag above)
 ```
 
 | Endpoint | Purpose |
@@ -15,6 +15,8 @@ go run ./cmd/simdevice                    # fake alpha/beta/stable devices
 | `GET /api/summary`, `/api/devices`, `/api/devices/{id}` | Fleet state. Beta/stable detail never includes the full log feed. |
 | `POST /api/devices/{id}/command` | Alpha bench debug commands. Refused for non-alpha devices, audited. |
 | `GET /api/audit` | Audit trail. |
+| `POST /api/registrations`, `GET /api/registrations`, `POST /api/registrations/{id}/revoke` | Register a device (returns a one-time claim code), list, revoke. Operator token. |
+| `POST /v1/claim` | Called by the phone app. Code + device public key in, per-device credential out (shown once). Rate limited per source. |
 
 ## OTA
 ```bash
@@ -32,3 +34,10 @@ Rollout engine, gating and halt rules: `docs/architecture/FLEET-OTA-AND-SECURITY
 mTLS with per-device certificates, the sealed end-to-end envelope, per-user roles,
 Postgres (`infra/supabase/migrations/002_fleet.sql`), signed OTA manifests and the
 camera relay / dataset pipeline (message types exist, handlers are stubs).
+
+## Registering a device
+1. Console: Register device -> label, tier, bench flag -> you get a claim code (shown once, valid 7 days, single use).
+2. App: Add device -> USB-connect the glasses -> enter the code. The app calls `/v1/claim` and passes the returned device token to the device over USB.
+3. Device connects to `/ws/device` with `Authorization: Bearer <device token>` and `X-Device-Id`. Its tier, ring and bench flag come from the registry, not from what the device says.
+4. Lost or stolen: Revoke in the console. The live connection drops and the device cannot reconnect.
+Tests: `go test ./...` covers claim, expiry, rate limit, tier override, revoke.

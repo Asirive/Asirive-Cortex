@@ -43,7 +43,7 @@ with simulated or bench devices only.
 
 | Area | Today | Needed before real devices |
 |---|---|---|
-| Device identity | one shared token | per-device certificate (mTLS), provisioning/claim, revocation |
+| Device identity | per-device token issued at claim, revocable, tier from registry (done, tested). Shared dev token only behind `-dev-shared-device-token` | per-device certificate (mTLS), key rotation, hardware-backed key |
 | Transport | plain WebSocket | TLS 1.3 terminated at the gateway or reverse proxy |
 | Payload privacy | unsealed protobuf | end-to-end sealed envelope (phone relay sees ciphertext) |
 | Operator auth | one shared token, one actor name | per-user accounts, MFA, roles (viewer/operator/admin), short-lived sessions |
@@ -63,7 +63,8 @@ state, tiers, alpha debug commands with audit, logs and events, staged OTA contr
 plane, fleet console.
 
 Not yet built (a complete fleet platform also needs):
-- Provisioning and identity lifecycle (claim, key rotation, revoke, decommission)
+- Identity lifecycle beyond claim/revoke (key rotation, decommission, transfer to a new owner)
+- App-facing API: only /v1/claim exists; the rest is drafted in contracts/openapi/app.yaml
 - Durable storage, backups, retention jobs, and multi-instance gateway scaling
 - Alerting and on-call (offline ratio, safety fault, failed rollout) to email/chat
 - Metrics and tracing (Prometheus/Grafana), uptime history, SLOs

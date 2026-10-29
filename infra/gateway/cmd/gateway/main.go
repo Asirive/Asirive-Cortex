@@ -16,6 +16,7 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
+	shared := flag.Bool("dev-shared-device-token", false, "DEV ONLY: let devices connect with the shared token (simulator)")
 	flag.Parse()
 	token := os.Getenv("CORTEX_DEV_TOKEN")
 	if token == "" {
@@ -28,6 +29,7 @@ func main() {
 		}
 	}()
 	srv := server.New(f, token)
+	srv.AllowSharedDeviceToken = *shared
 	if k := os.Getenv("CORTEX_OTA_PUBKEY"); k != "" { // hex ed25519 public key; the private key never touches the gateway
 		pub, err := hex.DecodeString(k)
 		if err != nil || len(pub) != ed25519.PublicKeySize {

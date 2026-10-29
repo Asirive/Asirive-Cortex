@@ -43,7 +43,7 @@ func main() {
 func device(url, tok, id string, tier pb.Tier, ring pb.Ring, bench bool) {
 	var seq uint64
 	for {
-		h := http.Header{"Authorization": {"Bearer " + tok}}
+		h := http.Header{"Authorization": {"Bearer " + tok}, "X-Device-Id": {id}}
 		ws, _, err := websocket.DefaultDialer.Dial(url, h)
 		if err != nil {
 			log.Printf("%s dial: %v", id, err)

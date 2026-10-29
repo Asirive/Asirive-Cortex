@@ -27,31 +27,34 @@ type Event struct {
 }
 
 type Device struct {
-	ID          string  `json:"id"`
-	Tier        string  `json:"tier"`
-	Ring        string  `json:"ring"`
-	Bench       bool    `json:"bench"`
-	Hardware    string  `json:"hardware"`
-	Firmware    string  `json:"firmware"`
-	MCU         string  `json:"mcu"`
-	Model       string  `json:"model"`
-	Online      bool    `json:"online"`
-	LastSeenMs  int64   `json:"last_seen_ms"`
-	ConnectedMs int64   `json:"connected_ms"`
-	Battery     uint32  `json:"battery_pct"`
-	Charging    bool    `json:"charging"`
-	Safety      string  `json:"safety"`
-	Brain       string  `json:"brain"`
-	Link        string  `json:"link"`
-	RTTMs       int32   `json:"link_rtt_ms"`
-	UptimeS     uint32  `json:"uptime_s"`
-	TempC       float32 `json:"soc_temp_c"`
-	PowerW      float32 `json:"power_w"`
-	MemMB       uint32  `json:"mem_used_mb"`
-	Restarts    uint32  `json:"services_restarted"`
-	SafetyP99Ms uint32  `json:"safety_latency_p99_ms"`
-	Ota         *Ota    `json:"ota,omitempty"`
-	HBIntervalS uint32  `json:"heartbeat_interval_s"`
+	ID           string  `json:"id"`
+	Tier         string  `json:"tier"`
+	Ring         string  `json:"ring"`
+	Bench        bool    `json:"bench"`
+	Hardware     string  `json:"hardware"`
+	Firmware     string  `json:"firmware"`
+	MCU          string  `json:"mcu"`
+	Model        string  `json:"model"`
+	Online       bool    `json:"online"`
+	LastSeenMs   int64   `json:"last_seen_ms"`
+	ConnectedMs  int64   `json:"connected_ms"`
+	Battery      uint32  `json:"battery_pct"`
+	Charging     bool    `json:"charging"`
+	Safety       string  `json:"safety"`
+	Brain        string  `json:"brain"`
+	Link         string  `json:"link"`
+	RTTMs        int32   `json:"link_rtt_ms"`
+	UptimeS      uint32  `json:"uptime_s"`
+	TempC        float32 `json:"soc_temp_c"`
+	PowerW       float32 `json:"power_w"`
+	MemMB        uint32  `json:"mem_used_mb"`
+	Restarts     uint32  `json:"services_restarted"`
+	SafetyP99Ms  uint32  `json:"safety_latency_p99_ms"`
+	Ota          *Ota    `json:"ota,omitempty"`
+	HBIntervalS  uint32  `json:"heartbeat_interval_s"`
+	RegState     string  `json:"reg_state,omitempty"`
+	Label        string  `json:"label,omitempty"`
+	ClaimExpires int64   `json:"claim_expires_ms,omitempty"`
 
 	logs   []LogLine
 	events []Event

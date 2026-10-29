@@ -12,6 +12,8 @@ contracts/proto/cortex/v1/
   alpha.proto      ALPHA-ONLY: DebugCommand, CameraControl/Frame, DatasetControl/Chunk
 ```
 
+contracts/openapi/app.yaml   Companion app <-> cloud REST API (draft; only /claim implemented)
+
 ## Rules
 1. Every message rides in an `Envelope` (header + typed payload + tag). Production
    seals the payload end to end; the phone relay and proxies see ciphertext only.
