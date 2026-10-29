@@ -103,3 +103,13 @@ Without `RESEND_API_KEY` mail is printed to the gateway log (dev only: it expose
 - **Feedback:** `POST /v1/feedback` text plus a clipped log excerpt, attached to the user's device; appears in the console Feedback tab.
 - **Updates:** `GET /v1/me/devices/{id}/update?counter=N` returns the signed manifest for the device's ring (204 if none); `POST` reports `committed | rolled_back | rejected`. Only the owner of the device can ask.
 - **Deleting an account** also removes its links, location, call records and device feedback.
+
+## Push wake-up and TURN (calls)
+
+- `PUT /v1/me/push {platform: ios|android, token}` registers a phone (max 5 per account; a token moves to the newest account that registers it). `DELETE /v1/me/push` clears.
+- Starting a call sends the callee a **generic** push ("Incoming call", opaque call id; no name, no email). Dead tokens are dropped automatically. Failures never fail the call.
+- Providers: FCM HTTP v1 (`CORTEX_FCM_SERVICE_ACCOUNT` = Firebase service-account JSON) and APNs token auth (`CORTEX_APNS_KEY` `.p8`, `_KEY_ID`, `_TEAM_ID`, `_TOPIC`). Unset = push is logged, not sent.
+- **iOS caveat:** this sends a normal time-sensitive alert push, which shows a banner. A full-screen ringing call UI on iOS needs PushKit VoIP pushes + CallKit in the app (separate VoIP token and `.voip` topic). Not built; tell the app team.
+- `GET /v1/calls/ice-servers` returns TURN URLs with 1-hour HMAC credentials (coturn `use-auth-secret`). The secret must match `static-auth-secret` on coturn.
+- `infra/deploy/` has a docker-compose (gateway + Caddy TLS + coturn). Written but **not run**: it was not tested in the dev container.
+- Tested against fake FCM/APNs servers only; never against the real providers.

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"github.com/asirive/cortex/gateway/internal/accounts"
 	"github.com/asirive/cortex/gateway/internal/mail"
+	"github.com/asirive/cortex/gateway/internal/push"
 	"github.com/asirive/cortex/gateway/internal/social"
 	"io"
 	"io/fs"
@@ -51,7 +52,11 @@ type Server struct {
 	Reg      *registry.Registry
 	Accounts *accounts.Store
 	Social   *social.Store
-	Mailer   mail.Mailer
+	Pusher   push.Pusher // nil = no wake-up
+	// TurnSecret is coturn static-auth-secret; TurnURLs e.g. turn:turn.asirive.com:3478?transport=udp
+	TurnSecret string
+	TurnURLs   []string
+	Mailer     mail.Mailer
 	// AppLinkBase prefixes deep links in emails (default asirive://).
 	AppLinkBase string
 	// AllowSharedDeviceToken lets devices connect with the shared dev token (simulator only).

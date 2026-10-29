@@ -2,11 +2,17 @@ package server
 
 import (
 	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha1"
+	"encoding/base64"
+	"encoding/json"
+	"github.com/asirive/cortex/gateway/internal/push"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -196,4 +202,89 @@ func reqBody(t *testing.T, method, url, token string) (int, []byte) {
 	defer res.Body.Close()
 	b, _ := io.ReadAll(res.Body)
 	return res.StatusCode, b
+}
+
+type rec struct {
+	mu   sync.Mutex
+	sent []string
+	err  error
+}
+
+func (r *rec) Send(platform, token string, m push.Message) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.sent = append(r.sent, platform+":"+token+":"+m.Body+":"+m.Data["call_id"])
+	return r.err
+}
+func (r *rec) wait(n int) []string {
+	for i := 0; i < 100; i++ {
+		r.mu.Lock()
+		if len(r.sent) >= n {
+			out := append([]string(nil), r.sent...)
+			r.mu.Unlock()
+			return out
+		}
+		r.mu.Unlock()
+		time.Sleep(20 * time.Millisecond)
+	}
+	return nil
+}
+
+func TestCallPushAndTurn(t *testing.T) {
+	s := New(fleet.New(), "boot")
+	pr := &rec{}
+	s.Pusher = pr
+	s.TurnSecret, s.TurnURLs = "s3cret", []string{"turn:turn.example.com:3478?transport=udp"}
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	u := ts.URL + "/v1"
+	owner, comp := login(t, s, "o@example.com"), login(t, s, "c@example.com")
+	ownerID := between(func() string { _, b := get(t, u+"/me", owner); return string(b) }(), `"id":"`, `"`)
+	_, inv := post(t, u+"/companions", owner, map[string]any{"label": "Mum"})
+	post(t, u+"/companions/accept", comp, map[string]any{"code": inv["invite_code"]})
+	put(t, u+"/companions/"+inv["link"].(map[string]any)["id"].(string)+"/grants", owner, map[string]any{"call": true})
+
+	if c, _ := put(t, u+"/me/push", owner, map[string]any{"platform": "windows", "token": "abcdefgh12"}); c != 400 {
+		t.Fatalf("bad platform: %d", c)
+	}
+	put(t, u+"/me/push", owner, map[string]any{"platform": "ios", "token": "iosdevicetoken1"})
+	_, call := post(t, u+"/calls", comp, map[string]any{"to": ownerID, "offer": "sdp"})
+	got := pr.wait(1)
+	if len(got) != 1 || !strings.HasPrefix(got[0], "ios:iosdevicetoken1:Incoming call:"+call["call_id"].(string)) {
+		t.Fatalf("callee not woken with a generic message: %v", got)
+	}
+	if strings.Contains(got[0], "Mum") || strings.Contains(got[0], "@") {
+		t.Fatal("push leaked a name or email")
+	}
+	// dead token is dropped
+	pr.err = push.ErrUnregistered
+	post(t, u+"/calls/"+call["call_id"].(string)+"/end", comp, nil)
+	post(t, u+"/calls", comp, map[string]any{"to": ownerID, "offer": "sdp"})
+	pr.wait(2)
+	time.Sleep(100 * time.Millisecond)
+	if len(s.Social.PushTokens(ownerID)) != 0 {
+		t.Fatal("unregistered token kept")
+	}
+
+	// TURN credentials follow the coturn REST scheme
+	c, b := get(t, u+"/calls/ice-servers", comp)
+	if c != 200 {
+		t.Fatalf("ice: %d %s", c, b)
+	}
+	var out struct {
+		Ice []struct {
+			Username   string `json:"username"`
+			Credential string `json:"credential"`
+		} `json:"ice_servers"`
+	}
+	json.Unmarshal(b, &out)
+	mac := hmac.New(sha1.New, []byte("s3cret"))
+	mac.Write([]byte(out.Ice[0].Username))
+	if out.Ice[0].Credential != base64.StdEncoding.EncodeToString(mac.Sum(nil)) || !strings.Contains(out.Ice[0].Username, ":") {
+		t.Fatalf("bad TURN credential: %s", b)
+	}
+	s.TurnSecret = ""
+	if c, _ := get(t, u+"/calls/ice-servers", comp); c != 503 {
+		t.Fatal("served TURN without a secret")
+	}
 }

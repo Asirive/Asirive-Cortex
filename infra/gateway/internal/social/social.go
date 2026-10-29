@@ -90,10 +90,16 @@ type Store struct {
 	history map[string][]Point
 	calls   map[string]*Call
 	fails   map[string][]time.Time
+	push    map[string][]PushToken
+}
+
+type PushToken struct {
+	Platform string `json:"platform"` // ios | android
+	Token    string `json:"token"`
 }
 
 func New() *Store {
-	return &Store{links: map[string]*Link{}, latest: map[string]Point{}, history: map[string][]Point{}, calls: map[string]*Call{}, fails: map[string][]time.Time{}}
+	return &Store{links: map[string]*Link{}, latest: map[string]Point{}, history: map[string][]Point{}, calls: map[string]*Call{}, fails: map[string][]time.Time{}, push: map[string][]PushToken{}}
 }
 
 // ---- companions ----
@@ -438,19 +444,21 @@ func (s *Store) DeleteAccount(id string) {
 	}
 	delete(s.latest, id)
 	delete(s.history, id)
+	delete(s.push, id)
 }
 
 type snap struct {
-	Links   map[string]*Link   `json:"links"`
-	Latest  map[string]Point   `json:"latest"`
-	History map[string][]Point `json:"history"`
-	Calls   map[string]*Call   `json:"calls"`
+	Links   map[string]*Link       `json:"links"`
+	Latest  map[string]Point       `json:"latest"`
+	History map[string][]Point     `json:"history"`
+	Calls   map[string]*Call       `json:"calls"`
+	Push    map[string][]PushToken `json:"push"`
 }
 
 func (s *Store) Snapshot() ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return json.Marshal(snap{s.links, s.latest, s.history, s.calls})
+	return json.Marshal(snap{s.links, s.latest, s.history, s.calls, s.push})
 }
 
 func (s *Store) Restore(b []byte) error {
@@ -472,5 +480,52 @@ func (s *Store) Restore(b []byte) error {
 	if o.Calls != nil {
 		s.calls = o.Calls
 	}
+	if o.Push != nil {
+		s.push = o.Push
+	}
 	return nil
+}
+
+// ---- push tokens ----
+
+// SetPush registers a device token for an account (max 5; a token belongs to one account only).
+func (s *Store) SetPush(acct, platform, token string) error {
+	if (platform != "ios" && platform != "android") || len(token) < 8 || len(token) > 512 {
+		return ErrInvalid
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for a, list := range s.push { // a phone that changes hands moves with the latest sign-in
+		kept := list[:0]
+		for _, t := range list {
+			if t.Token != token {
+				kept = append(kept, t)
+			}
+		}
+		s.push[a] = kept
+	}
+	l := append(s.push[acct], PushToken{platform, token})
+	if len(l) > 5 {
+		l = l[len(l)-5:]
+	}
+	s.push[acct] = l
+	return nil
+}
+
+func (s *Store) ClearPush(acct, token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.push[acct][:0]
+	for _, t := range s.push[acct] {
+		if token != "" && t.Token != token {
+			kept = append(kept, t)
+		}
+	}
+	s.push[acct] = kept
+}
+
+func (s *Store) PushTokens(acct string) []PushToken {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]PushToken(nil), s.push[acct]...)
 }

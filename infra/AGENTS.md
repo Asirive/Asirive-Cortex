@@ -93,3 +93,4 @@ psql -f supabase/migrations/001_initial_schema.sql   # schema apply (reference)
 - 2026-10-29: Per-user operators with viewer/operator/release/admin roles, personal tokens (hashed, persisted), real actor in audit, whoami badge in console.
 - 2026-10-29: App accounts in the gateway: email+password (argon2id), Resend verification/reset mail, sessions, login lockout, delete account (releases devices), beta opt-in with consent record, authenticated /v1/claim, /v1/me/devices. Sign in with Apple dropped for now.
 - 2026-10-29: App cloud features: companions with per-grant consent, location (30-day TTL), call signalling, app feedback, app-side OTA relay (offer/report). Account deletion purges all of it. Open: push wake-up for calls, TURN, per-device settings.
+- 2026-10-29: Push wake-up (FCM v1, APNs token auth) for incoming calls, TURN ephemeral credentials, infra/deploy compose (untested). Real providers not exercised.

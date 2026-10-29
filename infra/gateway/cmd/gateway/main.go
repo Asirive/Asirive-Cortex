@@ -5,10 +5,12 @@ import (
 	"encoding/hex"
 	"flag"
 	"github.com/asirive/cortex/gateway/internal/mail"
+	"github.com/asirive/cortex/gateway/internal/push"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -42,6 +44,31 @@ func main() {
 		srv.Mailer = &mail.Resend{APIKey: k, From: from}
 	} else {
 		log.Print("WARNING: RESEND_API_KEY not set; app emails (verify, reset) are written to this log. DEV ONLY.")
+	}
+	var rt push.Router
+	if p := os.Getenv("CORTEX_FCM_SERVICE_ACCOUNT"); p != "" {
+		f, err := push.NewFCM(p)
+		if err != nil {
+			log.Fatalf("FCM: %v", err)
+		}
+		rt.Android = f
+	}
+	if p := os.Getenv("CORTEX_APNS_KEY"); p != "" {
+		a, err := push.NewAPNs(p, os.Getenv("CORTEX_APNS_KEY_ID"), os.Getenv("CORTEX_APNS_TEAM_ID"), os.Getenv("CORTEX_APNS_TOPIC"))
+		if err != nil {
+			log.Fatalf("APNs: %v", err)
+		}
+		rt.IOS = a
+	}
+	if rt.IOS != nil || rt.Android != nil {
+		srv.Pusher = rt
+	} else {
+		log.Print("WARNING: no FCM/APNs credentials; incoming calls only reach apps that poll. Push is logged, not sent.")
+		srv.Pusher = push.Log{}
+	}
+	srv.TurnSecret = os.Getenv("CORTEX_TURN_SECRET")
+	if u := os.Getenv("CORTEX_TURN_URLS"); u != "" {
+		srv.TurnURLs = strings.Split(u, ",")
 	}
 	if b := os.Getenv("CORTEX_APP_LINK_BASE"); b != "" {
 		srv.AppLinkBase = b

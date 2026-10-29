@@ -1,0 +1,34 @@
+# Self-host stack: gateway + TLS front (Caddy) + TURN relay (coturn).
+# NOT run in CI or in the dev container: validate on your server with `docker compose config` first.
+services:
+  gateway:
+    build: ../gateway
+    restart: unless-stopped
+    env_file: .env
+    command: ["-addr", ":8080", "-state", "/data/cortex-state.json"]
+    volumes:
+      - gateway-data:/data
+      - ./secrets:/secrets:ro        # fcm.json, AuthKey_XXXX.p8
+    expose: ["8080"]
+
+  caddy:                              # automatic HTTPS for api.<your domain>; devices and apps speak wss/https only
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on: [gateway]
+
+  coturn:                             # relay for calls across strict NATs
+    image: coturn/coturn:4.6
+    restart: unless-stopped
+    network_mode: host                # TURN needs real UDP ports; open 3478 and 49160-49200 on the firewall
+    command: >
+      -n --realm=${TURN_REALM} --use-auth-secret --static-auth-secret=${CORTEX_TURN_SECRET}
+      --listening-port=3478 --min-port=49160 --max-port=49200 --fingerprint --no-multicast-peers
+      --no-cli --denied-peer-ip=10.0.0.0-10.255.255.255 --denied-peer-ip=172.16.0.0-172.31.255.255 --denied-peer-ip=192.168.0.0-192.168.255.255
+
+volumes:
+  gateway-data:
+  caddy-data:

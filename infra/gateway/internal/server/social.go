@@ -1,8 +1,13 @@
 package server
 
 import (
+	"crypto/hmac"
+	"crypto/sha1"
+	"encoding/base64"
 	"errors"
+	"github.com/asirive/cortex/gateway/internal/push"
 	"google.golang.org/protobuf/encoding/protojson"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -29,6 +34,9 @@ func (s *Server) socialRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/calls/{id}/answer", s.appAuth(s.callAnswer))
 	mux.HandleFunc("POST /v1/calls/{id}/ice", s.appAuth(s.callICE))
 	mux.HandleFunc("POST /v1/calls/{id}/end", s.appAuth(s.callEnd))
+	mux.HandleFunc("PUT /v1/me/push", s.appAuth(s.pushPut))
+	mux.HandleFunc("DELETE /v1/me/push", s.appAuth(s.pushDel))
+	mux.HandleFunc("GET /v1/calls/ice-servers", s.appAuth(s.iceServers))
 	mux.HandleFunc("POST /v1/feedback", s.appAuth(s.appFeedback))
 	mux.HandleFunc("GET /v1/me/devices/{id}/update", s.appAuth(s.updateGet))
 	mux.HandleFunc("POST /v1/me/devices/{id}/update", s.appAuth(s.updateReport))
@@ -150,6 +158,7 @@ func (s *Server) callStart(w http.ResponseWriter, r *http.Request) {
 		s.socialErr(w, err)
 		return
 	}
+	s.notifyCall(req.To, c.ID)
 	writeJSON(w, map[string]any{"call_id": c.ID})
 }
 
@@ -297,3 +306,54 @@ func (s *Server) updateReport(w http.ResponseWriter, r *http.Request) {
 }
 
 var protojsonOpts = protojson.MarshalOptions{EmitUnpopulated: false}
+
+func (s *Server) pushPut(w http.ResponseWriter, r *http.Request) {
+	var req struct{ Platform, Token string }
+	if !decode(w, r, &req) {
+		return
+	}
+	if err := s.Social.SetPush(acct(r).ID, req.Platform, req.Token); err != nil {
+		s.socialErr(w, err)
+		return
+	}
+	writeJSON(w, map[string]string{"result": "registered"})
+}
+
+func (s *Server) pushDel(w http.ResponseWriter, r *http.Request) {
+	var req struct{ Token string }
+	decode(w, r, &req)
+	s.Social.ClearPush(acct(r).ID, req.Token) // empty token clears all
+	writeJSON(w, map[string]string{"result": "cleared"})
+}
+
+// notifyCall wakes the callee's phones. The text is generic on purpose: the lock
+// screen must not show a name. Failures never fail the call; dead tokens are dropped.
+func (s *Server) notifyCall(to, callID string) {
+	if s.Pusher == nil {
+		return
+	}
+	for _, t := range s.Social.PushTokens(to) {
+		go func(t social.PushToken) {
+			err := s.Pusher.Send(t.Platform, t.Token, push.Message{Title: "Asirive", Body: "Incoming call", Data: map[string]string{"type": "incoming_call", "call_id": callID}})
+			if errors.Is(err, push.ErrUnregistered) {
+				s.Social.ClearPush(to, t.Token)
+			} else if err != nil {
+				log.Printf("push failed: %v", err)
+			}
+		}(t)
+	}
+}
+
+// iceServers returns STUN/TURN with short-lived credentials (coturn "REST API" scheme:
+// username = expiry:account, credential = base64(HMAC-SHA1(secret, username))).
+func (s *Server) iceServers(w http.ResponseWriter, r *http.Request) {
+	if s.TurnSecret == "" || len(s.TurnURLs) == 0 {
+		writeErr(w, 503, "no_relay", "Calls can't be relayed right now.")
+		return
+	}
+	exp := time.Now().Add(time.Hour).Unix()
+	user := strconv.FormatInt(exp, 10) + ":" + acct(r).ID
+	mac := hmac.New(sha1.New, []byte(s.TurnSecret))
+	mac.Write([]byte(user))
+	writeJSON(w, map[string]any{"ttl_s": 3600, "ice_servers": []map[string]any{{"urls": s.TurnURLs, "username": user, "credential": base64.StdEncoding.EncodeToString(mac.Sum(nil))}}})
+}
