@@ -1,0 +1,31 @@
+# Owns the hardware watchdog. Pets it only while safety and link are healthy, so a wedged
+# safety service resets the board instead of leaving a silent, unsafe device.
+[Unit]
+Description=Cortex supervisor
+After=local-fs.target
+StartLimitIntervalSec=300
+StartLimitBurst=20
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=cortex
+Group=cortex
+WorkingDirectory=/opt/cortex
+Environment=PYTHONPATH=/opt/cortex CORTEX_HB_DIR=/run/cortex/hb PYTHONDONTWRITEBYTECODE=1
+RuntimeDirectory=cortex
+RuntimeDirectoryPreserve=yes
+RuntimeDirectoryMode=0750
+ExecStart=/opt/cortex/venv/bin/python -m cortex_core.supervisor
+Restart=always
+RestartSec=1
+WatchdogSec=10
+# Hardening: read-only root with a writable overlay for state only
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/run/cortex /var/lib/cortex
+
+[Install]
+WantedBy=cortex.target

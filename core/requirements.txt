@@ -1,0 +1,5 @@
+# Pinned for the device image; no pip install at runtime (AGENTS.md section 4).
+protobuf>=5.29,<8
+cryptography>=43
+pytest>=8   # dev/CI only
+grpcio-tools>=1.68  # dev/CI only (scripts/gen_proto.sh)
