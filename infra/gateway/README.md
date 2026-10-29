@@ -118,3 +118,13 @@ Without `RESEND_API_KEY` mail is printed to the gateway log (dev only: it expose
 
 - **Alerts:** set `CORTEX_ALERT_EMAILS=a@x.com,b@x.com`. A live device needing attention (offline, safety fault/degraded, low battery) for 3 minutes emails once, repeats every 6 h while unresolved, and sends one all-clear. Releases that halt automatically email immediately. Uses the same Resend mailer. Pending and revoked devices never alert.
 - **Signed debug commands:** every alpha command carries `device_id`, issue/expiry (60 s), a random nonce, the operator's name and an ed25519 signature (`internal/cmdsign`, field list in `alpha.proto`). The device must check all of them and remember the last 256 nonces. The public key is returned by `/v1/claim` and `GET /api/command-key`; the private key is generated on first start and kept in the state file. **Limit:** the key is on the gateway, so this stops replay, misdirection and stale/tampered commands, not a compromised gateway. An operator-held key (WebAuthn) would be needed for that.
+
+## Postgres state store (failover)
+
+Set `CORTEX_PG_DSN=postgres://user:pass@host/db?sslmode=require`. The state document is stored in one table
+(`cortex_state`, created automatically) and a Postgres advisory lock makes one gateway the leader; others wait as
+**warm standbys** and take over within ~5 s when the leader's session ends (crash or network loss). A leader that
+loses the lock exits, so run the gateway under a restarter (compose `restart: unless-stopped` does this).
+Verified against a local Postgres 16 (`CORTEX_TEST_PG=... go test ./internal/server`), including killing the leader.
+This is **failover, not scaling**: one writer at a time, whole-document saves every 3 s (so a hard crash loses up to
+3 s of changes). A per-table schema for active-active is not built; `supabase/migrations/002_fleet.sql` is still reference only.

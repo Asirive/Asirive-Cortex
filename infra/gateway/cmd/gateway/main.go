@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"flag"
@@ -93,11 +94,38 @@ func main() {
 	} else {
 		log.Print("OTA disabled: CORTEX_OTA_PUBKEY not set")
 	}
-	if err := srv.LoadState(*statePath); err != nil {
-		log.Fatalf("load state %s: %v (refusing to start with unreadable state)", *statePath, err)
+	var store server.StateStore = server.FileStore{Path: *statePath}
+	if dsn := os.Getenv("CORTEX_PG_DSN"); dsn != "" {
+		pg, err := server.OpenPG(context.Background(), dsn)
+		if err != nil {
+			log.Fatalf("postgres: %v", err)
+		}
+		for { // warm standby: wait until the current leader's lock is released
+			ok, err := pg.TryLead(context.Background())
+			if err != nil {
+				log.Fatalf("postgres lock: %v", err)
+			}
+			if ok {
+				break
+			}
+			log.Print("standby: another gateway holds the lead; waiting")
+			time.Sleep(5 * time.Second)
+		}
+		store = pg
+		go func() { // lost the lock (connection dropped)? Stop writing and exit so the supervisor restarts us as standby.
+			for range time.Tick(5 * time.Second) {
+				if !pg.StillLeader(context.Background()) {
+					log.Fatal("lost the postgres lead; exiting")
+				}
+			}
+		}()
+		log.Print("state store: postgres (leader)")
+	}
+	if err := srv.LoadFrom(store); err != nil {
+		log.Fatalf("load state: %v (refusing to start with unreadable state)", err)
 	}
 	save := func() {
-		if err := srv.SaveState(*statePath); err != nil {
+		if err := srv.SaveTo(store); err != nil {
 			log.Printf("save state: %v", err)
 		}
 	}

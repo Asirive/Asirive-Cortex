@@ -95,3 +95,4 @@ psql -f supabase/migrations/001_initial_schema.sql   # schema apply (reference)
 - 2026-10-29: App cloud features: companions with per-grant consent, location (30-day TTL), call signalling, app feedback, app-side OTA relay (offer/report). Account deletion purges all of it. Open: push wake-up for calls, TURN, per-device settings.
 - 2026-10-29: Push wake-up (FCM v1, APNs token auth) for incoming calls, TURN ephemeral credentials, infra/deploy compose (untested). Real providers not exercised.
 - 2026-10-29: Fleet alerting by email; signed alpha debug commands (cmdsign + alpha.proto fields). Device-side verification belongs in core/.
+- 2026-10-29: Postgres state store with advisory-lock leader election (warm standby failover), tested on PG16. Not active-active.

@@ -23,14 +23,30 @@ type state struct {
 	CmdKey    []byte            `json:"command_key,omitempty"`
 }
 
-// SaveState writes registrations, releases and the audit log to path atomically
-// (temp file, fsync, rename) with owner-only permissions: it holds credential hashes.
-func (s *Server) SaveState(path string) error {
+// StateStore is where the state document lives: a file (single node) or Postgres.
+type StateStore interface {
+	Read() ([]byte, error) // (nil, nil) when nothing has been saved yet
+	Write([]byte) error
+}
+
+// SaveState / LoadState use a file store.
+func (s *Server) SaveState(path string) error { return s.SaveTo(FileStore{path}) }
+func (s *Server) LoadState(path string) error { return s.LoadFrom(FileStore{path}) }
+
+func (s *Server) SaveTo(st StateStore) error {
+	data, err := s.marshalState()
+	if err != nil {
+		return err
+	}
+	return st.Write(data)
+}
+
+func (s *Server) marshalState() ([]byte, error) {
 	st := state{Version: 1, SavedAt: time.Now(), Devices: s.Reg.Snapshot(), CmdKey: s.CmdKey}
 	if s.OTA != nil {
 		b, err := s.OTA.Snapshot()
 		if err != nil {
-			return err
+			return nil, err
 		}
 		st.Releases = b
 	}
@@ -47,10 +63,22 @@ func (s *Server) SaveState(path string) error {
 		st.Operators = append(st.Operators, &c)
 	}
 	s.mu.Unlock()
-	data, err := json.Marshal(st)
-	if err != nil {
-		return err
+	return json.Marshal(st)
+}
+
+// FileStore writes atomically (temp file, fsync, rename) with owner-only permissions: it holds credential hashes.
+type FileStore struct{ Path string }
+
+func (f FileStore) Read() ([]byte, error) {
+	b, err := os.ReadFile(f.Path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
 	}
+	return b, err
+}
+
+func (f FileStore) Write(data []byte) error {
+	path := f.Path
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".state-*")
 	if err != nil {
 		return err
@@ -71,14 +99,14 @@ func (s *Server) SaveState(path string) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// LoadState restores a previous SaveState. A missing file is a clean first start.
-func (s *Server) LoadState(path string) error {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
+// LoadFrom restores a previous save. Nothing saved yet is a clean first start.
+func (s *Server) LoadFrom(store StateStore) error {
+	data, err := store.Read()
 	if err != nil {
 		return err
+	}
+	if data == nil {
+		return nil
 	}
 	var st state
 	if err := json.Unmarshal(data, &st); err != nil {
