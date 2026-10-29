@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -150,5 +151,47 @@ func TestOperatorTokenGuessingIsLimited(t *testing.T) {
 	}
 	if last != 429 {
 		t.Fatalf("token guessing not rate limited: %d", last)
+	}
+}
+
+func TestStateSurvivesRestart(t *testing.T) {
+	path := t.TempDir() + "/state.json"
+	s := New(fleet.New(), "optoken")
+	ts := httptest.NewServer(s.Handler())
+	_, reg := post(t, ts.URL+"/api/registrations", "optoken", map[string]any{"tier": "ALPHA", "label": "bench 1", "bench": true})
+	id := reg["registration"].(map[string]any)["id"].(string)
+	_, c := post(t, ts.URL+"/v1/claim", "", map[string]any{"claim_code": reg["claim_code"], "account_id": "u1"})
+	tok := c["device_token"].(string)
+	_, pend := post(t, ts.URL+"/api/registrations", "optoken", map[string]any{"tier": "BETA", "label": "unclaimed"})
+	if err := s.SaveState(path); err != nil {
+		t.Fatal(err)
+	}
+	ts.Close()
+
+	s2 := New(fleet.New(), "optoken") // gateway restarted
+	if err := s2.LoadState(path); err != nil {
+		t.Fatal(err)
+	}
+	ts2 := httptest.NewServer(s2.Handler())
+	defer ts2.Close()
+	ws, _, err := dial(t, ts2, id, tok)
+	if err != nil {
+		t.Fatalf("claimed device locked out after restart: %v", err)
+	}
+	ws.Close()
+	if _, _, err := dial(t, ts2, id, "wrong"); err == nil {
+		t.Fatal("wrong token accepted after restart")
+	}
+	if code, _ := post(t, ts2.URL+"/v1/claim", "", map[string]any{"claim_code": pend["claim_code"], "account_id": "u2"}); code != 200 {
+		t.Fatalf("pending claim code lost across restart: %d", code)
+	}
+	if code, _ := post(t, ts2.URL+"/v1/claim", "", map[string]any{"claim_code": reg["claim_code"], "account_id": "u3"}); code == 200 {
+		t.Fatal("used claim code reusable after restart")
+	}
+	if err := os.WriteFile(path, []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := New(fleet.New(), "x").LoadState(path); err == nil {
+		t.Fatal("corrupt state file loaded silently")
 	}
 }

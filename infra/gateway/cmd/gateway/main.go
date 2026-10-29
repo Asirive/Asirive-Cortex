@@ -7,6 +7,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/asirive/cortex/gateway/internal/fleet"
@@ -17,6 +19,7 @@ import (
 func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	shared := flag.Bool("dev-shared-device-token", false, "DEV ONLY: let devices connect with the shared token (simulator)")
+	statePath := flag.String("state", "cortex-state.json", "durable state file (registrations, releases, audit)")
 	flag.Parse()
 	token := os.Getenv("CORTEX_DEV_TOKEN")
 	if token == "" {
@@ -44,7 +47,27 @@ func main() {
 	} else {
 		log.Print("OTA disabled: CORTEX_OTA_PUBKEY not set")
 	}
+	if err := srv.LoadState(*statePath); err != nil {
+		log.Fatalf("load state %s: %v (refusing to start with unreadable state)", *statePath, err)
+	}
+	save := func() {
+		if err := srv.SaveState(*statePath); err != nil {
+			log.Printf("save state: %v", err)
+		}
+	}
+	go func() {
+		for range time.Tick(3 * time.Second) {
+			save()
+		}
+	}()
 	log.Printf("cortex gateway listening on %s", *addr)
 	httpSrv := &http.Server{Addr: *addr, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second}
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		<-sig
+		save()
+		os.Exit(0)
+	}()
 	log.Fatal(httpSrv.ListenAndServe())
 }

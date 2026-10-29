@@ -43,3 +43,12 @@ camera relay / dataset pipeline (message types exist, handlers are stubs).
 3. Device connects to `/ws/device` with `Authorization: Bearer <device token>` and `X-Device-Id`. Its tier, ring and bench flag come from the registry, not from what the device says.
 4. Lost or stolen: Revoke in the console. The live connection drops and the device cannot reconnect.
 Tests: `go test ./...` covers claim, expiry, rate limit, tier override, revoke.
+
+## Durable state
+
+`-state cortex-state.json` (default) holds registrations (claim/token **hashes**, public keys), releases with
+rollout progress and halts, and the audit log. It is written atomically every 3 s and on SIGTERM, mode 0600,
+and read at start; an unreadable file stops the gateway rather than starting empty. Back it up, and keep it
+on the same disk encryption as any secret store. Releases are re-verified against `CORTEX_OTA_PUBKEY` on load.
+Live device telemetry is not persisted; it repopulates as devices reconnect. Single node only: the multi-node
+store is Postgres (`infra/supabase/migrations/002_fleet.sql`), not yet wired.

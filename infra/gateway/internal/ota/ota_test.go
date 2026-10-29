@@ -144,3 +144,38 @@ func TestNoAdvanceWhenNobodyTested(t *testing.T) {
 		t.Fatalf("advanced with zero devices tested: %+v", st)
 	}
 }
+
+func TestSnapshotRestoreKeepsHaltAndExclusions(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	e := NewEngine(pub)
+	m := mf("r1", 2, pb.Ring_RING_STABLE)
+	Sign(m, priv)
+	now := time.Now()
+	if err := e.Register(m, nil, now); err != nil {
+		t.Fatal(err)
+	}
+	e.Offer("A1", pb.Ring_RING_ALPHA, 1)
+	e.Report("r1", "A1", RolledBack)
+	e.Halt("r1", "bad")
+	snap, err := e.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e2 := NewEngine(pub)
+	if err := e2.Restore(snap); err != nil {
+		t.Fatal(err)
+	}
+	if e2.Offer("A2", pb.Ring_RING_ALPHA, 1) != nil {
+		t.Fatal("halted release offered after restore")
+	}
+	if e2.Register(m, nil, now) != ErrDuplicate {
+		t.Fatal("release not restored")
+	}
+	if !e2.Resume("r1", now) || e2.Offer("A1", pb.Ring_RING_ALPHA, 1) != nil {
+		t.Fatal("rolled-back device re-offered after restore")
+	}
+	other, _, _ := ed25519.GenerateKey(rand.Reader)
+	if NewEngine(other).Restore(snap) == nil {
+		t.Fatal("state signed by another key was accepted")
+	}
+}
