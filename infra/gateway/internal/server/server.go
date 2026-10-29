@@ -5,6 +5,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -49,11 +50,12 @@ type Server struct {
 	AllowSharedDeviceToken bool
 	up                     websocket.Upgrader
 
-	mu     sync.Mutex
-	conns  map[string]*devConn
-	audit  []AuditLine
-	authFl map[string][]time.Time
-	cmdSeq atomic.Uint64
+	mu        sync.Mutex
+	conns     map[string]*devConn
+	audit     []AuditLine
+	operators map[string]*Operator
+	authFl    map[string][]time.Time
+	cmdSeq    atomic.Uint64
 }
 
 type AuditLine struct {
@@ -79,7 +81,7 @@ type devConn struct {
 }
 
 func New(f *fleet.Store, token string) *Server {
-	s := &Server{Fleet: f, DevToken: token, Reg: registry.New(), conns: map[string]*devConn{}, authFl: map[string][]time.Time{}}
+	s := &Server{Fleet: f, DevToken: token, Reg: registry.New(), conns: map[string]*devConn{}, authFl: map[string][]time.Time{}, operators: map[string]*Operator{}}
 	// devices are not browsers: refuse any browser-originated WebSocket (cross-site hijack)
 	s.up = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return r.Header.Get("Origin") == "" }}
 	return s
@@ -96,20 +98,24 @@ func (s *Server) WireOTA(e *ota.Engine) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/device", s.deviceWS)
-	mux.HandleFunc("GET /api/summary", s.auth(s.summary))
-	mux.HandleFunc("GET /api/devices", s.auth(s.devices))
-	mux.HandleFunc("GET /api/devices/{id}", s.auth(s.device))
-	mux.HandleFunc("POST /api/devices/{id}/command", s.auth(s.command))
-	mux.HandleFunc("GET /api/audit", s.auth(s.auditLog))
-	mux.HandleFunc("GET /api/feedback", s.auth(s.feedback))
-	mux.HandleFunc("POST /api/registrations", s.auth(s.register))
-	mux.HandleFunc("GET /api/registrations", s.auth(s.registrations))
-	mux.HandleFunc("POST /api/registrations/{id}/revoke", s.auth(s.revoke))
+	mux.HandleFunc("GET /api/whoami", s.auth(RoleViewer, s.whoami))
+	mux.HandleFunc("GET /api/operators", s.auth(RoleAdmin, s.listOperators))
+	mux.HandleFunc("POST /api/operators", s.auth(RoleAdmin, s.createOperator))
+	mux.HandleFunc("POST /api/operators/{name}/revoke", s.auth(RoleAdmin, s.revokeOperator))
+	mux.HandleFunc("GET /api/summary", s.auth(RoleViewer, s.summary))
+	mux.HandleFunc("GET /api/devices", s.auth(RoleViewer, s.devices))
+	mux.HandleFunc("GET /api/devices/{id}", s.auth(RoleViewer, s.device))
+	mux.HandleFunc("POST /api/devices/{id}/command", s.auth(RoleOperator, s.command))
+	mux.HandleFunc("GET /api/audit", s.auth(RoleViewer, s.auditLog))
+	mux.HandleFunc("GET /api/feedback", s.auth(RoleViewer, s.feedback))
+	mux.HandleFunc("POST /api/registrations", s.auth(RoleOperator, s.register))
+	mux.HandleFunc("GET /api/registrations", s.auth(RoleViewer, s.registrations))
+	mux.HandleFunc("POST /api/registrations/{id}/revoke", s.auth(RoleOperator, s.revoke))
 	mux.HandleFunc("POST /v1/claim", s.claim)
-	mux.HandleFunc("GET /api/releases", s.auth(s.releases))
-	mux.HandleFunc("POST /api/releases", s.auth(s.registerRelease))
-	mux.HandleFunc("POST /api/releases/{id}/halt", s.auth(s.haltRelease))
-	mux.HandleFunc("POST /api/releases/{id}/resume", s.auth(s.resumeRelease))
+	mux.HandleFunc("GET /api/releases", s.auth(RoleViewer, s.releases))
+	mux.HandleFunc("POST /api/releases", s.auth(RoleRelease, s.registerRelease))
+	mux.HandleFunc("POST /api/releases/{id}/halt", s.auth(RoleRelease, s.haltRelease))
+	mux.HandleFunc("POST /api/releases/{id}/resume", s.auth(RoleRelease, s.resumeRelease))
 	sub, _ := fs.Sub(web.FS, ".")
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 	return secure(mux)
@@ -162,7 +168,7 @@ func (s *Server) tooManyFails(ip string, now time.Time) bool {
 	return len(f) >= 10
 }
 
-func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
+func (s *Server) auth(min Role, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ip, now := clientIP(r), time.Now()
 		if s.tooManyFails(ip, now) {
@@ -170,14 +176,19 @@ func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if subtle.ConstantTimeCompare([]byte(tok), []byte(s.DevToken)) != 1 {
+		p, ok := s.identify(tok)
+		if !ok {
 			s.mu.Lock()
 			s.authFl[ip] = append(s.authFl[ip], now)
 			s.mu.Unlock()
 			writeErr(w, http.StatusUnauthorized, "unauthorized", "Token rejected")
 			return
 		}
-		h(w, r)
+		if p.Role < min {
+			writeErr(w, http.StatusForbidden, "forbidden", "Your role ("+p.Role.String()+") can't do this. It needs "+min.String()+" or higher.")
+			return
+		}
+		h(w, r.WithContext(context.WithValue(r.Context(), ctxKey{}, p)))
 	}
 }
 
@@ -529,19 +540,19 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 	switch {
 	case c == nil:
-		s.record("dev-admin", "command:"+req.Name, id, "refused", "device offline "+string(argTxt))
+		s.record(actor(r), "command:"+req.Name, id, "refused", "device offline "+string(argTxt))
 		writeErr(w, http.StatusConflict, "device_offline", id+" is offline, so the command was not sent.")
 	case c.tier != pb.Tier_TIER_ALPHA || !c.bench:
-		s.record("dev-admin", "command:"+req.Name, id, "refused", "not an alpha bench device "+string(argTxt))
+		s.record(actor(r), "command:"+req.Name, id, "refused", "not an alpha bench device "+string(argTxt))
 		writeErr(w, http.StatusConflict, "not_bench", id+" is not an alpha bench device, so debug commands are refused.")
 	default:
 		cid := fmt.Sprintf("c%d-%d", time.Now().Unix(), s.cmdSeq.Add(1))
 		if err := s.send(c, pb.PayloadType_PAYLOAD_TYPE_DEBUG_COMMAND, &pb.DebugCommand{CommandId: cid, Name: req.Name, Args: req.Args}); err != nil {
-			s.record("dev-admin", "command:"+req.Name, id, "send failed", string(argTxt))
+			s.record(actor(r), "command:"+req.Name, id, "send failed", string(argTxt))
 			writeErr(w, http.StatusBadGateway, "send_failed", "Could not reach the device.")
 			return
 		}
-		s.record("dev-admin", "command:"+req.Name, id, "sent", cid+" "+string(argTxt))
+		s.record(actor(r), "command:"+req.Name, id, "sent", cid+" "+string(argTxt))
 		writeJSON(w, map[string]string{"result": "sent", "command_id": cid})
 	}
 }
@@ -593,7 +604,7 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, "id_space", "Could not allocate a device id")
 			return
 		}
-		s.record("dev-admin", "device:register", reg.ID, "pending", req.Label)
+		s.record(actor(r), "device:register", reg.ID, "pending", req.Label)
 		uri := "asirive://claim?code=" + strings.ReplaceAll(code, "-", "")
 		png, _ := qrcode.Encode(uri, qrcode.Medium, 256)
 		writeJSON(w, map[string]any{"registration": reg, "claim_code": code, "claim_uri": uri, "claim_qr_png": base64.StdEncoding.EncodeToString(png)})
@@ -620,7 +631,7 @@ func (s *Server) revoke(w http.ResponseWriter, r *http.Request) {
 		c.ws.Close() // drop a live connection immediately
 	}
 	s.Fleet.AddEvent(id, fleet.Event{TsMs: time.Now().UnixMilli(), Kind: "revoked", Summary: "device revoked by operator"})
-	s.record("dev-admin", "device:revoke", id, "revoked", "")
+	s.record(actor(r), "device:revoke", id, "revoked", "")
 	writeJSON(w, map[string]string{"result": "revoked"})
 }
 
@@ -685,13 +696,13 @@ func (s *Server) registerRelease(w http.ResponseWriter, r *http.Request) {
 	}
 	switch err := s.OTA.Register(&m, nil, time.Now()); err {
 	case nil:
-		s.record("dev-admin", "release:register", m.ReleaseId, "registered", fmt.Sprintf("counter %d, max ring %s", m.VersionCounter, m.MaxRing))
+		s.record(actor(r), "release:register", m.ReleaseId, "registered", fmt.Sprintf("counter %d, max ring %s", m.VersionCounter, m.MaxRing))
 		writeJSON(w, map[string]string{"result": "registered"})
 	case ota.ErrDuplicate:
-		s.record("dev-admin", "release:register", m.ReleaseId, "refused", "duplicate")
+		s.record(actor(r), "release:register", m.ReleaseId, "refused", "duplicate")
 		writeErr(w, http.StatusConflict, "duplicate_release", "Release "+m.ReleaseId+" is already registered. Re-posting does not reset it; use Resume to restart a halted release.")
 	default:
-		s.record("dev-admin", "release:register", m.ReleaseId, "rejected", err.Error())
+		s.record(actor(r), "release:register", m.ReleaseId, "rejected", err.Error())
 		writeErr(w, http.StatusUnprocessableEntity, "invalid_manifest", "Rejected: "+err.Error())
 	}
 }
@@ -702,7 +713,7 @@ func (s *Server) haltRelease(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_rolling", id+" is unknown or not rolling")
 		return
 	}
-	s.record("dev-admin", "release:halt", id, "halted", "")
+	s.record(actor(r), "release:halt", id, "halted", "")
 	writeJSON(w, map[string]string{"result": "halted"})
 }
 
@@ -712,6 +723,6 @@ func (s *Server) resumeRelease(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not_halted", id+" is unknown or not halted")
 		return
 	}
-	s.record("dev-admin", "release:resume", id, "resumed", "")
+	s.record(actor(r), "release:resume", id, "resumed", "")
 	writeJSON(w, map[string]string{"result": "resumed"})
 }

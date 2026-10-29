@@ -11,11 +11,12 @@ import (
 )
 
 type state struct {
-	Version  int               `json:"version"`
-	SavedAt  time.Time         `json:"saved_at"`
-	Devices  []registry.Record `json:"devices"`
-	Releases json.RawMessage   `json:"releases,omitempty"`
-	Audit    []AuditLine       `json:"audit"`
+	Version   int               `json:"version"`
+	SavedAt   time.Time         `json:"saved_at"`
+	Devices   []registry.Record `json:"devices"`
+	Releases  json.RawMessage   `json:"releases,omitempty"`
+	Audit     []AuditLine       `json:"audit"`
+	Operators []*Operator       `json:"operators,omitempty"`
 }
 
 // SaveState writes registrations, releases and the audit log to path atomically
@@ -31,6 +32,10 @@ func (s *Server) SaveState(path string) error {
 	}
 	s.mu.Lock()
 	st.Audit = append([]AuditLine(nil), s.audit...)
+	for _, o := range s.operators {
+		c := *o
+		st.Operators = append(st.Operators, &c)
+	}
 	s.mu.Unlock()
 	data, err := json.Marshal(st)
 	if err != nil {
@@ -80,6 +85,10 @@ func (s *Server) LoadState(path string) error {
 	}
 	s.mu.Lock()
 	s.audit = st.Audit
+	s.operators = map[string]*Operator{}
+	for _, o := range st.Operators {
+		s.operators[o.Name] = o
+	}
 	s.mu.Unlock()
 	return nil
 }

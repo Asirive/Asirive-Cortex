@@ -195,3 +195,80 @@ func TestStateSurvivesRestart(t *testing.T) {
 		t.Fatal("corrupt state file loaded silently")
 	}
 }
+
+func get(t *testing.T, url, token string) (int, []byte) {
+	req, _ := http.NewRequest("GET", url, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var b bytes.Buffer
+	b.ReadFrom(res.Body)
+	return res.StatusCode, b.Bytes()
+}
+
+func TestOperatorRolesAndAudit(t *testing.T) {
+	s := New(fleet.New(), "boot")
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	mk := func(name, role string) string {
+		code, o := post(t, ts.URL+"/api/operators", "boot", map[string]any{"name": name, "role": role})
+		if code != 200 {
+			t.Fatalf("create %s: %d %v", name, code, o)
+		}
+		return o["token"].(string)
+	}
+	viewer, op, rel := mk("vera", "viewer"), mk("omar", "operator"), mk("rin", "release")
+	if code, _ := get(t, ts.URL+"/api/devices", viewer); code != 200 {
+		t.Fatalf("viewer read: %d", code)
+	}
+	if code, _ := post(t, ts.URL+"/api/registrations", viewer, map[string]any{"tier": "BETA", "label": "x"}); code != 403 {
+		t.Fatalf("viewer registered a device: %d", code)
+	}
+	if code, _ := post(t, ts.URL+"/api/registrations", op, map[string]any{"tier": "BETA", "label": "by omar"}); code != 200 {
+		t.Fatalf("operator register: %d", code)
+	}
+	if code, _ := post(t, ts.URL+"/api/releases/r1/halt", op, nil); code != 403 {
+		t.Fatalf("operator touched releases: %d", code)
+	}
+	if code, _ := post(t, ts.URL+"/api/releases/r1/halt", rel, nil); code == 403 {
+		t.Fatal("release role refused")
+	}
+	if code, _ := post(t, ts.URL+"/api/operators", rel, map[string]any{"name": "evil", "role": "admin"}); code != 403 {
+		t.Fatalf("non-admin created an operator: %d", code)
+	}
+	if code, _ := post(t, ts.URL+"/api/operators", "boot", map[string]any{"name": "bootstrap", "role": "viewer"}); code != 400 {
+		t.Fatalf("reserved name allowed: %d", code)
+	}
+	_, a := get(t, ts.URL+"/api/audit", viewer)
+	if !strings.Contains(string(a), `"actor":"omar"`) {
+		t.Fatalf("audit lacks the real actor: %s", a)
+	}
+	if code, _ := post(t, ts.URL+"/api/operators/omar/revoke", "boot", nil); code != 200 {
+		t.Fatal("revoke failed")
+	}
+	if code, _ := get(t, ts.URL+"/api/devices", op); code != 401 {
+		t.Fatalf("revoked operator still works: %d", code)
+	}
+	// survives restart, token still hashed
+	path := t.TempDir() + "/s.json"
+	s.SaveState(path)
+	raw, _ := os.ReadFile(path)
+	if strings.Contains(string(raw), viewer) {
+		t.Fatal("plaintext operator token in state file")
+	}
+	s2 := New(fleet.New(), "boot")
+	if err := s2.LoadState(path); err != nil {
+		t.Fatal(err)
+	}
+	ts2 := httptest.NewServer(s2.Handler())
+	defer ts2.Close()
+	if code, _ := get(t, ts2.URL+"/api/devices", viewer); code != 200 {
+		t.Fatalf("operator lost on restart: %d", code)
+	}
+	if code, _ := get(t, ts2.URL+"/api/devices", op); code != 401 {
+		t.Fatal("revoked operator revived on restart")
+	}
+}

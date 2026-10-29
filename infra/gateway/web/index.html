@@ -217,8 +217,8 @@ function refresh() {
     if (S.sel) return api("/api/devices/" + encodeURIComponent(S.sel)).then(function (d) { S.detail = d; }).catch(function (e) { if (e.status === 404) { S.sel = null; S.detail = null; } else throw e; });
   }).catch(function (e) { S.err = e.message; if (e.status === 401) logout(); }).then(render);
 }
-function start() { refresh(); clearInterval(timer); timer = setInterval(refresh, 3000); }
-function logout() { clearInterval(timer); S.token = ""; S.demo = false; S.sel = null; S.detail = null; try { sessionStorage.removeItem("cortex-token"); } catch (e) {} render(); }
+function start() { if (!S.demo) api("/api/whoami").then(function (w) { S.me = w; render(); }).catch(function () {}); refresh(); clearInterval(timer); timer = setInterval(refresh, 3000); }
+function logout() { clearInterval(timer); S.token = ""; S.me = null; S.demo = false; S.sel = null; S.detail = null; try { sessionStorage.removeItem("cortex-token"); } catch (e) {} render(); }
 
 /* ---------- demo data (marked, used when no gateway is reachable) ---------- */
 var DEMO = null;
@@ -428,7 +428,7 @@ function viewFeedback() {
   return '<div class="tablewrap" style="margin-bottom:40px"><table class="fb"><thead><tr><th scope="col">Time</th><th scope="col">Device</th><th scope="col">Tier</th><th scope="col">Feedback</th><th scope="col">App</th></tr></thead><tbody>' + (rows || '<tr><td colspan="5" class="empty">No feedback yet. Users send it from the app; text and trimmed logs only.</td></tr>') + '</tbody></table></div>';
 }
 function viewGate() {
-  return '<main class="gate"><div class="brand">' + LOGO + '<b>Asirive</b></div><h1>Cortex Fleet Console</h1><p>Enter the gateway access token to view the fleet.</p>' +
+  return '<main class="gate"><div class="brand">' + LOGO + '<b>Asirive</b></div><h1>Cortex Fleet Console</h1><p>Enter your personal access token. Ask an admin if you do not have one.</p>' +
     '<form id="login"><label class="sr" for="tok">Gateway token</label><input type="password" id="tok" placeholder="Gateway token" autocomplete="current-password"><div class="err" id="err" role="alert">' + esc(S.err) + '</div>' +
     '<button class="btn primary" type="submit">Open console</button><button class="btn" type="button" id="demo">View with demo data</button></form></main>';
 }
@@ -439,7 +439,7 @@ function render() {
   var live = S.err ? '<span class="dot bad" aria-hidden="true"></span>' + esc(S.err) + (S.lastOk ? " · showing data from " + ago(S.lastOk) : "") : '<span class="dot ok" aria-hidden="true"></span>Live · updated ' + ago(S.lastOk);
   $app.innerHTML = '<header class="top"><div class="brand">' + LOGO + '<b>Asirive</b><span>Cortex Fleet</span></div>' +
     '<nav class="tabs" role="tablist" aria-label="Sections">' + TABS.map(function (t) { return '<button class="tab" role="tab" id="tab-' + t[0] + '" aria-controls="panel" data-tab="' + t[0] + '" data-fk="tab-' + t[0] + '" aria-selected="' + (S.tab === t[0]) + '">' + t[1] + '</button>'; }).join("") + '</nav>' +
-    '<span class="spacer"></span>' + (S.tab === "fleet" ? '<button class="btn primary" id="regbtn">Register device</button>' : "") + (S.demo ? '<span class="demo-flag">Demo data</span>' : "") + '<div class="conn' + (S.err ? " bad" : "") + '">' + live + '</div><button class="btn" id="out">Sign out</button></header>' +
+    '<span class="spacer"></span>' + (S.tab === "fleet" ? '<button class="btn primary" id="regbtn">Register device</button>' : "") + (S.demo ? '<span class="demo-flag">Demo data</span>' : "") + '<div class="conn' + (S.err ? " bad" : "") + '">' + live + '</div><span class="demo-flag" title="Your role decides what you can change">' + (S.me ? esc(S.me.name) + " · " + esc(S.me.role) : "") + '</span><button class="btn" id="out">Sign out</button></header>' +
     '<main id="panel" role="tabpanel" aria-labelledby="tab-' + S.tab + '"><h1 class="sr">Cortex fleet console</h1>' + viewNeed() + viewSummary() + (S.tab === "fleet" ? viewFleet() : S.tab === "rings" ? viewRings() : S.tab === "feedback" ? viewFeedback() : viewAudit()) + '</main>';
   bind(); restore(snap);
   var lv = document.getElementById("live"); if (lv && S.err !== lv.dataset.e) { lv.dataset.e = S.err; lv.textContent = S.err ? "Connection problem: " + S.err : ""; }

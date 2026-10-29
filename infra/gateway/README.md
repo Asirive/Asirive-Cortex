@@ -52,3 +52,23 @@ and read at start; an unreadable file stops the gateway rather than starting emp
 on the same disk encryption as any secret store. Releases are re-verified against `CORTEX_OTA_PUBKEY` on load.
 Live device telemetry is not persisted; it repopulates as devices reconnect. Single node only: the multi-node
 store is Postgres (`infra/supabase/migrations/002_fleet.sql`), not yet wired.
+
+## Operators and roles
+
+The `CORTEX_DEV_TOKEN` is the **bootstrap** admin. Use it once to create named operators, then stop sharing it.
+
+```bash
+curl -XPOST :8080/api/operators -H "Authorization: Bearer $CORTEX_DEV_TOKEN" -d '{"name":"omar","role":"operator"}'
+# -> {"token":"op_..."}  shown once; only its hash is stored
+curl -XPOST :8080/api/operators/omar/revoke -H "Authorization: Bearer ..."
+```
+
+| Role | Can |
+|---|---|
+| viewer | read fleet, audit, feedback, releases |
+| operator | + register/revoke devices, alpha debug commands |
+| release | + register, halt and resume OTA releases |
+| admin | + create and revoke operators |
+
+Every audit line now carries the real operator name (`bootstrap` for the shared token). Operators persist in the state file.
+No password login yet: tokens are personal bearer secrets; SSO is not built.
