@@ -72,7 +72,7 @@ func TestRegisterClaimConnectRevoke(t *testing.T) {
 	if _, _, err := dial(t, ts, id, "guess"); err == nil {
 		t.Fatal("unclaimed device connected")
 	}
-	code, c := post(t, ts.URL+"/v1/claim", "", map[string]any{"claim_code": claim, "account_id": "u1"})
+	code, c := post(t, ts.URL+"/v1/claim", login(t, s, "u1@example.com"), map[string]any{"claim_code": claim})
 	if code != 200 {
 		t.Fatalf("claim failed: %d %v", code, c)
 	}
@@ -160,7 +160,7 @@ func TestStateSurvivesRestart(t *testing.T) {
 	ts := httptest.NewServer(s.Handler())
 	_, reg := post(t, ts.URL+"/api/registrations", "optoken", map[string]any{"tier": "ALPHA", "label": "bench 1", "bench": true})
 	id := reg["registration"].(map[string]any)["id"].(string)
-	_, c := post(t, ts.URL+"/v1/claim", "", map[string]any{"claim_code": reg["claim_code"], "account_id": "u1"})
+	_, c := post(t, ts.URL+"/v1/claim", login(t, s, "u1@example.com"), map[string]any{"claim_code": reg["claim_code"]})
 	tok := c["device_token"].(string)
 	_, pend := post(t, ts.URL+"/api/registrations", "optoken", map[string]any{"tier": "BETA", "label": "unclaimed"})
 	if err := s.SaveState(path); err != nil {
@@ -182,10 +182,10 @@ func TestStateSurvivesRestart(t *testing.T) {
 	if _, _, err := dial(t, ts2, id, "wrong"); err == nil {
 		t.Fatal("wrong token accepted after restart")
 	}
-	if code, _ := post(t, ts2.URL+"/v1/claim", "", map[string]any{"claim_code": pend["claim_code"], "account_id": "u2"}); code != 200 {
+	if code, _ := post(t, ts2.URL+"/v1/claim", login(t, s2, "u2@example.com"), map[string]any{"claim_code": pend["claim_code"]}); code != 200 {
 		t.Fatalf("pending claim code lost across restart: %d", code)
 	}
-	if code, _ := post(t, ts2.URL+"/v1/claim", "", map[string]any{"claim_code": reg["claim_code"], "account_id": "u3"}); code == 200 {
+	if code, _ := post(t, ts2.URL+"/v1/claim", login(t, s2, "u3@example.com"), map[string]any{"claim_code": reg["claim_code"]}); code == 200 {
 		t.Fatal("used claim code reusable after restart")
 	}
 	if err := os.WriteFile(path, []byte("{broken"), 0o600); err != nil {
@@ -271,4 +271,17 @@ func TestOperatorRolesAndAudit(t *testing.T) {
 	if code, _ := get(t, ts2.URL+"/api/devices", op); code != 401 {
 		t.Fatal("revoked operator revived on restart")
 	}
+}
+
+// login creates (or reuses) a verified account directly in the store and returns a session token.
+func login(t *testing.T, s *Server, email string) string {
+	t.Helper()
+	if tok, err := s.Accounts.Register(email, "correct horse battery", time.Now()); err == nil && tok != "" {
+		s.Accounts.Verify(tok, time.Now())
+	}
+	ses, _, err := s.Accounts.Login(email, "correct horse battery", "test", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ses
 }

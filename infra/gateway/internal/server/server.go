@@ -10,6 +10,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"github.com/asirive/cortex/gateway/internal/accounts"
+	"github.com/asirive/cortex/gateway/internal/mail"
 	"io"
 	"io/fs"
 	"log"
@@ -46,6 +48,10 @@ type Server struct {
 	DevToken string // operator token (and, with AllowSharedDeviceToken, the simulator's device token)
 	OTA      *ota.Engine
 	Reg      *registry.Registry
+	Accounts *accounts.Store
+	Mailer   mail.Mailer
+	// AppLinkBase prefixes deep links in emails (default asirive://).
+	AppLinkBase string
 	// AllowSharedDeviceToken lets devices connect with the shared dev token (simulator only).
 	AllowSharedDeviceToken bool
 	up                     websocket.Upgrader
@@ -81,7 +87,7 @@ type devConn struct {
 }
 
 func New(f *fleet.Store, token string) *Server {
-	s := &Server{Fleet: f, DevToken: token, Reg: registry.New(), conns: map[string]*devConn{}, authFl: map[string][]time.Time{}, operators: map[string]*Operator{}}
+	s := &Server{Fleet: f, DevToken: token, Reg: registry.New(), Accounts: accounts.New(), Mailer: mail.Log{}, AppLinkBase: "asirive://", conns: map[string]*devConn{}, authFl: map[string][]time.Time{}, operators: map[string]*Operator{}}
 	// devices are not browsers: refuse any browser-originated WebSocket (cross-site hijack)
 	s.up = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return r.Header.Get("Origin") == "" }}
 	return s
@@ -98,6 +104,7 @@ func (s *Server) WireOTA(e *ota.Engine) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/device", s.deviceWS)
+	s.appRoutes(mux)
 	mux.HandleFunc("GET /api/whoami", s.auth(RoleViewer, s.whoami))
 	mux.HandleFunc("GET /api/operators", s.auth(RoleAdmin, s.listOperators))
 	mux.HandleFunc("POST /api/operators", s.auth(RoleAdmin, s.createOperator))
@@ -638,15 +645,21 @@ func (s *Server) revoke(w http.ResponseWriter, r *http.Request) {
 // claim is called by the phone app (not an operator). Public endpoint, rate limited per source.
 // TODO: require an authenticated app account; account_id is self-asserted until accounts exist.
 func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
+	a, err := s.Accounts.Authenticate(bearer(r), time.Now())
+	if err != nil {
+		writeErr(w, http.StatusUnauthorized, "signed_out", "Sign in to the Asirive app before pairing a device.")
+		return
+	}
 	var req struct {
 		ClaimCode string `json:"claim_code"`
 		PublicKey []byte `json:"device_public_key"`
-		AccountID string `json:"account_id"`
+		AccountID string `json:"-"`
 	}
-	if json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req) != nil || strings.TrimSpace(req.ClaimCode) == "" || strings.TrimSpace(req.AccountID) == "" {
-		writeErr(w, http.StatusBadRequest, "bad_request", "claim_code and account_id are required")
+	if json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&req) != nil || strings.TrimSpace(req.ClaimCode) == "" {
+		writeErr(w, http.StatusBadRequest, "bad_request", "claim_code is required")
 		return
 	}
+	req.AccountID = a.ID
 	reg, tok, err := s.Reg.Claim(req.ClaimCode, req.PublicKey, req.AccountID, clientIP(r), time.Now())
 	if err != nil {
 		if err == registry.ErrRateLimit {

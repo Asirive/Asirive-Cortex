@@ -72,3 +72,25 @@ curl -XPOST :8080/api/operators/omar/revoke -H "Authorization: Bearer ..."
 
 Every audit line now carries the real operator name (`bootstrap` for the shared token). Operators persist in the state file.
 No password login yet: tokens are personal bearer secrets; SSO is not built.
+
+## App accounts (email + password)
+
+App users are separate from console operators: different token type (`ses_...`), different routes, and a session
+cannot call `/api/*`. Endpoints (all under `/v1`): `auth/register`, `auth/verify`, `auth/resend`, `auth/login`,
+`auth/logout`, `auth/reset-request`, `auth/reset`, `GET /me`, `DELETE /me` (password required), `PUT /me/beta`
+(needs the current consent version), `GET /me/devices`, and `POST /claim` (needs a session).
+
+- Passwords: argon2id; min 10 chars. Sessions last 30 days; a password reset signs out every session.
+- Registration, resend and reset answer identically whether or not the email exists. Login locks for 15 min after 10 failures per email or per IP.
+- Deleting an account revokes its devices; an operator must register the hardware again before a new owner can claim it.
+- Beta toggle moves the owner's STABLE/BETA devices between channels; ALPHA devices are never touched.
+
+Email goes out through Resend:
+
+```bash
+export RESEND_API_KEY=re_...                       # from resend.com
+export CORTEX_MAIL_FROM='Asirive <no-reply@asirive.com>'   # a sender on your verified domain
+export CORTEX_APP_LINK_BASE='asirive://'           # deep links in emails: asirive://verify?token=...
+```
+
+Without `RESEND_API_KEY` mail is printed to the gateway log (dev only: it exposes links). Not built: Sign in with Apple, email change, per-device session list, companions/location/calls.

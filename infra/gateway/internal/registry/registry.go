@@ -201,3 +201,49 @@ func (r *Registry) List() []Registration {
 }
 
 func HexToken(b []byte) string { return hex.EncodeToString(b) }
+
+// ListByAccount returns the devices an account has claimed (not revoked).
+func (r *Registry) ListByAccount(acct string) []Registration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []Registration
+	for _, reg := range r.byID {
+		if reg.AccountID == acct && reg.State == Claimed {
+			out = append(out, *cp(reg))
+		}
+	}
+	return out
+}
+
+// ReleaseAccount revokes every device the account owns (used on account deletion)
+// and returns their ids. The credentials die; an operator must register the
+// hardware again before a new owner can claim it.
+func (r *Registry) ReleaseAccount(acct string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var ids []string
+	for id, reg := range r.byID {
+		if reg.AccountID == acct && reg.State != Revoked {
+			reg.State = Revoked
+			reg.tokenHash = [32]byte{}
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// SetChannel moves a claimed device between STABLE and BETA. ALPHA is assigned
+// only by an operator at registration and is never changed here.
+func (r *Registry) SetChannel(id, tier string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	reg := r.byID[id]
+	if reg == nil {
+		return ErrNotFound
+	}
+	if reg.Tier == "ALPHA" || (tier != "BETA" && tier != "STABLE") {
+		return ErrNotFound
+	}
+	reg.Tier, reg.Ring = tier, tier
+	return nil
+}

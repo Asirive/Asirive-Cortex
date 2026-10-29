@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"flag"
+	"github.com/asirive/cortex/gateway/internal/mail"
 	"log"
 	"net/http"
 	"os"
@@ -33,6 +34,18 @@ func main() {
 	}()
 	srv := server.New(f, token)
 	srv.AllowSharedDeviceToken = *shared
+	if k := os.Getenv("RESEND_API_KEY"); k != "" {
+		from := os.Getenv("CORTEX_MAIL_FROM")
+		if from == "" {
+			log.Fatal("CORTEX_MAIL_FROM is required with RESEND_API_KEY, e.g. 'Asirive <no-reply@asirive.com>'")
+		}
+		srv.Mailer = &mail.Resend{APIKey: k, From: from}
+	} else {
+		log.Print("WARNING: RESEND_API_KEY not set; app emails (verify, reset) are written to this log. DEV ONLY.")
+	}
+	if b := os.Getenv("CORTEX_APP_LINK_BASE"); b != "" {
+		srv.AppLinkBase = b
+	}
 	if k := os.Getenv("CORTEX_OTA_PUBKEY"); k != "" { // hex ed25519 public key; the private key never touches the gateway
 		pub, err := hex.DecodeString(k)
 		if err != nil || len(pub) != ed25519.PublicKeySize {

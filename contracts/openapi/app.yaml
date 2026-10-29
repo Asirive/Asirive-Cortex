@@ -38,24 +38,24 @@ components:
 paths:
   /auth/register:
     post:
-      x-status: planned
+      x-status: implemented
       security: []
       summary: Create an account with email and password
   /auth/login:
     post:
-      x-status: planned
+      x-status: implemented
       security: []
       summary: Email and password login. Returns a short-lived access token and a refresh token.
   /auth/apple:
     post:
-      x-status: planned
+      x-status: dropped
       security: []
-      summary: Sign in with Apple (identity token exchange). Preferred on iOS.
+      summary: (Dropped 2026-10-29, email and password only for now.) Sign in with Apple (identity token exchange). Preferred on iOS.
   /auth/logout:
-    post: { x-status: planned, summary: Revoke the refresh token }
+    post: { x-status: implemented, summary: Revoke the refresh token }
   /me:
     delete:
-      x-status: planned
+      x-status: implemented
       summary: |
         Delete the account and its data (decided 2026-10-29: yes). Removes companions and
         grants, location history, call records, feedback and the device link. The device is
@@ -67,8 +67,8 @@ paths:
       summary: |
         Claim a registered device with its one-time code (called by the app during USB pairing).
         The code is delivered as a QR code (payload asirive://claim?code=XXXXXXXX, preferred; the app
-        scans it, which also works with VoiceOver) or typed. PLANNED CHANGE: this call will require an
-        authenticated account (bearer token) and take account_id from the token, not the body.
+        scans it, which also works with VoiceOver) or typed. IMPLEMENTED: this call now requires an
+        authenticated account (bearer token) and takes the account from the token, never the body.
       requestBody:
         content:
           application/json:
