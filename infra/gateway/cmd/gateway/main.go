@@ -35,7 +35,7 @@ func main() {
 		if err != nil || len(pub) != ed25519.PublicKeySize {
 			log.Fatal("CORTEX_OTA_PUBKEY must be a 32-byte hex ed25519 public key")
 		}
-		srv.OTA = ota.NewEngine(pub)
+		srv.WireOTA(ota.NewEngine(pub))
 		go func() {
 			for range time.Tick(30 * time.Second) {
 				srv.OTA.Evaluate(time.Now())
@@ -45,5 +45,6 @@ func main() {
 		log.Print("OTA disabled: CORTEX_OTA_PUBKEY not set")
 	}
 	log.Printf("cortex gateway listening on %s", *addr)
-	log.Fatal(http.ListenAndServe(*addr, srv.Handler()))
+	httpSrv := &http.Server{Addr: *addr, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second}
+	log.Fatal(httpSrv.ListenAndServe())
 }

@@ -9,78 +9,67 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
-/* Layout: black console. Top bar, summary strip, then fleet table with a detail drawer on the right.
-   Brand: Asirive black + #EAFF00. Yellow is the only accent; status colors are separate and semantic. */
+/* Layout: black console. Top bar, "what needs me" strip, summary, then fleet table with a detail drawer
+   (full-screen sheet on phones). Brand: Asirive black + #EAFF00. Yellow is the only accent; status colors are semantic. */
 :root {
-  --bg: #0a0a0a;
-  --panel: #121212;
-  --panel-2: #181818;
-  --line: #262626;
-  --fg: #f2f2ee;
-  --muted: #8d8d86;
-  --accent: #eaff00;
-  --accent-ink: #0a0a0a;
-  --ok: #4ade80;
-  --warn: #fbbf24;
-  --bad: #f87171;
-  --idle: #5a5a55;
+  --bg: #0a0a0a; --panel: #121212; --panel-2: #181818; --line: #262626;
+  --fg: #f2f2ee; --muted: #9a9a93; --accent: #eaff00; --accent-ink: #0a0a0a;
+  --ok: #4ade80; --warn: #fbbf24; --bad: #f87171; --idle: #8a8a84;
   --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
   --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
   color-scheme: dark;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; }
-body {
-  background: var(--bg); color: var(--fg); font-family: var(--display); font-size: 14px; line-height: 1.45;
-  padding-block: 0;
-  padding-left: max(16px, env(safe-area-inset-left, 0px));
-  padding-right: max(16px, env(safe-area-inset-right, 0px));
-  min-height: 100vh;
-}
+body { background: var(--bg); color: var(--fg); font-family: var(--display); font-size: 14px; line-height: 1.45; min-height: 100vh;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
 button { font: inherit; color: inherit; cursor: pointer; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .wrap { max-width: 1320px; margin: 0 auto; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
-/* top bar */
 .top { display: flex; align-items: center; gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .brand { display: flex; align-items: center; gap: 10px; }
 .brand svg { width: 28px; height: 28px; display: block; }
 .brand b { font-weight: 800; letter-spacing: .14em; font-size: 13px; text-transform: uppercase; }
 .brand span { color: var(--muted); letter-spacing: .14em; font-size: 11px; text-transform: uppercase; }
-.tabs { display: flex; gap: 4px; margin-left: 12px; }
-.tab { background: none; border: 0; padding: 7px 12px; color: var(--muted); letter-spacing: .08em; font-size: 12px; text-transform: uppercase; font-weight: 600; border-bottom: 2px solid transparent; }
+.tabs { display: flex; gap: 4px; margin-left: 12px; flex-wrap: wrap; }
+.tab { background: none; border: 0; padding: 11px 12px; color: var(--muted); letter-spacing: .08em; font-size: 12px; text-transform: uppercase; font-weight: 600; border-bottom: 2px solid transparent; min-height: 44px; }
 .tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
 .spacer { flex: 1; }
 .conn { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.conn.bad { color: var(--bad); }
 .demo-flag { background: var(--accent); color: var(--accent-ink); font-weight: 800; font-size: 11px; letter-spacing: .1em; padding: 2px 8px; text-transform: uppercase; }
 
-/* summary */
-.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); margin: 18px 0; }
+.need { margin: 18px 0 0; padding: 12px 16px; border: 1px solid var(--line); background: var(--panel); display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.need.alert { border-color: var(--warn); }
+.need b { font-size: 16px; }
+.need .why { color: var(--muted); font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); margin: 12px 0 18px; }
 .stat { background: var(--panel); padding: 14px 16px; min-width: 0; }
 .stat h3 { margin: 0 0 6px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
-.stat .big { font-family: var(--mono); font-size: 30px; font-weight: 500; line-height: 1.1; }
+.stat .big { font-family: var(--mono); font-size: 28px; font-weight: 500; line-height: 1.1; }
 .stat .big small { font-size: 14px; color: var(--muted); }
 .stat .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
 .bars { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
-.bar { display: grid; grid-template-columns: 52px 1fr 52px; align-items: center; gap: 8px; font-size: 12px; }
+.bar { display: grid; grid-template-columns: 52px 1fr 40px; align-items: center; gap: 8px; font-size: 12px; }
 .bar i { display: block; height: 6px; background: #1f1f1f; position: relative; }
 .bar i u { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
+@media (max-width: 700px) { .summary { grid-template-columns: 1fr 1fr; } }
 
-/* controls */
 .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
 .chips { display: flex; gap: 6px; flex-wrap: wrap; }
-.chip { background: transparent; border: 1px solid var(--line); padding: 5px 11px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.chip { background: transparent; border: 1px solid var(--line); padding: 8px 12px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; min-height: 36px; }
 .chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-input[type=search], input[type=password], input[type=text] { background: var(--panel); border: 1px solid var(--line); color: var(--fg); padding: 7px 10px; font: inherit; min-width: 0; }
+input[type=search], input[type=password], input[type=text], select { background: var(--panel); border: 1px solid var(--line); color: var(--fg); padding: 9px 10px; font: inherit; min-width: 0; min-height: 40px; }
 input::placeholder { color: var(--muted); }
 
-/* layout fleet + drawer */
 .main { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; padding-bottom: 40px; }
 .main.has-detail { grid-template-columns: minmax(0, 1fr) minmax(320px, 420px); }
 @media (max-width: 900px) { .main.has-detail { grid-template-columns: minmax(0, 1fr); } }
 .tablewrap { overflow-x: auto; border: 1px solid var(--line); background: var(--panel); }
-table { border-collapse: collapse; width: 100%; min-width: 760px; }
+table { border-collapse: collapse; width: 100%; }
 th { text-align: left; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 10px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 td { padding: 10px 12px; border-bottom: 1px solid #1c1c1c; white-space: nowrap; }
 tbody tr { cursor: pointer; }
@@ -89,97 +78,123 @@ tbody tr.sel { background: #1a1d05; box-shadow: inset 3px 0 0 var(--accent); }
 tbody tr.off td { color: var(--muted); }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 8px; vertical-align: middle; background: var(--idle); }
 .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
+.dot.idle { background: transparent; border: 2px solid var(--idle); }
 .status { font-size: 12px; font-weight: 600; letter-spacing: .04em; }
+.lbl { color: var(--muted); max-width: 18ch; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: bottom; }
 .tier { font-size: 11px; font-weight: 800; letter-spacing: .1em; padding: 2px 7px; border: 1px solid var(--line); }
 .tier.ALPHA { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .tier.BETA { color: var(--fg); border-color: #555; }
 .tier.STABLE { color: var(--muted); }
 .batt { display: inline-flex; align-items: center; gap: 6px; }
-.batt i { width: 26px; height: 9px; border: 1px solid #666; position: relative; display: inline-block; }
+.batt i { width: 26px; height: 9px; border: 1px solid #777; position: relative; display: inline-block; }
 .batt i u { position: absolute; inset: 1px auto 1px 1px; background: var(--ok); }
 .batt.low i u { background: var(--bad); }
 .empty { padding: 40px 16px; color: var(--muted); text-align: center; }
+@media (max-width: 700px) {
+  .tablewrap { border: 0; background: none; overflow: visible; }
+  table, tbody { display: block; } thead { display: none; }
+  tbody tr { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; padding: 12px; border: 1px solid var(--line); background: var(--panel); margin-bottom: 8px; }
+  td { display: block; padding: 0; border: 0; white-space: normal; }
+  td[data-l]::before { content: attr(data-l); display: block; font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  td.full { grid-column: 1 / -1; }
+  td.hm { display: none; }
+}
 
-/* drawer */
 .drawer { border: 1px solid var(--line); background: var(--panel); position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto; }
-@media (max-width: 900px) { .drawer { position: static; max-height: none; } }
-.dh { padding: 14px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; }
+.drawer:focus { outline: none; }
+@media (max-width: 900px) {
+  .drawer { position: fixed; inset: 0; max-height: none; z-index: 15; border: 0;
+    padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-left: max(0px, env(safe-area-inset-left, 0px)); padding-right: max(0px, env(safe-area-inset-right, 0px)); }
+}
+.dh { padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; position: sticky; top: 0; background: var(--panel); z-index: 2; flex-wrap: wrap; }
 .dh h2 { margin: 0; font-size: 18px; font-weight: 800; letter-spacing: .04em; flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.x { background: none; border: 1px solid var(--line); width: 28px; height: 28px; color: var(--muted); }
+.x { background: none; border: 1px solid var(--line); min-width: 44px; min-height: 44px; color: var(--fg); }
 .sec { padding: 14px 16px; border-bottom: 1px solid var(--line); }
 .sec h4 { margin: 0 0 10px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
 .kv { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
 .kv div { min-width: 0; }
 .kv span { display: block; font-size: 11px; color: var(--muted); }
 .kv b { font-family: var(--mono); font-weight: 500; font-size: 13px; overflow-wrap: anywhere; }
+.stale .kv b { color: var(--muted); }
 .logbox { background: #0d0d0d; border: 1px solid var(--line); max-height: 220px; overflow: auto; padding: 8px 10px; font-family: var(--mono); font-size: 12px; }
 .logbox div { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1px 0; }
 .lv-ERROR { color: var(--bad); } .lv-WARN { color: var(--warn); } .lv-DEBUG { color: var(--muted); }
 .timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
-.timeline li { display: grid; grid-template-columns: 62px 1fr; gap: 10px; font-size: 13px; }
+.timeline li { display: grid; grid-template-columns: 96px 1fr; gap: 10px; font-size: 13px; min-width: 0; overflow-wrap: anywhere; }
 .timeline time { font-family: var(--mono); color: var(--muted); font-size: 12px; }
 .btnrow { display: flex; flex-wrap: wrap; gap: 8px; }
-.btn { background: transparent; border: 1px solid var(--fg); padding: 7px 12px; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.btn { background: transparent; border: 1px solid var(--fg); padding: 9px 14px; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; min-height: 40px; }
 .btn:hover { background: var(--fg); color: var(--bg); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
 .btn.danger { border-color: var(--bad); color: var(--bad); }
-.btn.danger:hover { background: var(--bad); color: var(--bg); }
+.btn.danger:hover, .btn.danger.armed { background: var(--bad); color: var(--bg); }
 .btn[disabled] { opacity: .35; pointer-events: none; }
 .note { font-size: 12px; color: var(--muted); margin-top: 8px; }
-.locked { border: 1px dashed #333; padding: 10px 12px; font-size: 12px; color: var(--muted); }
+.locked { border: 1px dashed #444; padding: 10px 12px; font-size: 12px; color: var(--muted); }
 .progress { height: 6px; background: #1f1f1f; margin: 6px 0; }
 .progress u { display: block; height: 100%; background: var(--accent); }
-.toast { position: fixed; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%); background: var(--accent); color: var(--accent-ink); padding: 9px 16px; font-weight: 700; font-size: 13px; z-index: 20; }
+.toast { position: fixed; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%); background: var(--accent); color: var(--accent-ink); padding: 9px 16px; font-weight: 700; font-size: 13px; z-index: 30; max-width: 90vw; }
+.toast.err { background: var(--bad); }
 
-/* rings */
-.rings { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; padding-bottom: 40px; }
+.rings { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-bottom: 24px; }
 .ring { border: 1px solid var(--line); background: var(--panel); }
 .ring header { padding: 14px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: baseline; gap: 10px; }
 .ring header h2 { margin: 0; font-size: 16px; letter-spacing: .1em; font-weight: 800; }
 .ring header span { color: var(--muted); font-size: 12px; }
 .vrow { display: grid; grid-template-columns: 1fr 40px; gap: 10px; align-items: center; margin-bottom: 8px; font-size: 13px; }
+.h2 { font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 24px 0 10px; font-weight: 600; }
+.rel { border: 1px solid var(--line); background: var(--panel); margin-bottom: 10px; padding: 14px 16px; display: grid; grid-template-columns: 1fr auto; gap: 8px 16px; align-items: center; }
+.rel h3 { margin: 0; font-size: 15px; font-family: var(--mono); font-weight: 500; overflow-wrap: anywhere; }
+.pill { font-size: 11px; font-weight: 800; letter-spacing: .1em; padding: 2px 8px; border: 1px solid var(--line); margin-left: 8px; }
+.pill.ROLLING { border-color: var(--accent); color: var(--accent); } .pill.HALTED { border-color: var(--bad); color: var(--bad); } .pill.COMPLETE { border-color: var(--ok); color: var(--ok); }
+.stages { display: flex; gap: 3px; margin: 8px 0 4px; }
+.stages i { flex: 1; height: 6px; background: #222; } .stages i.done { background: var(--ok); } .stages i.cur { background: var(--accent); }
+@media (max-width: 700px) { .rel { grid-template-columns: 1fr; } }
 
-/* gate */
-.gate { max-width: 460px; margin: 12vh auto; border: 1px solid var(--line); background: var(--panel); padding: 28px; }
-.gate h1 { margin: 12px 0 6px; font-size: 22px; letter-spacing: .06em; text-transform: uppercase; font-weight: 800; }
-.gate p { color: var(--muted); margin: 0 0 16px; }
-.gate form { display: flex; flex-direction: column; gap: 10px; }
-.err { color: var(--bad); font-size: 13px; min-height: 18px; }
-table.audit td { white-space: normal; }
 .panel { border: 1px solid var(--line); background: var(--panel); margin-bottom: 16px; }
 .panel .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: end; padding: 14px 16px; }
 .field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .field label { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
-select { background: var(--bg); border: 1px solid var(--line); color: var(--fg); padding: 7px 10px; font: inherit; }
-.check { display: flex; align-items: center; gap: 8px; font-size: 13px; padding-bottom: 7px; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 13px; padding-bottom: 9px; min-width: 0; }
+.check input { width: 18px; height: 18px; }
 .code { font-family: var(--mono); font-size: 34px; letter-spacing: .14em; color: var(--accent); padding: 6px 0; overflow-wrap: anywhere; }
+.claim { display: flex; gap: 20px; flex-wrap: wrap; align-items: center; }
+.claim img { width: 168px; height: 168px; background: #fff; padding: 8px; image-rendering: pixelated; }
 .steps { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 13px; }
-.dot.idle { background: transparent; border: 2px solid var(--idle); width: 9px; height: 9px; }
-.tag-unclaimed { color: var(--muted); }
-@media (prefers-reduced-motion: no-preference) { .dot.ok { animation: none; } }
+.err { color: var(--bad); font-size: 13px; min-height: 18px; }
+
+.gate { max-width: 460px; margin: 12vh auto; border: 1px solid var(--line); background: var(--panel); padding: 28px; }
+.gate h1 { margin: 12px 0 6px; font-size: 22px; letter-spacing: .06em; text-transform: uppercase; font-weight: 800; }
+.gate p { color: var(--muted); margin: 0 0 16px; }
+.gate form { display: flex; flex-direction: column; gap: 10px; }
+table.audit td, table.fb td { white-space: normal; overflow-wrap: anywhere; }
 </style>
 </head>
 <body>
 <div id="app" class="wrap"></div>
+<div id="live" class="sr" role="status" aria-live="polite"></div>
 <script>
 "use strict";
 var LOGO = '<svg viewBox="0 0 100 100" aria-hidden="true"><rect width="100" height="100" fill="#eaff00"/><rect x="20" y="20" width="20" height="40" fill="#000"/><rect x="20" y="70" width="20" height="10" fill="#000"/><rect x="60" y="40" width="20" height="40" fill="#000"/><rect x="60" y="20" width="20" height="10" fill="#000"/><rect x="40" y="40" width="20" height="20" fill="#000"/></svg>';
 
-var S = { token: "", demo: false, devices: [], summary: null, audit: [], tab: "fleet", tier: "ALL", status: "ALL", q: "", sel: null, detail: null, err: "", lastOk: 0, level: "INFO", reg: null };
-var $app = document.getElementById("app");
-var timer = null;
+var S = { token: "", demo: false, devices: [], releases: [], audit: [], feedback: [], tab: "fleet", tier: "ALL", status: "ALL", q: "", sel: null, detail: null,
+  err: "", lastOk: 0, level: "INFO", reg: null, armed: "", relErr: "" };
+var $app = document.getElementById("app"), timer = null, armTimer = null;
 
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
-function ago(ms) { if (!ms) return "never"; var s = Math.max(0, Math.round((Date.now() - ms) / 1000)); if (s < 60) return s + "s ago"; if (s < 3600) return Math.round(s / 60) + "m ago"; return Math.round(s / 3600) + "h ago"; }
+function ago(ms) { if (!ms) return "never"; var s = Math.max(0, Math.round((Date.now() - ms) / 1000)); if (s < 60) return s + "s ago"; if (s < 3600) return Math.round(s / 60) + "m ago"; if (s < 86400) return Math.round(s / 3600) + "h ago"; return Math.round(s / 86400) + "d ago"; }
 function up(s) { var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return h ? h + "h " + m + "m" : m + "m " + (s % 60) + "s"; }
-function clock(ms) { var d = new Date(ms); return d.toTimeString().slice(0, 8); }
+function clock(ms) { var d = new Date(ms), t = d.toTimeString().slice(0, 8); return new Date().toDateString() === d.toDateString() ? t : d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + t; }
+function isLive(d) { return d.reg_state !== "PENDING" && d.reg_state !== "REVOKED"; }
 function health(d) {
   if (d.reg_state === "PENDING") return { k: "off", label: "Awaiting claim", dot: "idle" };
   if (d.reg_state === "REVOKED") return { k: "off", label: "Revoked", dot: "bad" };
-  if (!d.online) return { k: "off", label: "Offline", dot: "" };
-  if (d.safety === "FAULT") return { k: "bad", label: "Safety fault", dot: "bad" };
+  if (d.reg_state === "CLAIMED" && !d.last_seen_ms) return { k: "off", label: "Claimed, not connected yet", dot: "idle" };
+  if (d.safety === "FAULT") return { k: "bad", label: d.online ? "Safety fault" : "Offline after safety fault", dot: "bad" };
+  if (!d.online) return { k: d.attention ? "warn" : "off", label: "Offline", dot: d.attention ? "warn" : "" };
   if (d.safety === "DEGRADED") return { k: "warn", label: "Degraded", dot: "warn" };
-  if (d.battery_pct < 15 && !d.charging) return { k: "warn", label: "Low battery", dot: "warn" };
+  if (d.attention) return { k: "warn", label: d.attention, dot: "warn" };
   return { k: "ok", label: "Healthy", dot: "ok" };
 }
 
@@ -187,204 +202,268 @@ function health(d) {
 function api(path, opts) {
   opts = opts || {};
   opts.headers = Object.assign({ Authorization: "Bearer " + S.token }, opts.headers || {});
-  return fetch(path, opts).then(function (r) { if (!r.ok) throw new Error(r.status === 401 ? "Token rejected" : "Gateway error " + r.status); return r.json(); });
+  return fetch(path, opts).then(function (r) {
+    return r.text().then(function (t) {
+      var j = null; try { j = t ? JSON.parse(t) : null; } catch (e) {}
+      if (!r.ok) { var e = new Error((j && j.error) || (r.status === 401 ? "Token rejected" : "Gateway error " + r.status)); e.status = r.status; throw e; }
+      return j;
+    });
+  });
 }
 function refresh() {
   if (S.demo) { demoTick(); return render(); }
-  Promise.all([api("/api/devices"), api("/api/summary"), api("/api/audit")]).then(function (r) {
-    S.devices = r[0] || []; S.summary = r[1]; S.audit = r[2] || []; S.err = ""; S.lastOk = Date.now();
-    if (S.sel) return api("/api/devices/" + encodeURIComponent(S.sel)).then(function (d) { S.detail = d; });
-  }).catch(function (e) { S.err = e.message; if (e.message === "Token rejected") { logout(); } })
-    .then(render);
+  Promise.all([api("/api/devices"), api("/api/releases"), api("/api/audit"), api("/api/feedback")]).then(function (r) {
+    S.devices = r[0] || []; S.releases = r[1] || []; S.audit = r[2] || []; S.feedback = r[3] || []; S.err = ""; S.lastOk = Date.now();
+    if (S.sel) return api("/api/devices/" + encodeURIComponent(S.sel)).then(function (d) { S.detail = d; }).catch(function (e) { if (e.status === 404) { S.sel = null; S.detail = null; } else throw e; });
+  }).catch(function (e) { S.err = e.message; if (e.status === 401) logout(); }).then(render);
 }
 function start() { refresh(); clearInterval(timer); timer = setInterval(refresh, 3000); }
-function logout() { clearInterval(timer); S.token = ""; S.demo = false; try { sessionStorage.removeItem("cortex-token"); } catch (e) {} render(); }
+function logout() { clearInterval(timer); S.token = ""; S.demo = false; S.sel = null; S.detail = null; try { sessionStorage.removeItem("cortex-token"); } catch (e) {} render(); }
 
 /* ---------- demo data (marked, used when no gateway is reachable) ---------- */
 var DEMO = null;
 function demoInit() {
   var now = Date.now(), rnd = function (a, b) { return a + Math.floor(Math.random() * (b - a)); };
-  var mk = function (id, tier, bench, fw, online, safety) {
-    return { id: id, tier: tier, ring: tier, bench: bench, hardware: "dragon-q8b", firmware: fw, mcu: "0.2.1", model: "lfm3-omni-2b-q4", online: online,
-      last_seen_ms: online ? now - rnd(0, 4000) : now - rnd(120000, 900000), connected_ms: now - rnd(600000, 9000000), battery_pct: rnd(14, 98), charging: false,
+  var mk = function (id, tier, label, fw, online, safety) {
+    return { id: id, label: label, tier: tier, ring: tier, bench: tier === "ALPHA", hardware: "dragon-q8b", firmware: fw, mcu: "0.2.1", model: "lfm3-omni-2b-q4", online: online, reg_state: "CLAIMED",
+      last_seen_ms: online ? now - rnd(0, 4000) : now - rnd(120000, 900000), connected_ms: now - rnd(600000, 9000000), battery_pct: rnd(14, 98), charging: false, mic_muted: false,
       safety: safety, brain: "LOCAL", link: "USB_TETHER", link_rtt_ms: rnd(28, 90), uptime_s: rnd(900, 40000), soc_temp_c: 48 + Math.random() * 14,
       power_w: 3 + Math.random() * 3, mem_used_mb: rnd(4200, 5900), services_restarted: 0, safety_latency_p99_ms: rnd(42, 84), heartbeat_interval_s: 5 };
   };
-  var ds = [mk("ALPHA-001", "ALPHA", true, "4.0.0-alpha.3", true, "OK"), mk("ALPHA-002", "ALPHA", true, "4.0.0-alpha.3", true, "OK"),
-    mk("ALPHA-003", "ALPHA", true, "4.0.0-alpha.2", true, "DEGRADED"), mk("ALPHA-004", "ALPHA", true, "4.0.0-alpha.3", false, "OK"),
-    mk("BETA-001", "BETA", false, "4.0.0-beta.1", true, "OK"), mk("BETA-002", "BETA", false, "4.0.0-beta.1", true, "OK"),
-    mk("BETA-003", "BETA", false, "4.0.0-beta.1", false, "OK"), mk("STBL-001", "STABLE", false, "3.9.4", true, "OK"), mk("STBL-002", "STABLE", false, "3.9.4", true, "OK")];
+  var ds = [mk("ALPHA-0001", "ALPHA", "Bench unit 1", "4.0.0-alpha.3", true, "OK"), mk("ALPHA-0002", "ALPHA", "Bench unit 2", "4.0.0-alpha.3", true, "OK"),
+    mk("ALPHA-0003", "ALPHA", "Bench unit 3", "4.0.0-alpha.2", true, "DEGRADED"), mk("ALPHA-0004", "ALPHA", "Haziq's pair", "4.0.0-alpha.3", false, "OK"),
+    mk("BETA-0001", "BETA", "Tester Aisha", "4.0.0-beta.1", true, "OK"), mk("BETA-0002", "BETA", "Tester Ben", "4.0.0-beta.1", true, "OK"),
+    mk("BETA-0003", "BETA", "Tester Chen", "4.0.0-beta.1", false, "FAULT"), mk("STBL-0001", "STABLE", "Customer 1", "3.9.4", true, "OK"), mk("STBL-0002", "STABLE", "Customer 2", "3.9.4", true, "OK")];
   ds[1].brain = "CLOUD"; ds[2].services_restarted = 2;
-  ds[2].ota = { release_id: "r-2026.10.29", stage: "DOWNLOADING", percent: 42 };
-  DEMO = { devices: ds, audit: [{ ts_ms: now - 600000, actor: "dev-admin", action: "command:set_log_level", target: "ALPHA-001", result: "sent" }] };
+  ds[2].ota = { release_id: "r-2026.10.30", stage: "DOWNLOADING", percent: 42 };
+  DEMO = { devices: ds, audit: [{ ts_ms: now - 600000, actor: "dev-admin", action: "command:set_log_level", target: "ALPHA-0001", result: "sent" }],
+    releases: [{ release_id: "r-2026.10.30", state: "ROLLING", stage: 0, stages: 6, ring: "RING_ALPHA", percent: 100, offered: 3, committed: 2, failed: 0, counter: 5, max_ring: "RING_STABLE", version: "4.0.1", note: "waiting: 2 of 3 offered devices committed" }] };
+}
+function demoAttention(d) {
+  if (d.reg_state === "PENDING" || d.reg_state === "REVOKED") return "";
+  if (d.safety === "FAULT" || d.safety === "DEGRADED") return "Safety " + d.safety.toLowerCase() + " (last known)";
+  if (!d.online && d.last_seen_ms) return "Offline";
+  if (d.online && d.battery_pct < 15) return "Low battery";
+  return "";
 }
 function demoTick() {
   if (!DEMO) demoInit();
   var now = Date.now();
   DEMO.devices.forEach(function (d) {
-    if (!d.online) return;
-    d.last_seen_ms = now - Math.floor(Math.random() * 3000); d.uptime_s += 3; d.link_rtt_ms = 28 + Math.floor(Math.random() * 60);
-    d.soc_temp_c = Math.max(44, Math.min(66, d.soc_temp_c + (Math.random() - .5)));
+    if (d.online) { d.last_seen_ms = now - Math.floor(Math.random() * 3000); d.uptime_s += 3; d.link_rtt_ms = 28 + Math.floor(Math.random() * 60); d.soc_temp_c = Math.max(44, Math.min(66, d.soc_temp_c + (Math.random() - .5))); }
     if (d.ota && d.ota.percent < 100) { d.ota.percent = Math.min(100, d.ota.percent + 3); if (d.ota.percent === 100) { d.ota.stage = "DONE"; d.ota.outcome = "COMMITTED"; } }
+    d.attention = demoAttention(d);
   });
-  S.devices = DEMO.devices.map(function (d) { return Object.assign({}, d); }); S.audit = DEMO.audit;
-  S.summary = null; S.lastOk = now; S.err = "";
+  S.devices = DEMO.devices.map(function (d) { return Object.assign({}, d); }); S.audit = DEMO.audit; S.releases = DEMO.releases; S.feedback = []; S.lastOk = now; S.err = "";
   if (S.sel) {
     var d = S.devices.filter(function (x) { return x.id === S.sel; })[0];
-    if (d) {
-      var t = Date.now(), lines = [
-        { ts_ms: t - 9000, level: "INFO", service: "agent", message: "brain=" + d.brain }, { ts_ms: t - 7000, level: "DEBUG", service: "perception", message: "frame batch ok (12 fps)" },
-        { ts_ms: t - 4000, level: "INFO", service: "voice", message: "wake word armed" }, { ts_ms: t - 2500, level: d.safety === "DEGRADED" ? "WARN" : "INFO", service: "safety", message: d.safety === "DEGRADED" ? "restarted by supervisor, heartbeat late 410 ms" : "heartbeat ok p99=" + d.safety_latency_p99_ms + " ms" }];
-      var ev = [{ ts_ms: d.connected_ms, kind: "connected", summary: "device connected" }];
-      if (d.services_restarted) ev.push({ ts_ms: t - 120000, kind: "service_restart", summary: "safety restarted by supervisor" });
-      S.detail = { device: d, logs: d.tier === "ALPHA" ? lines : [], events: ev };
-    }
+    if (!d) { S.sel = null; S.detail = null; return; }
+    var t = Date.now(), lines = [
+      { ts_ms: t - 9000, level: "INFO", service: "agent", message: "brain=" + d.brain }, { ts_ms: t - 7000, level: "DEBUG", service: "perception", message: "frame batch ok (12 fps)" },
+      { ts_ms: t - 4000, level: "INFO", service: "voice", message: "wake word armed" }, { ts_ms: t - 2500, level: d.safety === "DEGRADED" ? "WARN" : "INFO", service: "safety", message: d.safety === "DEGRADED" ? "restarted by supervisor, heartbeat late 410 ms" : "heartbeat ok p99=" + d.safety_latency_p99_ms + " ms" }];
+    var ev = d.connected_ms ? [{ ts_ms: d.connected_ms, kind: "connected", summary: "device connected" }] : [];
+    if (d.services_restarted) ev.push({ ts_ms: t - 120000, kind: "service_restart", summary: "safety restarted by supervisor" });
+    S.detail = { device: d, logs: d.tier === "ALPHA" ? lines : [], events: ev };
   }
 }
 function demoRegister(body, done) {
   if (!DEMO) demoInit();
-  var id = (body.tier === "STABLE" ? "STBL" : body.tier) + "-" + String(100 + Math.floor(Math.random() * 900));
+  var id = (body.tier === "STABLE" ? "STBL" : body.tier) + "-" + String(1000 + Math.floor(Math.random() * 9000));
   DEMO.devices.push({ id: id, tier: body.tier, ring: body.tier, bench: body.bench, label: body.label, reg_state: "PENDING", online: false, last_seen_ms: 0, firmware: "", mcu: "", model: "", hardware: "", battery_pct: 0, safety: "", brain: "", link: "", link_rtt_ms: 0, uptime_s: 0, soc_temp_c: 0, power_w: 0, mem_used_mb: 0, services_restarted: 0, safety_latency_p99_ms: 0, claim_expires_ms: Date.now() + 7 * 864e5 });
-  done({ id: id, code: "K7QM-4TXD" });
+  done({ id: id, code: "K7QM-4TXD", qr: "" });
 }
 function demoRevoke(id) { DEMO.devices.forEach(function (d) { if (d.id === id) { d.reg_state = "REVOKED"; d.online = false; } }); }
 function enterDemo() { S.demo = true; S.token = "demo"; DEMO = null; start(); }
 
 /* ---------- views ---------- */
-function summaryOf() {
-  var t = { total: 0, online: 0, bad: 0, tiers: {} };
-  S.devices.forEach(function (d) {
-    t.total++; var c = t.tiers[d.tier] || (t.tiers[d.tier] = { total: 0, online: 0 }); c.total++;
-    if (d.online) { t.online++; c.online++; }
-    if (d.online && d.safety && d.safety !== "OK") t.bad++;
-  });
-  return t;
+function liveDevices() { return S.devices.filter(isLive); }
+function viewNeed() {
+  var att = liveDevices().filter(function (d) { return d.attention; });
+  var rel = S.releases.filter(function (r) { return r.state === "HALTED"; });
+  var n = att.length + rel.length;
+  if (!n) return '<section class="need" aria-label="What needs you"><span class="dot ok" aria-hidden="true"></span><b>Nothing needs you right now</b><span class="why">All claimed devices are healthy and no update is halted.</span></section>';
+  var why = att.slice(0, 4).map(function (d) { return esc(d.id) + ": " + esc(d.attention); }).concat(rel.map(function (r) { return esc(r.release_id) + " halted" + (r.halt_why ? " (" + esc(r.halt_why) + ")" : ""); })).join(" · ");
+  return '<section class="need alert" aria-label="What needs you"><span class="dot warn" aria-hidden="true"></span><b>' + n + (n === 1 ? " item needs" : " items need") + ' you</b><span class="why">' + why + (n > 4 ? " …" : "") + '</span>' +
+    '<button class="btn" data-group="status" data-val="ATTENTION" data-fk="need-show">Show devices</button></section>';
 }
 function viewSummary() {
-  var t = summaryOf(), ota = S.devices.filter(function (d) { return d.ota && d.ota.stage !== "DONE"; }).length;
-  var rolled = S.devices.filter(function (d) { return d.ota && d.ota.outcome === "ROLLED_BACK"; }).length;
+  var ds = liveDevices(), t = { total: ds.length, online: 0, tiers: {} };
+  ds.forEach(function (d) { var c = t.tiers[d.tier] || (t.tiers[d.tier] = { total: 0, online: 0 }); c.total++; if (d.online) { t.online++; c.online++; } });
+  var pend = S.devices.filter(function (d) { return d.reg_state === "PENDING"; }).length;
+  var ota = ds.filter(function (d) { return d.ota && d.ota.stage !== "DONE"; }).length, rolled = ds.filter(function (d) { return d.ota && d.ota.outcome === "ROLLED_BACK"; }).length;
+  var low = ds.filter(function (d) { return d.online && d.battery_pct < 20 && !d.charging; }).length;
   var pct = t.total ? Math.round(100 * t.online / t.total) : 0;
   var bars = ["ALPHA", "BETA", "STABLE"].map(function (k) {
     var c = t.tiers[k] || { total: 0, online: 0 }, w = c.total ? Math.round(100 * c.online / c.total) : 0;
     return '<div class="bar"><span class="mono">' + k + '</span><i><u style="width:' + w + '%"></u></i><span class="mono">' + c.online + '/' + c.total + '</span></div>';
   }).join("");
   return '<section class="summary" aria-label="Fleet summary">' +
-    '<div class="stat"><h3>Online</h3><div class="big">' + t.online + '<small> / ' + t.total + '</small></div><div class="sub">' + pct + '% of fleet reachable</div></div>' +
+    '<div class="stat"><h3>Online</h3><div class="big">' + t.online + '<small> / ' + t.total + '</small></div><div class="sub">' + pct + '% of claimed devices' + (pend ? ' · ' + pend + ' awaiting claim' : '') + '</div></div>' +
     '<div class="stat"><h3>Uptime by tier</h3><div class="bars">' + bars + '</div></div>' +
-    '<div class="stat"><h3>Safety not OK</h3><div class="big" style="color:' + (t.bad ? 'var(--warn)' : 'var(--ok)') + '">' + t.bad + '</div><div class="sub">' + (t.bad ? 'devices degraded or faulted' : 'all online devices nominal') + '</div></div>' +
+    '<div class="stat"><h3>Low battery</h3><div class="big" style="color:' + (low ? 'var(--warn)' : 'var(--ok)') + '">' + low + '</div><div class="sub">online devices under 20%</div></div>' +
     '<div class="stat"><h3>Updates</h3><div class="big">' + ota + '</div><div class="sub">in flight' + (rolled ? ' · <span style="color:var(--bad)">' + rolled + ' rolled back</span>' : ' · none rolled back') + '</div></div></section>';
 }
 function filtered() {
+  var q = S.q.toLowerCase();
   return S.devices.filter(function (d) {
-    var h = health(d);
     if (S.tier !== "ALL" && d.tier !== S.tier) return false;
     if (S.status === "ONLINE" && !d.online) return false;
-    if (S.status === "OFFLINE" && d.online) return false;
-    if (S.status === "ATTENTION" && (h.k === "ok" || h.k === "off")) return false;
-    if (S.q && d.id.toLowerCase().indexOf(S.q.toLowerCase()) < 0) return false;
+    if (S.status === "OFFLINE" && (d.online || !isLive(d))) return false;
+    if (S.status === "ATTENTION" && !d.attention) return false;
+    if (S.status === "REGISTERED" && isLive(d) && d.reg_state === "CLAIMED") return false;
+    if (q && (d.id + " " + (d.label || "")).toLowerCase().indexOf(q) < 0) return false;
     return true;
-  });
+  }).sort(function (a, b) { return (b.attention ? 1 : 0) - (a.attention ? 1 : 0) || (a.id < b.id ? -1 : 1); });
 }
-function chip(group, val, label) { return '<button class="chip" data-group="' + group + '" data-val="' + val + '" aria-pressed="' + (S[group] === val) + '">' + label + '</button>'; }
+function chip(group, val, label) { return '<button class="chip" data-group="' + group + '" data-val="' + val + '" data-fk="chip-' + group + '-' + val + '" aria-pressed="' + (S[group] === val) + '">' + label + '</button>'; }
 function viewFleet() {
   var rows = filtered().map(function (d) {
-    var h = health(d), low = d.battery_pct < 20;
-    return '<tr data-id="' + esc(d.id) + '" class="' + (S.sel === d.id ? "sel " : "") + (d.online ? "" : "off") + '">' +
-      '<td><span class="dot ' + h.dot + '"></span><span class="status">' + h.label + '</span></td>' +
-      '<td class="mono"><b>' + esc(d.id) + '</b></td><td><span class="tier ' + esc(d.tier) + '">' + esc(d.tier) + '</span></td>' +
-      '<td class="mono">' + esc(d.firmware) + '</td>' +
-      '<td>' + (d.online ? '<span class="batt mono ' + (low ? "low" : "") + '"><i><u style="width:' + d.battery_pct + '%"></u></i>' + d.battery_pct + '%</span>' : '<span class="mono">–</span>') + '</td>' +
-      '<td>' + (d.online ? esc(d.brain === "LOCAL" ? "Local" : d.brain === "CLOUD" ? "Cloud fallback" : d.brain) : "–") + '</td>' +
-      '<td class="mono">' + (d.online ? d.link_rtt_ms + ' ms' : '–') + '</td>' +
-      '<td class="mono">' + (d.online ? d.safety_latency_p99_ms + ' ms' : '–') + '</td>' +
-      '<td class="mono">' + ago(d.last_seen_ms) + '</td></tr>';
+    var h = health(d), low = d.battery_pct < 20, on = d.online && isLive(d);
+    return '<tr tabindex="0" role="button" data-id="' + esc(d.id) + '" data-fk="row-' + esc(d.id) + '" aria-label="' + esc(d.id) + (d.label ? ", " + esc(d.label) : "") + ", " + esc(h.label) + '" class="' + (S.sel === d.id ? "sel " : "") + (on ? "" : "off") + '">' +
+      '<td class="full" data-l="Status"><span class="dot ' + h.dot + '" aria-hidden="true"></span><span class="status">' + esc(h.label) + '</span></td>' +
+      '<td data-l="Device" class="mono"><b>' + esc(d.id) + '</b></td><td data-l="Label"><span class="lbl">' + esc(d.label || "—") + '</span></td><td data-l="Tier"><span class="tier ' + esc(d.tier) + '">' + esc(d.tier) + '</span></td>' +
+      '<td class="hm mono" data-l="Firmware">' + esc(d.firmware || "—") + '</td>' +
+      '<td data-l="Battery">' + (on ? '<span class="batt mono ' + (low ? "low" : "") + '"><i><u style="width:' + d.battery_pct + '%"></u></i>' + d.battery_pct + '%</span>' : '<span class="mono">–</span>') + '</td>' +
+      '<td class="hm" data-l="Brain">' + (on ? esc(d.brain === "LOCAL" ? "Local" : d.brain === "CLOUD" ? "Cloud fallback" : d.brain) : "–") + '</td>' +
+      '<td class="hm mono" data-l="Link RTT">' + (on ? d.link_rtt_ms + ' ms' : '–') + '</td>' +
+      '<td class="hm mono" data-l="Safety p99">' + (on ? d.safety_latency_p99_ms + ' ms' : '–') + '</td>' +
+      '<td class="mono" data-l="Last seen">' + (d.last_seen_ms ? ago(d.last_seen_ms) : "never") + '</td></tr>';
   }).join("");
-  var table = rows ? '<div class="tablewrap"><table><thead><tr><th>Status</th><th>Device</th><th>Tier</th><th>Firmware</th><th>Battery</th><th>Brain</th><th>Link RTT</th><th>Safety p99</th><th>Last seen</th></tr></thead><tbody>' + rows + '</tbody></table></div>' :
-    '<div class="tablewrap"><div class="empty">' + (S.devices.length ? "No devices match these filters." : "No devices have connected yet. Start the simulator or power on an alpha unit.") + '</div></div>';
+  var table = rows ? '<div class="tablewrap"><table><thead><tr><th scope="col">Status</th><th scope="col">Device</th><th scope="col">Label</th><th scope="col">Tier</th><th scope="col">Firmware</th><th scope="col">Battery</th><th scope="col">Brain</th><th scope="col">Link RTT</th><th scope="col">Safety p99</th><th scope="col">Last seen</th></tr></thead><tbody>' + rows + '</tbody></table></div>' :
+    '<div class="tablewrap"><div class="empty">' + (S.devices.length ? "No devices match these filters." : "No devices yet. Register one with the button above.") + '</div></div>';
   return viewReg() + '<div class="controls"><div class="chips" role="group" aria-label="Tier filter">' + chip("tier", "ALL", "All tiers") + chip("tier", "ALPHA", "Alpha") + chip("tier", "BETA", "Beta") + chip("tier", "STABLE", "Stable") + '</div>' +
-    '<div class="chips" role="group" aria-label="Status filter">' + chip("status", "ALL", "Any status") + chip("status", "ONLINE", "Online") + chip("status", "OFFLINE", "Offline") + chip("status", "ATTENTION", "Needs attention") + '</div>' +
-    '<span class="spacer"></span><input type="search" id="q" placeholder="Search device ID" value="' + esc(S.q) + '" aria-label="Search device ID"></div>' +
+    '<div class="chips" role="group" aria-label="Status filter">' + chip("status", "ALL", "Any status") + chip("status", "ONLINE", "Online") + chip("status", "OFFLINE", "Offline") + chip("status", "ATTENTION", "Needs attention") + chip("status", "REGISTERED", "Not claimed / revoked") + '</div>' +
+    '<span class="spacer"></span><input type="search" id="q" placeholder="Search ID or label" value="' + esc(S.q) + '" aria-label="Search by device ID or label"></div>' +
     '<div class="main ' + (S.sel ? "has-detail" : "") + '">' + table + (S.sel ? viewDrawer() : "") + '</div>';
 }
 function viewReg() {
   if (!S.reg) return "";
   var r = S.reg;
   if (r.result) {
-    return '<section class="panel" aria-label="Device registered"><div class="sec"><h4>Registered ' + esc(r.result.id) + (r.label ? ' · ' + esc(r.label) : '') + '</h4>' +
-      '<div class="code" id="claimcode">' + esc(r.result.code) + '</div>' +
-      '<div class="btnrow"><button class="btn" id="copycode">Copy code</button><button class="btn" id="regdone">Done</button></div>' +
-      '<ol class="steps"><li>Open the Asirive app and choose Add device.</li><li>Connect the glasses by USB and enter this code. It works once.</li><li>The device appears here as Awaiting claim until the app claims it. The code expires in 7 days.</li></ol>' +
-      '<div class="note">This code is shown only now. If you lose it, revoke this device and register a new one.</div></div></section>';
+    return '<section class="panel" id="regpanel" tabindex="-1" aria-label="Device registered"><div class="sec"><h4>Registered ' + esc(r.result.id) + ' · ' + esc(r.label) + '</h4>' +
+      '<div class="claim">' + (r.result.qr ? '<img src="data:image/png;base64,' + r.result.qr + '" alt="QR code for the claim code ' + esc(r.result.code) + '">' : '') +
+      '<div><div class="code" id="claimcode">' + esc(r.result.code) + '</div>' +
+      '<div class="btnrow"><button class="btn" id="copycode">Copy code</button><button class="btn primary" id="regdone">Done, I have saved it</button></div></div></div>' +
+      '<ol class="steps"><li>Open the Asirive app and choose Add device.</li><li>Scan the QR code, or type the code. It works once.</li><li>Connect the glasses by USB when the app asks.</li><li>This row shows Awaiting claim until the app finishes. The code expires in 7 days.</li></ol>' +
+      '<div class="note">The code is shown only now. If you lose it, cancel this registration and register again.</div></div></section>';
   }
-  return '<section class="panel" aria-label="Register device"><form class="row" id="regform">' +
-    '<div class="field"><label for="rlabel">Label</label><input type="text" id="rlabel" maxlength="80" placeholder="e.g. Bench unit 4" value="' + esc(r.label || "") + '"></div>' +
-    '<div class="field"><label for="rtier">Tier</label><select id="rtier"><option value="ALPHA"' + (r.tier === "ALPHA" ? " selected" : "") + '>Alpha (team bench)</option><option value="BETA"' + (r.tier === "BETA" ? " selected" : "") + '>Beta</option><option value="STABLE"' + (r.tier === "STABLE" ? " selected" : "") + '>Stable</option></select></div>' +
-    '<label class="check"><input type="checkbox" id="rbench"' + (r.bench ? " checked" : "") + '> Bench device (allows debug, camera relay, dataset capture; alpha only)</label>' +
+  var alpha = r.tier === "ALPHA";
+  return '<section class="panel" aria-label="Register device"><form class="row" id="regform" novalidate>' +
+    '<div class="field"><label for="rlabel">Label (required)</label><input type="text" id="rlabel" maxlength="80" placeholder="e.g. Bench unit 4" value="' + esc(r.label || "") + '" aria-describedby="regerr"></div>' +
+    '<div class="field"><label for="rtier">Tier</label><select id="rtier"><option value="ALPHA"' + (alpha ? " selected" : "") + '>Alpha (team only)</option><option value="BETA"' + (r.tier === "BETA" ? " selected" : "") + '>Beta</option><option value="STABLE"' + (r.tier === "STABLE" ? " selected" : "") + '>Stable</option></select></div>' +
+    '<label class="check"><input type="checkbox" id="rbench"' + (alpha && r.bench ? " checked" : "") + (alpha ? "" : " disabled") + '> Bench device: allows debug commands, camera relay, dataset capture' + (alpha ? "" : " (alpha only)") + '</label>' +
     '<button class="btn primary" type="submit">Create claim code</button><button class="btn" type="button" id="regcancel">Cancel</button>' +
-    '<div class="err" id="regerr" role="alert">' + esc(r.err || "") + '</div></form></section>';
+    '<div class="err" id="regerr" role="alert" style="width:100%">' + esc(r.err || "") + '</div></form></section>';
 }
 function kv(k, v) { return '<div><span>' + k + '</span><b>' + esc(v) + '</b></div>'; }
+function armed(key) { return S.armed === key; }
 function viewDrawer() {
   var D = S.detail && S.detail.device && S.detail.device.id === S.sel ? S.detail : null;
-  if (!D) return '<aside class="drawer"><div class="dh"><h2>' + esc(S.sel) + '</h2><button class="x" data-close aria-label="Close">×</button></div><div class="sec">Loading…</div></aside>';
-  var d = D.device, h = health(d), alpha = d.tier === "ALPHA" && d.bench;
+  if (!D) return '<aside class="drawer" tabindex="-1" aria-label="Device detail"><div class="dh"><h2>' + esc(S.sel) + '</h2><button class="x" data-close data-fk="close" aria-label="Close detail">×</button></div><div class="sec">Loading…</div></aside>';
+  var d = D.device, h = health(d), bench = d.tier === "ALPHA" && d.bench, connected = d.online && isLive(d), claimed = d.reg_state === "CLAIMED" || !d.reg_state;
   var lv = { DEBUG: 1, INFO: 2, WARN: 3, ERROR: 4 };
   var logs = (D.logs || []).filter(function (l) { return lv[l.level] >= lv[S.level]; }).map(function (l) {
     return '<div class="lv-' + esc(l.level) + '">' + clock(l.ts_ms) + ' ' + esc(l.service) + ' ' + esc(l.message) + '</div>';
   }).join("") || '<div class="lv-DEBUG">No log lines at this level.</div>';
-  var ev = (D.events || []).slice(-8).reverse().map(function (e) { return '<li><time>' + clock(e.ts_ms) + '</time><span>' + esc(e.summary) + '</span></li>'; }).join("") || '<li><span class="note">No events yet.</span></li>';
-  var ota = d.ota ? '<div class="sec"><h4>Update</h4><div class="mono">' + esc(d.ota.release_id) + ' · ' + esc(d.ota.stage) + (d.ota.outcome ? ' · ' + esc(d.ota.outcome) : '') + '</div><div class="progress"><u style="width:' + d.ota.percent + '%"></u></div></div>' : "";
-  var cmds = alpha ?
-    '<div class="sec"><h4>Debug commands</h4><div class="btnrow">' +
-    '<button class="btn" data-cmd="dump_state">Dump state</button><button class="btn" data-cmd="restart_service" data-arg="agent">Restart agent</button>' +
-    '<button class="btn" data-cmd="set_log_level" data-arg="debug">Log: debug</button><button class="btn danger" data-cmd="reboot">Reboot</button></div>' +
-    '<div class="note" id="cmdnote">Commands are signed, logged in the audit tab, and only reach alpha bench units.</div></div>' +
-    '<div class="sec"><h4>Camera relay · Dataset capture</h4><div class="locked">Off by default and per session. Camera frames are relayed to this console only and never written to disk. Dataset capture needs a consent record and is stored separately from telemetry.</div></div>' :
-    '<div class="sec"><h4>Access</h4><div class="locked">' + esc(d.tier) + ' tier: health, versions, trimmed logs, feedback and updates only. No debug commands, camera or dataset capture.</div></div>';
-  var life = d.reg_state === "PENDING" ? '<div class="sec"><h4>Registration</h4><div class="locked">Awaiting claim by the app. Claim code expires ' + (d.claim_expires_ms ? new Date(d.claim_expires_ms).toLocaleDateString() : "") + '. The code was shown once at registration.</div><div class="btnrow" style="margin-top:10px"><button class="btn danger" data-revoke>Cancel registration</button></div></div>' :
+  var evAll = (D.events || []).slice().reverse();
+  var ev = evAll.slice(0, 8).map(function (e) { return '<li><time>' + clock(e.ts_ms) + '</time><span>' + esc(e.summary) + '</span></li>'; }).join("") || '<li><span class="note">No events yet.</span></li>';
+  var lastRes = evAll.filter(function (e) { return e.kind === "debug_result"; })[0];
+  var ota = d.ota ? '<div class="sec"><h4>Update</h4><div class="mono">' + esc(d.ota.release_id) + ' · ' + esc(d.ota.stage) + (d.ota.outcome ? ' · ' + esc(d.ota.outcome.replace("_", " ")) : '') + '</div><div class="progress"><u style="width:' + d.ota.percent + '%"></u></div></div>' : "";
+  var why = !bench ? "Debug commands are only for alpha bench devices." : !connected ? "Device is offline, so commands cannot be sent." : "";
+  function cmdBtn(name, arg, label, danger) {
+    var key = "cmd-" + name + (arg || "");
+    var on = danger && armed(key);
+    return '<button class="btn ' + (danger ? "danger " : "") + (on ? "armed" : "") + '" data-cmd="' + name + '"' + (arg ? ' data-arg="' + arg + '"' : '') + ' data-key="' + key + '" data-fk="' + key + '"' + (danger ? ' data-danger="1"' : '') + (why ? " disabled" : "") + '>' + (on ? "Confirm " + label.toLowerCase() + " on " + esc(d.id) : label) + '</button>';
+  }
+  var cmds = '<div class="sec"><h4>Debug commands</h4><div class="btnrow">' + cmdBtn("dump_state", "", "Dump state") + cmdBtn("restart_service", "agent", "Restart agent") + cmdBtn("set_log_level", "debug", "Log: debug") + cmdBtn("reboot", "", "Reboot", true) + '</div>' +
+    '<div class="note">' + (why || "Commands are audited and only reach alpha bench units.") + '</div>' + (lastRes ? '<div class="note mono">Last result ' + clock(lastRes.ts_ms) + ': ' + esc(lastRes.summary) + '</div>' : '') + '</div>' +
+    '<div class="sec"><h4>Camera relay · Dataset capture</h4><div class="locked">Not available yet. When built: off by default and per session; camera frames are relayed to this console only and never stored; dataset capture needs a consent record and is stored separately from telemetry.</div></div>';
+  var access = '<div class="sec"><h4>Access</h4><div class="locked">' + esc(d.tier) + ' tier: health, versions, trimmed logs (warnings and above), feedback and updates only. No debug commands, camera or dataset capture.</div></div>';
+  var rk = "revoke-" + d.id, ra = armed(rk);
+  var life = d.reg_state === "PENDING" ? '<div class="sec"><h4>Registration</h4><div class="locked">Awaiting claim by the app. The claim code expires ' + (d.claim_expires_ms ? new Date(d.claim_expires_ms).toLocaleDateString() : "") + ' and was shown once at registration.</div><div class="btnrow" style="margin-top:10px"><button class="btn danger ' + (ra ? "armed" : "") + '" data-revoke data-key="' + rk + '" data-fk="' + rk + '">' + (ra ? "Confirm: cancel registration" : "Cancel registration") + '</button></div></div>' :
     d.reg_state === "REVOKED" ? '<div class="sec"><h4>Registration</h4><div class="locked">Revoked. This device can no longer connect and its claim code is void.</div></div>' :
-    '<div class="sec"><h4>Registration</h4><div class="btnrow"><button class="btn danger" data-revoke>Revoke device</button></div><div class="note">Revoking drops the live connection and blocks reconnects. It cannot be undone; register a new device instead.</div></div>';
-  return '<aside class="drawer" aria-label="Device detail"><div class="dh"><span class="dot ' + h.dot + '"></span><h2>' + esc(d.id) + '</h2><span class="tier ' + esc(d.tier) + '">' + esc(d.tier) + '</span><button class="x" data-close aria-label="Close">×</button></div>' +
-    (d.label ? '<div class="sec"><div class="mono">' + esc(d.label) + '</div></div>' : '') + '<div class="sec"><h4>' + h.label + ' · last seen ' + ago(d.last_seen_ms) + '</h4><div class="kv">' +
-    kv("Firmware", d.firmware) + kv("Glasses MCU", d.mcu) + kv("Model", d.model) + kv("Hardware", d.hardware) +
-    kv("Battery", d.battery_pct + "%" + (d.charging ? " (charging)" : "")) + kv("Uptime", up(d.uptime_s)) + kv("SoC temp", d.soc_temp_c.toFixed(1) + " °C") + kv("Power draw", d.power_w.toFixed(1) + " W") +
-    kv("Memory", d.mem_used_mb + " MB") + kv("Safety p99", d.safety_latency_p99_ms + " ms") + kv("Link", d.link + " · " + d.link_rtt_ms + " ms") + kv("Service restarts", d.services_restarted) + '</div></div>' + ota +
+    claimed && d.reg_state ? '<div class="sec"><h4>Registration</h4><div class="btnrow"><button class="btn danger ' + (ra ? "armed" : "") + '" data-revoke data-key="' + rk + '" data-fk="' + rk + '">' + (ra ? "Confirm: revoke " + esc(d.id) : "Revoke device") + '</button></div><div class="note">Revoking drops the live connection and blocks reconnects. It cannot be undone; register a new device instead.</div></div>' : "";
+  var stale = connected ? "" : " stale";
+  var levels = ["ERROR", "WARN", "INFO", "DEBUG"].map(function (l) { return '<button class="chip" data-level="' + l + '" data-fk="lvl-' + l + '" aria-pressed="' + (S.level === l) + '" style="padding:4px 10px;min-height:30px">' + l + '</button>'; }).join(" ");
+  return '<aside class="drawer" tabindex="-1" aria-label="Device detail ' + esc(d.id) + '"><div class="dh"><span class="dot ' + h.dot + '" aria-hidden="true"></span><h2>' + esc(d.id) + '</h2><span class="tier ' + esc(d.tier) + '">' + esc(d.tier) + '</span><button class="x" data-close data-fk="close" aria-label="Close detail (Escape)">×</button></div>' +
+    (d.label ? '<div class="sec"><div class="mono">' + esc(d.label) + '</div></div>' : '') +
+    (d.last_seen_ms ? '<div class="sec' + stale + '"><h4>' + esc(h.label) + ' · last seen ' + ago(d.last_seen_ms) + (connected ? "" : " · values below are the last known") + '</h4><div class="kv">' +
+      kv("Firmware", d.firmware) + kv("Glasses MCU", d.mcu) + kv("Model", d.model) + kv("Hardware", d.hardware) +
+      kv("Battery", d.battery_pct + "%" + (d.charging ? " (charging)" : "")) + kv("Uptime", up(d.uptime_s)) + kv("SoC temp", (d.soc_temp_c || 0).toFixed(1) + " °C") + kv("Power draw", (d.power_w || 0).toFixed(1) + " W") +
+      kv("Memory", d.mem_used_mb + " MB") + kv("Safety p99", d.safety_latency_p99_ms + " ms") + kv("Link", d.link + " · " + d.link_rtt_ms + " ms") + kv("Service restarts", d.services_restarted) + kv("Mic", d.mic_muted ? "Muted" : "On") + kv("Brain", d.brain) + '</div></div>' :
+      '<div class="sec"><h4>' + esc(h.label) + '</h4><div class="note">No telemetry yet. Details appear after the device first connects.</div></div>') + ota +
     '<div class="sec"><h4>Events</h4><ul class="timeline">' + ev + '</ul></div>' +
-    (d.tier === "ALPHA" ? '<div class="sec"><h4>Logs <span style="float:right">' + ["INFO", "DEBUG", "WARN"].map(function (l) { return '<button class="chip" data-level="' + l + '" aria-pressed="' + (S.level === l) + '" style="padding:2px 8px">' + l + '</button>'; }).join(" ") + '</span></h4><div class="logbox">' + logs + '</div></div>' : "") + cmds + life + '</aside>';
+    (d.tier === "ALPHA" ? '<div class="sec"><h4>Logs</h4><div class="chips" style="margin-bottom:8px">' + levels + '</div><div class="logbox" id="logbox" tabindex="0" aria-label="Device logs">' + logs + '</div></div>' : (D.logs && D.logs.length ? '<div class="sec"><h4>Warnings and errors</h4><div class="logbox" id="logbox" tabindex="0" aria-label="Device logs">' + logs + '</div></div>' : '')) +
+    (d.reg_state === "PENDING" || d.reg_state === "REVOKED" ? "" : (bench ? cmds : access)) + life + '</aside>';
 }
 function viewRings() {
   var rings = ["ALPHA", "BETA", "STABLE"];
-  return '<div class="rings">' + rings.map(function (r) {
-    var ds = S.devices.filter(function (d) { return d.ring === r; }), vs = {};
-    ds.forEach(function (d) { vs[d.firmware] = (vs[d.firmware] || 0) + 1; });
-    var on = ds.filter(function (d) { return d.online; }).length;
-    var rows = Object.keys(vs).sort().reverse().map(function (v) { var w = ds.length ? Math.round(100 * vs[v] / ds.length) : 0; return '<div class="vrow"><div><span class="mono">' + esc(v) + '</span><div class="progress"><u style="width:' + w + '%"></u></div></div><span class="mono">' + vs[v] + '</span></div>'; }).join("") || '<div class="note">No devices in this ring.</div>';
-    var inflight = ds.filter(function (d) { return d.ota && d.ota.stage !== "DONE"; }).length, rb = ds.filter(function (d) { return d.ota && d.ota.outcome === "ROLLED_BACK"; }).length;
-    return '<section class="ring"><header><h2>' + r + '</h2><span>' + on + ' of ' + ds.length + ' online</span></header><div class="sec"><h4>Firmware versions</h4>' + rows + '</div>' +
-      '<div class="sec"><h4>Rollout</h4><div class="mono">' + inflight + ' updating · ' + rb + ' rolled back</div><div class="note">A ring only gets a release after the ring before it runs it clean. Failed health checks halt the rollout and roll back.</div></div></section>';
-  }).join("") + '</div>';
+  var relHtml = S.releases.map(function (r) {
+    var stg = ""; for (var i = 0; i < r.stages; i++) stg += '<i class="' + (i < r.stage || r.state === "COMPLETE" ? "done" : i === r.stage ? "cur" : "") + '"></i>';
+    var hk = "halt-" + r.release_id, hot = armed(hk);
+    return '<div class="rel"><div><h3>' + esc(r.release_id) + '<span class="pill ' + esc(r.state) + '">' + esc(r.state) + '</span></h3><div class="note mono">version ' + esc(r.version || "?") + ' · counter ' + r.counter + ' · max ring ' + esc((r.max_ring || "").replace("RING_", "")) + '</div>' +
+      '<div class="stages" aria-hidden="true">' + stg + '</div><div class="note">Stage ' + (r.stage + 1) + ' of ' + r.stages + ': ' + esc((r.ring || "").replace("RING_", "")) + ' ' + r.percent + '% · ' + r.offered + ' offered · ' + r.committed + ' committed · <span style="color:' + (r.failed ? "var(--bad)" : "inherit") + '">' + r.failed + ' failed</span></div>' +
+      (r.halt_why ? '<div class="note" style="color:var(--bad)">' + esc(r.halt_why) + '</div>' : '') + (r.note ? '<div class="note">' + esc(r.note) + '</div>' : '') + '</div>' +
+      '<div class="btnrow">' + (r.state === "ROLLING" ? '<button class="btn danger ' + (hot ? "armed" : "") + '" data-halt="' + esc(r.release_id) + '" data-key="' + hk + '" data-fk="' + hk + '">' + (hot ? "Confirm halt" : "Halt") + '</button>' : '') +
+      (r.state === "HALTED" ? '<button class="btn" data-resume="' + esc(r.release_id) + '" data-fk="resume-' + esc(r.release_id) + '">Resume</button>' : '') + '</div></div>';
+  }).join("") || '<div class="locked">No releases registered. Sign one with cortex-sign and add it below.</div>';
+  return '<h2 class="h2">Releases</h2>' + relHtml +
+    '<div class="panel" style="margin-top:10px"><div class="row"><div class="field"><label for="manifest">Add a signed release (.manifest)</label><input type="file" id="manifest" accept=".manifest,application/octet-stream"></div><div class="err" id="relerr" role="alert">' + esc(S.relErr) + '</div></div></div>' +
+    '<h2 class="h2">Rings</h2><div class="rings">' + rings.map(function (r) {
+      var ds = liveDevices().filter(function (d) { return d.ring === r; }), vs = {};
+      ds.forEach(function (d) { if (d.firmware) vs[d.firmware] = (vs[d.firmware] || 0) + 1; });
+      var on = ds.filter(function (d) { return d.online; }).length;
+      var rows = Object.keys(vs).sort().reverse().map(function (v) { var w = ds.length ? Math.round(100 * vs[v] / ds.length) : 0; return '<div class="vrow"><div><span class="mono">' + esc(v) + '</span><div class="progress"><u style="width:' + w + '%"></u></div></div><span class="mono">' + vs[v] + '</span></div>'; }).join("") || '<div class="note">No devices in this ring.</div>';
+      var inflight = ds.filter(function (d) { return d.ota && d.ota.stage !== "DONE"; }).length, rb = ds.filter(function (d) { return d.ota && d.ota.outcome === "ROLLED_BACK"; }).length;
+      return '<section class="ring"><header><h2>' + r + '</h2><span>' + on + ' of ' + ds.length + ' online</span></header><div class="sec"><h4>Firmware versions</h4>' + rows + '</div>' +
+        '<div class="sec"><h4>Updates</h4><div class="mono">' + inflight + ' updating · ' + rb + ' rolled back</div></div></section>';
+    }).join("") + '</div>';
 }
 function viewAudit() {
-  var rows = (S.audit || []).slice().reverse().map(function (a) { return '<tr><td class="mono">' + clock(a.ts_ms) + '</td><td>' + esc(a.actor) + '</td><td class="mono">' + esc(a.action) + '</td><td class="mono">' + esc(a.target) + '</td><td>' + esc(a.result) + '</td></tr>'; }).join("");
-  return '<div class="tablewrap" style="margin-bottom:40px"><table class="audit"><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Device</th><th>Result</th></tr></thead><tbody>' + (rows || '<tr><td colspan="5" class="empty">No actions recorded yet.</td></tr>') + '</tbody></table></div>';
+  var rows = (S.audit || []).slice().reverse().map(function (a) { return '<tr><td class="mono">' + clock(a.ts_ms) + '</td><td>' + esc(a.actor) + '</td><td class="mono">' + esc(a.action) + '</td><td class="mono">' + esc(a.target) + '</td><td>' + esc(a.result) + '</td><td class="mono">' + esc(a.detail || "") + '</td></tr>'; }).join("");
+  return '<div class="tablewrap" style="margin-bottom:40px"><table class="audit"><thead><tr><th scope="col">Time</th><th scope="col">Actor</th><th scope="col">Action</th><th scope="col">Target</th><th scope="col">Result</th><th scope="col">Detail</th></tr></thead><tbody>' + (rows || '<tr><td colspan="6" class="empty">No actions recorded yet.</td></tr>') + '</tbody></table></div>';
+}
+function viewFeedback() {
+  var rows = (S.feedback || []).slice().reverse().map(function (f) { return '<tr><td class="mono">' + clock(f.ts_ms) + '</td><td class="mono">' + esc(f.device_id) + '</td><td>' + esc(f.tier) + '</td><td>' + esc(f.text) + '</td><td class="mono">' + esc(f.app_version) + '</td></tr>'; }).join("");
+  return '<div class="tablewrap" style="margin-bottom:40px"><table class="fb"><thead><tr><th scope="col">Time</th><th scope="col">Device</th><th scope="col">Tier</th><th scope="col">Feedback</th><th scope="col">App</th></tr></thead><tbody>' + (rows || '<tr><td colspan="5" class="empty">No feedback yet. Users send it from the app; text and trimmed logs only.</td></tr>') + '</tbody></table></div>';
 }
 function viewGate() {
-  return '<div class="gate"><div class="brand">' + LOGO + '<b>Asirive</b></div><h1>Cortex Fleet Console</h1><p>Enter the gateway access token to view the fleet.</p>' +
-    '<form id="login"><input type="password" id="tok" placeholder="Gateway token" autocomplete="current-password" aria-label="Gateway token"><div class="err" id="err" role="alert">' + esc(S.err) + '</div>' +
-    '<button class="btn primary" type="submit">Open console</button><button class="btn" type="button" id="demo">View with demo data</button></form></div>';
+  return '<main class="gate"><div class="brand">' + LOGO + '<b>Asirive</b></div><h1>Cortex Fleet Console</h1><p>Enter the gateway access token to view the fleet.</p>' +
+    '<form id="login"><label class="sr" for="tok">Gateway token</label><input type="password" id="tok" placeholder="Gateway token" autocomplete="current-password"><div class="err" id="err" role="alert">' + esc(S.err) + '</div>' +
+    '<button class="btn primary" type="submit">Open console</button><button class="btn" type="button" id="demo">View with demo data</button></form></main>';
 }
+var TABS = [["fleet", "Fleet"], ["rings", "Updates"], ["feedback", "Feedback"], ["audit", "Audit"]];
 function render() {
+  var snap = snapshot();
   if (!S.token) { $app.innerHTML = viewGate(); bindGate(); return; }
-  var focusQ = document.activeElement && document.activeElement.id === "q", pos = focusQ ? document.activeElement.selectionStart : 0;
-  var live = S.err ? '<span class="dot bad"></span>' + esc(S.err) : '<span class="dot ok"></span>Live · updated ' + ago(S.lastOk);
+  var live = S.err ? '<span class="dot bad" aria-hidden="true"></span>' + esc(S.err) + (S.lastOk ? " · showing data from " + ago(S.lastOk) : "") : '<span class="dot ok" aria-hidden="true"></span>Live · updated ' + ago(S.lastOk);
   $app.innerHTML = '<header class="top"><div class="brand">' + LOGO + '<b>Asirive</b><span>Cortex Fleet</span></div>' +
-    '<nav class="tabs" role="tablist">' + [["fleet", "Fleet"], ["rings", "Rings & updates"], ["audit", "Audit"]].map(function (t) { return '<button class="tab" role="tab" data-tab="' + t[0] + '" aria-selected="' + (S.tab === t[0]) + '">' + t[1] + '</button>'; }).join("") + '</nav>' +
-    '<span class="spacer"></span>' + (S.tab === "fleet" ? '<button class="btn primary" id="regbtn">Register device</button>' : "") + (S.demo ? '<span class="demo-flag">Demo data</span>' : "") + '<div class="conn">' + live + '</div><button class="btn" id="out">Sign out</button></header>' +
-    viewSummary() + (S.tab === "fleet" ? viewFleet() : S.tab === "rings" ? viewRings() : viewAudit());
-  bind();
-  if (focusQ) { var q = document.getElementById("q"); q.focus(); q.setSelectionRange(pos, pos); }
+    '<nav class="tabs" role="tablist" aria-label="Sections">' + TABS.map(function (t) { return '<button class="tab" role="tab" id="tab-' + t[0] + '" aria-controls="panel" data-tab="' + t[0] + '" data-fk="tab-' + t[0] + '" aria-selected="' + (S.tab === t[0]) + '">' + t[1] + '</button>'; }).join("") + '</nav>' +
+    '<span class="spacer"></span>' + (S.tab === "fleet" ? '<button class="btn primary" id="regbtn">Register device</button>' : "") + (S.demo ? '<span class="demo-flag">Demo data</span>' : "") + '<div class="conn' + (S.err ? " bad" : "") + '">' + live + '</div><button class="btn" id="out">Sign out</button></header>' +
+    '<main id="panel" role="tabpanel" aria-labelledby="tab-' + S.tab + '"><h1 class="sr">Cortex fleet console</h1>' + viewNeed() + viewSummary() + (S.tab === "fleet" ? viewFleet() : S.tab === "rings" ? viewRings() : S.tab === "feedback" ? viewFeedback() : viewAudit()) + '</main>';
+  bind(); restore(snap);
+  var lv = document.getElementById("live"); if (lv && S.err !== lv.dataset.e) { lv.dataset.e = S.err; lv.textContent = S.err ? "Connection problem: " + S.err : ""; }
 }
-function toast(m) { var t = document.createElement("div"); t.className = "toast"; t.textContent = m; document.body.appendChild(t); setTimeout(function () { t.remove(); }, 2200); }
+function toast(m, err) { var t = document.createElement("div"); t.className = "toast" + (err ? " err" : ""); t.setAttribute("role", "status"); t.textContent = m; document.body.appendChild(t); setTimeout(function () { t.remove(); }, 3200); }
+
+/* Re-rendering must not cost the operator their place: keep focus, caret, scroll positions. */
+function snapshot() {
+  var a = document.activeElement, snap = { scroll: {}, win: window.scrollY };
+  if (a && a !== document.body && $app.contains(a)) { snap.fk = a.getAttribute("data-fk"); snap.id = a.id; if (typeof a.selectionStart === "number") { snap.s = a.selectionStart; snap.e = a.selectionEnd; } }
+  ["drawer", "logbox", "tablewrap"].forEach(function (c) { var el = document.querySelector("." + c + ", #" + c); if (el) snap.scroll[c] = el.scrollTop; });
+  var lb = document.getElementById("logbox"); if (lb) snap.logAtBottom = lb.scrollTop + lb.clientHeight >= lb.scrollHeight - 4;
+  return snap;
+}
+function restore(snap) {
+  ["drawer", "logbox", "tablewrap"].forEach(function (c) { var el = document.querySelector("." + c + ", #" + c); if (el && snap.scroll[c] != null) el.scrollTop = snap.scroll[c]; });
+  window.scrollTo(0, snap.win);
+  var el = snap.id ? document.getElementById(snap.id) : null;
+  if (!el && snap.fk) el = $app.querySelector('[data-fk="' + snap.fk + '"]');
+  if (el) { el.focus({ preventScroll: true }); if (snap.s != null && el.setSelectionRange) try { el.setSelectionRange(snap.s, snap.e); } catch (x) {} }
+}
+function arm(key) { S.armed = key; clearTimeout(armTimer); armTimer = setTimeout(function () { S.armed = ""; render(); }, 5000); render(); }
+function openDevice(id) { S.sel = id; S.detail = null; refresh(); setTimeout(function () { var d = document.querySelector(".drawer"); if (d) d.focus({ preventScroll: true }); }, 60); }
+function closeDevice() { var id = S.sel; S.sel = null; S.detail = null; render(); var r = id && $app.querySelector('[data-fk="row-' + id + '"]'); if (r) r.focus(); }
 
 /* ---------- events ---------- */
 function bindGate() {
@@ -395,50 +474,81 @@ function bindGate() {
   };
 }
 function bind() {
-  $app.querySelectorAll("[data-tab]").forEach(function (b) { b.onclick = function () { S.tab = b.dataset.tab; render(); }; });
-  $app.querySelectorAll("[data-group]").forEach(function (b) { b.onclick = function () { S[b.dataset.group] = b.dataset.val; render(); }; });
+  $app.querySelectorAll("[data-tab]").forEach(function (b) { b.onclick = function () { S.tab = b.dataset.tab; render(); }; b.onkeydown = function (e) { var i = TABS.map(function (t) { return t[0]; }).indexOf(b.dataset.tab), n = e.key === "ArrowRight" ? i + 1 : e.key === "ArrowLeft" ? i - 1 : null; if (n != null) { S.tab = TABS[(n + TABS.length) % TABS.length][0]; render(); var t = document.getElementById("tab-" + S.tab); if (t) t.focus(); } }; });
+  $app.querySelectorAll("[data-group]").forEach(function (b) { b.onclick = function () { S[b.dataset.group] = b.dataset.val; if (b.dataset.fk === "need-show") S.tab = "fleet"; render(); }; });
   $app.querySelectorAll("[data-level]").forEach(function (b) { b.onclick = function () { S.level = b.dataset.level; render(); }; });
-  $app.querySelectorAll("tbody tr[data-id]").forEach(function (r) { r.onclick = function () { S.sel = r.dataset.id; S.detail = null; refresh(); }; });
-  $app.querySelectorAll("[data-close]").forEach(function (b) { b.onclick = function () { S.sel = null; S.detail = null; render(); }; });
+  $app.querySelectorAll("tbody tr[data-id]").forEach(function (r) {
+    r.onclick = function () { openDevice(r.dataset.id); };
+    r.onkeydown = function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDevice(r.dataset.id); } };
+  });
+  $app.querySelectorAll("[data-close]").forEach(function (b) { b.onclick = closeDevice; });
   var q = document.getElementById("q"); if (q) q.oninput = function () { S.q = q.value; render(); };
   document.getElementById("out").onclick = logout;
-  var rb = document.getElementById("regbtn"); if (rb) rb.onclick = function () { S.reg = S.reg ? null : { tier: "ALPHA", bench: true }; render(); };
+  var rb = document.getElementById("regbtn"); if (rb) rb.onclick = function () { if (S.reg && S.reg.result) { var p = document.getElementById("regpanel"); if (p) p.focus(); toast("Save the claim code first, then press Done"); return; } S.reg = S.reg ? null : { tier: "ALPHA", bench: true, label: "" }; render(); if (S.reg) { var l = document.getElementById("rlabel"); if (l) l.focus(); } };
   var rf = document.getElementById("regform");
   if (rf) {
+    var lab = document.getElementById("rlabel"), tier = document.getElementById("rtier"), bench = document.getElementById("rbench");
+    lab.oninput = function () { S.reg.label = lab.value; S.reg.err = ""; };
+    bench.onchange = function () { S.reg.bench = bench.checked; };
     document.getElementById("regcancel").onclick = function () { S.reg = null; render(); };
-    document.getElementById("rtier").onchange = function () { S.reg.tier = this.value; S.reg.label = document.getElementById("rlabel").value; S.reg.bench = this.value === "ALPHA" && document.getElementById("rbench").checked; render(); };
+    tier.onchange = function () { S.reg.tier = tier.value; S.reg.bench = tier.value === "ALPHA"; render(); };
     rf.onsubmit = function (e) {
       e.preventDefault();
-      var body = { label: document.getElementById("rlabel").value.trim(), tier: document.getElementById("rtier").value, bench: document.getElementById("rbench").checked && document.getElementById("rtier").value === "ALPHA" };
-      var done = function (res) { S.reg = { result: res, label: body.label }; refresh(); };
+      var body = { label: lab.value.trim(), tier: tier.value, bench: tier.value === "ALPHA" && bench.checked };
+      if (!body.label) { S.reg.err = "Give the device a label so you can find it later."; render(); document.getElementById("rlabel").focus(); return; }
+      var done = function (res) { S.reg = { result: res, label: body.label }; refresh(); setTimeout(function () { var p = document.getElementById("regpanel"); if (p) p.focus(); }, 60); };
       if (S.demo) { demoRegister(body, done); return; }
       api("/api/registrations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
-        .then(function (r) { done({ id: r.registration.id, code: r.claim_code }); }).catch(function (e) { S.reg.err = e.message; render(); });
+        .then(function (r) { done({ id: r.registration.id, code: r.claim_code, qr: r.claim_qr_png }); }).catch(function (er) { S.reg.err = er.message; render(); });
     };
   }
   var cd = document.getElementById("regdone"); if (cd) cd.onclick = function () { S.reg = null; render(); };
   var cc = document.getElementById("copycode"); if (cc) cc.onclick = function () {
     var t = document.getElementById("claimcode").textContent;
-    (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(function () { toast("Code copied"); }).catch(function () { var r = document.createRange(); r.selectNodeContents(document.getElementById("claimcode")); var sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); toast("Press copy to copy the selected code"); });
+    (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(function () { toast("Code copied"); }).catch(function () { var r = document.createRange(); r.selectNodeContents(document.getElementById("claimcode")); var sel = getSelection(); sel.removeAllRanges(); sel.addRange(r); toast("Selected. Press Ctrl+C or Cmd+C to copy"); });
   };
   $app.querySelectorAll("[data-revoke]").forEach(function (b) {
     b.onclick = function () {
-      if (!b.dataset.armed) { b.dataset.armed = "1"; b.textContent = "Confirm: " + b.textContent.toLowerCase(); setTimeout(render, 4000); return; }
+      if (S.armed !== b.dataset.key) return arm(b.dataset.key);
+      S.armed = "";
       if (S.demo) { demoRevoke(S.sel); toast("Demo: revoked " + S.sel); refresh(); return; }
-      api("/api/registrations/" + encodeURIComponent(S.sel) + "/revoke", { method: "POST" }).then(function () { toast("Revoked " + S.sel); refresh(); }).catch(function (e) { toast("Not revoked: " + e.message); });
+      api("/api/registrations/" + encodeURIComponent(S.sel) + "/revoke", { method: "POST" }).then(function () { toast("Revoked " + S.sel); refresh(); }).catch(function (e) { toast("Not revoked: " + e.message, true); refresh(); });
     };
   });
   $app.querySelectorAll("[data-cmd]").forEach(function (b) {
     b.onclick = function () {
       var name = b.dataset.cmd, arg = b.dataset.arg;
-      if (b.classList.contains("danger") && !b.dataset.armed) { b.dataset.armed = "1"; b.textContent = "Confirm " + b.textContent.toLowerCase(); setTimeout(render, 4000); return; }
-      if (S.demo) { toast("Demo mode: no command sent"); return; }
+      if (b.dataset.danger && S.armed !== b.dataset.key) return arm(b.dataset.key);
+      S.armed = "";
+      if (S.demo) { toast("Demo mode: no command sent"); render(); return; }
       var args = name === "restart_service" ? { service: arg } : name === "set_log_level" ? { level: arg } : {};
       api("/api/devices/" + encodeURIComponent(S.sel) + "/command", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name, args: args }) })
-        .then(function () { toast("Command sent: " + name); refresh(); }).catch(function (e) { toast("Not sent: " + e.message); });
+        .then(function () { toast("Sent " + name + " to " + S.sel + ". The result appears under Debug commands."); refresh(); setTimeout(refresh, 1500); }).catch(function (e) { toast("Not sent: " + e.message, true); refresh(); });
     };
   });
+  $app.querySelectorAll("[data-halt]").forEach(function (b) {
+    b.onclick = function () {
+      if (S.armed !== b.dataset.key) return arm(b.dataset.key);
+      S.armed = "";
+      if (S.demo) { DEMO.releases.forEach(function (r) { if (r.release_id === b.dataset.halt) { r.state = "HALTED"; r.halt_why = "halted by operator"; } }); refresh(); return; }
+      api("/api/releases/" + encodeURIComponent(b.dataset.halt) + "/halt", { method: "POST" }).then(function () { toast("Halted " + b.dataset.halt); refresh(); }).catch(function (e) { toast("Not halted: " + e.message, true); });
+    };
+  });
+  $app.querySelectorAll("[data-resume]").forEach(function (b) {
+    b.onclick = function () {
+      if (S.demo) { DEMO.releases.forEach(function (r) { if (r.release_id === b.dataset.resume) { r.state = "ROLLING"; r.halt_why = ""; } }); refresh(); return; }
+      api("/api/releases/" + encodeURIComponent(b.dataset.resume) + "/resume", { method: "POST" }).then(function () { toast("Resumed " + b.dataset.resume); refresh(); }).catch(function (e) { toast("Not resumed: " + e.message, true); });
+    };
+  });
+  var mf = document.getElementById("manifest");
+  if (mf) mf.onchange = function () {
+    var f = mf.files[0]; if (!f) return;
+    if (S.demo) { S.relErr = "Demo mode: releases cannot be added."; render(); return; }
+    f.arrayBuffer().then(function (buf) { return api("/api/releases", { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: buf }); })
+      .then(function () { S.relErr = ""; toast("Release registered"); refresh(); }).catch(function (e) { S.relErr = e.message; toast(e.message, true); render(); });
+  };
 }
+document.addEventListener("keydown", function (e) { if (e.key === "Escape" && S.sel && S.token) { e.preventDefault(); closeDevice(); } });
 try { var saved = sessionStorage.getItem("cortex-token"); if (saved) { S.token = saved; start(); } else render(); } catch (e) { render(); }
 </script>
 </body>

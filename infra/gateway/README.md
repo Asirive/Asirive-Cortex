@@ -16,6 +16,8 @@ go run ./cmd/simdevice                    # fake alpha/beta/stable devices (need
 | `POST /api/devices/{id}/command` | Alpha bench debug commands. Refused for non-alpha devices, audited. |
 | `GET /api/audit` | Audit trail. |
 | `POST /api/registrations`, `GET /api/registrations`, `POST /api/registrations/{id}/revoke` | Register a device (returns a one-time claim code), list, revoke. Operator token. |
+| `GET/POST /api/releases`, `POST /api/releases/{id}/halt`, `/resume` | Release list, add a signed manifest (409 on a duplicate id), halt, explicit resume. |
+| `GET /api/feedback` | Feedback received from devices. |
 | `POST /v1/claim` | Called by the phone app. Code + device public key in, per-device credential out (shown once). Rate limited per source. |
 
 ## OTA
@@ -37,7 +39,7 @@ camera relay / dataset pipeline (message types exist, handlers are stubs).
 
 ## Registering a device
 1. Console: Register device -> label, tier, bench flag -> you get a claim code (shown once, valid 7 days, single use).
-2. App: Add device -> USB-connect the glasses -> enter the code. The app calls `/v1/claim` and passes the returned device token to the device over USB.
+2. App: Add device -> scan the QR (or type the code) -> USB-connect the glasses. The app calls `/v1/claim` and passes the returned device token to the device over USB.
 3. Device connects to `/ws/device` with `Authorization: Bearer <device token>` and `X-Device-Id`. Its tier, ring and bench flag come from the registry, not from what the device says.
 4. Lost or stolen: Revoke in the console. The live connection drops and the device cannot reconnect.
 Tests: `go test ./...` covers claim, expiry, rate limit, tier override, revoke.

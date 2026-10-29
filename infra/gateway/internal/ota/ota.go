@@ -14,6 +14,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -43,6 +44,7 @@ var (
 	ErrRollback       = errors.New("version counter below device counter")
 	ErrRingNotAllowed = errors.New("release not allowed for this ring")
 	ErrTooEarly       = errors.New("release not yet valid")
+	ErrDuplicate      = errors.New("release id already registered")
 )
 
 // Verify is what the DEVICE runs before downloading anything. It lives here so
@@ -117,12 +119,20 @@ type Release struct {
 	HaltWhy  string
 	outcomes map[string]Outcome
 	offered  map[string]bool
+	excluded map[string]bool // rolled back or rejected: never re-offered
+	Note     string
 }
+
+// StallLimit is how long past the soak a stage may wait for offered devices to
+// report before the rollout halts instead of waiting forever.
+const StallLimit = 2 * time.Hour
 
 type Engine struct {
 	mu       sync.Mutex
 	releases map[string]*Release
 	pub      ed25519.PublicKey
+	// OnEvent is called (outside the lock) on automatic halt/advance/complete so the caller can audit them.
+	OnEvent func(releaseID, what string)
 }
 
 func NewEngine(pub ed25519.PublicKey) *Engine {
@@ -138,8 +148,10 @@ func (e *Engine) Register(m *pb.Manifest, plan []Stage, now time.Time) error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.releases[m.ReleaseId] = &Release{Manifest: m, Plan: plan, Started: now,
-		outcomes: map[string]Outcome{}, offered: map[string]bool{}}
+	if _, dup := e.releases[m.ReleaseId]; dup {
+		return ErrDuplicate // never reset a release (and its halt) by re-posting it
+	}
+	e.releases[m.ReleaseId] = &Release{Manifest: m, Plan: plan, Started: now, outcomes: map[string]Outcome{}, offered: map[string]bool{}, excluded: map[string]bool{}}
 	return nil
 }
 
@@ -154,7 +166,7 @@ func (e *Engine) Offer(deviceID string, ring pb.Ring, runningCounter uint64) *pb
 	defer e.mu.Unlock()
 	var best *Release
 	for _, r := range e.releases {
-		if r.State != Rolling || r.Manifest.VersionCounter <= runningCounter || ring > r.Manifest.MaxRing {
+		if r.State != Rolling || r.Manifest.VersionCounter <= runningCounter || ring > r.Manifest.MaxRing || r.excluded[deviceID] || r.Manifest.NotBeforeMs > time.Now().UnixMilli() {
 			continue
 		}
 		if !r.eligible(deviceID, ring) {
@@ -188,33 +200,47 @@ func (e *Engine) Report(releaseID, deviceID string, o Outcome) {
 	defer e.mu.Unlock()
 	if r := e.releases[releaseID]; r != nil {
 		r.outcomes[deviceID] = o
+		if o == RolledBack || o == Rejected {
+			r.excluded[deviceID] = true
+		}
 	}
 }
 
-func (e *Engine) Halt(releaseID, why string) {
+// Halt stops a rolling release. False if unknown or not rolling.
+func (e *Engine) Halt(releaseID, why string) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if r := e.releases[releaseID]; r != nil && r.State == Rolling {
 		r.State, r.HaltWhy = Halted, why
+		return true
 	}
+	return false
+}
+
+// Resume restarts a halted release at its current stage. Explicit operator action only.
+func (e *Engine) Resume(releaseID string, now time.Time) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if r := e.releases[releaseID]; r != nil && r.State == Halted {
+		r.State, r.HaltWhy, r.Note, r.Started = Rolling, "", "", now
+		return true
+	}
+	return false
 }
 
 // Evaluate advances or halts every rolling release. Call it on a timer.
-// Halt rules: any rejection or rollback below the stage's healthy threshold
-// halts the whole rollout; a release is never advanced while devices are pending
-// inside the soak window.
+//   - failures that drop the offered devices below the stage's healthy fraction halt the release
+//   - a stage never advances before its soak ends, nor while no device has been tested in it
+//   - a stage whose offered devices never report halts after StallLimit instead of waiting forever
 func (e *Engine) Evaluate(now time.Time) {
+	var events [][2]string
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	for _, r := range e.releases {
 		if r.State != Rolling {
 			continue
 		}
 		var ok, bad int
-		for d, off := range r.offered {
-			if !off {
-				continue
-			}
+		for d := range r.offered {
 			switch r.outcomes[d] {
 			case Committed:
 				ok++
@@ -224,22 +250,44 @@ func (e *Engine) Evaluate(now time.Time) {
 		}
 		total := len(r.offered)
 		st := r.Plan[r.Stage]
-		if total > 0 && float64(ok)/float64(total) < st.MinHealthyPc && bad > 0 && float64(total-bad)/float64(total) < st.MinHealthyPc {
-			r.State, r.HaltWhy = Halted, fmt.Sprintf("healthy fraction below threshold at stage %d", r.Stage)
+		id := r.Manifest.ReleaseId
+		if total > 0 && bad > 0 && float64(total-bad)/float64(total) < st.MinHealthyPc {
+			r.State, r.HaltWhy = Halted, fmt.Sprintf("stage %d: %d of %d devices failed", r.Stage, bad, total)
+			events = append(events, [2]string{id, "auto-halt: " + r.HaltWhy})
 			continue
 		}
 		if now.Sub(r.Started) < st.Soak {
 			continue
 		}
-		if total > 0 && float64(ok)/float64(total) < st.MinHealthyPc {
-			continue // still waiting on devices to commit
+		if total == 0 {
+			r.Note = "waiting: no device has been offered this release in the current stage"
+			continue
 		}
+		if float64(ok)/float64(total) < st.MinHealthyPc {
+			if now.Sub(r.Started) > st.Soak+StallLimit {
+				r.State, r.HaltWhy = Halted, fmt.Sprintf("stage %d stalled: %d of %d devices committed", r.Stage, ok, total)
+				events = append(events, [2]string{id, "auto-halt: " + r.HaltWhy})
+			} else {
+				r.Note = fmt.Sprintf("waiting: %d of %d offered devices committed", ok, total)
+			}
+			continue
+		}
+		r.Note = ""
 		if r.Stage+1 >= len(r.Plan) {
 			r.State = Complete
+			events = append(events, [2]string{id, "complete"})
 			continue
 		}
 		r.Stage++
 		r.Started = now
+		events = append(events, [2]string{id, fmt.Sprintf("advance to stage %d (%s %d%%)", r.Stage, r.Plan[r.Stage].Ring, r.Plan[r.Stage].Percent)})
+	}
+	cb := e.OnEvent
+	e.mu.Unlock()
+	if cb != nil {
+		for _, ev := range events {
+			cb(ev[0], ev[1])
+		}
 	}
 }
 
@@ -254,6 +302,11 @@ type Status struct {
 	Committed int    `json:"committed"`
 	Failed    int    `json:"failed"`
 	HaltWhy   string `json:"halt_why,omitempty"`
+	Note      string `json:"note,omitempty"`
+	Counter   uint64 `json:"counter"`
+	MaxRing   string `json:"max_ring"`
+	Version   string `json:"version,omitempty"`
+	StartedMs int64  `json:"stage_started_ms"`
 }
 
 func (e *Engine) List() []Status {
@@ -261,7 +314,10 @@ func (e *Engine) List() []Status {
 	defer e.mu.Unlock()
 	out := []Status{}
 	for _, r := range e.releases {
-		s := Status{ReleaseID: r.Manifest.ReleaseId, Stage: r.Stage, Stages: len(r.Plan), HaltWhy: r.HaltWhy, Offered: len(r.offered)}
+		s := Status{ReleaseID: r.Manifest.ReleaseId, Stage: r.Stage, Stages: len(r.Plan), HaltWhy: r.HaltWhy, Offered: len(r.offered), Note: r.Note, Counter: r.Manifest.VersionCounter, MaxRing: r.Manifest.MaxRing.String(), StartedMs: r.Started.UnixMilli()}
+		if len(r.Manifest.Artifacts) > 0 {
+			s.Version = r.Manifest.Artifacts[0].Version
+		}
 		s.State = [...]string{"ROLLING", "HALTED", "COMPLETE"}[r.State]
 		cur := r.Plan[min(r.Stage, len(r.Plan)-1)]
 		s.Ring, s.Percent = cur.Ring.String(), cur.Percent
@@ -274,6 +330,7 @@ func (e *Engine) List() []Status {
 		}
 		out = append(out, s)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Counter > out[j].Counter })
 	return out
 }
 

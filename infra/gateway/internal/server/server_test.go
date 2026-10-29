@@ -48,10 +48,23 @@ func TestRegisterClaimConnectRevoke(t *testing.T) {
 	ts := httptest.NewServer(s.Handler())
 	defer ts.Close()
 
-	if code, _ := post(t, ts.URL+"/api/registrations", "wrong", map[string]any{"tier": "BETA"}); code != 401 {
+	if code, _ := post(t, ts.URL+"/api/registrations", "wrong", map[string]any{"tier": "BETA", "label": "x"}); code != 401 {
 		t.Fatalf("registration without operator token: %d", code)
 	}
-	_, reg := post(t, ts.URL+"/api/registrations", "optoken", map[string]any{"tier": "BETA", "label": "Sam's glasses", "bench": true})
+	for name, body := range map[string]map[string]any{
+		"blank label":    {"tier": "BETA", "label": "   "},
+		"bench on beta":  {"tier": "BETA", "label": "x", "bench": true},
+		"bad tier":       {"tier": "GOLD", "label": "x"},
+		"label too long": {"tier": "BETA", "label": strings.Repeat("a", 81)},
+	} {
+		if code, _ := post(t, ts.URL+"/api/registrations", "optoken", body); code != 400 {
+			t.Fatalf("%s accepted: %d", name, code)
+		}
+	}
+	if code, _ := post(t, ts.URL+"/api/registrations", "optoken", map[string]any{"tier": "BETA", "label": strings.Repeat("é", 80)}); code != 200 {
+		t.Fatalf("80 multibyte characters must be allowed: %d", code)
+	}
+	_, reg := post(t, ts.URL+"/api/registrations", "optoken", map[string]any{"tier": "BETA", "label": "Sam's glasses"})
 	id := reg["registration"].(map[string]any)["id"].(string)
 	claim := reg["claim_code"].(string)
 
@@ -75,16 +88,67 @@ func TestRegisterClaimConnectRevoke(t *testing.T) {
 	if d.Tier != "BETA" || d.Bench {
 		t.Fatalf("device self-declared its tier: %+v", d)
 	}
+	if code, out := post(t, ts.URL+"/api/devices/"+id+"/command", "optoken", map[string]any{"name": "rm -rf /"}); code != 400 {
+		t.Fatalf("unknown command accepted: %d %v", code, out)
+	}
 	if code, out := post(t, ts.URL+"/api/devices/"+id+"/command", "optoken", map[string]any{"name": "reboot"}); code != 409 {
 		t.Fatalf("beta device accepted a debug command: %d %v", code, out)
 	}
 
-	post(t, ts.URL+"/api/registrations/"+id+"/revoke", "optoken", map[string]any{})
+	if code, _ := post(t, ts.URL+"/api/registrations/"+id+"/revoke", "optoken", map[string]any{}); code != 200 {
+		t.Fatalf("revoke failed: %d", code)
+	}
+	if code, _ := post(t, ts.URL+"/api/registrations/"+id+"/revoke", "optoken", map[string]any{}); code != 409 {
+		t.Fatalf("second revoke must conflict: %d", code)
+	}
+	if code, _ := post(t, ts.URL+"/api/registrations/NOPE-1/revoke", "optoken", map[string]any{}); code != 404 {
+		t.Fatalf("revoke of unknown device: %d", code)
+	}
 	time.Sleep(200 * time.Millisecond)
 	if _, _, err := dial(t, ts, id, tok); err == nil {
 		t.Fatal("revoked device reconnected")
 	}
 	if code, _ := post(t, ts.URL+"/v1/claim", "", map[string]any{"claim_code": claim}); code == 200 {
 		t.Fatal("claim code reusable")
+	}
+}
+
+func TestReconnectDoesNotMarkOffline(t *testing.T) {
+	s := New(fleet.New(), "optoken")
+	s.AllowSharedDeviceToken = true
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	a, _, err := dial(t, ts, "ALPHA-X", "optoken")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hello(a, "ALPHA-X", pb.Tier_TIER_ALPHA)
+	time.Sleep(200 * time.Millisecond)
+	b, _, _ := dial(t, ts, "ALPHA-X", "optoken")
+	hello(b, "ALPHA-X", pb.Tier_TIER_ALPHA)
+	time.Sleep(300 * time.Millisecond)
+	a.Close() // the replaced connection dies; the live one must stay online
+	time.Sleep(300 * time.Millisecond)
+	if d, _, _, _ := s.Fleet.Get("ALPHA-X"); !d.Online {
+		t.Fatal("replaced connection marked the live device offline")
+	}
+}
+
+func TestHeartbeatIntervalClamped(t *testing.T) {
+	if clampHB(3600) != 60 || clampHB(0) != 5 || clampHB(1) != 2 || clampHB(1<<31) != 60 {
+		t.Fatal("heartbeat interval not clamped")
+	}
+}
+
+func TestOperatorTokenGuessingIsLimited(t *testing.T) {
+	s := New(fleet.New(), "optoken")
+	ts := httptest.NewServer(s.Handler())
+	defer ts.Close()
+	var last int
+	for i := 0; i < 12; i++ {
+		last, _ = post(t, ts.URL+"/api/registrations", "guess", map[string]any{"tier": "BETA", "label": "x"})
+	}
+	if last != 429 {
+		t.Fatalf("token guessing not rate limited: %d", last)
 	}
 }

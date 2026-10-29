@@ -102,3 +102,45 @@ func TestUnsignedReleaseRejected(t *testing.T) {
 		t.Fatal("unsigned manifest registered")
 	}
 }
+
+func TestDuplicateNoResetAndNoReoffer(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	e := NewEngine(pub)
+	m := mf("r1", 2, pb.Ring_RING_STABLE)
+	Sign(m, priv)
+	if err := e.Register(m, nil, time.Unix(0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if e.Offer("A1", pb.Ring_RING_ALPHA, 1) == nil {
+		t.Fatal("not offered")
+	}
+	e.Report("r1", "A1", RolledBack)
+	e.Evaluate(time.Unix(0, 0))
+	if e.List()[0].State != "HALTED" {
+		t.Fatal("rollback did not halt")
+	}
+	if err := e.Register(m, nil, time.Unix(0, 0)); err != ErrDuplicate {
+		t.Fatalf("re-post must not reset: %v", err)
+	}
+	if e.List()[0].State != "HALTED" {
+		t.Fatal("re-post un-halted release")
+	}
+	if !e.Resume("r1", time.Unix(0, 0)) {
+		t.Fatal("explicit resume failed")
+	}
+	if e.Offer("A1", pb.Ring_RING_ALPHA, 1) != nil {
+		t.Fatal("device that rolled back was re-offered")
+	}
+}
+
+func TestNoAdvanceWhenNobodyTested(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	e := NewEngine(pub)
+	m := mf("r1", 2, pb.Ring_RING_STABLE)
+	Sign(m, priv)
+	e.Register(m, nil, time.Unix(0, 0))
+	e.Evaluate(time.Unix(0, 0).Add(10 * time.Hour))
+	if st := e.List()[0]; st.Stage != 0 || st.Note == "" {
+		t.Fatalf("advanced with zero devices tested: %+v", st)
+	}
+}

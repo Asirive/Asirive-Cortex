@@ -88,3 +88,4 @@ psql -f supabase/migrations/001_initial_schema.sql   # schema apply (reference)
   created here per V4-ECOSYSTEM.md section 6.
 - 2026-10-29: Added OTA control plane (internal/ota), cortex-sign, release API, FLEET-OTA-AND-SECURITY.md.
 - 2026-10-29: Added device registry (register/claim/revoke), console registration UI, app API draft.
+- 2026-10-29: QA-pass fixes: console rewrite (state-preserving render, keyboard, mobile sheet, releases panel, feedback tab), rollout engine hardening, registry id/claim fixes, command allowlist, security headers, claim QR. contracts: local.proto (owner stop over the local link only), app.yaml auth/deletion/opt-in decisions.

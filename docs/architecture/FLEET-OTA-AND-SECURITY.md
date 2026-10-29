@@ -83,3 +83,22 @@ Not yet built (a complete fleet platform also needs):
 4. Alerting + metrics; rollout halt notifications.
 5. Dataset and camera pipelines with consent enforcement.
 6. External security review before any non-bench device connects.
+
+## 5. Operator QA pass (2026-10-29)
+
+An agent acting as the operator tested the console and gateway in a real browser and
+found 21 bugs, 15 UX problems and many gaps. Fixed and covered by tests or browser
+checks: auto-refresh wiping inputs and focus, keyboard-unreachable rows, rollbacks not
+counted, re-posting a release resetting a halt (now 409 plus explicit Resume), versions
+not following updates, incidents vanishing when a device drops, heartbeat interval trust
+(clamped 2-60 s), duplicate connections marking a live device offline, silently dropped
+feedback, blank/bench/over-long labels, error text, command allowlist and audited args,
+revoke and halt on unknown ids, rollout advancing with nobody tested, rolled-back devices
+re-offered, `not_before` ignored, stalled stages, ID collisions, operator token guessing,
+security headers and server timeouts. Added: release panel with halt/resume, claim QR,
+feedback tab, label column and search.
+
+Still open from that pass: Postgres persistence (a restart loses registrations, tokens and
+releases), per-user operator accounts and roles, signed commands, claim endpoint requires an
+authenticated app account, alerting, uptime history, device notes/groups/export, offline
+fonts, artifact hosting and key custody, and everything in the app API that is only planned.

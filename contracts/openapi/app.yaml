@@ -36,11 +36,39 @@ components:
         can_call: { type: boolean }
         status: { type: string, enum: [invited, active, revoked] }
 paths:
+  /auth/register:
+    post:
+      x-status: planned
+      security: []
+      summary: Create an account with email and password
+  /auth/login:
+    post:
+      x-status: planned
+      security: []
+      summary: Email and password login. Returns a short-lived access token and a refresh token.
+  /auth/apple:
+    post:
+      x-status: planned
+      security: []
+      summary: Sign in with Apple (identity token exchange). Preferred on iOS.
+  /auth/logout:
+    post: { x-status: planned, summary: Revoke the refresh token }
+  /me:
+    delete:
+      x-status: planned
+      summary: |
+        Delete the account and its data (decided 2026-10-29: yes). Removes companions and
+        grants, location history, call records, feedback and the device link. The device is
+        released so it can be claimed by a new owner. Confirmation step required in the app.
   /claim:
     post:
       x-status: implemented
       security: []
-      summary: Claim a registered device with its one-time code (called by the app during USB pairing)
+      summary: |
+        Claim a registered device with its one-time code (called by the app during USB pairing).
+        The code is delivered as a QR code (payload asirive://claim?code=XXXXXXXX, preferred; the app
+        scans it, which also works with VoiceOver) or typed. PLANNED CHANGE: this call will require an
+        authenticated account (bearer token) and take account_id from the token, not the body.
       requestBody:
         content:
           application/json:
@@ -63,7 +91,11 @@ paths:
   /me/devices/{id}/settings:
     put:
       x-status: planned
-      summary: Beta opt-in, mic controls, notification prefs
+      summary: |
+        Beta opt-in and notification prefs. Tier rules (decided 2026-10-29): ALPHA is assigned only by
+        the Asirive team at registration and can never be set here. A user may switch STABLE <-> BETA
+        (opt-in under app settings); opting in records a consent record (who, when, text version)
+        and changes the telemetry level to the BETA set. Opting out reverts to STABLE.
   /me/devices/{id}/update:
     get:
       x-status: planned
@@ -71,6 +103,13 @@ paths:
     post:
       x-status: planned
       summary: Report relay result (downloaded, handed to device, device outcome)
+  /me/devices/{id}/stop:
+    post:
+      x-status: not-cloud
+      summary: |
+        NOT a cloud endpoint. Stopping the device (pause or shutdown) is a LOCAL command from the
+        owner's paired app over USB/BLE (contracts/proto/cortex/v1/local.proto). The cloud, operators
+        and companions cannot stop a device. Listed here so nobody adds a cloud version.
   /feedback:
     post:
       x-status: planned

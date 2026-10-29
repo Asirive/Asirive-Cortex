@@ -8,7 +8,7 @@ import (
 func TestLifecycle(t *testing.T) {
 	r := New()
 	now := time.Now()
-	reg, code := r.Register("bench unit 1", "ALPHA", "ALPHA", true, now)
+	reg, code, _ := r.Register("bench unit 1", "ALPHA", "ALPHA", true, now, nil)
 	if reg.State != Pending || len(code) != 9 {
 		t.Fatalf("bad registration %+v %q", reg, code)
 	}
@@ -47,12 +47,12 @@ func lower(s string) string {
 func TestExpiryAndRateLimit(t *testing.T) {
 	r := New()
 	now := time.Now()
-	_, code := r.Register("x", "BETA", "BETA", false, now)
+	_, code, _ := r.Register("x", "BETA", "BETA", false, now, nil)
 	if _, _, err := r.Claim(code, nil, "a", "ip", now.Add(8*24*time.Hour)); err != ErrBadClaim {
 		t.Fatalf("expired code accepted: %v", err)
 	}
 	r2 := New()
-	_, code2 := r2.Register("x", "BETA", "BETA", false, now)
+	_, code2, _ := r2.Register("x", "BETA", "BETA", false, now, nil)
 	for i := 0; i < 5; i++ {
 		r2.Claim("AAAA-AAAA", nil, "a", "ip", now)
 	}
@@ -63,7 +63,7 @@ func TestExpiryAndRateLimit(t *testing.T) {
 
 func TestBenchOnlyForAlpha(t *testing.T) {
 	r := New()
-	reg, _ := r.Register("x", "BETA", "BETA", true, time.Now())
+	reg, _, _ := r.Register("x", "BETA", "BETA", true, time.Now(), nil)
 	if reg.Bench {
 		t.Fatal("beta device flagged bench")
 	}

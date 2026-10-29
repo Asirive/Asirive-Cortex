@@ -305,6 +305,7 @@ the team key; production = real PKI from V4-Final manufacturing.
 - Login: Apple ID + email.
 - Infra: Go gateway + web dashboard; dev self-host → VPS at beta.
 - Core language: Python (C for measured hot paths), hardened: safety is a separate real-time process, systemd + hardware watchdog, A/B OTA with rollback. Rust not used unless measurement forces it. V4 core is built new; V3 frozen in `v3_core/`. See core/AGENTS.md. (2026-10-29)
+- App decisions (2026-10-29): ALPHA tier is assigned only by the team at registration; BETA is a user opt-in under app settings (STABLE <-> BETA only, with a consent record). App login is email + password plus Sign in with Apple. Device pairing uses a QR code (typed code as fallback). Account deletion is supported and deletes the account's data. The owner can stop the device from the app (pause or shutdown) over the LOCAL phone link only; the cloud, operators and companions cannot. See contracts/openapi/app.yaml and contracts/proto/cortex/v1/local.proto.
 - Fleet transport: WebSocket over TLS, protobuf `Envelope`, device-initiated; tiered message sets; alpha-only debug, camera relay and dataset capture. See §6.1-6.3 and §9.1. (2026-10-29)
 - Test plan: home/room lab first; field tests (MRT, real routes) only after lab-proven.
 - Partners: NTU (professor support — injection molding + 3D printing), SVH

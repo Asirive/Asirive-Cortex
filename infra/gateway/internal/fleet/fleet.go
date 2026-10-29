@@ -52,6 +52,8 @@ type Device struct {
 	SafetyP99Ms  uint32  `json:"safety_latency_p99_ms"`
 	Ota          *Ota    `json:"ota,omitempty"`
 	HBIntervalS  uint32  `json:"heartbeat_interval_s"`
+	Mic          bool    `json:"mic_muted"`
+	Attention    string  `json:"attention,omitempty"`
 	RegState     string  `json:"reg_state,omitempty"`
 	Label        string  `json:"label,omitempty"`
 	ClaimExpires int64   `json:"claim_expires_ms,omitempty"`
@@ -68,8 +70,33 @@ type Ota struct {
 }
 
 type Store struct {
-	mu      sync.RWMutex
-	devices map[string]*Device
+	mu       sync.RWMutex
+	devices  map[string]*Device
+	feedback []Feedback
+}
+
+type Feedback struct {
+	TsMs     int64     `json:"ts_ms"`
+	DeviceID string    `json:"device_id"`
+	Tier     string    `json:"tier"`
+	Text     string    `json:"text"`
+	App      string    `json:"app_version"`
+	Log      []LogLine `json:"log_excerpt,omitempty"`
+}
+
+func (s *Store) AddFeedback(f Feedback) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.feedback = append(s.feedback, f)
+	if over := len(s.feedback) - 200; over > 0 {
+		s.feedback = s.feedback[over:]
+	}
+}
+
+func (s *Store) Feedback() []Feedback {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return append([]Feedback(nil), s.feedback...)
 }
 
 func New() *Store { return &Store{devices: map[string]*Device{}} }
@@ -117,8 +144,15 @@ func (s *Store) Heartbeat(id string, hb *pb.Heartbeat, now time.Time) {
 	d.Link = trim(hb.Link.String(), "LINK_KIND_")
 	d.RTTMs, d.UptimeS, d.TempC, d.PowerW = hb.LinkRttMs, hb.UptimeS, hb.SocTempC, hb.PowerW
 	d.MemMB, d.Restarts, d.SafetyP99Ms = hb.MemUsedMb, hb.ServicesRestarted, hb.SafetyLatencyP99Ms
+	d.Mic = hb.MicMuted
 	if hb.FirmwareVersion != "" {
 		d.Firmware = hb.FirmwareVersion
+	}
+	if hb.McuVersion != "" {
+		d.MCU = hb.McuVersion
+	}
+	if hb.ModelVersion != "" {
+		d.Model = hb.ModelVersion
 	}
 }
 
@@ -166,7 +200,7 @@ func (s *Store) Sweep(now time.Time) {
 	defer s.mu.Unlock()
 	for _, d := range s.devices {
 		iv := int64(d.HBIntervalS)
-		if iv == 0 {
+		if iv < 2 || iv > 60 {
 			iv = 5
 		}
 		if d.Online && now.UnixMilli()-d.LastSeenMs > 3*iv*1000 {
@@ -202,4 +236,14 @@ func trim(s, prefix string) string {
 		return s[len(prefix):]
 	}
 	return s
+}
+
+// SetVersion records the version a device reports after an update attempt. Only a
+// committed update changes the firmware shown.
+func (s *Store) SetVersion(id, version string, committed bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if d := s.devices[id]; d != nil && committed && version != "" {
+		d.Firmware = version
+	}
 }

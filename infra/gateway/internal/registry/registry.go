@@ -28,10 +28,12 @@ const (
 const claimAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789" // no 0/O/1/I/L
 
 var (
-	ErrBadClaim  = errors.New("claim code invalid or expired")
-	ErrNotFound  = errors.New("device not found")
-	ErrRevoked   = errors.New("device revoked")
-	ErrRateLimit = errors.New("too many attempts, try again later")
+	ErrBadClaim       = errors.New("claim code invalid or expired")
+	ErrNotFound       = errors.New("device not found")
+	ErrRevoked        = errors.New("device revoked")
+	ErrRateLimit      = errors.New("too many attempts, try again later")
+	ErrAlreadyRevoked = errors.New("already revoked")
+	ErrIDSpace        = errors.New("no free device id")
 )
 
 type Registration struct {
@@ -89,15 +91,19 @@ func normalize(code string) string {
 
 // Register creates a PENDING device and returns its one-time claim code. The
 // code is shown once; only its hash is kept.
-func (r *Registry) Register(label, tier, ring string, bench bool, now time.Time) (*Registration, string) {
+// taken reports ids in use elsewhere (e.g. live devices); may be nil.
+func (r *Registry) Register(label, tier, ring string, bench bool, now time.Time, taken func(string) bool) (*Registration, string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.n++
 	prefix := map[string]string{"ALPHA": "ALPHA", "BETA": "BETA", "STABLE": "STBL"}[tier]
 	id := ""
-	for {
-		id = prefix + "-" + randString("0123456789", 3)
-		if r.byID[id] == nil {
+	for tries := 0; ; tries++ {
+		if tries > 2000 {
+			return nil, "", ErrIDSpace
+		}
+		id = prefix + "-" + randString("0123456789", 4)
+		if r.byID[id] == nil && (taken == nil || !taken(id)) {
 			break
 		}
 	}
@@ -105,7 +111,7 @@ func (r *Registry) Register(label, tier, ring string, bench bool, now time.Time)
 	reg := &Registration{ID: id, Label: label, Tier: tier, Ring: ring, Bench: bench && tier == "ALPHA",
 		State: Pending, CreatedAt: now, ExpiresAt: now.Add(r.ClaimTTL), claimHash: sha256.Sum256([]byte(code))}
 	r.byID[id] = reg
-	return cp(reg), code[:4] + "-" + code[4:]
+	return cp(reg), code[:4] + "-" + code[4:], nil
 }
 
 func cp(x *Registration) *Registration { c := *x; return &c }
@@ -165,6 +171,9 @@ func (r *Registry) Revoke(id string) error {
 	reg := r.byID[id]
 	if reg == nil {
 		return ErrNotFound
+	}
+	if reg.State == Revoked {
+		return ErrAlreadyRevoked
 	}
 	reg.State = Revoked
 	reg.tokenHash = [32]byte{}
