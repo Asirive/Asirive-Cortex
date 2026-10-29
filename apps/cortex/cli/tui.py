@@ -62,7 +62,7 @@ RE_FPS        = re.compile(r'FPS[:=]\s*([\d.]+)')
 RE_LATENCY    = re.compile(r'(?:latency|Layer\s*0).*?([\d.]+)\s*ms', re.IGNORECASE)
 
 # Main process signatures — match any of these substrings in cmdline
-APP_SIGNATURES = ("core/system.py", "core.system", "cortex.py", "main.py")
+APP_SIGNATURES = ("v3_core/system.py", "v3_core.system", "cortex.py", "main.py")
 
 
 def _read_thermal() -> Optional[float]:

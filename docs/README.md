@@ -17,7 +17,7 @@ they live in git history if you need them.
 
 - [website-faq.md](website-faq.md) — product FAQ (navigation-first framing)
 - [reference/YOLOE-THREE-MODES-QUICK-REF.md](reference/YOLOE-THREE-MODES-QUICK-REF.md) —
-  YOLOE API quick reference (matches current `core/layer1_learner`)
+  YOLOE API quick reference (matches current `v3_core/layer1_learner`)
 
 ## Research / vendor references
 
@@ -27,5 +27,5 @@ they live in git history if you need them.
 ## Conventions
 
 - Code is the source of truth. When docs and code disagree, code wins.
-- New docs must reference V4 paths only (`core/`, `device/`, `infra/`, `apps/`,
+- New docs must reference V4 paths only (`v3_core/` for V3 reference only, `device/`, `infra/`, `apps/`,
   `tools/`) — never `rpi5/`, `laptop/`, `shared/`, `scripts/`, `src/`.

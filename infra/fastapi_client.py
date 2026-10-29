@@ -93,7 +93,7 @@ class RPi5Client(AsyncWebSocketClient):
         """
         # Load from config if host not provided
         if host is None:
-            from core.config.config import get_config
+            from v3_core.config.config import get_config
             config = get_config()
             host = config.get('laptop_server', {}).get('host', '10.127.61.101')
         
@@ -167,7 +167,7 @@ class RPi5Client(AsyncWebSocketClient):
         self._layer1_cache_time = time.time()
         logger.debug(f"Cached {len(detections)} L1 detections from laptop ({source_tag})")
         try:
-            from core.system import get_status_display
+            from v3_core.system import get_status_display
             status_display = get_status_display()
             if status_display and detections:
                 formatted_dets = [

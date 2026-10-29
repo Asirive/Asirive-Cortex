@@ -24,7 +24,7 @@ Reference architecture: `docs/architecture/V4-ECOSYSTEM.md`.
 | `supabase/migrations/001_initial_schema.sql` | 7 tables (detections, queries, memories, adaptive_prompts, system_logs, device_status, device_commands) + heartbeat RPC + RLS + realtime |
 | `video_streamer.py`, `fastapi_client.py`, `websocket_client.py` | Device-side links (moved here from the old rpi5 package) |
 
-Legacy consumers: `core/` (device links, hybrid memory sync),
+Legacy consumers: `v3_core/` (device links, hybrid memory sync),
 `apps/laptop_dashboard/` (deprecated, message-shape reference only).
 
 ## V4 target (greenfield)

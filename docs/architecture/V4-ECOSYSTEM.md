@@ -275,7 +275,7 @@ Do not build on these; they remain in the repo only until refactored out:
 
 | Area | V4 treatment |
 |---|---|
-| `core/` | **Heavy refactor.** Decompose the `CortexSystem` monolith (`core/system.py`, ~8.4k lines) into services: perception, safety, voice, agent harness, nav, memory. Preserve proven logic: safety T0–T3, Gemini Live handler patterns, voice pipeline. Strip every deprecated system (§12). Add: local-brain adapter, dual STT/TTS policy, wake word service, offline routing, retention-aware sync. |
+| `v3_core/` → new V4 core | **Build new; V3 frozen as reference in `v3_core/`.** Decompose the `CortexSystem` monolith (`v3_core/system.py`, ~8.4k lines) into services: perception, safety, voice, agent harness, nav, memory. Preserve proven logic: safety T0–T3, Gemini Live handler patterns, voice pipeline. Strip every deprecated system (§12). Add: local-brain adapter, dual STT/TTS policy, wake word service, offline routing, retention-aware sync. |
 | `device/` | **Replace.** New ESP32-S3 firmware (ESP-IDF, C) for the glasses bridge + compute-module board support for Dragon Q8B. Current RPi-specific handlers are reference only. |
 | `infra/` | **Greenfield.** Go fleet gateway + OTA + contracts. Current `infra/api/protocol.py` + `infra/supabase/` schema are seeds/reference for message shapes and tables. |
 | App | **Greenfield.** Flutter (iOS-first). `apps/laptop_dashboard` is deprecated; its message protocol is the only reference worth keeping. |
@@ -290,7 +290,7 @@ Do not build on these; they remain in the repo only until refactored out:
 
 - **Orchestrator (source of truth for product + ecosystem):** owns this doc, the
   contracts, cross-domain consistency, and arbitrates between domains.
-- **Domain agent — core/device:** compute-module runtime + ESP32-S3 firmware +
+- **Domain agent — v3_core/device:** compute-module runtime + ESP32-S3 firmware +
   local AI stack (Python / C / Rust).
 - **Domain agent — app:** Flutter app (Dart, iOS/Android).
 - **Domain agent — cloud infra:** Go gateway + OTA + web dashboard.

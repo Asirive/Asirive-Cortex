@@ -228,8 +228,8 @@ def run_command(args: argparse.Namespace) -> int:
     command = args.command
 
     if command == "all":
-        from core.system import CortexSystem
-        from core.config.config import get_config
+        from v3_core.system import CortexSystem
+        from v3_core.config.config import get_config
 
         logger.info("Starting Asirive Cortex v2.0 (all layers)...")
 
