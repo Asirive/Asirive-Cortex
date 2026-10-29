@@ -27,6 +27,17 @@ Reference architecture: `docs/architecture/V4-ECOSYSTEM.md`.
 Legacy consumers: `v3_core/` (device links, hybrid memory sync),
 `apps/laptop_dashboard/` (deprecated, message-shape reference only).
 
+## V4 build status (2026-10-29)
+
+- `contracts/` (repo root): protobuf contracts + buf config. Lints and generates Go.
+- `gateway/`: Go gateway skeleton. Device WebSocket, heartbeat/log/event/OTA
+  status handling, tier enforcement, dashboard API, audit, embedded Asirive
+  fleet console (`gateway/web/index.html`), `cmd/simdevice` fake devices. Dev
+  token auth and in-memory state only. See `gateway/README.md`.
+- `supabase/migrations/002_fleet.sql`: V4 Postgres schema (not applied anywhere yet).
+- Not built: mTLS/PKI, sealed envelope, roles, Postgres wiring, OTA service,
+  camera relay, dataset pipeline, Python/Dart codegen.
+
 ## V4 target (greenfield)
 
 1. **Fleet gateway (Go).** Device registry, persistent device/app channels,
@@ -67,5 +78,6 @@ psql -f supabase/migrations/001_initial_schema.sql   # schema apply (reference)
 
 ## Change log (append one line per meaningful change)
 
+- 2026-10-29: Added contracts/, gateway skeleton, fleet console, 002_fleet.sql. Tiered access and dataset-capture policy documented in V4-ECOSYSTEM.md 6.1 and 9.1.
 - 2026-10-12: AGENTS.md created. Directory holds V3 seeds; Go gateway to be
   created here per V4-ECOSYSTEM.md section 6.

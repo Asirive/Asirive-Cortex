@@ -1,0 +1,89 @@
+syntax = "proto3";
+package cortex.v1;
+import "cortex/v1/common.proto";
+option go_package = "github.com/asirive/cortex/gateway/internal/gen/cortex/v1;cortexv1";
+
+// First message on every connection. Device always dials out.
+message Hello {
+  Tier tier = 1;
+  Ring ring = 2;
+  string firmware_version = 3;   // compute module
+  string mcu_version = 4;        // glasses ESP32-S3
+  string model_version = 5;      // brain / engine build
+  string hardware = 6;           // e.g. "dragon-q8b"
+  bool bench_device = 7;         // team-owned bench unit; required for alpha camera/dataset
+  uint64 resume_after_seq = 8;   // last server seq the device processed
+  uint32 heartbeat_interval_s = 9;
+}
+
+message HelloAck {
+  bool accepted = 1;
+  string reason = 2;               // set when rejected
+  uint32 heartbeat_interval_s = 3; // server may adjust
+  uint64 last_seen_seq = 4;        // lets the device resend what the gateway missed
+  int64 server_ts_ms = 5;
+}
+
+enum SafetyState {
+  SAFETY_STATE_UNSPECIFIED = 0;
+  SAFETY_STATE_OK = 1;
+  SAFETY_STATE_DEGRADED = 2;  // restarted / stalled and recovered
+  SAFETY_STATE_FAULT = 3;     // cannot guarantee T0-T3
+}
+
+enum BrainMode {
+  BRAIN_MODE_UNSPECIFIED = 0;
+  BRAIN_MODE_LOCAL = 1;   // LFM3-Omni
+  BRAIN_MODE_CLOUD = 2;   // Gemini Live fallback
+  BRAIN_MODE_NONE = 3;    // agent down
+}
+
+enum LinkKind {
+  LINK_KIND_UNSPECIFIED = 0;
+  LINK_KIND_USB_TETHER = 1;
+  LINK_KIND_BLE = 2;
+  LINK_KIND_NONE = 3;
+}
+
+// Sent every heartbeat_interval_s. The dashboard's uptime picture comes from this.
+message Heartbeat {
+  uint32 battery_pct = 1;
+  bool charging = 2;
+  SafetyState safety = 3;
+  BrainMode brain = 4;
+  LinkKind link = 5;
+  int32 link_rtt_ms = 6;
+  uint32 uptime_s = 7;
+  float soc_temp_c = 8;
+  float power_w = 9;             // average draw since last heartbeat
+  uint32 mem_used_mb = 10;
+  uint32 services_restarted = 11; // since boot
+  bool mic_muted = 12;
+  string firmware_version = 13;
+  string mcu_version = 14;
+  string model_version = 15;
+  uint32 safety_latency_p99_ms = 16;
+}
+
+message Ack {
+  uint64 acked_seq = 1;
+  bool ok = 2;
+  string error = 3;
+}
+
+message Goodbye { string reason = 1; }
+
+// Provisioning (USB claim by the phone app). Links a device key to an account.
+message ClaimRequest {
+  string device_id = 1;
+  bytes device_public_key = 2;
+  string claim_code = 3;     // shown by the app / QR
+  string account_id = 4;
+}
+
+message ClaimResult {
+  bool ok = 1;
+  string error = 2;
+  bytes gateway_public_key = 3;
+  Tier assigned_tier = 4;
+}

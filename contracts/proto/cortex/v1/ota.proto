@@ -1,0 +1,64 @@
+syntax = "proto3";
+package cortex.v1;
+import "cortex/v1/common.proto";
+option go_package = "github.com/asirive/cortex/gateway/internal/gen/cortex/v1;cortexv1";
+
+enum ArtifactKind {
+  ARTIFACT_KIND_UNSPECIFIED = 0;
+  ARTIFACT_KIND_COMPUTE_FIRMWARE = 1;
+  ARTIFACT_KIND_MCU_FIRMWARE = 2;  // glasses ESP32-S3, relayed compute -> USB -> MCU
+  ARTIFACT_KIND_MODEL = 3;
+  ARTIFACT_KIND_CONFIG = 4;
+}
+
+message Artifact {
+  ArtifactKind kind = 1;
+  string version = 2;
+  string url = 3;
+  uint64 size_bytes = 4;
+  bytes sha256 = 5;
+  bytes signature = 6;        // alpha: team key. production: real PKI
+  string min_version = 7;     // refuse if device is older (forces stepping stones)
+}
+
+// Signed manifest. Device verifies signature BEFORE downloading or applying.
+message Manifest {
+  string release_id = 1;
+  Ring ring = 2;
+  repeated Artifact artifacts = 3;
+  string rollback_to_release_id = 4;
+  uint32 rollout_percent = 5;   // staged rollout within the ring
+  int64 not_before_ms = 6;
+  bytes manifest_signature = 7;
+}
+
+message OtaOffer { Manifest manifest = 1; }
+
+enum OtaStage {
+  OTA_STAGE_UNSPECIFIED = 0;
+  OTA_STAGE_DOWNLOADING = 1;
+  OTA_STAGE_VERIFYING = 2;
+  OTA_STAGE_STAGED = 3;       // written to inactive slot
+  OTA_STAGE_REBOOTING = 4;
+  OTA_STAGE_HEALTH_CHECK = 5;
+}
+
+message OtaProgress {
+  string release_id = 1;
+  OtaStage stage = 2;
+  uint32 percent = 3;
+}
+
+enum OtaOutcome {
+  OTA_OUTCOME_UNSPECIFIED = 0;
+  OTA_OUTCOME_COMMITTED = 1;
+  OTA_OUTCOME_ROLLED_BACK = 2;  // failed boot or failed safety self-test
+  OTA_OUTCOME_REJECTED = 3;     // bad signature / too old / not for this ring
+}
+
+message OtaResult {
+  string release_id = 1;
+  OtaOutcome outcome = 2;
+  string detail = 3;
+  string running_version = 4;
+}

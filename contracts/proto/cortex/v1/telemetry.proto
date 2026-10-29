@@ -1,0 +1,36 @@
+syntax = "proto3";
+package cortex.v1;
+option go_package = "github.com/asirive/cortex/gateway/internal/gen/cortex/v1;cortexv1";
+
+enum LogLevel {
+  LOG_LEVEL_UNSPECIFIED = 0;
+  LOG_LEVEL_DEBUG = 1;
+  LOG_LEVEL_INFO = 2;
+  LOG_LEVEL_WARN = 3;
+  LOG_LEVEL_ERROR = 4;
+}
+
+message LogEntry {
+  int64 ts_ms = 1;
+  LogLevel level = 2;
+  string service = 3;   // safety, voice, agent, ...
+  string message = 4;   // text only. Never media, never raw audio or frames.
+}
+
+// Beta/stable: trimmed (WARN+). Alpha: everything the device is configured to send.
+message LogBatch { repeated LogEntry entries = 1; }
+
+// Structured events for the dashboard timeline (and the full alpha event feed).
+message Event {
+  int64 ts_ms = 1;
+  string kind = 2;              // "safety_alert", "service_restart", "brain_switch", ...
+  string summary = 3;
+  map<string, string> attrs = 4;
+}
+
+// In-app feedback. Text plus an optional trimmed log excerpt. No media field exists.
+message Feedback {
+  string text = 1;
+  repeated LogEntry log_excerpt = 2;
+  string app_version = 3;
+}

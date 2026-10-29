@@ -152,6 +152,45 @@ navigation mode while tethered. GPS is outdoor-only (off indoors, saves power).
 
 ---
 
+### 6.1 Access tiers
+
+| Tier | Device sends | Cloud can do |
+|---|---|---|
+| ALPHA (team bench) | everything: full logs, full event feed, debug state; on request camera relay and dataset capture | OTA, debug commands, config, restart |
+| BETA (opted in) | health, versions, trimmed logs (WARN+), feedback | OTA via ring |
+| STABLE | health, versions, feedback | OTA only |
+
+Alpha-only messages (`contracts/proto/cortex/v1/alpha.proto`) are compiled into
+alpha builds only, and the gateway also rejects them from any device that is not
+ALPHA and flagged `bench_device`. Production devices cannot be commanded or
+switched into debug remotely because the handlers do not exist in the build.
+
+### 6.2 Transport and security
+
+- **Transport:** WebSocket over TLS 1.3, protobuf frames, device-initiated and
+  kept open. The device dials out (phone tether and NAT friendly); the gateway
+  sends commands down the same connection. Reconnect with backoff, resume by
+  sequence number, queue while offline.
+- **Layers:** mutual TLS with a per-device certificate (alpha: team CA, production:
+  real PKI); signed, end-to-end sealed `Envelope`; replay protection (seq + clock
+  window); signed commands and OTA manifests verified on the device; tier-gated
+  message sets; per-user dashboard roles, short-lived tokens, audit log of every
+  command.
+- **Status today:** the skeleton uses one shared dev token and unsealed payloads.
+  mTLS, sealing and roles are not built yet.
+
+### 6.3 Stack
+
+- Gateway: Go, single static binary (`infra/gateway`).
+- State: Postgres (`infra/supabase/migrations/002_fleet.sql`); in-memory store
+  behind the same API for the skeleton.
+- Console: embedded single-page Asirive fleet console served by the gateway
+  (`infra/gateway/web`); fleet view, per-device detail, rings and updates, audit.
+  Moves to React/TypeScript if it outgrows a single page.
+- Hosting: self-host server in alpha (Docker, TLS via a reverse proxy), VPS at beta.
+- Uptime: heartbeat every 5 s, offline after 3 missed, staged rollout with
+  health-gated halt and automatic rollback.
+
 ## 7. Contracts — the Polyglot Glue
 
 The ecosystem is deliberately polyglot: Python (device), Dart (app), Go (infra),
@@ -214,6 +253,24 @@ UX state with haptic confirmation.
 
 ---
 
+### 9.1 Training data collection (amendment, 2026-10-29)
+
+The zero-retention rule above protects users. AI training still needs real data,
+so data collection is a separate, consented pipeline, never a side effect of
+telemetry:
+
+- **Who:** alpha bench devices only (team-owned, `bench_device = true`), operated
+  by team members or consented testers.
+- **How:** an explicit `DatasetControl` session with a consent record, chosen
+  streams (video, ToF, audio, IMU, GPS), a time limit, and an on-device indicator.
+- **Where:** a dataset store separate from the telemetry database, chunked and
+  hashed, carrying no account identity. Consent revocation deletes the session.
+- **Not covered:** beta and stable users. Collecting from user devices needs its
+  own opt-in design, consent text, retention and review, and is not authorized by
+  this document. Until then the zero-retention rule holds for every user device.
+- **Open:** dataset store technology and location, retention period, bystander
+  handling (people in frame), and review of consent wording.
+
 ## 10. Update Rings & Feedback
 
 | Ring | Who | Gate |
@@ -248,6 +305,7 @@ the team key; production = real PKI from V4-Final manufacturing.
 - Login: Apple ID + email.
 - Infra: Go gateway + web dashboard; dev self-host → VPS at beta.
 - Core language: Python (C for measured hot paths), hardened: safety is a separate real-time process, systemd + hardware watchdog, A/B OTA with rollback. Rust not used unless measurement forces it. V4 core is built new; V3 frozen in `v3_core/`. See core/AGENTS.md. (2026-10-29)
+- Fleet transport: WebSocket over TLS, protobuf `Envelope`, device-initiated; tiered message sets; alpha-only debug, camera relay and dataset capture. See §6.1-6.3 and §9.1. (2026-10-29)
 - Test plan: home/room lab first; field tests (MRT, real routes) only after lab-proven.
 - Partners: NTU (professor support — injection molding + 3D printing), SVH
   (visually-handicapped org collaboration). V4-Final funded via grants.
@@ -315,3 +373,6 @@ because the ecosystem spans languages, hardware and organizations.
 - [ ] LFM3-Omni speech output quality vs Supertonic / Cartesia for navigation cues
 - [ ] Spare device / multi-device support (post-alpha)
 - [ ] Field-test protocol with SVH (after lab-proven)
+- [ ] Fleet: mTLS + device PKI, sealed envelope, dashboard roles, Postgres wiring
+- [ ] Dataset store, retention, consent wording, bystander policy (§9.1)
+- [ ] Gateway hosting plan: self-host server, domain, TLS, backups

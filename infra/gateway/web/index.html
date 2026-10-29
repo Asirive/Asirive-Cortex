@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="claude:viewport-fit-sides" content="cover">
+<title>Cortex Fleet Console</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* Layout: black console. Top bar, summary strip, then fleet table with a detail drawer on the right.
+   Brand: Asirive black + #EAFF00. Yellow is the only accent; status colors are separate and semantic. */
+:root {
+  --bg: #0a0a0a;
+  --panel: #121212;
+  --panel-2: #181818;
+  --line: #262626;
+  --fg: #f2f2ee;
+  --muted: #8d8d86;
+  --accent: #eaff00;
+  --accent-ink: #0a0a0a;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --bad: #f87171;
+  --idle: #5a5a55;
+  --display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg); color: var(--fg); font-family: var(--display); font-size: 14px; line-height: 1.45;
+  padding-block: 0;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  min-height: 100vh;
+}
+button { font: inherit; color: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.wrap { max-width: 1320px; margin: 0 auto; }
+
+/* top bar */
+.top { display: flex; align-items: center; gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 10px; }
+.brand svg { width: 28px; height: 28px; display: block; }
+.brand b { font-weight: 800; letter-spacing: .14em; font-size: 13px; text-transform: uppercase; }
+.brand span { color: var(--muted); letter-spacing: .14em; font-size: 11px; text-transform: uppercase; }
+.tabs { display: flex; gap: 4px; margin-left: 12px; }
+.tab { background: none; border: 0; padding: 7px 12px; color: var(--muted); letter-spacing: .08em; font-size: 12px; text-transform: uppercase; font-weight: 600; border-bottom: 2px solid transparent; }
+.tab[aria-selected="true"] { color: var(--fg); border-bottom-color: var(--accent); }
+.spacer { flex: 1; }
+.conn { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.demo-flag { background: var(--accent); color: var(--accent-ink); font-weight: 800; font-size: 11px; letter-spacing: .1em; padding: 2px 8px; text-transform: uppercase; }
+
+/* summary */
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); margin: 18px 0; }
+.stat { background: var(--panel); padding: 14px 16px; min-width: 0; }
+.stat h3 { margin: 0 0 6px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.stat .big { font-family: var(--mono); font-size: 30px; font-weight: 500; line-height: 1.1; }
+.stat .big small { font-size: 14px; color: var(--muted); }
+.stat .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.bars { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.bar { display: grid; grid-template-columns: 52px 1fr 52px; align-items: center; gap: 8px; font-size: 12px; }
+.bar i { display: block; height: 6px; background: #1f1f1f; position: relative; }
+.bar i u { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
+
+/* controls */
+.controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { background: transparent; border: 1px solid var(--line); padding: 5px 11px; font-size: 12px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.chip[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+input[type=search], input[type=password], input[type=text] { background: var(--panel); border: 1px solid var(--line); color: var(--fg); padding: 7px 10px; font: inherit; min-width: 0; }
+input::placeholder { color: var(--muted); }
+
+/* layout fleet + drawer */
+.main { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; padding-bottom: 40px; }
+.main.has-detail { grid-template-columns: minmax(0, 1fr) minmax(320px, 420px); }
+@media (max-width: 900px) { .main.has-detail { grid-template-columns: minmax(0, 1fr); } }
+.tablewrap { overflow-x: auto; border: 1px solid var(--line); background: var(--panel); }
+table { border-collapse: collapse; width: 100%; min-width: 760px; }
+th { text-align: left; font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 10px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+td { padding: 10px 12px; border-bottom: 1px solid #1c1c1c; white-space: nowrap; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--panel-2); }
+tbody tr.sel { background: #1a1d05; box-shadow: inset 3px 0 0 var(--accent); }
+tbody tr.off td { color: var(--muted); }
+.dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 8px; vertical-align: middle; background: var(--idle); }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.bad { background: var(--bad); }
+.status { font-size: 12px; font-weight: 600; letter-spacing: .04em; }
+.tier { font-size: 11px; font-weight: 800; letter-spacing: .1em; padding: 2px 7px; border: 1px solid var(--line); }
+.tier.ALPHA { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.tier.BETA { color: var(--fg); border-color: #555; }
+.tier.STABLE { color: var(--muted); }
+.batt { display: inline-flex; align-items: center; gap: 6px; }
+.batt i { width: 26px; height: 9px; border: 1px solid #666; position: relative; display: inline-block; }
+.batt i u { position: absolute; inset: 1px auto 1px 1px; background: var(--ok); }
+.batt.low i u { background: var(--bad); }
+.empty { padding: 40px 16px; color: var(--muted); text-align: center; }
+
+/* drawer */
+.drawer { border: 1px solid var(--line); background: var(--panel); position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto; }
+@media (max-width: 900px) { .drawer { position: static; max-height: none; } }
+.dh { padding: 14px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; }
+.dh h2 { margin: 0; font-size: 18px; font-weight: 800; letter-spacing: .04em; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.x { background: none; border: 1px solid var(--line); width: 28px; height: 28px; color: var(--muted); }
+.sec { padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.sec h4 { margin: 0 0 10px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.kv { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+.kv div { min-width: 0; }
+.kv span { display: block; font-size: 11px; color: var(--muted); }
+.kv b { font-family: var(--mono); font-weight: 500; font-size: 13px; overflow-wrap: anywhere; }
+.logbox { background: #0d0d0d; border: 1px solid var(--line); max-height: 220px; overflow: auto; padding: 8px 10px; font-family: var(--mono); font-size: 12px; }
+.logbox div { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1px 0; }
+.lv-ERROR { color: var(--bad); } .lv-WARN { color: var(--warn); } .lv-DEBUG { color: var(--muted); }
+.timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.timeline li { display: grid; grid-template-columns: 62px 1fr; gap: 10px; font-size: 13px; }
+.timeline time { font-family: var(--mono); color: var(--muted); font-size: 12px; }
+.btnrow { display: flex; flex-wrap: wrap; gap: 8px; }
+.btn { background: transparent; border: 1px solid var(--fg); padding: 7px 12px; font-size: 12px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.btn:hover { background: var(--fg); color: var(--bg); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.danger { border-color: var(--bad); color: var(--bad); }
+.btn.danger:hover { background: var(--bad); color: var(--bg); }
+.btn[disabled] { opacity: .35; pointer-events: none; }
+.note { font-size: 12px; color: var(--muted); margin-top: 8px; }
+.locked { border: 1px dashed #333; padding: 10px 12px; font-size: 12px; color: var(--muted); }
+.progress { height: 6px; background: #1f1f1f; margin: 6px 0; }
+.progress u { display: block; height: 100%; background: var(--accent); }
+.toast { position: fixed; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); left: 50%; transform: translateX(-50%); background: var(--accent); color: var(--accent-ink); padding: 9px 16px; font-weight: 700; font-size: 13px; z-index: 20; }
+
+/* rings */
+.rings { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; padding-bottom: 40px; }
+.ring { border: 1px solid var(--line); background: var(--panel); }
+.ring header { padding: 14px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: baseline; gap: 10px; }
+.ring header h2 { margin: 0; font-size: 16px; letter-spacing: .1em; font-weight: 800; }
+.ring header span { color: var(--muted); font-size: 12px; }
+.vrow { display: grid; grid-template-columns: 1fr 40px; gap: 10px; align-items: center; margin-bottom: 8px; font-size: 13px; }
+
+/* gate */
+.gate { max-width: 460px; margin: 12vh auto; border: 1px solid var(--line); background: var(--panel); padding: 28px; }
+.gate h1 { margin: 12px 0 6px; font-size: 22px; letter-spacing: .06em; text-transform: uppercase; font-weight: 800; }
+.gate p { color: var(--muted); margin: 0 0 16px; }
+.gate form { display: flex; flex-direction: column; gap: 10px; }
+.err { color: var(--bad); font-size: 13px; min-height: 18px; }
+table.audit td { white-space: normal; }
+@media (prefers-reduced-motion: no-preference) { .dot.ok { animation: none; } }
+</style>
+</head>
+<body>
+<div id="app" class="wrap"></div>
+<script>
+"use strict";
+var LOGO = '<svg viewBox="0 0 100 100" aria-hidden="true"><rect width="100" height="100" fill="#eaff00"/><rect x="20" y="20" width="20" height="40" fill="#000"/><rect x="20" y="70" width="20" height="10" fill="#000"/><rect x="60" y="40" width="20" height="40" fill="#000"/><rect x="60" y="20" width="20" height="10" fill="#000"/><rect x="40" y="40" width="20" height="20" fill="#000"/></svg>';
+
+var S = { token: "", demo: false, devices: [], summary: null, audit: [], tab: "fleet", tier: "ALL", status: "ALL", q: "", sel: null, detail: null, err: "", lastOk: 0, level: "INFO" };
+var $app = document.getElementById("app");
+var timer = null;
+
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+function ago(ms) { if (!ms) return "never"; var s = Math.max(0, Math.round((Date.now() - ms) / 1000)); if (s < 60) return s + "s ago"; if (s < 3600) return Math.round(s / 60) + "m ago"; return Math.round(s / 3600) + "h ago"; }
+function up(s) { var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return h ? h + "h " + m + "m" : m + "m " + (s % 60) + "s"; }
+function clock(ms) { var d = new Date(ms); return d.toTimeString().slice(0, 8); }
+function health(d) {
+  if (!d.online) return { k: "off", label: "Offline", dot: "" };
+  if (d.safety === "FAULT") return { k: "bad", label: "Safety fault", dot: "bad" };
+  if (d.safety === "DEGRADED") return { k: "warn", label: "Degraded", dot: "warn" };
+  if (d.battery_pct < 15 && !d.charging) return { k: "warn", label: "Low battery", dot: "warn" };
+  return { k: "ok", label: "Healthy", dot: "ok" };
+}
+
+/* ---------- data ---------- */
+function api(path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({ Authorization: "Bearer " + S.token }, opts.headers || {});
+  return fetch(path, opts).then(function (r) { if (!r.ok) throw new Error(r.status === 401 ? "Token rejected" : "Gateway error " + r.status); return r.json(); });
+}
+function refresh() {
+  if (S.demo) { demoTick(); return render(); }
+  Promise.all([api("/api/devices"), api("/api/summary"), api("/api/audit")]).then(function (r) {
+    S.devices = r[0] || []; S.summary = r[1]; S.audit = r[2] || []; S.err = ""; S.lastOk = Date.now();
+    if (S.sel) return api("/api/devices/" + encodeURIComponent(S.sel)).then(function (d) { S.detail = d; });
+  }).catch(function (e) { S.err = e.message; if (e.message === "Token rejected") { logout(); } })
+    .then(render);
+}
+function start() { refresh(); clearInterval(timer); timer = setInterval(refresh, 3000); }
+function logout() { clearInterval(timer); S.token = ""; S.demo = false; try { sessionStorage.removeItem("cortex-token"); } catch (e) {} render(); }
+
+/* ---------- demo data (marked, used when no gateway is reachable) ---------- */
+var DEMO = null;
+function demoInit() {
+  var now = Date.now(), rnd = function (a, b) { return a + Math.floor(Math.random() * (b - a)); };
+  var mk = function (id, tier, bench, fw, online, safety) {
+    return { id: id, tier: tier, ring: tier, bench: bench, hardware: "dragon-q8b", firmware: fw, mcu: "0.2.1", model: "lfm3-omni-2b-q4", online: online,
+      last_seen_ms: online ? now - rnd(0, 4000) : now - rnd(120000, 900000), connected_ms: now - rnd(600000, 9000000), battery_pct: rnd(14, 98), charging: false,
+      safety: safety, brain: "LOCAL", link: "USB_TETHER", link_rtt_ms: rnd(28, 90), uptime_s: rnd(900, 40000), soc_temp_c: 48 + Math.random() * 14,
+      power_w: 3 + Math.random() * 3, mem_used_mb: rnd(4200, 5900), services_restarted: 0, safety_latency_p99_ms: rnd(42, 84), heartbeat_interval_s: 5 };
+  };
+  var ds = [mk("ALPHA-001", "ALPHA", true, "4.0.0-alpha.3", true, "OK"), mk("ALPHA-002", "ALPHA", true, "4.0.0-alpha.3", true, "OK"),
+    mk("ALPHA-003", "ALPHA", true, "4.0.0-alpha.2", true, "DEGRADED"), mk("ALPHA-004", "ALPHA", true, "4.0.0-alpha.3", false, "OK"),
+    mk("BETA-001", "BETA", false, "4.0.0-beta.1", true, "OK"), mk("BETA-002", "BETA", false, "4.0.0-beta.1", true, "OK"),
+    mk("BETA-003", "BETA", false, "4.0.0-beta.1", false, "OK"), mk("STBL-001", "STABLE", false, "3.9.4", true, "OK"), mk("STBL-002", "STABLE", false, "3.9.4", true, "OK")];
+  ds[1].brain = "CLOUD"; ds[2].services_restarted = 2;
+  ds[2].ota = { release_id: "r-2026.10.29", stage: "DOWNLOADING", percent: 42 };
+  DEMO = { devices: ds, audit: [{ ts_ms: now - 600000, actor: "dev-admin", action: "command:set_log_level", target: "ALPHA-001", result: "sent" }] };
+}
+function demoTick() {
+  if (!DEMO) demoInit();
+  var now = Date.now();
+  DEMO.devices.forEach(function (d) {
+    if (!d.online) return;
+    d.last_seen_ms = now - Math.floor(Math.random() * 3000); d.uptime_s += 3; d.link_rtt_ms = 28 + Math.floor(Math.random() * 60);
+    d.soc_temp_c = Math.max(44, Math.min(66, d.soc_temp_c + (Math.random() - .5)));
+    if (d.ota && d.ota.percent < 100) { d.ota.percent = Math.min(100, d.ota.percent + 3); if (d.ota.percent === 100) { d.ota.stage = "DONE"; d.ota.outcome = "COMMITTED"; } }
+  });
+  S.devices = DEMO.devices.map(function (d) { return Object.assign({}, d); }); S.audit = DEMO.audit;
+  S.summary = null; S.lastOk = now; S.err = "";
+  if (S.sel) {
+    var d = S.devices.filter(function (x) { return x.id === S.sel; })[0];
+    if (d) {
+      var t = Date.now(), lines = [
+        { ts_ms: t - 9000, level: "INFO", service: "agent", message: "brain=" + d.brain }, { ts_ms: t - 7000, level: "DEBUG", service: "perception", message: "frame batch ok (12 fps)" },
+        { ts_ms: t - 4000, level: "INFO", service: "voice", message: "wake word armed" }, { ts_ms: t - 2500, level: d.safety === "DEGRADED" ? "WARN" : "INFO", service: "safety", message: d.safety === "DEGRADED" ? "restarted by supervisor, heartbeat late 410 ms" : "heartbeat ok p99=" + d.safety_latency_p99_ms + " ms" }];
+      var ev = [{ ts_ms: d.connected_ms, kind: "connected", summary: "device connected" }];
+      if (d.services_restarted) ev.push({ ts_ms: t - 120000, kind: "service_restart", summary: "safety restarted by supervisor" });
+      S.detail = { device: d, logs: d.tier === "ALPHA" ? lines : [], events: ev };
+    }
+  }
+}
+function enterDemo() { S.demo = true; S.token = "demo"; DEMO = null; start(); }
+
+/* ---------- views ---------- */
+function summaryOf() {
+  var t = { total: 0, online: 0, bad: 0, tiers: {} };
+  S.devices.forEach(function (d) {
+    t.total++; var c = t.tiers[d.tier] || (t.tiers[d.tier] = { total: 0, online: 0 }); c.total++;
+    if (d.online) { t.online++; c.online++; }
+    if (d.online && d.safety && d.safety !== "OK") t.bad++;
+  });
+  return t;
+}
+function viewSummary() {
+  var t = summaryOf(), ota = S.devices.filter(function (d) { return d.ota && d.ota.stage !== "DONE"; }).length;
+  var rolled = S.devices.filter(function (d) { return d.ota && d.ota.outcome === "ROLLED_BACK"; }).length;
+  var pct = t.total ? Math.round(100 * t.online / t.total) : 0;
+  var bars = ["ALPHA", "BETA", "STABLE"].map(function (k) {
+    var c = t.tiers[k] || { total: 0, online: 0 }, w = c.total ? Math.round(100 * c.online / c.total) : 0;
+    return '<div class="bar"><span class="mono">' + k + '</span><i><u style="width:' + w + '%"></u></i><span class="mono">' + c.online + '/' + c.total + '</span></div>';
+  }).join("");
+  return '<section class="summary" aria-label="Fleet summary">' +
+    '<div class="stat"><h3>Online</h3><div class="big">' + t.online + '<small> / ' + t.total + '</small></div><div class="sub">' + pct + '% of fleet reachable</div></div>' +
+    '<div class="stat"><h3>Uptime by tier</h3><div class="bars">' + bars + '</div></div>' +
+    '<div class="stat"><h3>Safety not OK</h3><div class="big" style="color:' + (t.bad ? 'var(--warn)' : 'var(--ok)') + '">' + t.bad + '</div><div class="sub">' + (t.bad ? 'devices degraded or faulted' : 'all online devices nominal') + '</div></div>' +
+    '<div class="stat"><h3>Updates</h3><div class="big">' + ota + '</div><div class="sub">in flight' + (rolled ? ' · <span style="color:var(--bad)">' + rolled + ' rolled back</span>' : ' · none rolled back') + '</div></div></section>';
+}
+function filtered() {
+  return S.devices.filter(function (d) {
+    var h = health(d);
+    if (S.tier !== "ALL" && d.tier !== S.tier) return false;
+    if (S.status === "ONLINE" && !d.online) return false;
+    if (S.status === "OFFLINE" && d.online) return false;
+    if (S.status === "ATTENTION" && (h.k === "ok" || h.k === "off")) return false;
+    if (S.q && d.id.toLowerCase().indexOf(S.q.toLowerCase()) < 0) return false;
+    return true;
+  });
+}
+function chip(group, val, label) { return '<button class="chip" data-group="' + group + '" data-val="' + val + '" aria-pressed="' + (S[group] === val) + '">' + label + '</button>'; }
+function viewFleet() {
+  var rows = filtered().map(function (d) {
+    var h = health(d), low = d.battery_pct < 20;
+    return '<tr data-id="' + esc(d.id) + '" class="' + (S.sel === d.id ? "sel " : "") + (d.online ? "" : "off") + '">' +
+      '<td><span class="dot ' + h.dot + '"></span><span class="status">' + h.label + '</span></td>' +
+      '<td class="mono"><b>' + esc(d.id) + '</b></td><td><span class="tier ' + esc(d.tier) + '">' + esc(d.tier) + '</span></td>' +
+      '<td class="mono">' + esc(d.firmware) + '</td>' +
+      '<td>' + (d.online ? '<span class="batt mono ' + (low ? "low" : "") + '"><i><u style="width:' + d.battery_pct + '%"></u></i>' + d.battery_pct + '%</span>' : '<span class="mono">–</span>') + '</td>' +
+      '<td>' + (d.online ? esc(d.brain === "LOCAL" ? "Local" : d.brain === "CLOUD" ? "Cloud fallback" : d.brain) : "–") + '</td>' +
+      '<td class="mono">' + (d.online ? d.link_rtt_ms + ' ms' : '–') + '</td>' +
+      '<td class="mono">' + (d.online ? d.safety_latency_p99_ms + ' ms' : '–') + '</td>' +
+      '<td class="mono">' + ago(d.last_seen_ms) + '</td></tr>';
+  }).join("");
+  var table = rows ? '<div class="tablewrap"><table><thead><tr><th>Status</th><th>Device</th><th>Tier</th><th>Firmware</th><th>Battery</th><th>Brain</th><th>Link RTT</th><th>Safety p99</th><th>Last seen</th></tr></thead><tbody>' + rows + '</tbody></table></div>' :
+    '<div class="tablewrap"><div class="empty">' + (S.devices.length ? "No devices match these filters." : "No devices have connected yet. Start the simulator or power on an alpha unit.") + '</div></div>';
+  return '<div class="controls"><div class="chips" role="group" aria-label="Tier filter">' + chip("tier", "ALL", "All tiers") + chip("tier", "ALPHA", "Alpha") + chip("tier", "BETA", "Beta") + chip("tier", "STABLE", "Stable") + '</div>' +
+    '<div class="chips" role="group" aria-label="Status filter">' + chip("status", "ALL", "Any status") + chip("status", "ONLINE", "Online") + chip("status", "OFFLINE", "Offline") + chip("status", "ATTENTION", "Needs attention") + '</div>' +
+    '<span class="spacer"></span><input type="search" id="q" placeholder="Search device ID" value="' + esc(S.q) + '" aria-label="Search device ID"></div>' +
+    '<div class="main ' + (S.sel ? "has-detail" : "") + '">' + table + (S.sel ? viewDrawer() : "") + '</div>';
+}
+function kv(k, v) { return '<div><span>' + k + '</span><b>' + esc(v) + '</b></div>'; }
+function viewDrawer() {
+  var D = S.detail && S.detail.device && S.detail.device.id === S.sel ? S.detail : null;
+  if (!D) return '<aside class="drawer"><div class="dh"><h2>' + esc(S.sel) + '</h2><button class="x" data-close aria-label="Close">×</button></div><div class="sec">Loading…</div></aside>';
+  var d = D.device, h = health(d), alpha = d.tier === "ALPHA" && d.bench;
+  var lv = { DEBUG: 1, INFO: 2, WARN: 3, ERROR: 4 };
+  var logs = (D.logs || []).filter(function (l) { return lv[l.level] >= lv[S.level]; }).map(function (l) {
+    return '<div class="lv-' + esc(l.level) + '">' + clock(l.ts_ms) + ' ' + esc(l.service) + ' ' + esc(l.message) + '</div>';
+  }).join("") || '<div class="lv-DEBUG">No log lines at this level.</div>';
+  var ev = (D.events || []).slice(-8).reverse().map(function (e) { return '<li><time>' + clock(e.ts_ms) + '</time><span>' + esc(e.summary) + '</span></li>'; }).join("") || '<li><span class="note">No events yet.</span></li>';
+  var ota = d.ota ? '<div class="sec"><h4>Update</h4><div class="mono">' + esc(d.ota.release_id) + ' · ' + esc(d.ota.stage) + (d.ota.outcome ? ' · ' + esc(d.ota.outcome) : '') + '</div><div class="progress"><u style="width:' + d.ota.percent + '%"></u></div></div>' : "";
+  var cmds = alpha ?
+    '<div class="sec"><h4>Debug commands</h4><div class="btnrow">' +
+    '<button class="btn" data-cmd="dump_state">Dump state</button><button class="btn" data-cmd="restart_service" data-arg="agent">Restart agent</button>' +
+    '<button class="btn" data-cmd="set_log_level" data-arg="debug">Log: debug</button><button class="btn danger" data-cmd="reboot">Reboot</button></div>' +
+    '<div class="note" id="cmdnote">Commands are signed, logged in the audit tab, and only reach alpha bench units.</div></div>' +
+    '<div class="sec"><h4>Camera relay · Dataset capture</h4><div class="locked">Off by default and per session. Camera frames are relayed to this console only and never written to disk. Dataset capture needs a consent record and is stored separately from telemetry.</div></div>' :
+    '<div class="sec"><h4>Access</h4><div class="locked">' + esc(d.tier) + ' tier: health, versions, trimmed logs, feedback and updates only. No debug commands, camera or dataset capture.</div></div>';
+  return '<aside class="drawer" aria-label="Device detail"><div class="dh"><span class="dot ' + h.dot + '"></span><h2>' + esc(d.id) + '</h2><span class="tier ' + esc(d.tier) + '">' + esc(d.tier) + '</span><button class="x" data-close aria-label="Close">×</button></div>' +
+    '<div class="sec"><h4>' + h.label + ' · last seen ' + ago(d.last_seen_ms) + '</h4><div class="kv">' +
+    kv("Firmware", d.firmware) + kv("Glasses MCU", d.mcu) + kv("Model", d.model) + kv("Hardware", d.hardware) +
+    kv("Battery", d.battery_pct + "%" + (d.charging ? " (charging)" : "")) + kv("Uptime", up(d.uptime_s)) + kv("SoC temp", d.soc_temp_c.toFixed(1) + " °C") + kv("Power draw", d.power_w.toFixed(1) + " W") +
+    kv("Memory", d.mem_used_mb + " MB") + kv("Safety p99", d.safety_latency_p99_ms + " ms") + kv("Link", d.link + " · " + d.link_rtt_ms + " ms") + kv("Service restarts", d.services_restarted) + '</div></div>' + ota +
+    '<div class="sec"><h4>Events</h4><ul class="timeline">' + ev + '</ul></div>' +
+    (d.tier === "ALPHA" ? '<div class="sec"><h4>Logs <span style="float:right">' + ["INFO", "DEBUG", "WARN"].map(function (l) { return '<button class="chip" data-level="' + l + '" aria-pressed="' + (S.level === l) + '" style="padding:2px 8px">' + l + '</button>'; }).join(" ") + '</span></h4><div class="logbox">' + logs + '</div></div>' : "") + cmds + '</aside>';
+}
+function viewRings() {
+  var rings = ["ALPHA", "BETA", "STABLE"];
+  return '<div class="rings">' + rings.map(function (r) {
+    var ds = S.devices.filter(function (d) { return d.ring === r; }), vs = {};
+    ds.forEach(function (d) { vs[d.firmware] = (vs[d.firmware] || 0) + 1; });
+    var on = ds.filter(function (d) { return d.online; }).length;
+    var rows = Object.keys(vs).sort().reverse().map(function (v) { var w = ds.length ? Math.round(100 * vs[v] / ds.length) : 0; return '<div class="vrow"><div><span class="mono">' + esc(v) + '</span><div class="progress"><u style="width:' + w + '%"></u></div></div><span class="mono">' + vs[v] + '</span></div>'; }).join("") || '<div class="note">No devices in this ring.</div>';
+    var inflight = ds.filter(function (d) { return d.ota && d.ota.stage !== "DONE"; }).length, rb = ds.filter(function (d) { return d.ota && d.ota.outcome === "ROLLED_BACK"; }).length;
+    return '<section class="ring"><header><h2>' + r + '</h2><span>' + on + ' of ' + ds.length + ' online</span></header><div class="sec"><h4>Firmware versions</h4>' + rows + '</div>' +
+      '<div class="sec"><h4>Rollout</h4><div class="mono">' + inflight + ' updating · ' + rb + ' rolled back</div><div class="note">A ring only gets a release after the ring before it runs it clean. Failed health checks halt the rollout and roll back.</div></div></section>';
+  }).join("") + '</div>';
+}
+function viewAudit() {
+  var rows = (S.audit || []).slice().reverse().map(function (a) { return '<tr><td class="mono">' + clock(a.ts_ms) + '</td><td>' + esc(a.actor) + '</td><td class="mono">' + esc(a.action) + '</td><td class="mono">' + esc(a.target) + '</td><td>' + esc(a.result) + '</td></tr>'; }).join("");
+  return '<div class="tablewrap" style="margin-bottom:40px"><table class="audit"><thead><tr><th>Time</th><th>Actor</th><th>Action</th><th>Device</th><th>Result</th></tr></thead><tbody>' + (rows || '<tr><td colspan="5" class="empty">No actions recorded yet.</td></tr>') + '</tbody></table></div>';
+}
+function viewGate() {
+  return '<div class="gate"><div class="brand">' + LOGO + '<b>Asirive</b></div><h1>Cortex Fleet Console</h1><p>Enter the gateway access token to view the fleet.</p>' +
+    '<form id="login"><input type="password" id="tok" placeholder="Gateway token" autocomplete="current-password" aria-label="Gateway token"><div class="err" id="err" role="alert">' + esc(S.err) + '</div>' +
+    '<button class="btn primary" type="submit">Open console</button><button class="btn" type="button" id="demo">View with demo data</button></form></div>';
+}
+function render() {
+  if (!S.token) { $app.innerHTML = viewGate(); bindGate(); return; }
+  var focusQ = document.activeElement && document.activeElement.id === "q", pos = focusQ ? document.activeElement.selectionStart : 0;
+  var live = S.err ? '<span class="dot bad"></span>' + esc(S.err) : '<span class="dot ok"></span>Live · updated ' + ago(S.lastOk);
+  $app.innerHTML = '<header class="top"><div class="brand">' + LOGO + '<b>Asirive</b><span>Cortex Fleet</span></div>' +
+    '<nav class="tabs" role="tablist">' + [["fleet", "Fleet"], ["rings", "Rings & updates"], ["audit", "Audit"]].map(function (t) { return '<button class="tab" role="tab" data-tab="' + t[0] + '" aria-selected="' + (S.tab === t[0]) + '">' + t[1] + '</button>'; }).join("") + '</nav>' +
+    '<span class="spacer"></span>' + (S.demo ? '<span class="demo-flag">Demo data</span>' : "") + '<div class="conn">' + live + '</div><button class="btn" id="out">Sign out</button></header>' +
+    viewSummary() + (S.tab === "fleet" ? viewFleet() : S.tab === "rings" ? viewRings() : viewAudit());
+  bind();
+  if (focusQ) { var q = document.getElementById("q"); q.focus(); q.setSelectionRange(pos, pos); }
+}
+function toast(m) { var t = document.createElement("div"); t.className = "toast"; t.textContent = m; document.body.appendChild(t); setTimeout(function () { t.remove(); }, 2200); }
+
+/* ---------- events ---------- */
+function bindGate() {
+  document.getElementById("demo").onclick = enterDemo;
+  document.getElementById("login").onsubmit = function (e) {
+    e.preventDefault(); var v = document.getElementById("tok").value.trim(); if (!v) return;
+    S.token = v; S.err = ""; try { sessionStorage.setItem("cortex-token", v); } catch (x) {} start();
+  };
+}
+function bind() {
+  $app.querySelectorAll("[data-tab]").forEach(function (b) { b.onclick = function () { S.tab = b.dataset.tab; render(); }; });
+  $app.querySelectorAll("[data-group]").forEach(function (b) { b.onclick = function () { S[b.dataset.group] = b.dataset.val; render(); }; });
+  $app.querySelectorAll("[data-level]").forEach(function (b) { b.onclick = function () { S.level = b.dataset.level; render(); }; });
+  $app.querySelectorAll("tbody tr[data-id]").forEach(function (r) { r.onclick = function () { S.sel = r.dataset.id; S.detail = null; refresh(); }; });
+  $app.querySelectorAll("[data-close]").forEach(function (b) { b.onclick = function () { S.sel = null; S.detail = null; render(); }; });
+  var q = document.getElementById("q"); if (q) q.oninput = function () { S.q = q.value; render(); };
+  document.getElementById("out").onclick = logout;
+  $app.querySelectorAll("[data-cmd]").forEach(function (b) {
+    b.onclick = function () {
+      var name = b.dataset.cmd, arg = b.dataset.arg;
+      if (b.classList.contains("danger") && !b.dataset.armed) { b.dataset.armed = "1"; b.textContent = "Confirm " + b.textContent.toLowerCase(); setTimeout(render, 4000); return; }
+      if (S.demo) { toast("Demo mode: no command sent"); return; }
+      var args = name === "restart_service" ? { service: arg } : name === "set_log_level" ? { level: arg } : {};
+      api("/api/devices/" + encodeURIComponent(S.sel) + "/command", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: name, args: args }) })
+        .then(function () { toast("Command sent: " + name); refresh(); }).catch(function (e) { toast("Not sent: " + e.message); });
+    };
+  });
+}
+try { var saved = sessionStorage.getItem("cortex-token"); if (saved) { S.token = saved; start(); } else render(); } catch (e) { render(); }
+</script>
+</body>
+</html>
