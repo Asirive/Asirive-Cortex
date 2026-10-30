@@ -43,11 +43,11 @@ with simulated or bench devices only.
 
 | Area | Today | Needed before real devices |
 |---|---|---|
-| Device identity | per-device token issued at claim, revocable, tier from registry (done, tested). Shared dev token only behind `-dev-shared-device-token` | per-device certificate (mTLS), key rotation, hardware-backed key |
-| Transport | plain WebSocket | TLS 1.3 terminated at the gateway or reverse proxy |
-| Payload privacy | unsealed protobuf | end-to-end sealed envelope (phone relay sees ciphertext) |
+| Device identity | per-device token issued at claim, revocable, tier from registry (done, tested). Shared dev token only behind `-dev-shared-device-token` | **mTLS built 2026-10-30** (device CA, 90-day certs, renewal, revocation at handshake). Still needed: hardware-backed key (secure element/TPM), CA key custody off the box |
+| Transport | TLS 1.3 + client certificate on a dedicated device listener (`-device-addr`); public API stays behind the HTTPS proxy | pin the server certificate on the device |
+| Payload privacy | unsealed protobuf | device terminates its own mTLS stream through the phone tunnel, so the relay sees only ciphertext (needs the phone-side TCP tunnel, not built). Separate sealing not needed unless a proxy ever terminates device TLS |
 | Operator auth | one shared token, one actor name | per-user accounts, MFA, roles (viewer/operator/admin), short-lived sessions |
-| Commands | audited, tier-gated; not signed | signed commands with expiry and nonce, verified on device |
+| Commands | audited, tier-gated, **signed** (device id, 60 s expiry, nonce); device verifier written and cross-checked with the gateway | wire the verifier into the alpha debug handler; operator-held key so a compromised gateway cannot sign |
 | OTA | signed manifests, rings, halt, anti-rollback (done, tested) | real key custody (HSM/offline), device-side verifier, storage hosting, A/B slot client |
 | Replay protection | seq + clock window checked | persist seq across gateway restarts |
 | Persistence | in memory; restart loses state | Postgres wiring (schema exists in 002_fleet.sql) |
@@ -78,7 +78,7 @@ Not yet built (a complete fleet platform also needs):
 ## 4. Next steps in order
 
 1. Postgres store behind the fleet and release APIs (restart-safe).
-2. Per-device mTLS + provisioning; per-user accounts and roles; signed commands.
+2. (Done 2026-10-30: mTLS, roles, signed commands.) Remaining: hardware-backed device key, CA key custody, server-cert pinning.
 3. Device-side OTA verifier + A/B client (core `ota` service) using the same `internal/ota` rules.
 4. Alerting + metrics; rollout halt notifications.
 5. Dataset and camera pipelines with consent enforcement.

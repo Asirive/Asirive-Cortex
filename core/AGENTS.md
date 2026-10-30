@@ -125,7 +125,7 @@ memory (`layer4_memory/`). Do NOT port: spatial audio, Kokoro, GLM fallback,
 | Safety | `safety/` | Skeleton. Fail-safe loop, heartbeat, config fallback, never-silent degraded mode, import-isolation test. T0-T3 logic is a placeholder, not yet ported from `v3_core/safety_monitor.py`; no ToF driver or haptic/audio sinks (entry point reports "degraded" on purpose); no SCHED_FIFO/mlockall/GC freeze yet (unit file sets FIFO/cpuset). |
 | Supervisor | `supervisor/`, `deploy/` | Built: ordered start, backoff, heartbeat stall detection, watchdog petting only when safety+link healthy, systemd launcher. Units pass `systemd-analyze verify` apart from the venv path. NOT run on a real device or with a real hardware watchdog; the degraded cue is only logged (haptic hardware hook TODO). `link` and `ota` entry points are heartbeat-only stubs. |
 | Owner stop | `link/owner_control.py` | Built and fuzzed (500 random frames). Needs the real USB/BLE transport and the real `Controls` (agent/voice/power) behind it. |
-| Not started | voice, agent, perception, nav, memory, USB framing, mTLS/sealed envelope, mypy gate, replay/latency tests | |
+| Not started | voice, agent, perception, nav, memory, USB framing, mypy gate, replay/latency tests | |
 
 Run: `pip install -r requirements.txt && python3 -m pytest core` (the Go cross-check test skips without Go).
 
@@ -135,3 +135,5 @@ Run: `pip install -r requirements.txt && python3 -m pytest core` (the Go cross-c
   Python, hardened (process isolation, real-time safety, systemd/watchdog,
   A/B OTA). V3 moved to `v3_core/`.
 - 2026-10-29: First slice: contracts codegen, ota (verify, A/B slots, agent), safety skeleton, supervisor + systemd units, owner-stop handler, 32 tests. Safety tiers, drivers, link transport and bootloader hand-off remain stubs (section 9).
+
+- 2026-10-30: link/identity.py (device P-256 key, PKIX public key for claim, mTLS context, renewal check) and link/cmdverify.py (signed alpha command verifier, cross-checked against the Go signer). Not yet wired into a running service; the connection client itself is not written.

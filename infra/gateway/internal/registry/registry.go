@@ -247,3 +247,13 @@ func (r *Registry) SetChannel(id, tier string) error {
 	reg.Tier, reg.Ring = tier, tier
 	return nil
 }
+
+// PubKey returns the public key (canonical PKIX DER) bound at claim time, or nil.
+func (r *Registry) PubKey(id string) []byte {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if reg := r.byID[id]; reg != nil && reg.State == Claimed {
+		return append([]byte(nil), reg.pubKey...)
+	}
+	return nil
+}

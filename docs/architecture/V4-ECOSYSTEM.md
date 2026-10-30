@@ -176,8 +176,14 @@ switched into debug remotely because the handlers do not exist in the build.
   window); signed commands and OTA manifests verified on the device; tier-gated
   message sets; per-user dashboard roles, short-lived tokens, audit log of every
   command.
-- **Status today:** the skeleton uses one shared dev token and unsealed payloads.
-  mTLS, sealing and roles are not built yet.
+- **Status today (2026-10-30):** mutual TLS 1.3 is built: the gateway runs a device CA,
+  issues each device a 90-day ECDSA P-256 client certificate bound to the key the device
+  generated, and a dedicated device listener refuses any connection without a valid
+  certificate (plus the per-device token as a second factor). Signed commands, operator
+  roles, and OTA signing are built. **Sealed envelope: decided against for now.** Its
+  purpose was to hide payloads from the phone relay; if the phone only tunnels the device's
+  own TLS stream (the device terminates mTLS itself) the relay already sees only ciphertext.
+  Revisit only if a proxy or CDN ever terminates device TLS.
 
 ### 6.3 Stack
 

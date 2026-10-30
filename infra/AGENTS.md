@@ -39,7 +39,7 @@ Legacy consumers: `v3_core/` (device links, hybrid memory sync),
   ring/anti-rollback checks, staged rollout engine with halt. Unit-tested and
   run end to end against simulated devices.
 - `gateway/internal/registry`: register -> claim -> revoke, one-time claim codes, per-device tokens, tier from registry. `contracts/openapi/app.yaml`: draft app API (only /claim live).
-- Not built: mTLS/PKI, sealed envelope, roles, Postgres wiring, device-side OTA
+- Not built: hardware-backed device key, CA key custody off the box, phone-side TCP tunnel for the device TLS stream
   verifier/A-B client, camera relay, dataset pipeline, Python/Dart codegen. Gap
   table: docs/architecture/FLEET-OTA-AND-SECURITY.md.
 
@@ -96,3 +96,4 @@ psql -f supabase/migrations/001_initial_schema.sql   # schema apply (reference)
 - 2026-10-29: Push wake-up (FCM v1, APNs token auth) for incoming calls, TURN ephemeral credentials, infra/deploy compose (untested). Real providers not exercised.
 - 2026-10-29: Fleet alerting by email; signed alpha debug commands (cmdsign + alpha.proto fields). Device-side verification belongs in core/.
 - 2026-10-29: Postgres state store with advisory-lock leader election (warm standby failover), tested on PG16. Not active-active.
+- 2026-10-30: Device mTLS: internal/pki device CA, certificate issued at claim over the device-generated P-256 key, dedicated device listener (TLS 1.3, client cert required, revocation at handshake, renewal endpoint). Public handler no longer serves /ws/device when enabled. Sealed envelope decided against (see V4-ECOSYSTEM section 6).

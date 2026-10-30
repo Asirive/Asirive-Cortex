@@ -128,3 +128,17 @@ loses the lock exits, so run the gateway under a restarter (compose `restart: un
 Verified against a local Postgres 16 (`CORTEX_TEST_PG=... go test ./internal/server`), including killing the leader.
 This is **failover, not scaling**: one writer at a time, whole-document saves every 3 s (so a hard crash loses up to
 3 s of changes). A per-table schema for active-active is not built; `supabase/migrations/002_fleet.sql` is still reference only.
+
+## Device mutual TLS
+
+```bash
+gateway -addr :8080 -device-addr :8443 -device-cert fullchain.pem -device-key privkey.pem -pki-dir /data/pki
+```
+
+- **Device CA:** created in `-pki-dir` on first start (`ca.crt`, `ca.key`). **Back up `ca.key`**; losing it means re-claiming every device. Keep it off shared storage.
+- **At claim** the device sends an ECDSA P-256 public key (PKIX DER, `device_public_key`). The gateway validates it *before* spending the one-time code, then returns `device_cert_pem` (90 days), `ca_cert_pem` and `cert_expires_ms`. The private key never leaves the device.
+- **The device listener** (`-device-addr`) is TLS 1.3 only, requires a client certificate signed by that CA, serves only `/ws/device` and `POST /device/renew`, and refuses revoked/unknown devices during the handshake. On top of the certificate the gateway still checks the certificate's name equals the claimed id, its key equals the registered key, and the per-device token.
+- **With `-device-addr` set**, `/ws/device` is no longer served on the public `-addr` listener and the shared dev token is disabled. Put the public listener behind your HTTPS proxy as before; the device port must be exposed directly (a proxy that terminates TLS would break client certificates).
+- **Renewal:** devices renew with `POST /device/renew` over mTLS when under 30 days remain (`identity.needs_renewal` in `core`). An expired certificate needs a new claim.
+- **Server certificate:** use a normal certificate for the device hostname (Let's Encrypt). Pin it on the device when you can.
+- Verified with in-process TLS tests (no cert, wrong CA, another device's cert, wrong token, revoked, public listener) and a smoke run of the real binary. Not verified: real devices, hardware-backed keys, certificate expiry/clock-skew behaviour in the field.

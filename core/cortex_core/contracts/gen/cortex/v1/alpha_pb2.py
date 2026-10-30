@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x15\x63ortex/v1/alpha.proto\x12\tcortex.v1\"\x8e\x01\n\x0c\x44\x65\x62ugCommand\x12\x12\n\ncommand_id\x18\x01 \x01(\t\x12\x0c\n\x04name\x18\x02 \x01(\t\x12/\n\x04\x61rgs\x18\x03 \x03(\x0b\x32!.cortex.v1.DebugCommand.ArgsEntry\x1a+\n\tArgsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"=\n\x0b\x44\x65\x62ugResult\x12\x12\n\ncommand_id\x18\x01 \x01(\t\x12\n\n\x02ok\x18\x02 \x01(\x08\x12\x0e\n\x06output\x18\x03 \x01(\t\"G\n\rCameraControl\x12\x0e\n\x06\x65nable\x18\x01 \x01(\x08\x12\x0f\n\x07max_fps\x18\x02 \x01(\r\x12\x15\n\rsession_ttl_s\x18\x03 \x01(\r\"<\n\x0b\x43\x61meraFrame\x12\x10\n\x08\x66rame_id\x18\x01 \x01(\x04\x12\r\n\x05\x63odec\x18\x02 \x01(\t\x12\x0c\n\x04\x64\x61ta\x18\x03 \x01(\x0c\"q\n\x0e\x44\x61tasetControl\x12\x0e\n\x06\x65nable\x18\x01 \x01(\x08\x12\x12\n\nsession_id\x18\x02 \x01(\t\x12\x13\n\x0b\x63onsent_ref\x18\x03 \x01(\t\x12\x0f\n\x07streams\x18\x04 \x03(\t\x12\x15\n\rmax_session_s\x18\x05 \x01(\r\"z\n\x0c\x44\x61tasetChunk\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x0e\n\x06stream\x18\x02 \x01(\t\x12\x13\n\x0b\x63hunk_index\x18\x03 \x01(\x04\x12\x13\n\x0bstart_ts_ms\x18\x04 \x01(\x03\x12\x0c\n\x04\x64\x61ta\x18\x05 \x01(\x0c\x12\x0e\n\x06sha256\x18\x06 \x01(\x0c\x42\x43ZAgithub.com/asirive/cortex/gateway/internal/gen/cortex/v1;cortexv1b\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x15\x63ortex/v1/alpha.proto\x12\tcortex.v1\"\xfa\x01\n\x0c\x44\x65\x62ugCommand\x12\x12\n\ncommand_id\x18\x01 \x01(\t\x12\x0c\n\x04name\x18\x02 \x01(\t\x12/\n\x04\x61rgs\x18\x03 \x03(\x0b\x32!.cortex.v1.DebugCommand.ArgsEntry\x12\x11\n\tdevice_id\x18\x04 \x01(\t\x12\x11\n\tissued_ms\x18\x05 \x01(\x03\x12\x12\n\nexpires_ms\x18\x06 \x01(\x03\x12\r\n\x05nonce\x18\x07 \x01(\x0c\x12\x0e\n\x06issuer\x18\x08 \x01(\t\x12\x11\n\tsignature\x18\t \x01(\x0c\x1a+\n\tArgsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"=\n\x0b\x44\x65\x62ugResult\x12\x12\n\ncommand_id\x18\x01 \x01(\t\x12\n\n\x02ok\x18\x02 \x01(\x08\x12\x0e\n\x06output\x18\x03 \x01(\t\"G\n\rCameraControl\x12\x0e\n\x06\x65nable\x18\x01 \x01(\x08\x12\x0f\n\x07max_fps\x18\x02 \x01(\r\x12\x15\n\rsession_ttl_s\x18\x03 \x01(\r\"<\n\x0b\x43\x61meraFrame\x12\x10\n\x08\x66rame_id\x18\x01 \x01(\x04\x12\r\n\x05\x63odec\x18\x02 \x01(\t\x12\x0c\n\x04\x64\x61ta\x18\x03 \x01(\x0c\"q\n\x0e\x44\x61tasetControl\x12\x0e\n\x06\x65nable\x18\x01 \x01(\x08\x12\x12\n\nsession_id\x18\x02 \x01(\t\x12\x13\n\x0b\x63onsent_ref\x18\x03 \x01(\t\x12\x0f\n\x07streams\x18\x04 \x03(\t\x12\x15\n\rmax_session_s\x18\x05 \x01(\r\"z\n\x0c\x44\x61tasetChunk\x12\x12\n\nsession_id\x18\x01 \x01(\t\x12\x0e\n\x06stream\x18\x02 \x01(\t\x12\x13\n\x0b\x63hunk_index\x18\x03 \x01(\x04\x12\x13\n\x0bstart_ts_ms\x18\x04 \x01(\x03\x12\x0c\n\x04\x64\x61ta\x18\x05 \x01(\x0c\x12\x0e\n\x06sha256\x18\x06 \x01(\x0c\x42\x43ZAgithub.com/asirive/cortex/gateway/internal/gen/cortex/v1;cortexv1b\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -35,17 +35,17 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_DEBUGCOMMAND_ARGSENTRY']._loaded_options = None
   _globals['_DEBUGCOMMAND_ARGSENTRY']._serialized_options = b'8\001'
   _globals['_DEBUGCOMMAND']._serialized_start=37
-  _globals['_DEBUGCOMMAND']._serialized_end=179
-  _globals['_DEBUGCOMMAND_ARGSENTRY']._serialized_start=136
-  _globals['_DEBUGCOMMAND_ARGSENTRY']._serialized_end=179
-  _globals['_DEBUGRESULT']._serialized_start=181
-  _globals['_DEBUGRESULT']._serialized_end=242
-  _globals['_CAMERACONTROL']._serialized_start=244
-  _globals['_CAMERACONTROL']._serialized_end=315
-  _globals['_CAMERAFRAME']._serialized_start=317
-  _globals['_CAMERAFRAME']._serialized_end=377
-  _globals['_DATASETCONTROL']._serialized_start=379
-  _globals['_DATASETCONTROL']._serialized_end=492
-  _globals['_DATASETCHUNK']._serialized_start=494
-  _globals['_DATASETCHUNK']._serialized_end=616
+  _globals['_DEBUGCOMMAND']._serialized_end=287
+  _globals['_DEBUGCOMMAND_ARGSENTRY']._serialized_start=244
+  _globals['_DEBUGCOMMAND_ARGSENTRY']._serialized_end=287
+  _globals['_DEBUGRESULT']._serialized_start=289
+  _globals['_DEBUGRESULT']._serialized_end=350
+  _globals['_CAMERACONTROL']._serialized_start=352
+  _globals['_CAMERACONTROL']._serialized_end=423
+  _globals['_CAMERAFRAME']._serialized_start=425
+  _globals['_CAMERAFRAME']._serialized_end=485
+  _globals['_DATASETCONTROL']._serialized_start=487
+  _globals['_DATASETCONTROL']._serialized_end=600
+  _globals['_DATASETCHUNK']._serialized_start=602
+  _globals['_DATASETCHUNK']._serialized_end=724
 # @@protoc_insertion_point(module_scope)

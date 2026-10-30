@@ -13,9 +13,11 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"github.com/asirive/cortex/gateway/internal/cmdsign"
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	pb "github.com/asirive/cortex/gateway/internal/gen/cortex/v1"
 	"github.com/asirive/cortex/gateway/internal/ota"
@@ -41,6 +43,32 @@ func main() {
 			log.Fatal(err)
 		}
 		fmt.Println("public key (CORTEX_OTA_PUBKEY):", hex.EncodeToString(pub))
+	case "sign-command":
+		// Test/ops helper: signs one alpha debug command with a command key (hex ed25519 private key)
+		// and prints the serialized DebugCommand as hex. Used to cross-check the device verifier.
+		fs := flag.NewFlagSet("sign-command", flag.ExitOnError)
+		key := fs.String("key", "", "hex ed25519 private key")
+		dev := fs.String("device", "", "device id")
+		name := fs.String("name", "dump_state", "command name")
+		var args multi
+		fs.Var(&args, "arg", "k=v, repeatable")
+		fs.Parse(os.Args[2:])
+		priv, err := hex.DecodeString(*key)
+		if err != nil || len(priv) != ed25519.PrivateKeySize || *dev == "" {
+			log.Fatal("need -key (hex private key) and -device")
+		}
+		c := &pb.DebugCommand{CommandId: "fixture", Name: *name, Args: map[string]string{}}
+		for _, a := range args {
+			kv := strings.SplitN(a, "=", 2)
+			if len(kv) == 2 {
+				c.Args[kv[0]] = kv[1]
+			}
+		}
+		if err := cmdsign.Sign(c, *dev, "fixture", ed25519.PrivateKey(priv), time.Now()); err != nil {
+			log.Fatal(err)
+		}
+		b, _ := proto.Marshal(c)
+		fmt.Println(hex.EncodeToString(b))
 	case "sign":
 		fs := flag.NewFlagSet("sign", flag.ExitOnError)
 		key := fs.String("key", "ota.key", "private key file")

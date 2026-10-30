@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/tls"
 	"encoding/hex"
 	"flag"
 	"github.com/asirive/cortex/gateway/internal/mail"
+	"github.com/asirive/cortex/gateway/internal/pki"
 	"github.com/asirive/cortex/gateway/internal/push"
 	"log"
 	"net/http"
@@ -24,6 +26,10 @@ func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	shared := flag.Bool("dev-shared-device-token", false, "DEV ONLY: let devices connect with the shared token (simulator)")
 	statePath := flag.String("state", "cortex-state.json", "durable state file (registrations, releases, audit)")
+	deviceAddr := flag.String("device-addr", "", "mTLS listener for devices, e.g. :8443 (enables device certificates; /ws/device moves here)")
+	deviceCert := flag.String("device-cert", "", "TLS server certificate (PEM) for the device listener, e.g. from Let's Encrypt")
+	deviceKey := flag.String("device-key", "", "TLS server key (PEM) for the device listener")
+	pkiDir := flag.String("pki-dir", "pki", "directory holding the device CA (ca.crt, ca.key); created on first start")
 	flag.Parse()
 	token := os.Getenv("CORTEX_DEV_TOKEN")
 	if token == "" {
@@ -139,6 +145,25 @@ func main() {
 			save()
 		}
 	}()
+	if *deviceAddr != "" {
+		if *deviceCert == "" || *deviceKey == "" {
+			log.Fatal("-device-addr needs -device-cert and -device-key")
+		}
+		ca, err := pki.LoadOrCreate(*pkiDir, time.Now())
+		if err != nil {
+			log.Fatalf("device CA: %v", err)
+		}
+		sc, err := tls.LoadX509KeyPair(*deviceCert, *deviceKey)
+		if err != nil {
+			log.Fatalf("device TLS cert: %v", err)
+		}
+		srv.CA, srv.RequireMTLS, srv.AllowSharedDeviceToken = ca, true, false
+		ds := &http.Server{Addr: *deviceAddr, Handler: srv.DeviceHandler(), TLSConfig: srv.DeviceTLS(sc), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 5 * time.Minute}
+		go func() { log.Fatal(ds.ListenAndServeTLS("", "")) }()
+		log.Printf("device mTLS listener on %s (CA in %s; back up ca.key)", *deviceAddr, *pkiDir)
+	} else {
+		log.Print("WARNING: no -device-addr; devices connect without client certificates (dev only)")
+	}
 	log.Printf("cortex gateway listening on %s", *addr)
 	httpSrv := &http.Server{Addr: *addr, Handler: srv.Handler(), ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 120 * time.Second}
 	go func() {

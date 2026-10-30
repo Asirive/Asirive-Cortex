@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/subtle"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"github.com/asirive/cortex/gateway/internal/accounts"
 	"github.com/asirive/cortex/gateway/internal/cmdsign"
 	"github.com/asirive/cortex/gateway/internal/mail"
+	"github.com/asirive/cortex/gateway/internal/pki"
 	"github.com/asirive/cortex/gateway/internal/push"
 	"github.com/asirive/cortex/gateway/internal/social"
 	"io"
@@ -57,10 +59,14 @@ type Server struct {
 	Accounts *accounts.Store
 	Social   *social.Store
 	// CmdKey signs alpha debug commands (see internal/cmdsign). Generated on first start and kept in the state file.
-	CmdKey  ed25519.PrivateKey
-	AlertTo []string // ops email recipients for fleet alerts
-	alerts  map[string]*alertState
-	Pusher  push.Pusher // nil = no wake-up
+	CmdKey ed25519.PrivateKey
+	// CA issues device client certificates at claim. RequireMTLS makes the device listener
+	// (DeviceHandler) demand one; with it set, /ws/device is NOT served on the public Handler.
+	CA          *pki.CA
+	RequireMTLS bool
+	AlertTo     []string // ops email recipients for fleet alerts
+	alerts      map[string]*alertState
+	Pusher      push.Pusher // nil = no wake-up
 	// TurnSecret is coturn static-auth-secret; TurnURLs e.g. turn:turn.asirive.com:3478?transport=udp
 	TurnSecret string
 	TurnURLs   []string
@@ -122,7 +128,9 @@ func (s *Server) WireOTA(e *ota.Engine) {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ws/device", s.deviceWS)
+	if !s.RequireMTLS {
+		mux.HandleFunc("/ws/device", s.deviceWS)
+	}
 	s.appRoutes(mux)
 	mux.HandleFunc("GET /api/command-key", s.auth(RoleViewer, func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"command_public_key": hex.EncodeToString(s.CmdKey.Public().(ed25519.PublicKey))})
@@ -238,7 +246,14 @@ func (s *Server) deviceWS(w http.ResponseWriter, r *http.Request) {
 	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	devID := r.Header.Get("X-Device-Id")
 	var reg *registry.Registration
-	if s.AllowSharedDeviceToken && subtle.ConstantTimeCompare([]byte(tok), []byte(s.DevToken)) == 1 {
+	if s.RequireMTLS {
+		if err := s.checkCert(r, devID); err != nil {
+			s.record("system", "device:mtls", devID, "refused", err.Error())
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+	}
+	if !s.RequireMTLS && s.AllowSharedDeviceToken && subtle.ConstantTimeCompare([]byte(tok), []byte(s.DevToken)) == 1 {
 		// legacy dev path: tier comes from Hello. Never enable in production.
 	} else if rg, err := s.Reg.Authenticate(devID, tok); err == nil {
 		reg = rg
@@ -687,6 +702,18 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.AccountID = a.ID
+	var certPEM []byte
+	var certExp time.Time
+	var devKey []byte
+	if s.CA != nil { // validate the key BEFORE spending the one-time claim code
+		pk, err := pki.ParseDeviceKey(req.PublicKey)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "bad_device_key", "The device must send an ECDSA P-256 public key (PKIX DER).")
+			return
+		}
+		devKey, _ = x509.MarshalPKIXPublicKey(pk)
+		req.PublicKey = devKey
+	}
 	reg, tok, err := s.Reg.Claim(req.ClaimCode, req.PublicKey, req.AccountID, clientIP(r), time.Now())
 	if err != nil {
 		if err == registry.ErrRateLimit {
@@ -697,7 +724,18 @@ func (s *Server) claim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.record("app:"+req.AccountID, "device:claim", reg.ID, "claimed", "")
-	writeJSON(w, map[string]any{"command_public_key": hex.EncodeToString(s.CmdKey.Public().(ed25519.PublicKey)), "device_id": reg.ID, "device_token": tok, "tier": reg.Tier, "ring": reg.Ring})
+	extra := map[string]any{}
+	if s.CA != nil {
+		certPEM, certExp, err = s.CA.IssueDevice(reg.ID, devKey, time.Now())
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, "cert_failed", "Couldn't issue the device certificate. Ask for a new claim code.")
+			return
+		}
+		extra = map[string]any{"device_cert_pem": string(certPEM), "ca_cert_pem": string(s.CA.PEM), "cert_expires_ms": certExp.UnixMilli()}
+	}
+	extra["command_public_key"] = hex.EncodeToString(s.CmdKey.Public().(ed25519.PublicKey))
+	extra["device_id"], extra["device_token"], extra["tier"], extra["ring"] = reg.ID, tok, reg.Tier, reg.Ring
+	writeJSON(w, extra)
 }
 
 // ---- OTA ----
