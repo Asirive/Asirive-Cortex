@@ -1,0 +1,43 @@
+/* Cortex app design system (mockups). Fonts load per board: Anton, Space Grotesk, JetBrains Mono. */
+.scr{box-sizing:border-box;background:#0a0a08;color:#f4f4ec;position:relative;overflow:hidden;display:flex;flex-direction:column;gap:14px;padding:28px 14px 0;font-family:'Space Grotesk',system-ui,sans-serif}
+.mono{font:500 10.5px 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase;color:#9aa394}
+.ttl{margin:0;font:400 32px/1.05 'Anton',sans-serif;letter-spacing:.03em;text-transform:uppercase;color:#eaff00}
+.ttl.w{color:#f4f4ec}
+.p{margin:0;font:400 15px/1.45 'Space Grotesk',sans-serif;color:#b6bfb0}
+.p.s{font-size:13px;color:#9aa394}
+.ic{flex:none;display:block}
+.top{display:flex;align-items:center;gap:12px;min-height:48px}
+.bk{width:44px;height:44px;border-radius:50%;border:1.5px solid #2c3a2e;background:#131a14;display:flex;align-items:center;justify-content:center;color:#f4f4ec;text-decoration:none;flex:none}
+.tile{position:relative;box-sizing:border-box;background:#131a14;border-radius:22px;padding:14px 16px;color:#f4f4ec;text-decoration:none;display:flex;flex-direction:column;justify-content:space-between}
+.tile .go{position:absolute;top:12px;right:12px;width:30px;height:30px;border-radius:50%;border:1.5px solid #2c3a2e;display:flex;align-items:center;justify-content:center;color:#9aa394}
+.num{font:400 44px/1 'Anton',sans-serif;letter-spacing:.02em}
+.sub{font:500 14px/1.25 'Space Grotesk',sans-serif;color:#b6bfb0}
+.btn{display:flex;align-items:center;justify-content:center;gap:8px;height:56px;border-radius:28px;background:#eaff00;color:#0a0a08;font:700 17px 'Space Grotesk',sans-serif;text-decoration:none;border:0;width:100%;box-sizing:border-box;cursor:pointer}
+.btn.o{background:transparent;color:#f4f4ec;border:1.5px solid #2c3a2e}
+.btn.d{background:transparent;color:#ff8a7d;border:1.5px solid #5a2f2a}
+.in{height:52px;border-radius:26px;background:#131a14;border:1.5px solid #223024;color:#f4f4ec;font:500 16px 'Space Grotesk',sans-serif;padding:0 20px;box-sizing:border-box;width:100%}
+.in.code{height:64px;font:500 24px 'JetBrains Mono',monospace;letter-spacing:.2em;text-align:center;color:#eaff00}
+.lbl{display:block;margin:0 0 8px 8px}
+.ta{width:100%;height:170px;border-radius:22px;background:#131a14;border:1.5px solid #223024;color:#f4f4ec;font:400 16px/1.45 'Space Grotesk',sans-serif;padding:16px 20px;box-sizing:border-box;resize:none}
+.sw{width:52px;height:32px;border-radius:16px;background:#2c3a2e;position:relative;flex:none;border:0;padding:0}
+.sw i{position:absolute;top:4px;left:4px;width:24px;height:24px;border-radius:50%;background:#f4f4ec}
+.sw.y{background:#eaff00}.sw.y i{left:24px;background:#0a0a08}
+.list{background:#131a14;border-radius:22px;padding:4px 14px;display:flex;flex-direction:column}
+.row{display:flex;align-items:center;gap:14px;min-height:60px;padding:8px 0;border-bottom:1px solid #223024;color:#f4f4ec;text-decoration:none;box-sizing:border-box}
+.row:last-child{border-bottom:0}
+.row b{display:block;font:600 16px 'Space Grotesk',sans-serif}
+.row .s{display:block;font:400 13px/1.35 'Space Grotesk',sans-serif;color:#9aa394;margin-top:2px}
+.row .g{flex:1}
+.bot{margin-top:auto;padding-bottom:20px;display:flex;flex-direction:column;gap:10px}
+.chip{display:inline-block;font:700 12px 'Space Grotesk',sans-serif;padding:4px 10px;border-radius:99px;background:#26342a;color:#f4f4ec}
+.chip.y{background:#eaff00;color:#0a0a08}
+.av{flex:none;border-radius:50%;background:#26342a;display:flex;align-items:center;justify-content:center;font:700 15px 'Space Grotesk',sans-serif;color:#f4f4ec}
+.step{display:flex;align-items:center;gap:14px}
+.step .n{flex:none;width:34px;height:34px;border-radius:50%;border:1.5px solid #2c3a2e;display:flex;align-items:center;justify-content:center;font:700 14px 'Space Grotesk',sans-serif;color:#9aa394}
+.step .n.d{background:#eaff00;border-color:#eaff00;color:#0a0a08}
+.step .n.c{border-color:#eaff00;color:#eaff00}
+.step b{display:block;font:600 16px 'Space Grotesk',sans-serif}
+.step .s{display:block;font:400 13px/1.35 'Space Grotesk',sans-serif;color:#9aa394;margin-top:2px}
+.nav{position:absolute;left:14px;right:14px;bottom:16px;height:64px;box-sizing:border-box;padding:6px;border-radius:32px;background:#131a14;border:1px solid #223024;display:flex;gap:4px}
+.nv{flex:1;height:52px;border-radius:26px;display:flex;align-items:center;justify-content:center;gap:8px;color:#9aa394;text-decoration:none;font:700 14px 'Space Grotesk',sans-serif}
+.nv.on{flex:2.3;background:#eaff00;color:#0a0a08}
