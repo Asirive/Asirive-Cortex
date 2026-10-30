@@ -462,3 +462,21 @@ screens use "pocket box" instead of "module"; copy no longer overclaims
 5. Calls, including Answer-first accessibility and push.
 6. Device link: helper-led setup, pause over USB, internet check, update.
 7. Accessibility pass on every screen with a real screen reader, then 200% text.
+
+## 18. First open (added 2026-10-30)
+
+New row 0 on the canvas: four intro screens, a Welcome screen and a Scan screen.
+
+- **Intro 1 to 4** show features in plain words, built from the same tiles and
+  chips as the rest of the app: *Get there on your own* (route), *Know what is
+  ahead* (spoken warnings that work without internet), *Ask about what is around
+  you* (read signs, menus, prices, bus numbers by voice), *Family close by*
+  (people you choose, no camera). No sensor or distance jargon. Skip is on every
+  intro.
+- **Welcome:** Create an account, Sign in, Scan a QR code.
+- **Scan a QR code:** for invites (companion) and helper pairing. A "Type a code
+  instead" fallback is always offered; scanning is a sighted action and must
+  never be the only route.
+- Rule from review: intro and onboarding screens use the same margins, headline
+  sizes, tiles and buttons as every other screen. No full-bleed illustration
+  language, no separate visual style.

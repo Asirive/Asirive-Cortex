@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Scan a QR code</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./cortex.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="scr" style="width:390px;height:844px;padding-bottom:20px">
+  <div class="top">
+    <a class="bk" href="Welcome.dc.html" aria-label="Back"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></a>
+    <span class="mono">Scan</span>
+    <button class="bk" type="button" aria-label="Torch" style="margin-left:auto;cursor:pointer"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 3h10l-2 6v3a3 3 0 0 1-6 0V9zM12 15v6"/></svg></button>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:10px">
+    <h1 class="ttl" style="font-size:44px;line-height:1">Scan a<br>QR code</h1>
+    <p class="p">Point the camera at the code on an invite from someone using Cortex.</p>
+  </div>
+  <div role="img" aria-label="Camera view. Hold the QR code inside the frame." style="position:relative;height:320px;border-radius:22px;background:#131a14;overflow:hidden;display:flex;align-items:center;justify-content:center">
+    <svg width="200" height="200" viewBox="0 0 200 200" aria-hidden="true"><g fill="none" stroke="#eaff00" stroke-width="5" stroke-linecap="square"><path d="M6 52V6h46"/><path d="M148 6h46v46"/><path d="M194 148v46h-46"/><path d="M52 194H6v-46"/></g><path d="M24 100H176" stroke="#eaff00" stroke-width="2" stroke-dasharray="4 6" opacity=".8"/></svg>
+  </div>
+  <p class="p s" style="text-align:center">The camera is only used to read the code. Nothing is saved.</p>
+  <div class="bot">
+    <a class="btn o" href="Accept.dc.html">Type a code instead</a>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
