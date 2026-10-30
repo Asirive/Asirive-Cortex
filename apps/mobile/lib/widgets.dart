@@ -4,9 +4,12 @@ import 'theme.dart';
 /// Screen shell: 14px side margin, dark ground, safe area. [bottom] is pinned
 /// to the foot of the screen when the content is short, and scrolls with it when not.
 class CxScreen extends StatelessWidget {
-  const CxScreen({super.key, required this.children, this.bottom = const []});
+  const CxScreen({super.key, required this.children, this.bottom = const [], this.tab = false});
   final List<Widget> children;
   final List<Widget> bottom;
+
+  /// True on a main tab, which leaves room for the floating nav bar.
+  final bool tab;
 
   List<Widget> _gap(List<Widget> l) => [for (final c in l) ...[c, const SizedBox(height: 14)]];
 
@@ -15,9 +18,9 @@ class CxScreen extends StatelessWidget {
         body: SafeArea(
           child: LayoutBuilder(
             builder: (context, box) => SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(Cx.margin, 8, Cx.margin, 20),
+              padding: EdgeInsets.fromLTRB(Cx.margin, 8, Cx.margin, tab ? 100 : 20),
               child: ConstrainedBox(
-                constraints: BoxConstraints(minHeight: box.maxHeight - 28),
+                constraints: BoxConstraints(minHeight: box.maxHeight - (tab ? 108 : 28)),
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -117,14 +120,15 @@ class CxText extends StatelessWidget {
 }
 
 class CxButton extends StatelessWidget {
-  const CxButton(this.label, {super.key, required this.onTap, this.outline = false, this.busy = false});
+  const CxButton(this.label, {super.key, required this.onTap, this.outline = false, this.busy = false, this.danger = false});
   final String label;
   final VoidCallback? onTap;
   final bool outline;
+  final bool danger;
   final bool busy;
   @override
   Widget build(BuildContext context) {
-    final fg = outline ? Cx.text : Cx.ground;
+    final fg = outline ? (danger ? Cx.danger : Cx.text) : Cx.ground;
     return Semantics(
       button: true,
       enabled: onTap != null && !busy,
@@ -138,7 +142,7 @@ class CxButton extends StatelessWidget {
           decoration: BoxDecoration(
             color: outline ? Colors.transparent : (onTap == null ? Cx.outline : Cx.accent),
             borderRadius: BorderRadius.circular(28),
-            border: outline ? Border.all(color: Cx.outline, width: 1.5) : null,
+            border: outline ? Border.all(color: danger ? Cx.danger : Cx.outline, width: 1.5) : null,
           ),
           child: busy
               ? SizedBox(
@@ -207,7 +211,9 @@ class CxField extends StatelessWidget {
     this.autofill,
     this.help,
     this.onSubmit,
+    this.lines = 1,
   });
+  final int lines;
   final String label;
   final TextEditingController controller;
   final String? hint;
@@ -228,7 +234,9 @@ class CxField extends StatelessWidget {
           TextField(
             controller: controller,
             obscureText: obscure,
-            keyboardType: keyboard,
+            keyboardType: lines > 1 ? TextInputType.multiline : keyboard,
+            minLines: lines,
+            maxLines: lines,
             autofillHints: autofill,
             onSubmitted: onSubmit == null ? null : (_) => onSubmit!(),
             style: const TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 17, color: Cx.text),

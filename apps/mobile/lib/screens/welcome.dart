@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import '../theme.dart';
 import '../widgets.dart';
 import 'auth.dart';
-import 'soon.dart';
+import 'invite.dart';
 
 class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({super.key});
@@ -24,11 +24,7 @@ class WelcomeScreen extends StatelessWidget {
       CxButton('Sign in', outline: true, onTap: () => go(const SignInScreen())),
       const SizedBox(height: 6),
       const Text('SOMEONE INVITED ME', style: Cx.label),
-      CxButton('Scan or enter invite code',
-          outline: true,
-          onTap: () => go(const SoonScreen(
-              title: 'Join with an invite',
-              body: 'Scanning and typing an invite code arrive in the next build.'))),
+      CxButton('Scan or enter invite code', outline: true, onTap: () => go(const ScanScreen())),
     ]);
   }
 }

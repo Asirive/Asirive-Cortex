@@ -6,8 +6,21 @@
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+		<key>NSCameraUsageDescription</key>
+	<string>The camera is only used to read an invite or box QR code.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>The microphone is used for calls with the people you look after or who look after you.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Your location is shared only with people you allow, so they know you are safe.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Face ID confirms it is you when a helper hands the phone back.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>voip</string>
+	</array>
 	<key>CFBundleDisplayName</key>
-	<string>Cortex App</string>
+	<string>Asirive Cortex</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>

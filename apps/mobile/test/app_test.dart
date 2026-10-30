@@ -2,17 +2,24 @@ import 'dart:convert';
 
 import 'package:cortex_app/api.dart';
 import 'package:cortex_app/main.dart';
+import 'package:cortex_app/prefs.dart';
+import 'package:cortex_app/services.dart';
 import 'package:cortex_app/session.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
+import 'fakes.dart';
+
 http.Response json(int code, Object body) =>
     http.Response(jsonEncode(body), code, headers: {'content-type': 'application/json'});
 
-Session makeSession(Future<http.Response> Function(http.Request) h, [MemoryStore? store]) =>
-    Session(Api(client: MockClient(h), baseUrl: 'https://gw.test'), store ?? MemoryStore());
+Session makeSession(Future<http.Response> Function(http.Request) h, [MemoryStore? store]) {
+  final st = store ?? MemoryStore();
+  return Session(Api(client: MockClient(h), baseUrl: 'https://gw.test'), st,
+      services: Services(speaker: FakeSpeaker(), link: FakeLink()), prefs: Prefs(st));
+}
 
 Future<void> boot(WidgetTester t, Session s) async {
   t.view.physicalSize = const Size(1170, 2532);
@@ -24,6 +31,7 @@ Future<void> boot(WidgetTester t, Session s) async {
 }
 
 void main() {
+  setUpAll(loadFonts);
   testWidgets('fresh install shows intro 1, Next walks to the end, Get started opens Welcome',
       (t) async {
     await boot(t, makeSession((r) async => json(500, {})));
@@ -67,8 +75,12 @@ void main() {
     await t.enterText(find.byType(TextField).at(1), 'secret-password');
     await t.tap(find.text('Sign in').last);
     await t.pumpAndSettle();
-    expect(find.text('YOU ARE\nSIGNED IN'), findsOneWidget);
+    expect(find.text('HOME'), findsWidgets);
     expect(await store.read('token'), 'tok');
+    await t.tap(find.bySemanticsLabel(RegExp('Settings')));
+    await t.pumpAndSettle();
+    await t.tap(find.text('Account'));
+    await t.pumpAndSettle();
     await t.tap(find.text('Sign out'));
     await t.pumpAndSettle();
     expect(await store.read('token'), isNull);
@@ -134,19 +146,18 @@ void main() {
     final store = MemoryStore();
     await store.write('intro_seen', '1');
     await store.write('token', 'good');
+    var dead = false;
     final s = makeSession((r) async {
-      if (r.url.path == '/v1/me' && r.headers['authorization'] == 'Bearer good' && s0 == 0) {
-        s0++;
-        return json(200, {'id': '1', 'email': 'a@b.co', 'beta': false});
-      }
-      return json(401, {'error': 'Please sign in again.', 'error_code': 'signed_out'});
+      if (dead) return json(401, {'error': 'Please sign in again.', 'error_code': 'signed_out'});
+      if (r.url.path == '/v1/me') return json(200, {'id': '1', 'email': 'a@b.co', 'beta': false});
+      return json(200, <Object>[]);
     }, store);
     await boot(t, s);
-    expect(find.text('YOU ARE\nSIGNED IN'), findsOneWidget);
+    expect(find.text('HOME'), findsWidgets);
+    dead = true;
     await expectLater(s.api.me('good'), throwsA(isA<ApiException>()));
     await t.pumpAndSettle();
     expect(find.text('YOU WERE\nSIGNED OUT'), findsOneWidget);
   });
 }
 
-int s0 = 0;

@@ -36,6 +36,13 @@ dependencies:
   cupertino_icons: ^1.0.8
   http: ^1.6.0
   flutter_secure_storage: ^11.2.0
+  mobile_scanner: ^7.4.2
+  geolocator: ^14.1.2
+  flutter_tts: ^4.2.5
+  flutter_webrtc: ^1.6.3
+  local_auth: ^3.0.2
+  url_launcher: ^6.3.3
+  qr_flutter: ^4.1.0
 
 dev_dependencies:
   flutter_test:

@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'api.dart';
 import 'scope.dart';
 import 'screens/auth.dart';
-import 'screens/home.dart';
+import 'shell.dart';
 import 'screens/intro.dart';
 import 'screens/welcome.dart';
 import 'session.dart';
@@ -26,6 +26,15 @@ class CortexApp extends StatelessWidget {
           title: 'Asirive Cortex',
           debugShowCheckedModeBanner: false,
           theme: Cx.theme(),
+          builder: (context, child) => ListenableBuilder(
+            listenable: session.prefs,
+            builder: (context, _) => MediaQuery(
+              data: MediaQuery.of(context).copyWith(
+                  textScaler: TextScaler.linear(session.prefs.textScale),
+                  boldText: session.prefs.highContrast),
+              child: child!,
+            ),
+          ),
           home: const _Gate(),
         ),
       );
@@ -42,7 +51,7 @@ class _Gate extends StatelessWidget {
       case Phase.loading:
         return const Scaffold(body: Center(child: CxLogo(size: 64)));
       case Phase.signedIn:
-        return const HomeScreen();
+        return const Shell();
       case Phase.signedOut:
         if (s.expired) return const SignedOutScreen();
         return s.introSeen ? const WelcomeScreen() : const IntroScreen();
