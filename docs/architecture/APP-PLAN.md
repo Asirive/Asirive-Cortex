@@ -503,3 +503,12 @@ works", to build).
 
 **Still open:** camera-permission-denied state, whether helper pairing can start
 from Scan (pairing needs an existing session), replay entry in Settings.
+
+## 19. Build status (2026-10-30)
+
+`apps/mobile` holds the real Flutter app. Done: step 1 of section 17 up to the
+account flow (theme and fonts, API client, secure token storage, first open,
+create account, check email, sign in, forgot password, signed-out). 12 tests pass
+(client, session and screen flows). Next: step 2, side model and routing by account
+type, plus the invite scan / enter-code / Accept flow. Deep links for the email
+confirm and reset links are not wired.
