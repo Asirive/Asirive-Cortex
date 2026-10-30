@@ -512,10 +512,10 @@ screen was compared side by side with its mockup and rebuilt where it differed. 
 the honest list of what is unfinished are in `apps/mobile/README.md`.
 
 Biggest open items: the phone-to-box USB link (pairing, pause, update hand-off and the
-internet check all depend on it, and it must supply the box key for claiming); testing on real
+internet check all depend on it, and it must supply the box key, which the app already sends when claiming); testing on real
 devices; push notifications for calls; the screen-reader and 200% text pass on a device.
 
-Deviations from the mockups: dashed borders are solid; "Extra contrast" turns on bold text only;
+Deviations from the mockups: "Extra contrast" turns on bold text only;
 the map shows coordinates with Open in Maps; the Accept screen has no inviter name or companion
 kind and invites carry no starting permissions (the server has no invite preview, see section 16);
 the notification switches are saved on the phone only.

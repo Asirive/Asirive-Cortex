@@ -522,3 +522,34 @@ class CxList extends StatelessWidget {
         ]),
       );
 }
+
+/// A dashed outline panel (privacy notes and waiting invites in the mockups).
+class CxDashed extends StatelessWidget {
+  const CxDashed({super.key, required this.child, this.padding = EdgeInsets.zero});
+  final Widget child;
+  final EdgeInsets padding;
+  @override
+  Widget build(BuildContext context) => CustomPaint(
+        foregroundPainter: _DashPainter(),
+        child: Padding(padding: padding, child: child),
+      );
+}
+
+class _DashPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final path = Path()..addRRect(RRect.fromRectAndRadius((Offset.zero & size).deflate(.75), const Radius.circular(Cx.tileRadius)));
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5
+      ..color = Cx.outline;
+    for (final m in path.computeMetrics()) {
+      for (var d = 0.0; d < m.length; d += 9) {
+        canvas.drawPath(m.extractPath(d, d + 5), paint);
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_DashPainter old) => false;
+}

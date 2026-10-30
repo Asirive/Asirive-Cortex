@@ -59,6 +59,8 @@ class FakeLink implements DeviceLink {
   @override
   Future<String?> boxCodeTail() async => null;
   @override
+  Future<List<int>?> boxPublicKey() async => [1, 2, 3];
+  @override
   Future<bool> pause() async {
     paused++;
     return pauseOk;

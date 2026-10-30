@@ -397,9 +397,8 @@ class PrivacyScreen extends StatelessWidget {
           const SizedBox(height: 12),
           SizedBox(height: 48, child: CxButton('Delete my location history', outline: true, danger: true, small: true, onTap: clearHistory)),
         ])),
-      Container(
+      CxDashed(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        decoration: BoxDecoration(borderRadius: BorderRadius.circular(Cx.tileRadius), border: Border.all(color: Cx.outline, width: 1.5)),
         child: const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('NEVER STORED', style: Cx.label),
           SizedBox(height: 6),

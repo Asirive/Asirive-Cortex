@@ -396,6 +396,7 @@ void main() {
       await t.tap(find.text('Yes, that is my box'));
       await t.pumpAndSettle();
       expect(h.gw.calls, contains('POST /v1/claim'));
+      expect(h.gw.bodies['POST /v1/claim']!['device_public_key'], 'AQID');
       await t.tap(find.text('Setting up? Continue to step 4'));
       await t.pumpAndSettle();
       await t.tap(find.text('Play a sound'));

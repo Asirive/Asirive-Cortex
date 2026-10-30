@@ -84,9 +84,8 @@ class _PeopleScreenState extends State<PeopleScreen> {
         ),
       if (waiting.isNotEmpty) CxSection('${waiting.length} invite${waiting.length == 1 ? '' : 's'} waiting', top: 6),
       for (final c in waiting)
-        Container(
+        CxDashed(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-          decoration: BoxDecoration(borderRadius: BorderRadius.circular(Cx.tileRadius), border: Border.all(color: Cx.outline, width: 1.5)),
           child: Row(children: [
             Expanded(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -291,9 +290,8 @@ class _GrantsScreenState extends State<GrantsScreen> {
         CxSwitch(label: 'See my location', detail: 'Where I am now and my last few minutes. Kept up to 30 days.', tall: true, value: loc, onChanged: (v) => _save(v, call)),
         CxSwitch(label: 'Call me', detail: 'Rings my phone. I can always decline.', tall: true, value: call, onChanged: (v) => _save(loc, v)),
       ]),
-      Container(
+      CxDashed(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        decoration: BoxDecoration(borderRadius: BorderRadius.circular(Cx.tileRadius), border: Border.all(color: Cx.outline, width: 1.5)),
         child: const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('NEVER SHARED', style: Cx.label),
           SizedBox(height: 6),

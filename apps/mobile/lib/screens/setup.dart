@@ -231,7 +231,7 @@ class _HelperFlowScreenState extends State<HelperFlowScreen> with Ticker<HelperF
       err = null;
     });
     try {
-      final r = await s.api.claim(s.token!, c);
+      final r = await s.api.claim(s.token!, c, boxKey: await s.services.link.boxPublicKey());
       final done = await s.services.link.handOverDeviceToken(r['device_id'] as String, r['device_token'] as String);
       if (!done) {
         setState(() {
@@ -332,9 +332,8 @@ class _HelperFlowScreenState extends State<HelperFlowScreen> with Ticker<HelperF
               CxStep(5, 'Hand the phone back', 'The owner takes over'),
             ]),
           ),
-          Container(
+          CxDashed(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            decoration: BoxDecoration(borderRadius: BorderRadius.circular(Cx.tileRadius), border: Border.all(color: Cx.outline, width: 1.5)),
             child: const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text("OWNER'S PRIVACY", style: Cx.label),
               SizedBox(height: 6),

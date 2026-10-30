@@ -108,6 +108,7 @@ enum LinkState { cableOut, connectedOnline, connectedNoInternet }
 abstract class DeviceLink {
   Future<LinkState> state();
   Future<String?> boxCodeTail(); // last 4 characters of the box code, read back to the owner
+  Future<List<int>?> boxPublicKey(); // DER public key the box makes for itself; the gateway pins it at claim
   Future<bool> pause(); // local command; obstacle warnings keep running
   Future<bool> resume();
   Future<bool> internetFromBox(); // can the box reach the gateway?
@@ -122,6 +123,8 @@ class UnavailableLink implements DeviceLink {
   Future<LinkState> state() async => LinkState.cableOut;
   @override
   Future<String?> boxCodeTail() async => null;
+  @override
+  Future<List<int>?> boxPublicKey() async => null;
   @override
   Future<bool> pause() async => false;
   @override

@@ -275,8 +275,8 @@ class Api {
   Future<void> registerPush(String token, String platform, String pushToken) =>
       _call('PUT', '/me/push', body: {'platform': platform, 'token': pushToken}, token: token);
 
-  Future<Map<String, dynamic>> claim(String token, String code) =>
-      _call('POST', '/claim', body: {'claim_code': code}, token: token);
+  Future<Map<String, dynamic>> claim(String token, String code, {List<int>? boxKey}) =>
+      _call('POST', '/claim', body: {'claim_code': code, if (boxKey != null) 'device_public_key': base64Encode(boxKey)}, token: token);
 
   /// The update the box should install, or null when it is up to date (204).
   Future<Map<String, dynamic>?> updateOffer(String token, String deviceId) async {
