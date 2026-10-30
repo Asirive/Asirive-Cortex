@@ -43,6 +43,8 @@ dependencies:
   local_auth: ^3.0.2
   url_launcher: ^6.3.3
   qr_flutter: ^4.1.0
+  app_links: ^7.2.2
+  share_plus: ^13.3.1
 
 dev_dependencies:
   flutter_test:
@@ -61,6 +63,8 @@ dev_dependencies:
 # The following section is specific to Flutter packages.
 flutter:
   uses-material-design: true
+  assets:
+    - assets/images/hero.png
   fonts:
     - family: Anton
       fonts:

@@ -507,13 +507,15 @@ from Scan (pairing needs an existing session), replay entry in Settings.
 ## 19. Build status (2026-10-30)
 
 `apps/mobile` holds the real Flutter app. Steps 1 to 5 of section 17 are built and
-step 6 is built up to the USB link; 45 tests pass. Details and the honest list of what
-is unfinished are in `apps/mobile/README.md`.
+step 6 is built up to the USB link; 49 tests pass and `flutter analyze` is clean. Every
+screen was compared side by side with its mockup and rebuilt where it differed. Details and
+the honest list of what is unfinished are in `apps/mobile/README.md`.
 
 Biggest open items: the phone-to-box USB link (pairing, pause, update hand-off and the
-internet check all depend on it); testing on real devices; push notifications for calls;
-deep links for email links; the screen-reader and 200% text pass on a device.
+internet check all depend on it, and it must supply the box key for claiming); testing on real
+devices; push notifications for calls; the screen-reader and 200% text pass on a device.
 
-Deviations from the mockups: "Extra contrast" became "Bold text"; the map shows
-coordinates with Open in Maps; the invite screen cannot show the inviter's name before
-sign-in (the server has no invite preview, see section 16).
+Deviations from the mockups: dashed borders are solid; "Extra contrast" turns on bold text only;
+the map shows coordinates with Open in Maps; the Accept screen has no inviter name or companion
+kind and invites carry no starting permissions (the server has no invite preview, see section 16);
+the notification switches are saved on the phone only.

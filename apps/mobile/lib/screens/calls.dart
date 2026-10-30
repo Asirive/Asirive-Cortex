@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../api.dart';
+import 'people.dart';
 import '../services.dart';
 import '../session.dart';
 import '../scope.dart';
@@ -32,7 +33,13 @@ class CallController extends ChangeNotifier {
   bool _answerSet = false;
   bool _closed = false;
 
-  String get _token => session.token!;
+  String get _token {
+    final t = session.token;
+    if (t == null) throw ApiException(401, 'signed_out', 'You were signed out.');
+    return t;
+  }
+
+  bool _ticking = false;
 
   Future<List<Map<String, dynamic>>> _ice() => session.api.iceServers(_token);
 
@@ -64,7 +71,8 @@ class CallController extends ChangeNotifier {
   }
 
   Future<void> _tick() async {
-    if (_closed || _id == null) return;
+    if (_closed || _id == null || _ticking) return;
+    _ticking = true;
     try {
       final c = await session.api.getCall(_token, _id!);
       if (c.answer.isNotEmpty && !_answerSet) {
@@ -83,7 +91,11 @@ class CallController extends ChangeNotifier {
         await _finish(c.state == 'declined' ? 'They declined.' : c.state == 'missed' ? 'No answer.' : 'The call ended.', CallPhase.ended);
       }
     } on ApiException catch (e) {
-      if (e.status == 404) await _finish('The call ended.', CallPhase.ended);
+      if (e.status == 404 || e.signedOut) await _finish('The call ended.', CallPhase.ended);
+    } on Exception {
+      // a bad candidate or a dropped request: the next tick tries again
+    } finally {
+      _ticking = false;
     }
   }
 
@@ -104,7 +116,13 @@ class CallController extends ChangeNotifier {
       _engine = session.services.callEngine();
       final ice = await _ice();
       final offer = await _engine!.createOffer(ice, _onCandidate);
+      if (_closed) return;
       _id = await session.api.startCall(_token, toAccountId, offer);
+      if (_closed) {
+        // the caller hung up while the call was being made
+        session.api.endCall(_token, _id!).catchError((_) {});
+        return;
+      }
       await _flush();
       phase = CallPhase.ringing;
       notifyListeners();
@@ -142,22 +160,22 @@ class CallController extends ChangeNotifier {
   Future<void> decline(String id) async {
     try {
       await session.api.endCall(_token, id);
-    } on ApiException {
+    } on Exception {
       // already ended
+    } finally {
+      await _finish('Declined.', CallPhase.ended);
     }
-    await _finish('Declined.', CallPhase.ended);
   }
 
   Future<void> hangUp({String message = 'The call ended.'}) async {
     final id = _id;
-    if (id != null) {
-      try {
-        await session.api.endCall(_token, id);
-      } on ApiException {
-        // already ended
-      }
+    try {
+      if (id != null) await session.api.endCall(_token, id);
+    } on Exception {
+      // already ended, or signed out: still close the microphone below
+    } finally {
+      await _finish(message, CallPhase.ended);
     }
-    await _finish(message, CallPhase.ended);
   }
 
   void toggleMute() {
@@ -183,33 +201,54 @@ class CallController extends ChangeNotifier {
   }
 }
 
-class _Round extends StatelessWidget {
-  const _Round({required this.label, required this.icon, required this.on, required this.onTap});
+class _Rb extends StatelessWidget {
+  const _Rb({required this.label, required this.icon, required this.onTap, this.on = false, this.color, this.size = 68, this.semantic});
   final String label;
   final IconData icon;
+  final VoidCallback? onTap;
   final bool on;
-  final VoidCallback onTap;
+  final Color? color;
+  final double size;
+  final String? semantic;
   @override
   Widget build(BuildContext context) => Semantics(
         button: true,
-        toggled: on,
-        label: label,
+        toggled: color == null ? on : null,
+        label: semantic ?? label,
         excludeSemantics: true,
         child: GestureDetector(
           onTap: onTap,
-          child: Column(children: [
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
             Container(
-              width: 72,
-              height: 72,
-              decoration: BoxDecoration(shape: BoxShape.circle, color: on ? Cx.accent : Colors.transparent, border: Border.all(color: on ? Cx.accent : Cx.outline, width: 1.5)),
-              child: Icon(icon, size: 30, color: on ? Cx.ground : Cx.text),
+              width: size,
+              height: size,
+              decoration: BoxDecoration(shape: BoxShape.circle, color: color ?? (on ? Cx.accent : Cx.surface), border: color == null && !on ? Border.all(color: Cx.outline, width: 1.5) : null),
+              child: Icon(icon, size: 30, color: color != null || on ? Cx.ground : Cx.text),
             ),
-            const SizedBox(height: 8),
-            Text(label, style: Cx.small),
+            const SizedBox(height: 10),
+            Text(label, style: const TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 14, fontWeight: FontWeight.w600, color: Cx.text)),
           ]),
         ),
       );
 }
+
+const _coral = Color(0xFFFF6B5E);
+
+Widget _bigAvatar(String name, {bool halo = false}) => ExcludeSemantics(
+      child: Container(
+        width: 132,
+        height: 132,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: Cx.accent,
+          boxShadow: halo
+              ? const [BoxShadow(color: Cx.surface, spreadRadius: 14), BoxShadow(color: Cx.line, spreadRadius: 15), BoxShadow(color: Color(0xFF0F150F), spreadRadius: 32)]
+              : null,
+        ),
+        child: Text(initials(name), style: const TextStyle(fontFamily: 'Anton', fontSize: 52, color: Cx.ground)),
+      ),
+    );
 
 /// The call itself. Used for both outgoing and answered calls.
 class CallScreen extends StatefulWidget {
@@ -248,9 +287,9 @@ class _CallScreenState extends State<CallScreen> {
 
   String _dur() {
     final t = c!.connectedAt;
-    if (t == null) return '';
+    if (t == null) return '00:00';
     final d = DateTime.now().difference(t);
-    return '${d.inMinutes}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
+    return '${d.inMinutes.toString().padLeft(2, '0')}:${(d.inSeconds % 60).toString().padLeft(2, '0')}';
   }
 
   @override
@@ -262,34 +301,43 @@ class _CallScreenState extends State<CallScreen> {
           final status = switch (ctl.phase) {
             CallPhase.starting => 'Starting the call',
             CallPhase.ringing => widget.incoming != null ? 'Connecting' : 'Ringing',
-            CallPhase.connected => 'On a call ${_dur()}',
+            CallPhase.connected => _dur(),
             _ => ctl.message ?? 'The call ended.',
           };
+          final connected = ctl.phase == CallPhase.connected;
           return PopScope(
             canPop: over,
             child: CxScreen(children: [
-              const CxTop(back: false, trailing: CxLogo()),
-              const SizedBox(height: 24),
-              Center(child: ExcludeSemantics(child: CircleAvatar(radius: 56, backgroundColor: Cx.accent, child: Text(initialsOf(widget.name), style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w700, color: Cx.ground))))),
-              Center(child: Text(widget.name, style: Cx.strong.copyWith(fontSize: 24))),
-              Center(child: Semantics(liveRegion: true, child: Text(status, style: Cx.body))),
-              if (!over)
-                Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                  _Round(label: 'Mute', icon: ctl.muted ? Icons.mic_off : Icons.mic, on: ctl.muted, onTap: ctl.toggleMute),
-                  const SizedBox(width: 32),
-                  _Round(label: 'Speaker', icon: Icons.volume_up, on: ctl.speaker, onTap: ctl.toggleSpeaker),
-                ]),
+              const SizedBox(height: 62),
+              const Center(child: Text('VOICE CALL · NOT RECORDED', style: Cx.label)),
+              const SizedBox(height: 12),
+              Center(child: _bigAvatar(widget.name)),
+              const SizedBox(height: 12),
+              Center(child: Semantics(header: true, child: Text(widget.name.toUpperCase(), textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis, style: Cx.display.copyWith(fontSize: 52, color: Cx.text, letterSpacing: 1.5)))),
+              Center(
+                child: Semantics(
+                  liveRegion: true,
+                  label: connected ? 'Call time ${_dur()}' : status,
+                  excludeSemantics: true,
+                  child: Text(status, textAlign: TextAlign.center, style: connected ? const TextStyle(fontFamily: 'JetBrainsMono', fontSize: 24, letterSpacing: 1.4, color: Cx.accent) : Cx.body.copyWith(fontSize: 18, color: over && ctl.phase == CallPhase.failed ? Cx.danger : Cx.muted)),
+                ),
+              ),
             ], bottom: [
-              if (over) CxButton('Back', onTap: () => Navigator.of(context).pop()) else CxButton('End call', outline: true, danger: true, onTap: ctl.hangUp),
+              if (!over) ...[
+                Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  _Rb(label: 'Mute', icon: ctl.muted ? Icons.mic_off : Icons.mic_none, on: ctl.muted, onTap: ctl.toggleMute),
+                  const SizedBox(width: 44),
+                  _Rb(label: 'Speaker', icon: Icons.volume_up_outlined, on: ctl.speaker, onTap: ctl.toggleSpeaker),
+                ]),
+                const SizedBox(height: 30),
+                Center(child: _Rb(label: 'End call', icon: Icons.call_end, color: _coral, size: 76, onTap: ctl.hangUp)),
+                const SizedBox(height: 36),
+              ] else
+                CxButton('Back', onTap: () => Navigator.of(context).pop()),
             ]),
           );
         },
       );
-}
-
-String initialsOf(String s) {
-  final t = s.trim();
-  return t.isEmpty ? '?' : t.substring(0, 1).toUpperCase();
 }
 
 /// Opened by the inbox poll in the shell, or by a push. Answer comes first.
@@ -310,27 +358,42 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
     });
   }
 
+  Future<void> _decline() async {
+    final s = SessionScope.of(context);
+    final nav = Navigator.of(context);
+    try {
+      await s.api.endCall(s.token!, widget.call.id);
+    } on Exception {
+      // already gone
+    }
+    if (nav.canPop()) nav.pop();
+  }
+
   @override
   Widget build(BuildContext context) {
     final s = SessionScope.of(context);
     final name = s.nameFor(widget.call.from);
-    return CxScreen(children: [
-      const CxTop(back: false, trailing: CxLogo()),
-      const SizedBox(height: 24),
-      Center(child: ExcludeSemantics(child: CircleAvatar(radius: 56, backgroundColor: Cx.accent, child: Text(initialsOf(name), style: const TextStyle(fontSize: 34, fontWeight: FontWeight.w700, color: Cx.ground))))),
-      Center(child: Text(name, style: Cx.strong.copyWith(fontSize: 24))),
-      const Center(child: CxText('Incoming call')),
-    ], bottom: [
-      CxButton('Answer', onTap: () => Navigator.of(context).pushReplacement(MaterialPageRoute<void>(builder: (_) => CallScreen(name: name, incoming: widget.call)))),
-      CxButton('Decline', outline: true, danger: true, onTap: () async {
-        final nav = Navigator.of(context);
-        try {
-          await s.api.endCall(s.token!, widget.call.id);
-        } on ApiException {
-          // already gone
-        }
-        nav.pop();
-      }),
-    ]);
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _decline();
+      },
+      child: CxScreen(children: [
+        const SizedBox(height: 62),
+        const Center(child: Text('CORTEX VOICE CALL', style: Cx.label)),
+        const SizedBox(height: 26),
+        Center(child: _bigAvatar(name, halo: true)),
+        const SizedBox(height: 32),
+        Center(child: Semantics(header: true, child: Text(name.toUpperCase(), textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis, style: Cx.display.copyWith(fontSize: 52, color: Cx.text, letterSpacing: 1.5)))),
+        Center(child: Text('is calling you', style: Cx.body.copyWith(fontSize: 18))),
+      ], bottom: [
+        Row(textDirection: TextDirection.rtl, mainAxisAlignment: MainAxisAlignment.center, children: [
+          _Rb(label: 'Answer', semantic: 'Answer call from $name', icon: Icons.call, color: Cx.accent, onTap: () => Navigator.of(context).pushReplacement(MaterialPageRoute<void>(builder: (_) => CallScreen(name: name, incoming: widget.call)))),
+          const SizedBox(width: 84),
+          _Rb(label: 'Decline', icon: Icons.call_end, color: _coral, onTap: _decline),
+        ]),
+        const SizedBox(height: 40),
+      ]),
+    );
   }
 }

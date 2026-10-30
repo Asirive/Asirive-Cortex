@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'api.dart';
 import 'scope.dart';
 import 'screens/auth.dart';
+import 'screens/invite.dart';
+import 'services.dart';
 import 'shell.dart';
 import 'screens/intro.dart';
 import 'screens/welcome.dart';
@@ -11,18 +15,64 @@ import 'theme.dart';
 import 'widgets.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
   final session = Session(Api(), const SecureStore())..start();
   runApp(CortexApp(session: session));
 }
 
-class CortexApp extends StatelessWidget {
+class CortexApp extends StatefulWidget {
   const CortexApp({super.key, required this.session});
   final Session session;
+  @override
+  State<CortexApp> createState() => _CortexAppState();
+}
+
+class _CortexAppState extends State<CortexApp> {
+  final navKey = GlobalKey<NavigatorState>();
+  StreamSubscription<Uri>? _sub;
+  Session get session => widget.session;
+
+  @override
+  void initState() {
+    super.initState();
+    session.services.links.initial().then((u) {
+      if (u != null) _open(u);
+    });
+    _sub = session.services.links.stream.listen(_open);
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  /// asirive://verify?token=, asirive://reset?token=, asirive://companion?code=
+  Future<void> _open(Uri u) async {
+    final nav = navKey.currentState;
+    if (nav == null) return;
+    final token = u.queryParameters['token'] ?? '';
+    switch (u.host) {
+      case 'verify':
+        try {
+          await session.api.verify(token);
+          nav.push(MaterialPageRoute<void>(builder: (_) => const EmailConfirmedScreen()));
+        } on ApiException catch (e) {
+          nav.push(MaterialPageRoute<void>(builder: (_) => EmailConfirmedScreen(ok: false, message: e.message)));
+        }
+      case 'reset':
+        nav.push(MaterialPageRoute<void>(builder: (_) => NewPasswordScreen(token: token)));
+      case 'companion':
+        final c = inviteCodeFrom(u.queryParameters['code'] ?? '');
+        if (c != null) nav.push(MaterialPageRoute<void>(builder: (_) => AcceptScreen(code: c)));
+    }
+  }
 
   @override
   Widget build(BuildContext context) => SessionScope(
         session: session,
         child: MaterialApp(
+          navigatorKey: navKey,
           title: 'Asirive Cortex',
           debugShowCheckedModeBanner: false,
           theme: Cx.theme(),

@@ -11,10 +11,13 @@ class Prefs extends ChangeNotifier {
   final Store _store;
 
   double speechRate = 0.5; // slow 0.3 .. fast 0.7
-  int haptic = 2; // 0 off, 1 gentle, 2 strong
+  int haptic = 1; // 0 low, 1 medium, 2 high
   bool spokenAlerts = true;
-  double textScale = 1.0; // 1.0, 1.3, 1.6, 2.0
-  bool highContrast = false;
+  double textScale = 1.0; // 1.0 .. 2.0
+  bool highContrast = false; // extra contrast
+  bool readStatusOnOpen = true;
+  bool incomingCalls = true;
+  bool glassesAlerts = true;
   String side = ''; // 'owner' | 'companion' | '' (not chosen yet)
 
   static const _k = 'prefs';
@@ -29,20 +32,26 @@ class Prefs extends ChangeNotifier {
       spokenAlerts = m['alerts'] as bool? ?? spokenAlerts;
       textScale = (m['text'] as num?)?.toDouble() ?? textScale;
       highContrast = m['contrast'] as bool? ?? highContrast;
+      readStatusOnOpen = m['readOpen'] as bool? ?? readStatusOnOpen;
+      incomingCalls = m['calls'] as bool? ?? incomingCalls;
+      glassesAlerts = m['alerts2'] as bool? ?? glassesAlerts;
       side = (m['side'] as String?) ?? side;
-    } on FormatException {
+    } on Exception {
       // bad file: keep defaults
     }
     notifyListeners();
   }
 
-  Future<void> update({double? speechRate, int? haptic, bool? spokenAlerts, double? textScale, bool? highContrast, String? side}) async {
+  Future<void> update({double? speechRate, int? haptic, bool? spokenAlerts, double? textScale, bool? highContrast, String? side, bool? readStatusOnOpen, bool? incomingCalls, bool? glassesAlerts}) async {
     this.speechRate = speechRate ?? this.speechRate;
     this.haptic = haptic ?? this.haptic;
     this.spokenAlerts = spokenAlerts ?? this.spokenAlerts;
     this.textScale = textScale ?? this.textScale;
     this.highContrast = highContrast ?? this.highContrast;
     this.side = side ?? this.side;
+    this.readStatusOnOpen = readStatusOnOpen ?? this.readStatusOnOpen;
+    this.incomingCalls = incomingCalls ?? this.incomingCalls;
+    this.glassesAlerts = glassesAlerts ?? this.glassesAlerts;
     notifyListeners();
     await _store.write(
         _k,
@@ -53,6 +62,9 @@ class Prefs extends ChangeNotifier {
           'text': this.textScale,
           'contrast': this.highContrast,
           'side': this.side,
+          'readOpen': this.readStatusOnOpen,
+          'calls': this.incomingCalls,
+          'alerts2': this.glassesAlerts,
         }));
   }
 }

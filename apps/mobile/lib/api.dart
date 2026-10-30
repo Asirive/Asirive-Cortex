@@ -42,7 +42,8 @@ class LoginResult {
 }
 
 class Device {
-  Device({required this.id, this.label = '', this.online = false, this.battery, this.firmware = '', this.tier = ''});
+  Device({required this.id, this.label = '', this.online = false, this.battery, this.firmware = '', this.tier = '', this.safety = ''});
+  final String safety; // OK | DEGRADED | FAULT, from the heartbeat
   final String id;
   final String label;
   final bool online;
@@ -55,7 +56,8 @@ class Device {
       online: j['online'] == true,
       battery: (j['battery_pct'] as num?)?.toInt(),
       firmware: (j['firmware'] as String?) ?? '',
-      tier: (j['tier'] as String?) ?? '');
+      tier: (j['tier'] as String?) ?? '',
+      safety: (j['safety'] as String?) ?? '');
 }
 
 /// A person the owner invited (owner side).

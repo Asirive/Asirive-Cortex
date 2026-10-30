@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../api.dart';
 import '../scope.dart';
@@ -13,6 +14,24 @@ String initials(String s) {
   if (t.isEmpty) return '?';
   final parts = t.split(RegExp(r'\s+'));
   return (parts.length > 1 ? parts[0][0] + parts[1][0] : parts[0].substring(0, t.length > 1 ? 2 : 1)).toUpperCase();
+}
+
+class CxAvatar extends StatelessWidget {
+  const CxAvatar(this.text, {super.key, this.size = 52, this.yellow = false, this.fontSize});
+  final String text;
+  final double size;
+  final bool yellow;
+  final double? fontSize;
+  @override
+  Widget build(BuildContext context) => ExcludeSemantics(
+        child: Container(
+          width: size,
+          height: size,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(shape: BoxShape.circle, color: yellow ? Cx.accent : const Color(0xFF34463A)),
+          child: Text(initials(text), style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: fontSize ?? size / 3, fontWeight: FontWeight.w700, color: yellow ? Cx.ground : Cx.text)),
+        ),
+      );
 }
 
 class PeopleScreen extends StatefulWidget {
@@ -31,44 +50,71 @@ class _PeopleScreenState extends State<PeopleScreen> {
   @override
   Widget build(BuildContext context) {
     final s = SessionScope.of(context);
-    final people = s.links.owned.where((c) => c.state != 'revoked').toList();
+    final active = s.links.owned.where((c) => c.state == 'active').toList();
+    final waiting = s.links.owned.where((c) => c.state == 'pending').toList();
     return CxScreen(tab: true, children: [
-      const CxTop(back: false, trailing: CxLogo()),
-      const CxTitle('My people'),
-      const CxText('You choose who can see where you are and who can call you. Nobody sees anything until you allow it.'),
-      if (people.isEmpty)
-        const CxTile(child: CxText('Nobody yet. Invite someone you trust.'))
-      else
-        for (final c in people)
-          CxTile(
-            child: Semantics(
-              button: true,
-              label: '${c.label}, ${c.state == 'pending' ? 'waiting to accept' : 'active'}. ${c.location ? 'Sees where you are.' : 'Cannot see where you are.'} ${c.call ? 'Can call.' : 'Cannot call.'}',
-              excludeSemantics: true,
-              child: GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: () => push(context, GrantsScreen(link: c)),
-                child: Row(children: [
-                  CircleAvatar(radius: 24, backgroundColor: c.state == 'active' ? Cx.accent : const Color(0xFF34463A), child: Text(initials(c.label), style: TextStyle(fontWeight: FontWeight.w700, color: c.state == 'active' ? Cx.ground : Cx.text))),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text(c.label, style: Cx.strong),
-                      const SizedBox(height: 6),
-                      Wrap(spacing: 6, runSpacing: 6, children: [
-                        if (c.state == 'pending') const CxChip('Waiting to accept') else ...[
-                          CxChip(c.location ? 'Sees where you are' : 'No location', on: c.location),
-                          CxChip(c.call ? 'Can call' : 'No calls', on: c.call),
-                        ],
-                      ]),
-                    ]),
-                  ),
-                  const Icon(Icons.chevron_right, color: Cx.faint),
-                ]),
-              ),
+      const CxTop(back: false, lead: CxTitle('My people', size: 36, height: 1.05)),
+      const Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: CxText('Chosen by you. You decide what each one can see.')),
+      CxSection('Companions · ${active.length}', top: 6),
+      if (active.isEmpty) const CxTile(child: CxText('Nobody yet. Invite someone you trust.')),
+      for (final c in active)
+        Semantics(
+          button: true,
+          label: '${c.label}. ${c.location ? 'Sees where you are.' : 'Cannot see where you are.'} ${c.call ? 'Can call.' : 'Cannot call.'}',
+          excludeSemantics: true,
+          child: GestureDetector(
+            onTap: () => push(context, GrantsScreen(link: c)),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              decoration: BoxDecoration(color: Cx.surface, borderRadius: BorderRadius.circular(Cx.tileRadius)),
+              child: Row(children: [
+                CxAvatar(c.label, yellow: active.first == c, size: 52, fontSize: 17),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text(c.label, style: const TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 18, fontWeight: FontWeight.w700, color: Cx.text)),
+                    const SizedBox(height: 7),
+                    Wrap(spacing: 6, runSpacing: 6, children: [CxChip(c.location ? 'Location' : 'No location', on: c.location), CxChip(c.call ? 'Calls' : 'No calls', on: c.call)]),
+                  ]),
+                ),
+                const Icon(Icons.chevron_right, color: Cx.faint),
+              ]),
             ),
           ),
-      CxButton('Invite someone', onTap: () => push(context, const InviteScreen())),
+        ),
+      if (waiting.isNotEmpty) CxSection('${waiting.length} invite${waiting.length == 1 ? '' : 's'} waiting', top: 6),
+      for (final c in waiting)
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+          decoration: BoxDecoration(borderRadius: BorderRadius.circular(Cx.tileRadius), border: Border.all(color: Cx.outline, width: 1.5)),
+          child: Row(children: [
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('Invite sent to ${c.label}', style: const TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 16, fontWeight: FontWeight.w600, color: Cx.text)),
+                const SizedBox(height: 3),
+                const Text('Waiting for them to accept', style: Cx.small),
+              ]),
+            ),
+            Semantics(
+              button: true,
+              label: 'Cancel invite for ${c.label}',
+              excludeSemantics: true,
+              child: GestureDetector(
+                onTap: () async {
+                  try {
+                    await s.api.revoke(s.token!, c.id);
+                    await s.refresh();
+                  } on ApiException {
+                    // shown again on the next refresh
+                  }
+                },
+                child: const SizedBox(height: 44, child: Center(child: Text('Cancel invite', style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 15, fontWeight: FontWeight.w600, color: Cx.danger)))),
+              ),
+            ),
+          ]),
+        ),
+    ], bottom: [
+      CxButton('Invite someone', icon: Icons.person_add_alt, onTap: () => push(context, const InviteScreen())),
     ]);
   }
 }
@@ -84,12 +130,13 @@ class _InviteScreenState extends State<InviteScreen> {
   Invite? invite;
   String? err;
   bool busy = false;
-  bool copied = false;
+  String? note;
 
-  Future<void> _make() async {
+  Future<Invite?> _make() async {
+    if (invite != null) return invite;
     if (label.text.trim().isEmpty) {
       setState(() => err = 'Add a name so you know who this is for.');
-      return;
+      return null;
     }
     final s = SessionScope.of(context);
     setState(() {
@@ -100,10 +147,13 @@ class _InviteScreenState extends State<InviteScreen> {
       final i = await s.api.invite(s.token!, label.text.trim());
       await s.refresh();
       if (mounted) setState(() => invite = i);
+      return i;
     } on ApiException catch (e) {
       if (mounted) setState(() => err = e.message);
+    } finally {
+      if (mounted) setState(() => busy = false);
     }
-    if (mounted) setState(() => busy = false);
+    return null;
   }
 
   @override
@@ -116,36 +166,52 @@ class _InviteScreenState extends State<InviteScreen> {
   Widget build(BuildContext context) {
     final i = invite;
     return CxScreen(children: [
-      const CxTop(title: 'Invite'),
-      CxTitle(i == null ? 'Invite\nsomeone' : 'Share\nthis code'),
-      if (i == null) ...[
-        const CxText('They get a code to enter or scan in their Cortex app. It works once and expires in 48 hours. They see nothing until you allow it.'),
-        CxField(label: 'Their name', controller: label, hint: 'For example, Hui Min', error: err, onSubmit: _make),
-      ] else ...[
-        CxText('Give this to ${label.text.trim()}. It is shown once, and you cannot see it again.'),
-        CxTile(
-            semanticLabel: 'Invite code ${i.code.split('').join(' ')}',
-            child: Column(children: [
-              Text(i.code, style: Cx.display.copyWith(fontSize: 36, letterSpacing: 2)),
-              const SizedBox(height: 14),
-              Container(
-                color: Colors.white,
-                padding: const EdgeInsets.all(10),
-                child: ExcludeSemantics(child: QrImageView(data: i.link, size: 180)),
-              ),
-            ])),
-        if (copied) const CxNotice('Link copied.'),
-      ],
+      const CxTop(title: 'New invite'),
+      const CxTitle('Invite\nsomeone'),
+      CxField(label: 'Their name or label', controller: label, hint: 'For example, Hui Min', error: err, onSubmit: _make),
+      CxTile(
+        semanticLabel: i == null ? 'The invite code appears here once you share the link' : 'Invite code ${i.code.split('').join(' ')}',
+        child: Row(children: [
+          ExcludeSemantics(
+            child: Container(
+              width: 96,
+              height: 96,
+              color: Colors.white,
+              padding: const EdgeInsets.all(6),
+              child: i == null ? const Icon(Icons.qr_code_2, size: 80, color: Color(0xFFB0B0B0)) : QrImageView(data: i.link, size: 84, padding: EdgeInsets.zero),
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(i == null ? 'SCAN IN PERSON' : 'CODE · SHOWN ONCE', style: Cx.label),
+              const SizedBox(height: 6),
+              Text(i == null ? 'asirive://companion?code=…' : i.code, style: TextStyle(fontFamily: 'JetBrainsMono', fontSize: i == null ? 13 : 22, height: 1.3, color: Cx.accent, letterSpacing: i == null ? 0 : 3)),
+              const SizedBox(height: 6),
+              Text(i == null ? 'Or send the link below.' : 'Give them this code, or let them scan.', style: Cx.small),
+            ]),
+          ),
+        ]),
+      ),
+      if (note != null) CxNotice(note!),
     ], bottom: [
-      if (i == null)
-        CxButton('Make the invite', onTap: _make, busy: busy)
-      else ...[
-        CxButton('Copy the link', onTap: () async {
-          await Clipboard.setData(ClipboardData(text: i.link));
-          if (mounted) setState(() => copied = true);
-        }),
-        CxButton('Done', outline: true, onTap: () => Navigator.of(context).maybePop()),
-      ],
+      CxButton('Share the link', icon: Icons.ios_share, busy: busy, onTap: () async {
+        final inv = await _make();
+        if (inv == null) return;
+        try {
+          await SharePlus.instance.share(ShareParams(text: 'Join me on Asirive Cortex: ${inv.link}\nCode: ${inv.code}'));
+        } on Exception {
+          await Clipboard.setData(ClipboardData(text: inv.link));
+          if (mounted) setState(() => note = 'Sharing is not available here, so the link was copied.');
+        }
+      }),
+      CxButton('Copy link', outline: true, onTap: () async {
+        final inv = await _make();
+        if (inv == null) return;
+        await Clipboard.setData(ClipboardData(text: inv.link));
+        if (mounted) setState(() => note = 'Link copied.');
+      }),
+      const Text('The link works once and expires in 48 hours. No camera, ever.', textAlign: TextAlign.center, style: Cx.small),
     ]);
   }
 }
@@ -185,42 +251,59 @@ class _GrantsScreenState extends State<GrantsScreen> {
   Future<void> _remove() async {
     final s = SessionScope.of(context);
     final nav = Navigator.of(context);
+    final name = widget.link.label;
     final ok = await confirmSheet(context,
-        title: 'Remove ${widget.link.label}?',
-        body: '${widget.link.label} stops seeing where you are and can no longer call you. Any call in progress ends. You can invite them again later.',
-        confirmLabel: 'Remove',
-        cancelLabel: 'Keep ${widget.link.label}',
-        danger: true);
-    if (!ok) return;
-    try {
-      await s.api.revoke(s.token!, widget.link.id);
-      await s.refresh();
-      nav.pop();
-    } on ApiException catch (e) {
-      if (mounted) setState(() => err = e.message);
-    }
+        mono: 'My people',
+        title: 'Remove $name?',
+        body: '$name will no longer see where you are and cannot call you. You can invite them again later.',
+        cancelLabel: 'Keep $name',
+        confirmLabel: 'Remove $name',
+        onConfirm: () async {
+          try {
+            await s.api.revoke(s.token!, widget.link.id);
+            await s.refresh();
+            return null;
+          } on ApiException catch (e) {
+            return e.message;
+          }
+        });
+    if (ok) nav.pop();
   }
 
   @override
   Widget build(BuildContext context) {
-    final pending = widget.link.state == 'pending';
+    final name = widget.link.label;
     return CxScreen(children: [
-      CxTop(title: widget.link.label),
-      CxTitle('What ${widget.link.label}\ncan see'),
-      if (pending)
-        const CxText('They have not accepted yet. You can choose now and it applies when they join.')
-      else
-        const CxText('Turn each one on or off. It changes straight away, and you can change it any time.'),
-      CxTile(
-          child: Column(children: [
-        CxSwitch(label: 'See where I am', detail: 'Only my latest place, history kept 30 days', value: loc, onChanged: (v) => _save(v, call)),
-        const Divider(color: Cx.line, height: 1),
-        CxSwitch(label: 'Call me', detail: 'A voice call. Audio is not recorded', value: call, onChanged: (v) => _save(loc, v)),
-      ])),
-      const CxText('Never the camera.', small: true),
+      const CxTop(title: 'Companion'),
+      Row(children: [
+        CxAvatar(name, size: 72, yellow: true, fontSize: 24),
+        const SizedBox(width: 16),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            CxTitle(name, size: 40),
+            const SizedBox(height: 8),
+            const Text('COMPANION', style: Cx.label),
+          ]),
+        ),
+      ]),
+      CxSection('$name can', top: 10),
+      CxList(children: [
+        CxSwitch(label: 'See my location', detail: 'Where I am now and my last few minutes. Kept up to 30 days.', tall: true, value: loc, onChanged: (v) => _save(v, call)),
+        CxSwitch(label: 'Call me', detail: 'Rings my phone. I can always decline.', tall: true, value: call, onChanged: (v) => _save(loc, v)),
+      ]),
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(borderRadius: BorderRadius.circular(Cx.tileRadius), border: Border.all(color: Cx.outline, width: 1.5)),
+        child: const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('NEVER SHARED', style: Cx.label),
+          SizedBox(height: 6),
+          Text('Camera images, video, or anything you say to the assistant.', style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 14, height: 1.45, color: Cx.muted)),
+        ]),
+      ),
+      const Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Text('Changes apply straight away. Turning location off does not delete what was already recorded. Use Privacy and data for that.', style: Cx.small)),
       if (err != null) CxNotice(err!, error: true),
     ], bottom: [
-      CxButton('Remove ${widget.link.label}', outline: true, danger: true, onTap: _remove),
+      CxButton('Remove $name', outline: true, danger: true, onTap: _remove),
     ]);
   }
 }

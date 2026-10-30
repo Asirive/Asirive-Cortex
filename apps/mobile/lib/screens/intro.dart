@@ -6,11 +6,12 @@ import '../theme.dart';
 import '../widgets.dart';
 
 class _Step {
-  const _Step(this.title, this.body, this.tileLabel, this.tile);
+  const _Step(this.title, this.body, this.tileLabel, this.tile, this.chips);
   final String title;
   final String body;
   final String tileLabel;
   final Widget tile;
+  final Widget chips; // pinned to the foot of the tile
 }
 
 /// The four plain-language intro screens shown once per install.
@@ -32,10 +33,10 @@ class _IntroScreenState extends State<IntroScreen> {
         Text('YOUR WALK', style: Cx.label),
         SizedBox(height: 6),
         SizedBox(height: 150, width: double.infinity, child: CustomPaint(painter: _RoutePainter())),
+        SizedBox(height: 4),
         _Row('Home', 'Hawker centre'),
-        SizedBox(height: 14),
-        Wrap(spacing: 6, children: [CxChip('24 min', on: true), CxChip('Bus 175'), CxChip('Spoken')]),
       ]),
+      const Wrap(spacing: 6, children: [CxChip('24 min', on: true), CxChip('Bus 175'), CxChip('Spoken')]),
     ),
     _Step(
       'Know what\nis ahead',
@@ -47,9 +48,8 @@ class _IntroScreenState extends State<IntroScreen> {
         _Say('Something low, straight ahead'),
         _Say('Stairs going down'),
         _Say('Person on your left'),
-        SizedBox(height: 10),
-        Wrap(spacing: 6, children: [CxChip('Works without internet', on: true), CxChip('Ears stay open')]),
       ]),
+      const Wrap(spacing: 6, children: [CxChip('Works without internet', on: true), CxChip('Ears stay open')]),
     ),
     _Step(
       'Ask about what\nis around you',
@@ -65,9 +65,8 @@ class _IntroScreenState extends State<IntroScreen> {
         Align(
             alignment: Alignment.centerLeft,
             child: _Bubble('Bus 175 comes in 3 minutes.', said: 'Cortex says')),
-        SizedBox(height: 14),
-        Wrap(spacing: 6, children: [CxChip('Signs'), CxChip('Prices'), CxChip('Bus times')]),
       ]),
+      const Wrap(spacing: 6, children: [CxChip('Signs'), CxChip('Prices'), CxChip('Bus times')]),
     ),
     _Step(
       'Family\nclose by',
@@ -79,9 +78,8 @@ class _IntroScreenState extends State<IntroScreen> {
         _Person('HM', 'Hui Min', ['Sees where you are', 'Can call'], lead: true),
         Divider(color: Cx.line, height: 24),
         _Person('UB', 'Uncle Ben', ['Sees where you are', 'No calls']),
-        SizedBox(height: 12),
-        CxChip('Family never sees your camera'),
       ]),
+      const CxChip('Family never sees your camera'),
     ),
   ];
 
@@ -96,10 +94,14 @@ class _IntroScreenState extends State<IntroScreen> {
     return CxScreen(children: [
       CxTop(
         back: i > 0,
+        logo: i == 0,
         onBack: () => setState(() => i--),
         trailing: CxLink('Skip', semanticLabel: 'Skip introduction', onTap: _done),
       ),
-      CxTile(minHeight: 300, semanticLabel: s.tileLabel, child: s.tile),
+      CxTile(
+          minHeight: 300,
+          semanticLabel: s.tileLabel,
+          child: Column(mainAxisAlignment: MainAxisAlignment.spaceBetween, crossAxisAlignment: CrossAxisAlignment.start, children: [s.tile, s.chips])),
     ], bottom: [
       CxPager(step: i + 1),
       CxTitle(s.title),
@@ -149,7 +151,7 @@ class _Bubble extends StatelessWidget {
         label: '$said: $text',
         excludeSemantics: true,
         child: Container(
-          constraints: const BoxConstraints(maxWidth: 270),
+          constraints: const BoxConstraints(maxWidth: 300),
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(
             color: me ? null : Cx.accent,

@@ -30,14 +30,24 @@ class FakeLocation implements LocationSource {
 
 class FakeOwnerCheck implements OwnerCheck {
   bool ok = true;
+  bool unavailable = false;
   @override
-  Future<bool> confirm(String reason) async => ok;
+  Future<OwnerResult> confirm(String reason) async => unavailable ? OwnerResult.unavailable : (ok ? OwnerResult.confirmed : OwnerResult.declined);
 }
 
 class FakeOpener implements Opener {
   final opened = <Uri>[];
   @override
   Future<void> open(Uri uri) async => opened.add(uri);
+}
+
+class FakeLinks implements LinkSource {
+  final controller = StreamController<Uri>.broadcast();
+  Uri? first;
+  @override
+  Future<Uri?> initial() async => first;
+  @override
+  Stream<Uri> get stream => controller.stream;
 }
 
 class FakeLink implements DeviceLink {
@@ -62,6 +72,12 @@ class FakeLink implements DeviceLink {
   Future<bool> handOverDeviceToken(String deviceId, String token) async => handOver;
   @override
   Future<bool> installUpdate(Map<String, dynamic> manifest) async => installOk;
+  final tested = <String>[];
+  @override
+  Future<bool> playTest(String kind) async {
+    tested.add(kind);
+    return true;
+  }
 }
 
 class FakeEngine implements CallEngine {
@@ -122,6 +138,10 @@ class FakeGateway {
             : _j(401, {'error': 'Email or password is wrong.', 'error_code': 'bad_credentials'});
       case 'POST /v1/auth/register':
         return _j(200, {'result': 'check_email'});
+      case 'POST /v1/auth/verify':
+        return _j(200, {'result': 'verified'});
+      case 'POST /v1/auth/reset':
+        return _j(200, {'result': 'reset'});
       case 'POST /v1/auth/logout':
         return _j(200, {'result': 'signed_out'});
       case 'GET /v1/me':
@@ -185,8 +205,9 @@ class Harness {
             ownerCheck: ownerCheck,
             opener: opener,
             link: link,
-            scanView: (c, onCode) => TextButton(onPressed: () => onCode('https://app/companion?code=K7Q2XM9'), child: const Text('fake scan')),
-            callEngine: () => engine),
+            scanView: (c, onCode, torch) => TextButton(onPressed: () => onCode('https://app/companion?code=K7Q2XM9'), child: const Text('fake scan')),
+            callEngine: () => engine,
+            links: linkSource),
         prefs: Prefs(this.store));
   }
   final FakeGateway gw;
@@ -197,6 +218,7 @@ class Harness {
   final opener = FakeOpener();
   final link = FakeLink();
   final engine = FakeEngine();
+  final linkSource = FakeLinks();
   late final Session session;
 }
 
@@ -212,6 +234,11 @@ Future<void> loadFonts() async {
     'JetBrainsMono': 'assets/fonts/JetBrainsMono.ttf',
   }.entries) {
     final l = FontLoader(e.key)..addFont(Future.value(ByteData.view(File(e.value).readAsBytesSync().buffer)));
+    await l.load();
+  }
+  final icons = File('/opt/flutter/bin/cache/artifacts/material_fonts/MaterialIcons-Regular.otf');
+  if (icons.existsSync()) {
+    final l = FontLoader('MaterialIcons')..addFont(Future.value(ByteData.view(icons.readAsBytesSync().buffer)));
     await l.load();
   }
 }

@@ -16,9 +16,11 @@ class Cx {
   static const tileRadius = 22.0;
 
   static const display = TextStyle(
-      fontFamily: 'Anton', fontSize: 44, height: 1, color: accent, letterSpacing: 0.2);
+      fontFamily: 'Anton', fontSize: 44, height: 1, color: accent, letterSpacing: 1.3);
+  static const chipFill = Color(0xFF26342A);
+  static const dangerLine = Color(0xFF5A2F2A);
   static const body = TextStyle(
-      fontFamily: 'SpaceGrotesk', fontSize: 16, height: 1.4, color: muted);
+      fontFamily: 'SpaceGrotesk', fontSize: 15, height: 1.45, color: muted);
   static const small = TextStyle(
       fontFamily: 'SpaceGrotesk', fontSize: 13, height: 1.35, color: faint);
   static const strong = TextStyle(

@@ -73,10 +73,19 @@ class Session extends ChangeNotifier {
   static const _kIntro = 'intro_seen';
 
   Future<void> start() async {
-    introSeen = (await store.read(_kIntro)) == '1';
-    await prefs.load();
-    services.speaker.setRate(prefs.speechRate);
-    final t = await store.read(_kToken);
+    try {
+      introSeen = (await store.read(_kIntro)) == '1';
+      await prefs.load();
+      services.speaker.setRate(prefs.speechRate);
+    } on Exception {
+      // unreadable storage: carry on with defaults, the person can still sign in
+    }
+    String? t;
+    try {
+      t = await store.read(_kToken);
+    } on Exception {
+      t = null;
+    }
     if (t == null) {
       phase = Phase.signedOut;
       notifyListeners();
@@ -88,17 +97,32 @@ class Session extends ChangeNotifier {
       await refresh();
       phase = Phase.signedIn;
     } on ApiException catch (e) {
-      if (e.status == 0) {
-        // Offline at launch: keep the token and let the person in; the next call re-checks it.
+      if (e.status == 401) {
+        await _forget();
+        phase = Phase.signedOut;
+      } else {
+        // Offline or the server is busy: keep the token and let the person in. The next call re-checks it.
         token = t;
         account = Account(id: '', email: '');
         phase = Phase.signedIn;
-      } else {
-        await store.delete(_kToken);
-        phase = Phase.signedOut;
       }
     }
     notifyListeners();
+  }
+
+  Future<void> _forget() async {
+    token = null;
+    account = null;
+    devices = [];
+    links = Links([], []);
+    pendingInvite = null;
+    inviteNote = null;
+    side = Side.owner;
+    try {
+      await store.delete(_kToken);
+    } on Exception {
+      // nothing more to do
+    }
   }
 
   Future<void> markIntroSeen() async {
@@ -128,7 +152,6 @@ class Session extends ChangeNotifier {
     try {
       final f = await api.acceptInvite(t, code);
       inviteNote = 'You are now looking after ${f.ownerEmail}. They choose what you can see.';
-      await prefs.update(side: 'companion');
     } on ApiException catch (e) {
       inviteNote = e.message;
     }
@@ -139,8 +162,11 @@ class Session extends ChangeNotifier {
     final t = token;
     if (t == null) return;
     try {
-      devices = await api.devices(t);
-      links = await api.links(t);
+      final d = await api.devices(t);
+      final l = await api.links(t);
+      if (token != t) return; // signed out or switched account while we waited
+      devices = d;
+      links = l;
     } on ApiException {
       return; // keep what we had; the caller sees offline/session errors on its own calls
     }
@@ -180,12 +206,9 @@ class Session extends ChangeNotifier {
 
   Future<void> signOut() async {
     final t = token;
-    token = null;
-    account = null;
-    devices = [];
-    links = Links([], []);
+    await _forget();
+    expired = false;
     phase = Phase.signedOut;
-    await store.delete(_kToken);
     notifyListeners();
     if (t != null) {
       try {
@@ -198,11 +221,9 @@ class Session extends ChangeNotifier {
 
   void expire() {
     if (phase != Phase.signedIn) return;
-    token = null;
-    account = null;
     expired = true;
     phase = Phase.signedOut;
-    store.delete(_kToken);
+    _forget();
     notifyListeners();
   }
 }

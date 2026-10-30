@@ -29,11 +29,21 @@ clickable mockups: `docs/design/mockups/`.
   `Info.plist` and `AndroidManifest.xml`, but are untested on a device.
 - No push notifications yet (incoming calls are found by polling while the app is open). The server
   has push registration; the app needs the platform push setup and a PushKit/CallKit step.
-- Email confirm and reset links do not open the app (no deep links yet).
+- Email links (`asirive://verify`, `reset`, `companion`) are handled in the app, but the phone must be set to open them; the web fallback pages are not built.
 - The Voice, sound and text settings live on the phone; the server has no preferences endpoint.
-- "Bold text" replaces the "extra contrast" idea; a true high-contrast colour set is not built.
+- The "Extra contrast" switch currently turns on bold text only; a true high-contrast colour set is not built.
+- Box pairing: the gateway wants the box's public key when its certificate authority is on. `DeviceLink` has no call for that yet, so claiming will be refused by such a gateway until the USB link supplies it.
+- Grants can only be changed for people who accepted; invites that are still waiting can only be cancelled.
 - The map is coordinates plus "Open in Maps", not an in-app map.
 - Reading the screen with a real screen reader and testing at 200% text on a device is still to do.
+
+## How closely it matches the mockups
+
+Every screen was compared side by side with its mockup (47 screens). Same layout, spacing, type and
+colours. Known differences: dashed borders are solid, the map is a placeholder, the hero photo is the
+V3 prototype picture, the Accept screen has no inviter name or companion kind (the server has no
+invite preview), the invite cannot set starting permissions, and the Notifications switches are saved
+on the phone only.
 
 ## Run
 

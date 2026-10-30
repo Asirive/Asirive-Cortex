@@ -19,6 +19,17 @@
 		<string>audio</string>
 		<string>voip</string>
 	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.asirive.cortex</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>asirive</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleDisplayName</key>
 	<string>Asirive Cortex</string>
 	<key>CFBundleExecutable</key>

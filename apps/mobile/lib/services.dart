@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:app_links/app_links.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
@@ -61,19 +63,28 @@ class GeoLocationSource implements LocationSource {
   }
 }
 
+enum OwnerResult { confirmed, declined, unavailable }
+
 abstract class OwnerCheck {
-  /// Face ID, fingerprint or passcode. True when the owner confirmed.
-  Future<bool> confirm(String reason);
+  /// Face ID, fingerprint or passcode. [OwnerResult.unavailable] when the phone has none set up.
+  Future<OwnerResult> confirm(String reason);
 }
 
 class DeviceOwnerCheck implements OwnerCheck {
   final _auth = LocalAuthentication();
   @override
-  Future<bool> confirm(String reason) async {
+  Future<OwnerResult> confirm(String reason) async {
     try {
-      return await _auth.authenticate(localizedReason: reason);
+      if (!await _auth.isDeviceSupported()) return OwnerResult.unavailable;
+      return await _auth.authenticate(localizedReason: reason) ? OwnerResult.confirmed : OwnerResult.declined;
+    } on LocalAuthException catch (e) {
+      final c = e.code;
+      if (c == LocalAuthExceptionCode.noBiometricsEnrolled || c == LocalAuthExceptionCode.noCredentialsSet || c == LocalAuthExceptionCode.noBiometricHardware || c == LocalAuthExceptionCode.biometricHardwareTemporarilyUnavailable) {
+        return OwnerResult.unavailable;
+      }
+      return OwnerResult.declined;
     } on Exception {
-      return false;
+      return OwnerResult.unavailable;
     }
   }
 }
@@ -102,6 +113,7 @@ abstract class DeviceLink {
   Future<bool> internetFromBox(); // can the box reach the gateway?
   Future<bool> handOverDeviceToken(String deviceId, String token); // after /claim
   Future<bool> installUpdate(Map<String, dynamic> manifest); // hand the signed update to the box
+  Future<bool> playTest(String kind); // 'sound' | 'vibrate' | 'voice' on the glasses
 }
 
 class UnavailableLink implements DeviceLink {
@@ -120,22 +132,85 @@ class UnavailableLink implements DeviceLink {
   Future<bool> handOverDeviceToken(String deviceId, String token) async => false;
   @override
   Future<bool> installUpdate(Map<String, dynamic> manifest) async => false;
+  @override
+  Future<bool> playTest(String kind) async => false;
 }
 
-/// Camera view that reports each code it reads.
-typedef ScanViewBuilder = Widget Function(BuildContext context, void Function(String code) onCode);
+/// Links that open the app: asirive://verify?token=, asirive://reset?token=, asirive://companion?code=.
+abstract class LinkSource {
+  Future<Uri?> initial();
+  Stream<Uri> get stream;
+}
 
-Widget realScanView(BuildContext context, void Function(String code) onCode) => MobileScanner(
+class AppLinkSource implements LinkSource {
+  final _l = AppLinks();
+  @override
+  Future<Uri?> initial() async {
+    try {
+      return await _l.getInitialLink();
+    } on Exception {
+      return null;
+    }
+  }
+
+  @override
+  Stream<Uri> get stream => _l.uriLinkStream;
+}
+
+/// Opens the phone's mail app.
+Uri mailAppUri() => defaultTargetPlatform == TargetPlatform.iOS ? Uri.parse('message://') : Uri.parse('mailto:');
+
+/// Camera view that reports each code it reads.
+typedef ScanViewBuilder = Widget Function(BuildContext context, void Function(String code) onCode, ValueListenable<bool> torch);
+
+Widget realScanView(BuildContext context, void Function(String code) onCode, ValueListenable<bool> torch) => _RealScan(onCode: onCode, torch: torch);
+
+class _RealScan extends StatefulWidget {
+  const _RealScan({required this.onCode, required this.torch});
+  final void Function(String) onCode;
+  final ValueListenable<bool> torch;
+  @override
+  State<_RealScan> createState() => _RealScanState();
+}
+
+class _RealScanState extends State<_RealScan> {
+  final _c = MobileScannerController();
+  bool _on = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.torch.addListener(_t);
+  }
+
+  void _t() {
+    if (widget.torch.value != _on) {
+      _on = widget.torch.value;
+      _c.toggleTorch();
+    }
+  }
+
+  @override
+  void dispose() {
+    widget.torch.removeListener(_t);
+    _c.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => MobileScanner(
+      controller: _c,
       onDetect: (capture) {
         for (final b in capture.barcodes) {
           final v = b.rawValue;
           if (v != null && v.isNotEmpty) {
-            onCode(v);
+            widget.onCode(v);
             return;
           }
         }
       },
     );
+}
 
 /// Pulls the invite code from a scanned value: the full link or a bare code.
 String? inviteCodeFrom(String raw) {
@@ -260,13 +335,15 @@ class Services {
     DeviceLink? link,
     ScanViewBuilder? scanView,
     CallEngine Function()? callEngine,
+    LinkSource? links,
   })  : speaker = speaker ?? TtsSpeaker(),
         location = location ?? GeoLocationSource(),
         ownerCheck = ownerCheck ?? DeviceOwnerCheck(),
         opener = opener ?? UrlOpener(),
         link = link ?? const UnavailableLink(),
         scanView = scanView ?? realScanView,
-        callEngine = callEngine ?? WebRtcEngine.new;
+        callEngine = callEngine ?? WebRtcEngine.new,
+        links = links ?? AppLinkSource();
 
   final Speaker speaker;
   final LocationSource location;
@@ -275,4 +352,5 @@ class Services {
   final DeviceLink link;
   final ScanViewBuilder scanView;
   final CallEngine Function() callEngine;
+  final LinkSource links;
 }

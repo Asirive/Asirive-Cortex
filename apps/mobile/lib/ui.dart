@@ -17,45 +17,126 @@ String ago(DateTime t, [DateTime? now]) {
   return '${d.inDays} days ago';
 }
 
-/// A confirmation sheet. The safe choice comes first and is the default focus.
+/// A confirmation sheet (APP-PLAN 14.5): the safe choice first, the action second.
+/// [onConfirm] runs when the action is tapped; return an error text to keep the sheet open.
 Future<bool> confirmSheet(
   BuildContext context, {
+  required String mono,
   required String title,
-  required String body,
   required String confirmLabel,
+  String? body,
+  Widget? bodyWidget,
+  String? small,
   String cancelLabel = 'Cancel',
-  bool danger = false,
+  bool danger = true,
   Widget? extra,
+  Future<String?> Function()? onConfirm,
+  String? speak,
 }) async {
   final session = SessionScope.of(context);
-  if (session.prefs.spokenAlerts) session.services.speaker.say('$title. $body');
+  if (session.prefs.spokenAlerts) session.services.speaker.say(speak ?? '$title. ${body ?? ''}');
   final r = await showModalBottomSheet<bool>(
     context: context,
     isScrollControlled: true,
-    backgroundColor: Cx.surface,
-    shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(32))),
-    builder: (c) => Padding(
-      padding: EdgeInsets.fromLTRB(Cx.margin + 6, 24, Cx.margin + 6, 20 + MediaQuery.of(c).viewInsets.bottom),
-      child: SingleChildScrollView(
-        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          Semantics(header: true, child: Text(title, style: Cx.strong.copyWith(fontSize: 22))),
-          const SizedBox(height: 10),
-          Text(body, style: Cx.body),
-          if (extra != null) ...[const SizedBox(height: 14), extra],
-          const SizedBox(height: 18),
-          CxButton(cancelLabel, onTap: () => Navigator.pop(c, false)),
-          const SizedBox(height: 10),
-          CxButton(confirmLabel, outline: true, danger: danger, onTap: () => Navigator.pop(c, true)),
-        ]),
-      ),
+    backgroundColor: Colors.transparent,
+    barrierColor: const Color(0xA6000000),
+    builder: (c) => _SheetBody(
+      mono: mono,
+      title: title,
+      body: body,
+      bodyWidget: bodyWidget,
+      small: small,
+      cancelLabel: cancelLabel,
+      confirmLabel: confirmLabel,
+      danger: danger,
+      extra: extra,
+      onConfirm: onConfirm,
     ),
   );
   return r ?? false;
 }
 
+class _SheetBody extends StatefulWidget {
+  const _SheetBody({required this.mono, required this.title, required this.cancelLabel, required this.confirmLabel, required this.danger, this.body, this.bodyWidget, this.small, this.extra, this.onConfirm});
+  final String mono, title, cancelLabel, confirmLabel;
+  final String? body, small;
+  final Widget? bodyWidget, extra;
+  final bool danger;
+  final Future<String?> Function()? onConfirm;
+  @override
+  State<_SheetBody> createState() => _SheetBodyState();
+}
+
+class _SheetBodyState extends State<_SheetBody> {
+  bool busy = false;
+  String? err;
+
+  Future<void> _go() async {
+    if (widget.onConfirm == null) {
+      Navigator.pop(context, true);
+      return;
+    }
+    setState(() {
+      busy = true;
+      err = null;
+    });
+    final e = await widget.onConfirm!();
+    if (!mounted) return;
+    if (e == null) {
+      Navigator.pop(context, true);
+    } else {
+      setState(() {
+        busy = false;
+        err = e;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Padding(
+        padding: EdgeInsets.fromLTRB(8, 0, 8, 8 + MediaQuery.of(context).viewInsets.bottom + MediaQuery.of(context).padding.bottom),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(20, 14, 20, 22),
+          decoration: BoxDecoration(color: Cx.surface, borderRadius: BorderRadius.circular(32), border: Border.all(color: Cx.line)),
+          child: SingleChildScrollView(
+            child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+              Center(child: ExcludeSemantics(child: Container(width: 44, height: 5, decoration: BoxDecoration(color: Cx.outline, borderRadius: BorderRadius.circular(3))))),
+              const SizedBox(height: 16),
+              Text(widget.mono.toUpperCase(), style: Cx.label),
+              const SizedBox(height: 16),
+              Semantics(header: true, child: Text(widget.title.toUpperCase(), style: Cx.display.copyWith(fontSize: 40, letterSpacing: 1.2))),
+              if (widget.body != null) ...[const SizedBox(height: 16), Text(widget.body!, style: Cx.body.copyWith(fontSize: 16, color: const Color(0xFFD6DDD0)))],
+              if (widget.bodyWidget != null) ...[const SizedBox(height: 16), widget.bodyWidget!],
+              if (widget.small != null) ...[const SizedBox(height: 16), Text(widget.small!, style: Cx.small)],
+              if (widget.extra != null) ...[const SizedBox(height: 14), widget.extra!],
+              if (err != null) ...[const SizedBox(height: 12), CxNotice(err!, error: true)],
+              const SizedBox(height: 16),
+              CxButton(widget.cancelLabel, outline: true, onTap: busy ? null : () => Navigator.pop(context, false)),
+              const SizedBox(height: 10),
+              CxButton(widget.confirmLabel, outline: widget.danger, danger: widget.danger, busy: busy, onTap: _go),
+            ]),
+          ),
+        ),
+      );
+}
+
+/// Square yellow bullet used in short lists (mockup `.pt`).
+class CxBullet extends StatelessWidget {
+  const CxBullet(this.child, {super.key});
+  final Widget child;
+  @override
+  Widget build(BuildContext context) => Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Padding(padding: const EdgeInsets.only(top: 6), child: Container(width: 10, height: 10, color: Cx.accent)),
+        const SizedBox(width: 12),
+        Expanded(child: DefaultTextStyle(style: const TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 15, height: 1.4, color: Color(0xFFD6DDD0)), child: child)),
+      ]);
+}
+
 /// A row in a list tile: label, optional detail, chevron.
 class CxRow extends StatelessWidget {
-  const CxRow(this.label, {super.key, this.detail, this.onTap, this.trailing});
+  const CxRow(this.label, {super.key, this.detail, this.onTap, this.trailing, this.color, this.chevron = true});
+  final Color? color;
+  final bool chevron;
   final String label;
   final String? detail;
   final VoidCallback? onTap;
@@ -69,17 +150,17 @@ class CxRow extends StatelessWidget {
           behavior: HitTestBehavior.opaque,
           onTap: onTap,
           child: Container(
-            constraints: const BoxConstraints(minHeight: 56),
+            constraints: const BoxConstraints(minHeight: 60),
             padding: const EdgeInsets.symmetric(vertical: 8),
             child: Row(children: [
               Expanded(
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
-                  Text(label, style: Cx.strong.copyWith(fontSize: 16, fontWeight: FontWeight.w600)),
+                  Text(label, style: Cx.strong.copyWith(fontSize: 16, fontWeight: FontWeight.w600, color: color ?? Cx.text)),
                   if (detail != null) Text(detail!, style: Cx.small),
                 ]),
               ),
               ?trailing,
-              if (onTap != null && trailing == null) const Icon(Icons.chevron_right, color: Cx.faint),
+              if (onTap != null && trailing == null && chevron) const Icon(Icons.chevron_right, color: Cx.faint),
             ]),
           ),
         ),
@@ -87,7 +168,8 @@ class CxRow extends StatelessWidget {
 }
 
 class CxSwitch extends StatelessWidget {
-  const CxSwitch({super.key, required this.label, this.detail, required this.value, required this.onChanged});
+  const CxSwitch({super.key, required this.label, this.detail, required this.value, required this.onChanged, this.tall = false});
+  final bool tall;
   final String label;
   final String? detail;
   final bool value;
@@ -102,7 +184,7 @@ class CxSwitch extends StatelessWidget {
           behavior: HitTestBehavior.opaque,
           onTap: onChanged == null ? null : () => onChanged!(!value),
           child: Container(
-            constraints: const BoxConstraints(minHeight: 56),
+            constraints: BoxConstraints(minHeight: tall ? 76 : 60),
             padding: const EdgeInsets.symmetric(vertical: 8),
             child: Row(children: [
               Expanded(
@@ -115,15 +197,11 @@ class CxSwitch extends StatelessWidget {
               AnimatedContainer(
                 duration: const Duration(milliseconds: 120),
                 width: 52,
-                height: 30,
-                padding: const EdgeInsets.all(3),
+                height: 32,
+                padding: const EdgeInsets.all(4),
                 alignment: value ? Alignment.centerRight : Alignment.centerLeft,
-                decoration: BoxDecoration(
-                    color: value ? Cx.accent : Colors.transparent,
-                    borderRadius: BorderRadius.circular(15),
-                    border: Border.all(color: value ? Cx.accent : Cx.outline, width: 1.5)),
-                child: Container(
-                    width: 22, height: 22, decoration: BoxDecoration(shape: BoxShape.circle, color: value ? Cx.ground : Cx.outline)),
+                decoration: BoxDecoration(color: value ? Cx.accent : Cx.outline, borderRadius: BorderRadius.circular(16)),
+                child: Container(width: 24, height: 24, decoration: BoxDecoration(shape: BoxShape.circle, color: value ? Cx.ground : Cx.text)),
               ),
             ]),
           ),

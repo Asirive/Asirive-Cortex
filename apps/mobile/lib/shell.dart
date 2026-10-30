@@ -8,24 +8,24 @@ import 'screens/owner.dart';
 import 'screens/people.dart';
 import 'screens/settings.dart';
 import 'session.dart';
+import 'shell_nav.dart';
+export 'shell_nav.dart';
 import 'theme.dart';
 import 'ui.dart';
 
-enum Tab { home, people, following, settings }
-
-const _labels = {Tab.home: 'Home', Tab.people: 'My people', Tab.following: 'Following', Tab.settings: 'Settings'};
+const _labels = {AppTab.home: 'Home', AppTab.people: 'My people', AppTab.following: 'Following', AppTab.settings: 'Settings'};
 const _icons = {
-  Tab.home: Icons.home_outlined,
-  Tab.people: Icons.groups_outlined,
-  Tab.following: Icons.favorite_border,
-  Tab.settings: Icons.tune,
+  AppTab.home: Icons.home_outlined,
+  AppTab.people: Icons.groups_outlined,
+  AppTab.following: Icons.place_outlined,
+  AppTab.settings: Icons.tune,
 };
 
 /// Tabs for the side the person is on (APP-PLAN 8): owner Home, My people, [Following], Settings;
 /// companion Following, Settings.
-List<Tab> tabsFor(Session s) {
-  if (s.side == Side.companion) return [Tab.following, Tab.settings];
-  return [Tab.home, Tab.people, if (s.canCompanion) Tab.following, Tab.settings];
+List<AppTab> tabsFor(Session s) {
+  if (s.side == Side.companion) return [AppTab.following, AppTab.settings];
+  return [AppTab.home, AppTab.people, if (s.canCompanion) AppTab.following, AppTab.settings];
 }
 
 class Shell extends StatefulWidget {
@@ -35,19 +35,36 @@ class Shell extends StatefulWidget {
 }
 
 class _ShellState extends State<Shell> with Ticker<Shell> {
-  int index = 0;
+  AppTab? current;
   String? ringing; // call id already shown, so one call opens one screen
 
   @override
   void initState() {
     super.initState();
     tickEvery(const Duration(seconds: 4), _checkInbox);
+    ShellNav.request.addListener(_onRequest);
+  }
+
+  void _onRequest() {
+    final t = ShellNav.request.value;
+    if (t == null) return;
+    ShellNav.request.value = null;
+    final s = SessionScope.of(context);
+    if (t == AppTab.following && s.side != Side.companion && s.canCompanion) s.switchSide(Side.companion);
+    if ((t == AppTab.home || t == AppTab.people) && s.side == Side.companion && s.canOwner) s.switchSide(Side.owner);
+    setState(() => current = t);
+  }
+
+  @override
+  void dispose() {
+    ShellNav.request.removeListener(_onRequest);
+    super.dispose();
   }
 
   Future<void> _checkInbox() async {
     final s = SessionScope.of(context);
     final t = s.token;
-    if (t == null) return;
+    if (t == null || !s.prefs.incomingCalls) return;
     try {
       final inbox = await s.api.inbox(t);
       final c = inbox.where((x) => x.state == 'ringing').toList();
@@ -64,13 +81,14 @@ class _ShellState extends State<Shell> with Ticker<Shell> {
   Widget build(BuildContext context) {
     final s = SessionScope.of(context);
     final tabs = tabsFor(s);
-    if (index >= tabs.length) index = 0;
-    final tab = tabs[index];
+    if (current == null || !tabs.contains(current)) current = tabs.first;
+    final tab = current!;
+    final index = tabs.indexOf(tab);
     final page = switch (tab) {
-      Tab.home => const HomeScreen(),
-      Tab.people => const PeopleScreen(),
-      Tab.following => const FollowingScreen(),
-      Tab.settings => const SettingsScreen(),
+      AppTab.home => const HomeScreen(),
+      AppTab.people => const PeopleScreen(),
+      AppTab.following => const FollowingScreen(),
+      AppTab.settings => const SettingsScreen(),
     };
     return Scaffold(
       body: Stack(children: [
@@ -79,7 +97,7 @@ class _ShellState extends State<Shell> with Ticker<Shell> {
           left: Cx.margin,
           right: Cx.margin,
           bottom: 16,
-          child: SafeArea(top: false, child: _Nav(tabs: tabs, index: index, onTap: (i) => setState(() => index = i))),
+          child: SafeArea(top: false, child: _Nav(tabs: tabs, index: index, onTap: (i) => setState(() => current = tabs[i]))),
         ),
       ]),
     );
@@ -88,7 +106,7 @@ class _ShellState extends State<Shell> with Ticker<Shell> {
 
 class _Nav extends StatelessWidget {
   const _Nav({required this.tabs, required this.index, required this.onTap});
-  final List<Tab> tabs;
+  final List<AppTab> tabs;
   final int index;
   final ValueChanged<int> onTap;
   @override
@@ -109,6 +127,7 @@ class _Nav extends StatelessWidget {
                 child: GestureDetector(
                   onTap: () => onTap(i),
                   child: Container(
+                    height: 52,
                     margin: const EdgeInsets.symmetric(horizontal: 2),
                     decoration: BoxDecoration(
                         color: i == index ? Cx.accent : Colors.transparent, borderRadius: BorderRadius.circular(26)),

@@ -18,7 +18,7 @@ http.Response json(int code, Object body) =>
 Session makeSession(Future<http.Response> Function(http.Request) h, [MemoryStore? store]) {
   final st = store ?? MemoryStore();
   return Session(Api(client: MockClient(h), baseUrl: 'https://gw.test'), st,
-      services: Services(speaker: FakeSpeaker(), link: FakeLink()), prefs: Prefs(st));
+      services: Services(speaker: FakeSpeaker(), link: FakeLink(), links: FakeLinks()), prefs: Prefs(st));
 }
 
 Future<void> boot(WidgetTester t, Session s) async {
@@ -75,11 +75,9 @@ void main() {
     await t.enterText(find.byType(TextField).at(1), 'secret-password');
     await t.tap(find.text('Sign in').last);
     await t.pumpAndSettle();
-    expect(find.text('HOME'), findsWidgets);
+    expect(find.text('WELCOME'), findsWidgets);
     expect(await store.read('token'), 'tok');
     await t.tap(find.bySemanticsLabel(RegExp('Settings')));
-    await t.pumpAndSettle();
-    await t.tap(find.text('Account'));
     await t.pumpAndSettle();
     await t.tap(find.text('Sign out'));
     await t.pumpAndSettle();
@@ -103,7 +101,7 @@ void main() {
     await t.tap(find.text('Sign in').last);
     await t.pumpAndSettle();
     expect(find.text('Email or password is wrong.'), findsOneWidget);
-    expect(find.text('WELCOME\nBACK'), findsOneWidget);
+    expect(find.text('SIGN\nIN'), findsOneWidget);
   });
 
   testWidgets('create account checks the password length before calling the server', (t) async {
@@ -125,8 +123,13 @@ void main() {
     await t.enterText(find.byType(TextField).at(1), 'long-enough-password');
     await t.tap(find.text('Create account'));
     await t.pumpAndSettle();
+    expect(calls, 0); // the terms box is not ticked yet
+    expect(find.textContaining('agree to the Terms'), findsWidgets);
+    await t.tap(find.textContaining('I agree to the Terms'));
+    await t.tap(find.text('Create account'));
+    await t.pumpAndSettle();
     expect(calls, 1);
-    expect(find.text('CHECK YOUR\nEMAIL'), findsOneWidget);
+    expect(find.text('CHECK\nYOUR EMAIL'), findsOneWidget);
   });
 
   testWidgets('a stored token that the server rejects returns to Welcome', (t) async {
@@ -153,7 +156,7 @@ void main() {
       return json(200, <Object>[]);
     }, store);
     await boot(t, s);
-    expect(find.text('HOME'), findsWidgets);
+    expect(find.text('WELCOME'), findsWidgets);
     dead = true;
     await expectLater(s.api.me('good'), throwsA(isA<ApiException>()));
     await t.pumpAndSettle();
