@@ -493,11 +493,12 @@ works", to build).
   buttons; tiles use min-height so 200% text can grow. Skip and pager styles now
   live in `cortex.css`.
 
-**Copy held back until confirmed (do not ship as written):**
-- "Works without internet" and "ears stay open to traffic": safety claims, removed
-  from the mockups until engineering and hardware confirm them.
-- "Nothing is saved" about the Scan camera: removed; needs engineering.
-- "Menus" as a readable item: not in the docs, removed.
+**Copy decisions (owner, 2026-10-30):**
+- "Works without internet" and "ears stay open to traffic": kept on Intro 2.
+  Open speakers confirmed. Offline warnings are planned, so this line is only true
+  once the offline safety path ships; it must not go live before then.
+- "Nothing is saved" on Scan: not needed, removed for good.
+- "Menus" as a readable item: not confirmed, left out.
 - Bus times come from live arrivals data, so the example is illustrative.
 
 **Still open:** camera-permission-denied state, whether helper pairing can start
