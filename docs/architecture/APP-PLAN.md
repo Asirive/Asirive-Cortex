@@ -322,3 +322,143 @@ Adds to section 2:
 5. Calls.
 6. Device link: pairing, update, **internet sharing check** (needs hardware).
 7. Accessibility and polish.
+
+---
+
+# Part C — review round, 2026-10-30
+
+Three read-only reviews of the mockups were run: a blind owner using a screen
+reader, a sighted non-technical companion, and a product/accessibility/contract
+reviewer. This part records what changed and what is still open. The clickable
+mockups are on the design canvas; their source is committed in
+`docs/design/mockups/` (`*.dc.html`, with the shared `docs/design/app-mockup.css`).
+The hero photo is the V3 prototype and is a stand-in. The files link each other
+with relative `href`s; open them through the canvas to see the flows.
+
+## 13. The flows (40 screens)
+
+Row order on the canvas is the order of use.
+
+1. **Account (everyone):** Sign in · Create account · Check your email ·
+   Forgot password · Reset link sent · New password · Signed out.
+2. **Set up the glasses with a sighted helper (owner):** Set up with a helper ·
+   Helper mode · Helper 2 pair · Owner confirms the box · Helper 3 share
+   internet · Helper 4 test sound and touch · Helper 5 hand back.
+3. **Owner home:** Home · Home, no internet · My location (map) · Confirm:
+   pause assistant · Confirm: install update · Software update.
+4. **Owner settings and privacy:** Settings · Voice, sound and text · Join beta
+   · Send feedback · Privacy and data · Confirm: delete history · Confirm:
+   delete account.
+5. **Owner people and sides:** My people · Invite someone · What they can see ·
+   Confirm: remove companion · Switch side.
+6. **Companion joining:** Accept invite · Create account (invited) · Check
+   email (invited).
+7. **Companion daily:** Following · Where they are · Incoming call · On a call ·
+   Companion settings.
+
+Entry points that have no inbound link on purpose: Accept invite (invite link),
+Incoming call (push notification), Home no internet (a connection state),
+Signed out (a 401 from the server), Companion settings (companion-only nav).
+
+### Routing rules
+
+- **Sign in routes by account type.** Owner or both → Home. Companion-only →
+  Following. The mockup shows the owner path.
+- **An invitee never sees owner setup.** Accept → create account or sign in →
+  confirm email → Following with the invite applied. The "Step n of 3" counter
+  and glasses setup belong only to owner sign-up.
+- **Companion-only navigation is two tabs** (Following, Settings). Owner
+  navigation is Home · My people · Following (only if also a companion) ·
+  Settings. A both-sides user switches from the profile button or Settings.
+
+## 14. Decisions made in this round
+
+1. **Setup is done with a sighted helper, on the owner's phone.** The helper
+   sits next to the owner, uses Helper mode, and reads each step aloud. Five
+   steps: fit the glasses · plug in and pair · share internet · test sound and
+   touch · hand back. The helper needs no account.
+   - Helper mode is a **screen lock on the owner's session**, not a separate
+     login. It shows only setup steps, has a visible "Stop helper mode" on every
+     step and an inactivity timeout, and ends only when the **owner confirms
+     with Face ID or passcode**.
+   - The owner, not the helper, confirms what matters: the box code is read back
+     to the owner ("ending 9QDX, is that what you heard?") and sound/vibration
+     are confirmed by the owner.
+   - If a real server-enforced scope is wanted later, it needs a short-lived
+     "setup session" token that can call only `/claim` and device-link steps.
+     Until then the privacy copy says only what the app does.
+2. **Blind-assist features** are first-class, not an afterthought: a speaker
+   button on Home that reads status, a "Say where I am" button on the map, a
+   "Hear this screen" button on setup, a Voice, sound and text screen (speaking
+   speed, haptic strength, spoken alerts, text size, extra contrast), and
+   confirmations that are spoken and focus-safe (safest option first).
+3. **Pause the assistant is local, over USB.** It is not a cloud route. The
+   app sends a pause to the module over the cable; obstacle warnings keep
+   running. It needs the cable, and the confirm sheet says so. The cloud
+   `POST /v1/me/devices/{id}/stop` in the contract is the wrong place for it.
+4. **A companion sees nothing until the owner grants it.** The server creates
+   the grant with both flags false on accept. The Accept screen therefore says
+   "They choose what you can see. Until they choose, you see nothing."
+5. **Danger actions always confirm:** remove companion, delete location
+   history, delete account (re-enter password), pause the assistant, install an
+   update. Sign out is a single tap.
+6. **Contrast fixed from the review:** outline colour raised to `#5C6F5F` (3:1
+   for switch off-state and button edges); the disabled grey that failed
+   (`#6F7869`) is gone; profile ring lightened; label text 12 px minimum.
+
+## 15. Fixed in the mockups from the reviews
+
+Companion route (invite → account → email → Following; two-tab nav; call end
+and decline return to Following; Answer first in focus order; Mute and Speaker
+are toggle buttons with pressed state); reset password now has a sent state and
+a new-password screen; terms and log checkboxes are real checkboxes; the beta
+switch is a single control; sliders are focusable with value text; segmented
+choices carry a current marker; active nav items carry `aria-current`; Invite
+asks for a name or label and shows the real link shape
+(`…/companion?code=…`); Privacy no longer implies a viewed-at log; helper
+screens use "pocket box" instead of "module"; copy no longer overclaims
+(call audio is not recorded but a record that a call happened is kept 30 days;
+"Nothing stays on their phone" removed; "a person reads every message" removed).
+
+## 16. Still open
+
+**Design**
+
+- Cable-out state on Home (only "no internet" is drawn).
+- Ringing, no answer, "phone on silent", "location is stale" and "no one
+  followed yet" states for the companion.
+- Android steps on the Share internet screen.
+- Real selected states for toggles (the mockup is static).
+- Mockup screens are fixed at 844 px and fit at normal text size. The real app
+  scrolls, with a sticky bottom action bar, and must hold at 200% text. The
+  My people "Invite someone" button overlaps the list once there are three or
+  more people; it must become a sticky footer.
+- Bottom sheets use an 8 px margin, not the 14 px rule.
+
+**Server and contract changes the screens need**
+
+| Need | Today | Change |
+|---|---|---|
+| Invite preview before sign-in | none (accept needs a session) | public preview route, or drop the name from Accept |
+| Initial grants and label on invite | `POST /companions` takes only `label` | add grants; show relationship label |
+| Map: street name, activity, trail | Point = lat, lon, accuracy, ts | add `place`, `activity` or geocode on device; history route for the trail |
+| Location age | latest point can be 30 days old | always show age; "last seen" after about 15 min |
+| Pause assistant | contract says cloud route | local USB command; remove from cloud contract |
+| Internet check from the box | none | module probe over the USB link, surfaced in `/me/devices` |
+| Voice, sound and text settings | no store | `/me/prefs`, synced to the module |
+| Helper mode | UI-only | optional scoped setup-session token |
+| Change password, change email | missing | add (gaps 1 and 2) |
+| Feedback for companions | 400 unless the account has a device | allow, or hide for companions |
+| Session expiry | fixed 30 days, no 401 UX | Signed out screen keeps the user's place |
+| Viewed-at log | not stored | decide whether to add |
+
+## 17. Updated build order
+
+1. Foundation: theme, bundled fonts, API client, secure storage, the Account
+   flow (including reset and signed-out handling).
+2. Side model and routing by account type; companion join flow.
+3. Owner basics and the blind-assist settings; confirmations.
+4. People, invites, grants; companion Following and map.
+5. Calls, including Answer-first accessibility and push.
+6. Device link: helper-led setup, pause over USB, internet check, update.
+7. Accessibility pass on every screen with a real screen reader, then 200% text.

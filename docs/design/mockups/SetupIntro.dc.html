@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Set up with a helper</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./cortex.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>body{margin:0}.pt{display:flex;gap:12px;align-items:flex-start;font:400 15px/1.4 'Space Grotesk',sans-serif;color:#d6ddd0}.pt i{flex:none;width:10px;height:10px;background:#eaff00;margin-top:6px}</style>
+</helmet>
+<div class="scr" style="width:390px;height:844px;padding-bottom:20px">
+  <div class="top">
+    <span class="mono" style="flex:1">Step 3 of 3 · Set up glasses</span>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:12px;margin-top:10px">
+    <h1 class="ttl" style="font-size:48px;line-height:.98">Set up with<br>a helper</h1>
+    <p class="p">A few steps need eyes: reading the label, plugging in the cable, fitting the glasses. Ask someone you trust to sit with you. It takes about 10 minutes.</p>
+  </div>
+  <div class="list" style="padding:14px;gap:12px">
+    <div class="pt"><i></i><span>Your helper uses <strong style="color:#f4f4ec">your phone</strong>, sitting next to you, in Helper mode. They do not need an account.</span></div>
+    <div class="pt"><i></i><span>You stay in charge. This phone reads every step out loud so you can follow.</span></div>
+    <div class="pt"><i></i><span>Helper mode locks this phone to the setup steps and ends when setup finishes. You confirm the hand-back with your passcode.</span></div>
+  </div>
+  <button class="tile" type="button" style="flex-direction:row;align-items:center;justify-content:flex-start;gap:14px;padding:12px 16px;cursor:pointer;border:1.5px solid #5c6f5f;font:inherit;text-align:left">
+    <span style="width:44px;height:44px;border-radius:50%;background:#eaff00;color:#0a0a08;display:flex;align-items:center;justify-content:center;flex:none"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9zM16 9a4 4 0 0 1 0 6"/></svg></span>
+    <span style="display:flex;flex-direction:column;gap:3px"><span style="font:600 16px 'Space Grotesk'">Hear this screen</span><span class="p s">Cortex reads it aloud</span></span>
+  </button>
+  <div class="bot">
+    <a class="btn" href="SetupHelper.dc.html">Start with my helper</a>
+    <a class="btn o" href="Home.dc.html">Remind me later</a>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

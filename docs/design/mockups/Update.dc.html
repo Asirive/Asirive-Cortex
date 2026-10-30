@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Software update</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./cortex.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="scr" style="width:390px;height:844px;padding-bottom:20px">
+  <div class="top">
+    <a class="bk" href="Home.dc.html" aria-label="Back"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></a>
+    <span class="mono">Software update</span>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:10px">
+    <h1 class="ttl" style="font-size:52px;line-height:.98">Updating<br>to 4.1.0</h1>
+  </div>
+  <div class="tile" style="background:#eaff00;color:#0a0a08;gap:12px;padding:16px">
+    <div style="display:flex;align-items:flex-end;justify-content:space-between"><span style="font:500 12px 'JetBrains Mono',monospace;letter-spacing:.14em;text-transform:uppercase">Sending to glasses</span><span style="font:400 40px/1 'Anton',sans-serif">64<span style="font-size:20px">%</span></span></div>
+    <div style="height:8px;border-radius:4px;background:#0a0a0833" role="progressbar" aria-valuenow="64" aria-valuemin="0" aria-valuemax="100" aria-label="Sending to glasses"><div style="width:64%;height:100%;border-radius:4px;background:#0a0a08"></div></div>
+    <span style="font:500 14px 'Space Grotesk',sans-serif">Keep the cable plugged in.</span>
+  </div>
+  <div class="list" style="padding:10px 14px;gap:16px">
+    <div class="step"><span class="n d"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg></span><span><b>Downloaded</b><span class="s">Signature checked on your phone</span></span></div>
+    <div class="step"><span class="n c">2</span><span><b>Send to glasses</b><span class="s">In progress</span></span></div>
+    <div class="step"><span class="n">3</span><span><b>Install</b><span class="s">Starts when the transfer ends</span></span></div>
+    <div class="step"><span class="n">4</span><span><b>Restart and check</b><span class="s">The glasses say when they are ready</span></span></div>
+  </div>
+  <p class="p s" style="padding:0 8px"><strong style="color:#f4f4ec">If anything goes wrong,</strong> the glasses go back to the version that worked. You will hear a message and see it here.</p>
+  <div class="bot">
+    <a class="btn o" href="Home.dc.html">Keep going in the background</a>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

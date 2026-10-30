@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>What they can see</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./cortex.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="scr" style="width:390px;height:844px;padding-bottom:20px">
+  <div class="top">
+    <a class="bk" href="People.dc.html" aria-label="Back"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></a>
+    <span class="mono">Companion</span>
+  </div>
+  <div style="display:flex;align-items:center;gap:16px;margin-top:6px">
+    <span class="av" style="width:72px;height:72px;font-size:24px;background:#eaff00;color:#0a0a08">HM</span>
+    <div style="display:flex;flex-direction:column;gap:8px"><h1 class="ttl" style="font-size:40px;line-height:1">Hui Min</h1><span class="mono">Family · added 3 days ago</span></div>
+  </div>
+  <span class="mono" style="margin:10px 0 -4px 8px">Hui Min can</span>
+  <div class="list">
+    <div class="row" style="min-height:76px"><span class="g"><b>See my location</b><span class="s">Where I am now and my last few minutes. Kept up to 30 days.</span></span><button class="sw y" role="switch" aria-checked="true" type="button" aria-label="See my location"><i></i></button></div>
+    <div class="row" style="min-height:76px"><span class="g"><b>Call me</b><span class="s">Rings my phone. I can always decline.</span></span><button class="sw y" role="switch" aria-checked="true" type="button" aria-label="Call me"><i></i></button></div>
+  </div>
+  <div class="tile" style="background:transparent;border:1.5px dashed #5c6f5f;gap:6px">
+    <span class="mono">Never shared</span>
+    <p class="p" style="font-size:14px">Camera images, video, or anything you say to the assistant.</p>
+  </div>
+  <p class="p s" style="padding:0 8px">Changes apply straight away. Turning location off does not delete what was already recorded. Use Privacy and data for that.</p>
+  <div class="bot">
+    <a class="btn d" href="ConfirmRemove.dc.html">Remove Hui Min</a>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

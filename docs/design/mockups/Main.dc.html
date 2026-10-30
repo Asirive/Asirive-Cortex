@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sign in</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./cortex.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="scr" style="width:390px;height:844px;padding-bottom:20px">
+  <div class="top">
+    <svg class="ic" width="44" height="44" viewBox="0 0 100 100" role="img" aria-label="Asirive"><rect width="100" height="100" fill="#eaff00"/><g fill="#000"><rect x="20" y="20" width="20" height="40"/><rect x="20" y="70" width="20" height="10"/><rect x="60" y="40" width="20" height="40"/><rect x="60" y="20" width="20" height="10"/><rect x="40" y="40" width="20" height="20"/></g></svg>
+    <span class="mono">Asirive Cortex</span>
+  </div>
+  <div style="margin-top:44px;display:flex;flex-direction:column;gap:12px">
+    <h1 style="margin:0;font:400 64px/.95 'Anton',sans-serif;letter-spacing:.02em;text-transform:uppercase;color:#eaff00">Sign<br>in</h1>
+    <p class="p">Manage your glasses and the people who look after you.</p>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:14px;margin-top:10px">
+    <div><label class="mono lbl" for="e">Email</label><input id="e" class="in" type="email" value="you@example.com"></div>
+    <div><label class="mono lbl" for="pw">Password</label><input id="pw" class="in" type="password" value="••••••••••••"></div>
+    <a href="Forgot.dc.html" style="color:#eaff00;font:600 15px 'Space Grotesk',sans-serif;text-decoration:none;min-height:44px;display:flex;align-items:center;padding-left:8px">Forgot your password?</a>
+  </div>
+  <div class="bot">
+    <a class="btn" href="Home.dc.html">Sign in</a>
+    <a class="btn o" href="Create.dc.html">Create an account</a>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

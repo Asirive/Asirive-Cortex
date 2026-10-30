@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Setup done</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./cortex.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>body{margin:0}.hb{display:inline-flex;align-items:center;gap:8px;background:#eaff00;color:#0a0a08;border-radius:99px;padding:6px 12px;font:700 13px 'Space Grotesk',sans-serif}</style>
+</helmet>
+<div class="scr" style="width:390px;height:844px;padding-bottom:20px">
+  <div class="top">
+    <span class="hb">Helper · step 5 of 5</span>
+  </div>
+  <div style="margin-top:20px;width:84px;height:84px;background:#eaff00;color:#0a0a08;display:flex;align-items:center;justify-content:center"><svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg></div>
+  <div style="display:flex;flex-direction:column;gap:12px">
+    <h1 class="ttl" style="font-size:52px;line-height:.98">Hand the<br>phone back</h1>
+    <p class="p">Setup is done. Thank you, helper. The owner takes over now and confirms with their passcode.</p>
+  </div>
+  <div class="tile" style="gap:8px">
+    <span class="mono">Cortex says out loud</span>
+    <p class="p" style="color:#f4f4ec;font-size:16px">"Setup is done. Your glasses are ready. Your helper can step away. Press the big button when you are ready."</p>
+  </div>
+  <div class="list" style="padding:12px 14px;gap:12px">
+    <div class="step"><span class="n d"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg></span><span><b>Helper mode closed</b><span class="s">Setup steps can no longer be opened</span></span></div>
+    <div class="step"><span class="n d"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg></span><span><b>Glasses paired and online</b><span class="s">Sound and touch confirmed</span></span></div>
+  </div>
+  <div class="bot">
+    <a class="btn" href="Home.dc.html" style="height:68px;font-size:19px">Owner: I'm ready</a>
+    <p class="p s" style="text-align:center">Face ID or passcode ends Helper mode.</p>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

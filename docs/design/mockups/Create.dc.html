@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Create account</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./cortex.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="scr" style="width:390px;height:844px;padding-bottom:20px">
+  <div class="top">
+    <a class="bk" href="Main.dc.html" aria-label="Back"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></a>
+    <span class="mono">Step 1 of 3</span>
+  </div>
+  <div style="margin-top:26px;display:flex;flex-direction:column;gap:12px">
+    <h1 class="ttl" style="font-size:52px;line-height:.98">Create<br>account</h1>
+    <p class="p">One account for you, your glasses and the people you choose to share with.</p>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:14px;margin-top:8px">
+    <div><label class="mono lbl" for="e">Email</label><input id="e" class="in" type="email" value="you@example.com"></div>
+    <div><label class="mono lbl" for="pw">Password</label><input id="pw" class="in" type="password" value="••••••••••••"><p class="p s" style="margin:8px 0 0 8px">At least 10 characters. A few random words works well.</p></div>
+    <div style="display:flex;gap:12px;align-items:flex-start;padding:4px 8px">
+      <input id="t" type="checkbox" style="flex:none;width:26px;height:26px;accent-color:#eaff00;margin:2px 0 0"><label for="t" class="p" style="font-size:14px">I agree to the Terms and the Privacy notice. I understand the glasses never send camera images or video to Asirive.</label>
+    </div>
+  </div>
+  <div class="bot">
+    <a class="btn" href="Verify.dc.html">Create account</a>
+    <p class="p s" style="text-align:center">We will email you a link to confirm this address.</p>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
