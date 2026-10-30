@@ -419,7 +419,7 @@ void main() {
     testWidgets('a failed hand-over is reported, not hidden', (t) async {
       final h = Harness();
       h.link.st = LinkState.connectedOnline;
-      h.link.handOver = false;
+      h.link.handOverOk = false;
       await boot(t, h);
       await toPair(t);
       await t.enterText(find.byType(TextField), 'K7QM-4TXD');

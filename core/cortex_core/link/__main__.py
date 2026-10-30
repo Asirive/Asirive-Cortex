@@ -12,6 +12,8 @@ from pathlib import Path
 from cortex_core.contracts.gen.cortex.v1 import session_pb2
 from cortex_core.link import identity, provision
 from cortex_core.link.cmdverify import CommandVerifier
+from cortex_core.link.owner_control import OwnerControl
+from cortex_core.link.phone_link import FileControls, PhoneLink, RuntimeHooks
 from cortex_core.link.session import DeviceInfo, GatewayClient, Handlers
 
 log = logging.getLogger("cortex.link")
@@ -30,6 +32,9 @@ async def serve(hb: Path, stop: asyncio.Event) -> None:
             await asyncio.sleep(1)
 
     beater = asyncio.create_task(beat())
+    phone = PhoneLink(STATE_DIR, None, RuntimeHooks(STATE_DIR), os.environ.get("CORTEX_GATEWAY_WS", ""))  # type: ignore[arg-type]
+    phone.control = OwnerControl(FileControls(), phone.paired)
+    phone_task = asyncio.create_task(phone.serve(stop=stop))  # answers the app even while unpaired
     client = None
     task = None
     while not stop.is_set():
@@ -51,6 +56,7 @@ async def serve(hb: Path, stop: asyncio.Event) -> None:
         client.stop()
         task.cancel()
     beater.cancel()
+    await phone_task
 
 
 def main() -> None:

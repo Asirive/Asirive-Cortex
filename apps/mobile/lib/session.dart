@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 import 'api.dart';
+import 'box_link.dart';
 import 'prefs.dart';
+import 'push.dart';
 import 'services.dart';
 
 /// Where the sign-in token and small flags live. Secure storage on the phone,
@@ -40,7 +44,7 @@ enum Side { owner, companion }
 
 class Session extends ChangeNotifier {
   Session(this.api, this.store, {Services? services, Prefs? prefs})
-      : services = services ?? Services(),
+      : services = services ?? Services(link: BoxLink(store)),
         prefs = prefs ?? Prefs(store) {
     api.onSignedOut = expire;
   }
@@ -96,6 +100,7 @@ class Session extends ChangeNotifier {
       token = t;
       await refresh();
       phase = Phase.signedIn;
+      unawaited(_registerPush());
     } on ApiException catch (e) {
       if (e.status == 401) {
         await _forget();
@@ -141,6 +146,29 @@ class Session extends ChangeNotifier {
     await applyPendingInvite();
     await refresh();
     notifyListeners();
+    unawaited(_registerPush());
+  }
+
+  String? _pushToken;
+  StreamSubscription<PushAddress>? _pushSub;
+
+  /// Tells the gateway where to wake this phone for calls. Quiet when push is not set up.
+  Future<void> _registerPush() async {
+    try {
+      final a = await services.push.address();
+      final t = token;
+      if (a == null || t == null) return;
+      await api.registerPush(t, a.platform, a.token);
+      _pushToken = a.token;
+      _pushSub ??= services.push.refreshed.listen((n) {
+        final cur = token;
+        if (cur != null) {
+          api.registerPush(cur, n.platform, n.token).then((_) => _pushToken = n.token, onError: (Object _) {});
+        }
+      });
+    } on Object {
+      // polling still finds calls while the app is open
+    }
   }
 
   /// Joins whoever's invite was scanned before sign-in. Failure is kept as a note, not thrown.
@@ -206,6 +234,15 @@ class Session extends ChangeNotifier {
 
   Future<void> signOut() async {
     final t = token;
+    final pt = _pushToken;
+    _pushToken = null;
+    if (t != null && pt != null) {
+      try {
+        await api.clearPush(t, pt); // this phone stops ringing for the account it just left
+      } on Object {
+        // best effort
+      }
+    }
     await _forget();
     expired = false;
     phase = Phase.signedOut;

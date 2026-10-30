@@ -232,7 +232,7 @@ class _HelperFlowScreenState extends State<HelperFlowScreen> with Ticker<HelperF
     });
     try {
       final r = await s.api.claim(s.token!, c, boxKey: await s.services.link.boxPublicKey());
-      final done = await s.services.link.handOverDeviceToken(r['device_id'] as String, r['device_token'] as String);
+      final done = await s.services.link.handOver(r);
       if (!done) {
         setState(() {
           busy = false;

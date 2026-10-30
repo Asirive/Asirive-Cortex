@@ -19,20 +19,42 @@ clickable mockups: `docs/design/mockups/`.
 - Glasses setup with a sighted helper: five steps, owner confirms the box code and the hand back,
   "Stop helper mode" on every step, inactivity lock
 
+## Phone-to-box link and push (built, untested on hardware)
+
+- **Box link:** `lib/box_link.dart` talks to the box over the USB tether network (finds it by a UDP
+  beacon, signs every command). Box side: `core/cortex_core/link/phone_link.py`. Spec:
+  `docs/architecture/PHONE-BOX-LINK.md`. Tested app-against-fake-box and box-against-itself; the two
+  share signature test vectors.
+- **Push:** `lib/push.dart` registers the phone with the gateway (`PUT /v1/me/push`) after sign-in and
+  forgets it on sign-out. The gateway already sends the "Incoming call" alert; tapping it opens the app,
+  which finds the ringing call. Without the config files below, push is simply off and the app polls.
+
+### Turning push on (needs your accounts)
+
+1. **Firebase** (free): create a project at console.firebase.google.com. Add an Android app with id
+   `com.asirive.cortex_app`, download `google-services.json` into `android/app/`. Add an iOS app with the
+   bundle id from Xcode, download `GoogleService-Info.plist` into `ios/Runner/` (add it in Xcode).
+2. **Apple** (Developer Program, paid, needed anyway for the App Store): in developer.apple.com, Certificates,
+   Identifiers & Profiles, Keys, create a key with "Apple Push Notifications service" ticked and download the
+   `.p8` file once. Note its Key ID and your Team ID. In Xcode, Runner target, Signing & Capabilities, add
+   "Push Notifications" and "Background Modes: Remote notifications". In Firebase, Project settings, Cloud
+   Messaging, upload the same `.p8` for the iOS app.
+3. **Gateway:** `CORTEX_FCM_SERVICE_ACCOUNT` (a Firebase service-account JSON), `CORTEX_APNS_KEY` (the `.p8` path),
+   `CORTEX_APNS_KEY_ID`, `CORTEX_APNS_TEAM_ID`, `CORTEX_APNS_TOPIC` (the bundle id). See `infra/gateway/README.md`.
+
 ## Not finished, said plainly
 
-- **Phone-to-box USB link is not built.** `DeviceLink` in `lib/services.dart` is the seam; the default
-  `UnavailableLink` reports the cable as out. Until it is built, pairing stops at "plug in the box",
-  and Pause and Install update say the box could not be reached. Nothing pretends to succeed.
 - Not run on a phone or simulator (this build environment has no iOS or Android SDK). The native
-  plugins (camera, location, voice, calls, Face ID) are wired and permissions are in
-  `Info.plist` and `AndroidManifest.xml`, but are untested on a device.
-- No push notifications yet (incoming calls are found by polling while the app is open). The server
-  has push registration; the app needs the platform push setup and a PushKit/CallKit step.
-- Email links (`asirive://verify`, `reset`, `companion`) are handled in the app, but the phone must be set to open them; the web fallback pages are not built.
+  plugins (camera, location, voice, calls, Face ID, Firebase) are wired and permissions are in
+  `Info.plist` and `AndroidManifest.xml`, but are untested on a device. Whether the phone's hotspot
+  lets the broadcast beacon through on a given phone model is the first thing to check with the box.
+- On the box, the sound/touch test and update install report failure until the audio/haptic service and
+  the OTA agent are connected to the link; the app says "could not reach the box" for those.
+- A call that arrives with the app fully closed shows the alert, but there is no CallKit/ConnectionService
+  ringing screen yet.
 - The Voice, sound and text settings live on the phone; the server has no preferences endpoint.
 - The "Extra contrast" switch currently turns on bold text only; a true high-contrast colour set is not built.
-- Box pairing sends the box's public key (`DeviceLink.boxPublicKey`); the USB link must supply it, until then a gateway with its certificate authority on refuses the claim.
+- Email links (`asirive://verify`, `reset`, `companion`) are handled in the app, but the web fallback pages are not built.
 - Grants can only be changed for people who accepted; invites that are still waiting can only be cancelled.
 - The map is coordinates plus "Open in Maps", not an in-app map.
 - Reading the screen with a real screen reader and testing at 200% text on a device is still to do.

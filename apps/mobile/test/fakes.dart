@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:cortex_app/api.dart';
 import 'package:cortex_app/prefs.dart';
+import 'package:cortex_app/push.dart';
 import 'package:cortex_app/services.dart';
 import 'package:cortex_app/session.dart';
 import 'package:flutter/material.dart';
@@ -52,7 +53,7 @@ class FakeLinks implements LinkSource {
 
 class FakeLink implements DeviceLink {
   LinkState st = LinkState.cableOut;
-  bool pauseOk = true, internetOk = true, handOver = true, installOk = true;
+  bool pauseOk = true, internetOk = true, handOverOk = true, installOk = true;
   int paused = 0;
   @override
   Future<LinkState> state() async => st;
@@ -71,7 +72,7 @@ class FakeLink implements DeviceLink {
   @override
   Future<bool> internetFromBox() async => internetOk;
   @override
-  Future<bool> handOverDeviceToken(String deviceId, String token) async => handOver;
+  Future<bool> handOver(Map<String, dynamic> claimReply) async => handOverOk;
   @override
   Future<bool> installUpdate(Map<String, dynamic> manifest) async => installOk;
   final tested = <String>[];
@@ -120,6 +121,8 @@ class FakeGateway {
   final calls = <String>[]; // "METHOD path"
   final bodies = <String, Map<String, dynamic>>{};
   Map<String, dynamic>? update;
+  final pushed = <Map>[];
+  final pushCleared = <String>[];
   Map<String, dynamic> account = {'id': 'me', 'email': 'me@x.co', 'beta': false, 'beta_consent_version': 'v1'};
   bool loginOk = true;
   http.Response Function(http.Request)? override;
@@ -163,6 +166,12 @@ class FakeGateway {
       case 'PUT /v1/me/location':
       case 'DELETE /v1/me/location':
         return _j(200, {'result': 'ok'});
+      case 'PUT /v1/me/push':
+        pushed.add(jsonDecode(r.body) as Map);
+        return _j(200, {'result': 'ok'});
+      case 'DELETE /v1/me/push':
+        pushCleared.add((jsonDecode(r.body) as Map)['token'] as String);
+        return _j(200, {'result': 'ok'});
       case 'POST /v1/feedback':
         return _j(200, {'result': 'received'});
       case 'PUT /v1/me/beta':
@@ -196,6 +205,15 @@ class FakeGateway {
   }
 }
 
+class FakePush implements PushService {
+  PushAddress? addr = (platform: 'android', token: 'fcm-1');
+  final refresh = StreamController<PushAddress>.broadcast();
+  @override
+  Future<PushAddress?> address() async => addr;
+  @override
+  Stream<PushAddress> get refreshed => refresh.stream;
+}
+
 class Harness {
   Harness({FakeGateway? gw, MemoryStore? store})
       : gw = gw ?? FakeGateway(),
@@ -209,7 +227,8 @@ class Harness {
             link: link,
             scanView: (c, onCode, torch) => TextButton(onPressed: () => onCode('https://app/companion?code=K7Q2XM9'), child: const Text('fake scan')),
             callEngine: () => engine,
-            links: linkSource),
+            links: linkSource,
+            push: push),
         prefs: Prefs(this.store));
   }
   final FakeGateway gw;
@@ -221,6 +240,7 @@ class Harness {
   final link = FakeLink();
   final engine = FakeEngine();
   final linkSource = FakeLinks();
+  final push = FakePush();
   late final Session session;
 }
 

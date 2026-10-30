@@ -1,3 +1,4 @@
+import 'package:cortex_app/push.dart';
 import 'dart:convert';
 
 import 'package:cortex_app/api.dart';
@@ -18,7 +19,7 @@ http.Response json(int code, Object body) =>
 Session makeSession(Future<http.Response> Function(http.Request) h, [MemoryStore? store]) {
   final st = store ?? MemoryStore();
   return Session(Api(client: MockClient(h), baseUrl: 'https://gw.test'), st,
-      services: Services(speaker: FakeSpeaker(), link: FakeLink(), links: FakeLinks()), prefs: Prefs(st));
+      services: Services(speaker: FakeSpeaker(), link: FakeLink(), links: FakeLinks(), push: const NoPush()), prefs: Prefs(st));
 }
 
 Future<void> boot(WidgetTester t, Session s) async {

@@ -12,6 +12,7 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'api.dart';
+import 'push.dart';
 
 /// Everything that touches the phone's hardware or OS sits behind one of these,
 /// so screens can be tested with fakes and the real parts swapped in one place.
@@ -103,8 +104,8 @@ class UrlOpener implements Opener {
 /// State of the cable to the pocket box, as the app sees it.
 enum LinkState { cableOut, connectedOnline, connectedNoInternet }
 
-/// The phone-to-box link (USB, see contracts/proto/cortex/v1/local.proto).
-/// The framing is not built yet: [UnavailableLink] reports the cable as out.
+/// The phone-to-box link over the USB-C cable (docs/architecture/PHONE-BOX-LINK.md).
+/// [BoxLink] is the real one; [UnavailableLink] reports the cable as out (tests, web).
 abstract class DeviceLink {
   Future<LinkState> state();
   Future<String?> boxCodeTail(); // last 4 characters of the box code, read back to the owner
@@ -112,7 +113,7 @@ abstract class DeviceLink {
   Future<bool> pause(); // local command; obstacle warnings keep running
   Future<bool> resume();
   Future<bool> internetFromBox(); // can the box reach the gateway?
-  Future<bool> handOverDeviceToken(String deviceId, String token); // after /claim
+  Future<bool> handOver(Map<String, dynamic> claimReply); // the whole /claim reply, after the owner confirmed the box
   Future<bool> installUpdate(Map<String, dynamic> manifest); // hand the signed update to the box
   Future<bool> playTest(String kind); // 'sound' | 'vibrate' | 'voice' on the glasses
 }
@@ -132,7 +133,7 @@ class UnavailableLink implements DeviceLink {
   @override
   Future<bool> internetFromBox() async => false;
   @override
-  Future<bool> handOverDeviceToken(String deviceId, String token) async => false;
+  Future<bool> handOver(Map<String, dynamic> claimReply) async => false;
   @override
   Future<bool> installUpdate(Map<String, dynamic> manifest) async => false;
   @override
@@ -339,6 +340,7 @@ class Services {
     ScanViewBuilder? scanView,
     CallEngine Function()? callEngine,
     LinkSource? links,
+    PushService? push,
   })  : speaker = speaker ?? TtsSpeaker(),
         location = location ?? GeoLocationSource(),
         ownerCheck = ownerCheck ?? DeviceOwnerCheck(),
@@ -346,7 +348,8 @@ class Services {
         link = link ?? const UnavailableLink(),
         scanView = scanView ?? realScanView,
         callEngine = callEngine ?? WebRtcEngine.new,
-        links = links ?? AppLinkSource();
+        links = links ?? AppLinkSource(),
+        push = push ?? FirebasePush();
 
   final Speaker speaker;
   final LocationSource location;
@@ -356,4 +359,5 @@ class Services {
   final ScanViewBuilder scanView;
   final CallEngine Function() callEngine;
   final LinkSource links;
+  final PushService push;
 }

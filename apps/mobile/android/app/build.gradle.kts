@@ -47,3 +47,8 @@ kotlin {
 flutter {
     source = "../.."
 }
+
+// Push needs google-services.json from your Firebase project (see apps/mobile/README.md). Builds without it still work.
+if (file("google-services.json").exists()) {
+    apply(plugin = "com.google.gms.google-services")
+}

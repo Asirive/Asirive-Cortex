@@ -275,6 +275,8 @@ class Api {
   Future<void> registerPush(String token, String platform, String pushToken) =>
       _call('PUT', '/me/push', body: {'platform': platform, 'token': pushToken}, token: token);
 
+  Future<void> clearPush(String token, String pushToken) => _call('DELETE', '/me/push', body: {'token': pushToken}, token: token);
+
   Future<Map<String, dynamic>> claim(String token, String code, {List<int>? boxKey}) =>
       _call('POST', '/claim', body: {'claim_code': code, if (boxKey != null) 'device_public_key': base64Encode(boxKey)}, token: token);
 
