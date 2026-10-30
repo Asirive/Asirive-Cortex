@@ -463,20 +463,42 @@ screens use "pocket box" instead of "module"; copy no longer overclaims
 6. Device link: helper-led setup, pause over USB, internet check, update.
 7. Accessibility pass on every screen with a real screen reader, then 200% text.
 
-## 18. First open (added 2026-10-30)
+## 18. First open (added 2026-10-30, revised after three-agent review)
 
-New row 0 on the canvas: four intro screens, a Welcome screen and a Scan screen.
+Row 0 on the canvas: four intro screens, Welcome, Scan, Enter code and Code
+error. Accept (invite) follows.
 
-- **Intro 1 to 4** show features in plain words, built from the same tiles and
-  chips as the rest of the app: *Get there on your own* (route), *Know what is
-  ahead* (spoken warnings that work without internet), *Ask about what is around
-  you* (read signs, menus, prices, bus numbers by voice), *Family close by*
-  (people you choose, no camera). No sensor or distance jargon. Skip is on every
-  intro.
-- **Welcome:** Create an account, Sign in, Scan a QR code.
-- **Scan a QR code:** for invites (companion) and helper pairing. A "Type a code
-  instead" fallback is always offered; scanning is a sighted action and must
-  never be the only route.
-- Rule from review: intro and onboarding screens use the same margins, headline
-  sizes, tiles and buttons as every other screen. No full-bleed illustration
-  language, no separate visual style.
+**Routing at launch.** No session on the phone: Intro 1, then Welcome. Session
+present: straight to Home (owner) or Following (companion). The intro shows once
+per install; Skip and Get started both mark it seen. An invite link opens Accept
+directly and skips the intros. Intros can be replayed from Settings ("How Cortex
+works", to build).
+
+- **Intro 1 to 4** use the same tiles and chips as the rest of the app: *Get
+  there on your own* (route), *Know what is ahead* (spoken warnings), *Ask about
+  what is around you* (signs, prices, bus times by voice), *Family close by*
+  (people you choose; "Family never sees your camera"). Intro 4 tells invitees to
+  use Scan on the next screen. Each tile is marked as an example for screen
+  readers; the pager reads "Step n of 4"; Skip reads "Skip introduction".
+- **Welcome** splits the choice: *I use Cortex* (Create an account, Sign in) and
+  *Someone invited me* (Scan or enter invite code).
+- **Scan** explains the camera is only used to read the code, announces progress
+  in a live region, and the torch button has a pressed state. "Enter the code
+  instead" is a full yellow button, so it is not hidden for screen reader users.
+- **Enter code** has a code field and a **Code error** state (typo or expired).
+  Camera-permission-denied state is still to draw.
+- **Accept** now has Back and Not now, says what the invitee may see, and that
+  the owner sees only their name.
+- Rule: onboarding reuses the same margins, headline sizes (44), tiles and
+  buttons; tiles use min-height so 200% text can grow. Skip and pager styles now
+  live in `cortex.css`.
+
+**Copy held back until confirmed (do not ship as written):**
+- "Works without internet" and "ears stay open to traffic": safety claims, removed
+  from the mockups until engineering and hardware confirm them.
+- "Nothing is saved" about the Scan camera: removed; needs engineering.
+- "Menus" as a readable item: not in the docs, removed.
+- Bus times come from live arrivals data, so the example is illustrative.
+
+**Still open:** camera-permission-denied state, whether helper pairing can start
+from Scan (pairing needs an existing session), replay entry in Settings.

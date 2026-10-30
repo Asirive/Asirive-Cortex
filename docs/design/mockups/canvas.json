@@ -1,443 +1,459 @@
 {
-"v": 3,
-"createdOnFiles": {
-"v": 1,
-"at": "2026-10-30T09:00:00Z"
-},
-"title": "Cortex App Mockups",
-"launch": {
-"view": "canvas"
-},
-"pages": [],
-"boards": {
-"Intro1.dc.html": {
-"x": 0,
-"y": 300,
-"w": 390,
-"h": 844,
-"title": "Intro 1: get there on your own"
-},
-"Intro2.dc.html": {
-"x": 470,
-"y": 300,
-"w": 390,
-"h": 844,
-"title": "Intro 2: know what is ahead"
-},
-"Intro3.dc.html": {
-"x": 940,
-"y": 300,
-"w": 390,
-"h": 844,
-"title": "Intro 3: ask about what is around you"
-},
-"Intro4.dc.html": {
-"x": 1410,
-"y": 300,
-"w": 390,
-"h": 844,
-"title": "Intro 4: family close by"
-},
-"Welcome.dc.html": {
-"x": 1880,
-"y": 300,
-"w": 390,
-"h": 844,
-"title": "Welcome: create, sign in, scan"
-},
-"Scan.dc.html": {
-"x": 2350,
-"y": 300,
-"w": 390,
-"h": 844,
-"title": "Scan a QR code"
-},
-"Main.dc.html": {
-"x": 0,
-"y": 1264,
-"w": 390,
-"h": 844,
-"title": "Sign in"
-},
-"Create.dc.html": {
-"x": 470,
-"y": 1264,
-"w": 390,
-"h": 844,
-"title": "Create account"
-},
-"Verify.dc.html": {
-"x": 940,
-"y": 1264,
-"w": 390,
-"h": 844,
-"title": "Check your email"
-},
-"Forgot.dc.html": {
-"x": 1410,
-"y": 1264,
-"w": 390,
-"h": 844,
-"title": "Forgot password"
-},
-"ForgotSent.dc.html": {
-"x": 1880,
-"y": 1264,
-"w": 390,
-"h": 844,
-"title": "Reset link sent"
-},
-"NewPass.dc.html": {
-"x": 2350,
-"y": 1264,
-"w": 390,
-"h": 844,
-"title": "New password"
-},
-"SignedOut.dc.html": {
-"x": 2820,
-"y": 1264,
-"w": 390,
-"h": 844,
-"title": "Signed out"
-},
-"SetupIntro.dc.html": {
-"x": 0,
-"y": 2228,
-"w": 390,
-"h": 844,
-"title": "Set up with a helper"
-},
-"SetupHelper.dc.html": {
-"x": 470,
-"y": 2228,
-"w": 390,
-"h": 844,
-"title": "Helper mode"
-},
-"Pair.dc.html": {
-"x": 940,
-"y": 2228,
-"w": 390,
-"h": 844,
-"title": "Helper 2: pair"
-},
-"PairConfirm.dc.html": {
-"x": 1410,
-"y": 2228,
-"w": 390,
-"h": 844,
-"title": "Owner confirms the box"
-},
-"Internet.dc.html": {
-"x": 1880,
-"y": 2228,
-"w": 390,
-"h": 844,
-"title": "Helper 3: share internet"
-},
-"SetupTest.dc.html": {
-"x": 2350,
-"y": 2228,
-"w": 390,
-"h": 844,
-"title": "Helper 4: test sound and touch"
-},
-"SetupDone.dc.html": {
-"x": 2820,
-"y": 2228,
-"w": 390,
-"h": 844,
-"title": "Helper 5: hand back"
-},
-"Home.dc.html": {
-"x": 0,
-"y": 3192,
-"w": 390,
-"h": 844,
-"title": "Home"
-},
-"HomeNoNet.dc.html": {
-"x": 470,
-"y": 3192,
-"w": 390,
-"h": 844,
-"title": "Home, no internet"
-},
-"MyMap.dc.html": {
-"x": 940,
-"y": 3192,
-"w": 390,
-"h": 844,
-"title": "My location"
-},
-"ConfirmPause.dc.html": {
-"x": 1410,
-"y": 3192,
-"w": 390,
-"h": 844,
-"title": "Confirm: pause assistant"
-},
-"UpdateConfirm.dc.html": {
-"x": 1880,
-"y": 3192,
-"w": 390,
-"h": 844,
-"title": "Confirm: install update"
-},
-"Update.dc.html": {
-"x": 2350,
-"y": 3192,
-"w": 390,
-"h": 844,
-"title": "Software update"
-},
-"Settings.dc.html": {
-"x": 0,
-"y": 4156,
-"w": 390,
-"h": 844,
-"title": "Settings"
-},
-"Assist.dc.html": {
-"x": 470,
-"y": 4156,
-"w": 390,
-"h": 844,
-"title": "Voice, sound and text"
-},
-"Beta.dc.html": {
-"x": 940,
-"y": 4156,
-"w": 390,
-"h": 844,
-"title": "Join beta"
-},
-"Feedback.dc.html": {
-"x": 1410,
-"y": 4156,
-"w": 390,
-"h": 844,
-"title": "Send feedback"
-},
-"Privacy.dc.html": {
-"x": 1880,
-"y": 4156,
-"w": 390,
-"h": 844,
-"title": "Privacy and data"
-},
-"ConfirmHistory.dc.html": {
-"x": 2350,
-"y": 4156,
-"w": 390,
-"h": 844,
-"title": "Confirm: delete history"
-},
-"ConfirmDelete.dc.html": {
-"x": 2820,
-"y": 4156,
-"w": 390,
-"h": 844,
-"title": "Confirm: delete account"
-},
-"People.dc.html": {
-"x": 0,
-"y": 5120,
-"w": 390,
-"h": 844,
-"title": "My people"
-},
-"Invite.dc.html": {
-"x": 470,
-"y": 5120,
-"w": 390,
-"h": 844,
-"title": "Invite someone"
-},
-"Grants.dc.html": {
-"x": 940,
-"y": 5120,
-"w": 390,
-"h": 844,
-"title": "What they can see"
-},
-"ConfirmRemove.dc.html": {
-"x": 1410,
-"y": 5120,
-"w": 390,
-"h": 844,
-"title": "Confirm: remove companion"
-},
-"Switch.dc.html": {
-"x": 1880,
-"y": 5120,
-"w": 390,
-"h": 844,
-"title": "Switch side"
-},
-"Accept.dc.html": {
-"x": 0,
-"y": 6084,
-"w": 390,
-"h": 844,
-"title": "Accept invite"
-},
-"CreateC.dc.html": {
-"x": 470,
-"y": 6084,
-"w": 390,
-"h": 844,
-"title": "Create account (invited)"
-},
-"VerifyC.dc.html": {
-"x": 940,
-"y": 6084,
-"w": 390,
-"h": 844,
-"title": "Check email (invited)"
-},
-"CHome.dc.html": {
-"x": 0,
-"y": 7048,
-"w": 390,
-"h": 844,
-"title": "Following"
-},
-"Location.dc.html": {
-"x": 470,
-"y": 7048,
-"w": 390,
-"h": 844,
-"title": "Where they are"
-},
-"Incoming.dc.html": {
-"x": 940,
-"y": 7048,
-"w": 390,
-"h": 844,
-"title": "Incoming call"
-},
-"Call.dc.html": {
-"x": 1410,
-"y": 7048,
-"w": 390,
-"h": 844,
-"title": "On a call"
-},
-"CSettings.dc.html": {
-"x": 1880,
-"y": 7048,
-"w": 390,
-"h": 844,
-"title": "Companion settings"
-}
-},
-"order": [
-"Intro1.dc.html",
-"Intro2.dc.html",
-"Intro3.dc.html",
-"Intro4.dc.html",
-"Welcome.dc.html",
-"Scan.dc.html",
-"Main.dc.html",
-"Create.dc.html",
-"Verify.dc.html",
-"Forgot.dc.html",
-"ForgotSent.dc.html",
-"NewPass.dc.html",
-"SignedOut.dc.html",
-"SetupIntro.dc.html",
-"SetupHelper.dc.html",
-"Pair.dc.html",
-"PairConfirm.dc.html",
-"Internet.dc.html",
-"SetupTest.dc.html",
-"SetupDone.dc.html",
-"Home.dc.html",
-"HomeNoNet.dc.html",
-"MyMap.dc.html",
-"ConfirmPause.dc.html",
-"UpdateConfirm.dc.html",
-"Update.dc.html",
-"Settings.dc.html",
-"Assist.dc.html",
-"Beta.dc.html",
-"Feedback.dc.html",
-"Privacy.dc.html",
-"ConfirmHistory.dc.html",
-"ConfirmDelete.dc.html",
-"People.dc.html",
-"Invite.dc.html",
-"Grants.dc.html",
-"ConfirmRemove.dc.html",
-"Switch.dc.html",
-"Accept.dc.html",
-"CreateC.dc.html",
-"VerifyC.dc.html",
-"CHome.dc.html",
-"Location.dc.html",
-"Incoming.dc.html",
-"Call.dc.html",
-"CSettings.dc.html"
-],
-"notes": {
-"t0": {
-"x": 0,
-"y": 40,
-"text": "0 \u00b7 First open (everyone)",
-"kind": "title1",
-"maxW": 2740
-},
-"t1": {
-"x": 0,
-"y": 1004,
-"text": "1 \u00b7 Account (everyone)",
-"kind": "title1",
-"maxW": 3210
-},
-"t2": {
-"x": 0,
-"y": 1968,
-"text": "2 \u00b7 Set up the glasses with a sighted helper (owner)",
-"kind": "title1",
-"maxW": 3210
-},
-"t3": {
-"x": 0,
-"y": 2932,
-"text": "3 \u00b7 Owner: home, map and updates",
-"kind": "title1",
-"maxW": 2740
-},
-"t4": {
-"x": 0,
-"y": 3896,
-"text": "4 \u00b7 Owner: settings and privacy",
-"kind": "title1",
-"maxW": 3210
-},
-"t5": {
-"x": 0,
-"y": 4860,
-"text": "5 \u00b7 Owner: people and sides",
-"kind": "title1",
-"maxW": 2270
-},
-"t6": {
-"x": 0,
-"y": 5824,
-"text": "6 \u00b7 Companion: joining from an invite",
-"kind": "title1",
-"maxW": 1330
-},
-"t7": {
-"x": 0,
-"y": 6788,
-"text": "7 \u00b7 Companion: looking after someone",
-"kind": "title1",
-"maxW": 2270
-}
-},
-"designSystems": []
+ "v": 3,
+ "createdOnFiles": {
+  "v": 1,
+  "at": "2026-10-30T09:00:00Z"
+ },
+ "title": "Cortex App Mockups",
+ "launch": {
+  "view": "canvas"
+ },
+ "pages": [],
+ "boards": {
+  "Intro1.dc.html": {
+   "x": 0,
+   "y": 300,
+   "w": 390,
+   "h": 844,
+   "title": "Intro 1: get there on your own"
+  },
+  "Intro2.dc.html": {
+   "x": 470,
+   "y": 300,
+   "w": 390,
+   "h": 844,
+   "title": "Intro 2: know what is ahead"
+  },
+  "Intro3.dc.html": {
+   "x": 940,
+   "y": 300,
+   "w": 390,
+   "h": 844,
+   "title": "Intro 3: ask about what is around you"
+  },
+  "Intro4.dc.html": {
+   "x": 1410,
+   "y": 300,
+   "w": 390,
+   "h": 844,
+   "title": "Intro 4: family close by"
+  },
+  "Welcome.dc.html": {
+   "x": 1880,
+   "y": 300,
+   "w": 390,
+   "h": 844,
+   "title": "Welcome: create, sign in, scan"
+  },
+  "Scan.dc.html": {
+   "x": 2350,
+   "y": 300,
+   "w": 390,
+   "h": 844,
+   "title": "Scan a QR code"
+  },
+  "Main.dc.html": {
+   "x": 0,
+   "y": 1264,
+   "w": 390,
+   "h": 844,
+   "title": "Sign in"
+  },
+  "Create.dc.html": {
+   "x": 470,
+   "y": 1264,
+   "w": 390,
+   "h": 844,
+   "title": "Create account"
+  },
+  "Verify.dc.html": {
+   "x": 940,
+   "y": 1264,
+   "w": 390,
+   "h": 844,
+   "title": "Check your email"
+  },
+  "Forgot.dc.html": {
+   "x": 1410,
+   "y": 1264,
+   "w": 390,
+   "h": 844,
+   "title": "Forgot password"
+  },
+  "ForgotSent.dc.html": {
+   "x": 1880,
+   "y": 1264,
+   "w": 390,
+   "h": 844,
+   "title": "Reset link sent"
+  },
+  "NewPass.dc.html": {
+   "x": 2350,
+   "y": 1264,
+   "w": 390,
+   "h": 844,
+   "title": "New password"
+  },
+  "SignedOut.dc.html": {
+   "x": 2820,
+   "y": 1264,
+   "w": 390,
+   "h": 844,
+   "title": "Signed out"
+  },
+  "SetupIntro.dc.html": {
+   "x": 0,
+   "y": 2228,
+   "w": 390,
+   "h": 844,
+   "title": "Set up with a helper"
+  },
+  "SetupHelper.dc.html": {
+   "x": 470,
+   "y": 2228,
+   "w": 390,
+   "h": 844,
+   "title": "Helper mode"
+  },
+  "Pair.dc.html": {
+   "x": 940,
+   "y": 2228,
+   "w": 390,
+   "h": 844,
+   "title": "Helper 2: pair"
+  },
+  "PairConfirm.dc.html": {
+   "x": 1410,
+   "y": 2228,
+   "w": 390,
+   "h": 844,
+   "title": "Owner confirms the box"
+  },
+  "Internet.dc.html": {
+   "x": 1880,
+   "y": 2228,
+   "w": 390,
+   "h": 844,
+   "title": "Helper 3: share internet"
+  },
+  "SetupTest.dc.html": {
+   "x": 2350,
+   "y": 2228,
+   "w": 390,
+   "h": 844,
+   "title": "Helper 4: test sound and touch"
+  },
+  "SetupDone.dc.html": {
+   "x": 2820,
+   "y": 2228,
+   "w": 390,
+   "h": 844,
+   "title": "Helper 5: hand back"
+  },
+  "Home.dc.html": {
+   "x": 0,
+   "y": 3192,
+   "w": 390,
+   "h": 844,
+   "title": "Home"
+  },
+  "HomeNoNet.dc.html": {
+   "x": 470,
+   "y": 3192,
+   "w": 390,
+   "h": 844,
+   "title": "Home, no internet"
+  },
+  "MyMap.dc.html": {
+   "x": 940,
+   "y": 3192,
+   "w": 390,
+   "h": 844,
+   "title": "My location"
+  },
+  "ConfirmPause.dc.html": {
+   "x": 1410,
+   "y": 3192,
+   "w": 390,
+   "h": 844,
+   "title": "Confirm: pause assistant"
+  },
+  "UpdateConfirm.dc.html": {
+   "x": 1880,
+   "y": 3192,
+   "w": 390,
+   "h": 844,
+   "title": "Confirm: install update"
+  },
+  "Update.dc.html": {
+   "x": 2350,
+   "y": 3192,
+   "w": 390,
+   "h": 844,
+   "title": "Software update"
+  },
+  "Settings.dc.html": {
+   "x": 0,
+   "y": 4156,
+   "w": 390,
+   "h": 844,
+   "title": "Settings"
+  },
+  "Assist.dc.html": {
+   "x": 470,
+   "y": 4156,
+   "w": 390,
+   "h": 844,
+   "title": "Voice, sound and text"
+  },
+  "Beta.dc.html": {
+   "x": 940,
+   "y": 4156,
+   "w": 390,
+   "h": 844,
+   "title": "Join beta"
+  },
+  "Feedback.dc.html": {
+   "x": 1410,
+   "y": 4156,
+   "w": 390,
+   "h": 844,
+   "title": "Send feedback"
+  },
+  "Privacy.dc.html": {
+   "x": 1880,
+   "y": 4156,
+   "w": 390,
+   "h": 844,
+   "title": "Privacy and data"
+  },
+  "ConfirmHistory.dc.html": {
+   "x": 2350,
+   "y": 4156,
+   "w": 390,
+   "h": 844,
+   "title": "Confirm: delete history"
+  },
+  "ConfirmDelete.dc.html": {
+   "x": 2820,
+   "y": 4156,
+   "w": 390,
+   "h": 844,
+   "title": "Confirm: delete account"
+  },
+  "People.dc.html": {
+   "x": 0,
+   "y": 5120,
+   "w": 390,
+   "h": 844,
+   "title": "My people"
+  },
+  "Invite.dc.html": {
+   "x": 470,
+   "y": 5120,
+   "w": 390,
+   "h": 844,
+   "title": "Invite someone"
+  },
+  "Grants.dc.html": {
+   "x": 940,
+   "y": 5120,
+   "w": 390,
+   "h": 844,
+   "title": "What they can see"
+  },
+  "ConfirmRemove.dc.html": {
+   "x": 1410,
+   "y": 5120,
+   "w": 390,
+   "h": 844,
+   "title": "Confirm: remove companion"
+  },
+  "Switch.dc.html": {
+   "x": 1880,
+   "y": 5120,
+   "w": 390,
+   "h": 844,
+   "title": "Switch side"
+  },
+  "Accept.dc.html": {
+   "x": 0,
+   "y": 6084,
+   "w": 390,
+   "h": 844,
+   "title": "Accept invite"
+  },
+  "CreateC.dc.html": {
+   "x": 470,
+   "y": 6084,
+   "w": 390,
+   "h": 844,
+   "title": "Create account (invited)"
+  },
+  "VerifyC.dc.html": {
+   "x": 940,
+   "y": 6084,
+   "w": 390,
+   "h": 844,
+   "title": "Check email (invited)"
+  },
+  "CHome.dc.html": {
+   "x": 0,
+   "y": 7048,
+   "w": 390,
+   "h": 844,
+   "title": "Following"
+  },
+  "Location.dc.html": {
+   "x": 470,
+   "y": 7048,
+   "w": 390,
+   "h": 844,
+   "title": "Where they are"
+  },
+  "Incoming.dc.html": {
+   "x": 940,
+   "y": 7048,
+   "w": 390,
+   "h": 844,
+   "title": "Incoming call"
+  },
+  "Call.dc.html": {
+   "x": 1410,
+   "y": 7048,
+   "w": 390,
+   "h": 844,
+   "title": "On a call"
+  },
+  "CSettings.dc.html": {
+   "x": 1880,
+   "y": 7048,
+   "w": 390,
+   "h": 844,
+   "title": "Companion settings"
+  },
+  "EnterCode.dc.html": {
+   "x": 2820,
+   "y": 300,
+   "w": 390,
+   "h": 844,
+   "title": "Enter invite code"
+  },
+  "CodeError.dc.html": {
+   "x": 3290,
+   "y": 300,
+   "w": 390,
+   "h": 844,
+   "title": "Invite code error"
+  }
+ },
+ "order": [
+  "Intro1.dc.html",
+  "Intro2.dc.html",
+  "Intro3.dc.html",
+  "Intro4.dc.html",
+  "Welcome.dc.html",
+  "Scan.dc.html",
+  "EnterCode.dc.html",
+  "CodeError.dc.html",
+  "Main.dc.html",
+  "Create.dc.html",
+  "Verify.dc.html",
+  "Forgot.dc.html",
+  "ForgotSent.dc.html",
+  "NewPass.dc.html",
+  "SignedOut.dc.html",
+  "SetupIntro.dc.html",
+  "SetupHelper.dc.html",
+  "Pair.dc.html",
+  "PairConfirm.dc.html",
+  "Internet.dc.html",
+  "SetupTest.dc.html",
+  "SetupDone.dc.html",
+  "Home.dc.html",
+  "HomeNoNet.dc.html",
+  "MyMap.dc.html",
+  "ConfirmPause.dc.html",
+  "UpdateConfirm.dc.html",
+  "Update.dc.html",
+  "Settings.dc.html",
+  "Assist.dc.html",
+  "Beta.dc.html",
+  "Feedback.dc.html",
+  "Privacy.dc.html",
+  "ConfirmHistory.dc.html",
+  "ConfirmDelete.dc.html",
+  "People.dc.html",
+  "Invite.dc.html",
+  "Grants.dc.html",
+  "ConfirmRemove.dc.html",
+  "Switch.dc.html",
+  "Accept.dc.html",
+  "CreateC.dc.html",
+  "VerifyC.dc.html",
+  "CHome.dc.html",
+  "Location.dc.html",
+  "Incoming.dc.html",
+  "Call.dc.html",
+  "CSettings.dc.html"
+ ],
+ "notes": {
+  "t0": {
+   "x": 0,
+   "y": 40,
+   "text": "0 \u00b7 First open (everyone)",
+   "kind": "title1",
+   "maxW": 2740
+  },
+  "t1": {
+   "x": 0,
+   "y": 1004,
+   "text": "1 \u00b7 Account (everyone)",
+   "kind": "title1",
+   "maxW": 3210
+  },
+  "t2": {
+   "x": 0,
+   "y": 1968,
+   "text": "2 \u00b7 Set up the glasses with a sighted helper (owner)",
+   "kind": "title1",
+   "maxW": 3210
+  },
+  "t3": {
+   "x": 0,
+   "y": 2932,
+   "text": "3 \u00b7 Owner: home, map and updates",
+   "kind": "title1",
+   "maxW": 2740
+  },
+  "t4": {
+   "x": 0,
+   "y": 3896,
+   "text": "4 \u00b7 Owner: settings and privacy",
+   "kind": "title1",
+   "maxW": 3210
+  },
+  "t5": {
+   "x": 0,
+   "y": 4860,
+   "text": "5 \u00b7 Owner: people and sides",
+   "kind": "title1",
+   "maxW": 2270
+  },
+  "t6": {
+   "x": 0,
+   "y": 5824,
+   "text": "6 \u00b7 Companion: joining from an invite",
+   "kind": "title1",
+   "maxW": 1330
+  },
+  "t7": {
+   "x": 0,
+   "y": 6788,
+   "text": "7 \u00b7 Companion: looking after someone",
+   "kind": "title1",
+   "maxW": 2270
+  }
+ },
+ "designSystems": []
 }
