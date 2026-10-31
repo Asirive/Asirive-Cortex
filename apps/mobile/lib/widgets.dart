@@ -87,7 +87,7 @@ class CxBack extends StatelessWidget {
           child: Container(
             width: 44,
             height: 44,
-            decoration: BoxDecoration(color: Cx.surface, shape: BoxShape.circle, border: Border.all(color: Cx.outline, width: 1.5)),
+            decoration: BoxDecoration(color: Cx.surface, shape: BoxShape.circle, border: Border.all(color: Cx.outlineC, width: 1.5)),
             child: const CustomPaint(painter: _Chevron()),
           ),
         ),
@@ -183,9 +183,9 @@ class CxButton extends StatelessWidget {
           height: small ? 48 : 56,
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: outline ? Colors.transparent : (onTap == null ? Cx.outline : Cx.accent),
+            color: outline ? Colors.transparent : (onTap == null ? Cx.outlineC : Cx.accent),
             borderRadius: BorderRadius.circular(28),
-            border: outline ? Border.all(color: danger ? Cx.dangerLine : Cx.outline, width: 1.5) : null,
+            border: outline ? Border.all(color: danger ? Cx.dangerLine : Cx.outlineC, width: 1.5) : null,
           ),
           child: busy
               ? SizedBox(
@@ -262,7 +262,7 @@ class CxField extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final multi = lines > 1;
-    final border = error == null ? Cx.line : Cx.danger;
+    final border = error == null ? Cx.lineC : Cx.danger;
     OutlineInputBorder ob(Color c, double w) => OutlineInputBorder(
         borderRadius: BorderRadius.circular(multi ? 22 : (code ? 32 : 26)), borderSide: BorderSide(color: c, width: w));
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -285,7 +285,7 @@ class CxField extends StatelessWidget {
               : const TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 16, color: Cx.text, fontWeight: FontWeight.w500),
           decoration: InputDecoration(
             hintText: hint,
-            hintStyle: TextStyle(color: Cx.faint, letterSpacing: code ? 4.8 : 0),
+            hintStyle: TextStyle(color: Cx.faintC, letterSpacing: code ? 4.8 : 0),
             contentPadding: EdgeInsets.symmetric(horizontal: 20, vertical: multi ? 16 : 0),
             filled: true,
             fillColor: Cx.surface,
@@ -329,7 +329,7 @@ class CxCheck extends StatelessWidget {
                 decoration: BoxDecoration(
                     color: value ? Cx.accent : Colors.white,
                     borderRadius: BorderRadius.circular(4),
-                    border: Border.all(color: value ? Cx.accent : Cx.outline)),
+                    border: Border.all(color: value ? Cx.accent : Cx.outlineC)),
                 child: value ? const Icon(Icons.check, size: 20, color: Cx.ground) : null,
               ),
               const SizedBox(width: 12),
@@ -364,10 +364,10 @@ class CxStep extends StatelessWidget {
             decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: done ? Cx.accent : Colors.transparent,
-                border: Border.all(color: done || now ? Cx.accent : Cx.outline, width: 1.5)),
+                border: Border.all(color: done || now ? Cx.accent : Cx.outlineC, width: 1.5)),
             child: done
                 ? const Icon(Icons.check, size: 18, color: Cx.ground)
-                : Text('$n', style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 14, fontWeight: FontWeight.w700, color: now ? Cx.accent : Cx.faint)),
+                : Text('$n', style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 14, fontWeight: FontWeight.w700, color: now ? Cx.accent : Cx.faintC)),
           ),
           const SizedBox(width: 14),
           Expanded(
@@ -413,7 +413,7 @@ class CxPager extends StatelessWidget {
                 height: 6,
                 width: i == step ? 28 : 8,
                 decoration: BoxDecoration(
-                    color: i == step ? Cx.accent : Cx.outline, borderRadius: BorderRadius.circular(3)),
+                    color: i == step ? Cx.accent : Cx.outlineC, borderRadius: BorderRadius.circular(3)),
               ),
           ]),
         ),
@@ -494,7 +494,7 @@ class CxSlider extends StatelessWidget {
               child: SizedBox(
                 height: 44,
                 child: Stack(alignment: Alignment.centerLeft, children: [
-                  Container(height: 6, decoration: BoxDecoration(color: Cx.outline, borderRadius: BorderRadius.circular(3))),
+                  Container(height: 6, decoration: BoxDecoration(color: Cx.outlineC, borderRadius: BorderRadius.circular(3))),
                   Container(height: 6, width: 13 + value * (w - 26), decoration: BoxDecoration(color: Cx.accent, borderRadius: BorderRadius.circular(3))),
                   Positioned(left: value * (w - 26), child: Container(width: 26, height: 26, decoration: BoxDecoration(shape: BoxShape.circle, color: Cx.text, border: Border.all(color: Cx.accent, width: 3)))),
                 ]),
@@ -517,7 +517,7 @@ class CxList extends StatelessWidget {
         child: Column(children: [
           for (var i = 0; i < children.length; i++) ...[
             children[i],
-            if (i < children.length - 1) const Divider(color: Cx.line, height: 1, thickness: 1),
+            if (i < children.length - 1) Divider(color: Cx.lineC, height: 1, thickness: 1),
           ],
         ]),
       );
@@ -542,7 +542,7 @@ class _DashPainter extends CustomPainter {
     final paint = Paint()
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.5
-      ..color = Cx.outline;
+      ..color = Cx.outlineC;
     for (final m in path.computeMetrics()) {
       for (var d = 0.0; d < m.length; d += 9) {
         canvas.drawPath(m.extractPath(d, d + 5), paint);

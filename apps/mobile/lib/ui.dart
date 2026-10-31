@@ -97,10 +97,10 @@ class _SheetBodyState extends State<_SheetBody> {
         padding: EdgeInsets.fromLTRB(8, 0, 8, 8 + MediaQuery.of(context).viewInsets.bottom + MediaQuery.of(context).padding.bottom),
         child: Container(
           padding: const EdgeInsets.fromLTRB(20, 14, 20, 22),
-          decoration: BoxDecoration(color: Cx.surface, borderRadius: BorderRadius.circular(32), border: Border.all(color: Cx.line)),
+          decoration: BoxDecoration(color: Cx.surface, borderRadius: BorderRadius.circular(32), border: Border.all(color: Cx.lineC)),
           child: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-              Center(child: ExcludeSemantics(child: Container(width: 44, height: 5, decoration: BoxDecoration(color: Cx.outline, borderRadius: BorderRadius.circular(3))))),
+              Center(child: ExcludeSemantics(child: Container(width: 44, height: 5, decoration: BoxDecoration(color: Cx.outlineC, borderRadius: BorderRadius.circular(3))))),
               const SizedBox(height: 16),
               Text(widget.mono.toUpperCase(), style: Cx.label),
               const SizedBox(height: 16),
@@ -160,7 +160,7 @@ class CxRow extends StatelessWidget {
                 ]),
               ),
               ?trailing,
-              if (onTap != null && trailing == null && chevron) const Icon(Icons.chevron_right, color: Cx.faint),
+              if (onTap != null && trailing == null && chevron) Icon(Icons.chevron_right, color: Cx.faintC),
             ]),
           ),
         ),
@@ -200,7 +200,7 @@ class CxSwitch extends StatelessWidget {
                 height: 32,
                 padding: const EdgeInsets.all(4),
                 alignment: value ? Alignment.centerRight : Alignment.centerLeft,
-                decoration: BoxDecoration(color: value ? Cx.accent : Cx.outline, borderRadius: BorderRadius.circular(16)),
+                decoration: BoxDecoration(color: value ? Cx.accent : Cx.outlineC, borderRadius: BorderRadius.circular(16)),
                 child: Container(width: 24, height: 24, decoration: BoxDecoration(shape: BoxShape.circle, color: value ? Cx.ground : Cx.text)),
               ),
             ]),
@@ -234,7 +234,7 @@ class CxChoice<T> extends StatelessWidget {
                   decoration: BoxDecoration(
                       color: e.key == value ? Cx.accent : Colors.transparent,
                       borderRadius: BorderRadius.circular(22),
-                      border: Border.all(color: e.key == value ? Cx.accent : Cx.outline, width: 1.5)),
+                      border: Border.all(color: e.key == value ? Cx.accent : Cx.outlineC, width: 1.5)),
                   child: Center(
                     widthFactor: 1,
                     child: Text(e.value,

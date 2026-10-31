@@ -56,7 +56,7 @@ class _ScanScreenState extends State<ScanScreen> {
               child: Container(
                 width: 44,
                 height: 44,
-                decoration: BoxDecoration(color: on ? Cx.accent : Cx.surface, shape: BoxShape.circle, border: Border.all(color: Cx.outline, width: 1.5)),
+                decoration: BoxDecoration(color: on ? Cx.accent : Cx.surface, shape: BoxShape.circle, border: Border.all(color: Cx.outlineC, width: 1.5)),
                 child: Icon(on ? Icons.flashlight_on : Icons.flashlight_off_outlined, size: 20, color: on ? Cx.ground : Cx.text),
               ),
             ),
@@ -199,7 +199,7 @@ class _AcceptScreenState extends State<AcceptScreen> {
       const CxText('You can be there for them. They choose what you can see, and can change it or remove you at any time. Until they choose, you see nothing.'),
       CxTile(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('WHAT THEY CAN SHARE WITH YOU', style: Cx.label),
+        Text('WHAT THEY CAN SHARE WITH YOU', style: Cx.label),
         const SizedBox(height: 8),
         Text('You may see where they are and call them. Nothing else, and never their camera. They see only your email.', style: Cx.body.copyWith(color: Cx.text)),
       ])),
@@ -221,7 +221,7 @@ class _AcceptScreenState extends State<AcceptScreen> {
         s.pendingInvite = null;
         Navigator.of(context).popUntil((r) => r.isFirst);
       }),
-      const Text('Needs a free Cortex account. No glasses required.', textAlign: TextAlign.center, style: Cx.small),
+      Text('Needs a free Cortex account. No glasses required.', textAlign: TextAlign.center, style: Cx.small),
     ]);
   }
 }

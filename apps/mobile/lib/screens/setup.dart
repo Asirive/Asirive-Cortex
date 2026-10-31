@@ -57,11 +57,11 @@ class SetupIntroScreen extends StatelessWidget {
           onTap: () => s.services.speaker.say(_introSpoken),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: BoxDecoration(color: Cx.surface, borderRadius: BorderRadius.circular(Cx.tileRadius), border: Border.all(color: Cx.outline, width: 1.5)),
+            decoration: BoxDecoration(color: Cx.surface, borderRadius: BorderRadius.circular(Cx.tileRadius), border: Border.all(color: Cx.outlineC, width: 1.5)),
             child: Row(children: [
               Container(width: 44, height: 44, decoration: const BoxDecoration(color: Cx.accent, shape: BoxShape.circle), child: const Icon(Icons.volume_up, size: 22, color: Cx.ground)),
               const SizedBox(width: 14),
-              const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text('Hear this screen', style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 16, fontWeight: FontWeight.w600, color: Cx.text)),
                 SizedBox(height: 3),
                 Text('Cortex reads it aloud', style: Cx.small),
@@ -334,10 +334,10 @@ class _HelperFlowScreenState extends State<HelperFlowScreen> with Ticker<HelperF
           ),
           CxDashed(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-            child: const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Text("OWNER'S PRIVACY", style: Cx.label),
               SizedBox(height: 6),
-              Text('As helper you only see setup steps. You cannot see their location, people or settings.', style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 14, height: 1.45, color: Cx.muted)),
+              Text('As helper you only see setup steps. You cannot see their location, people or settings.', style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 14, height: 1.45, color: Cx.mutedC)),
             ]),
           ),
         ], bottom: [
@@ -368,11 +368,11 @@ class _HelperFlowScreenState extends State<HelperFlowScreen> with Ticker<HelperF
           ),
         ], bottom: [
           CxButton('Pair glasses', onTap: _pair, busy: busy),
-          const Text('Helper: read the code to the owner from the box label.', textAlign: TextAlign.center, style: Cx.small),
+          Text('Helper: read the code to the owner from the box label.', textAlign: TextAlign.center, style: Cx.small),
         ]),
       _P.confirm => CxScreen(children: [
           _top('Helper · step 2 of 5'),
-          const Text('FOR THE OWNER', style: Cx.label),
+          Text('FOR THE OWNER', style: Cx.label),
           const CxTitle('Is this\nyour box?', size: 48, height: .98),
           Semantics(
               liveRegion: true,
@@ -381,7 +381,7 @@ class _HelperFlowScreenState extends State<HelperFlowScreen> with Ticker<HelperF
             padding: const EdgeInsets.all(22),
             decoration: BoxDecoration(color: Cx.surface, borderRadius: BorderRadius.circular(Cx.tileRadius)),
             child: Column(children: [
-              const Text('BOX CODE ENDS', style: Cx.label),
+              Text('BOX CODE ENDS', style: Cx.label),
               const SizedBox(height: 6),
               Text(tail!, semanticsLabel: tail!.split('').join(' '), style: const TextStyle(fontFamily: 'Anton', fontSize: 72, height: 1, letterSpacing: 8.6, color: Cx.accent)),
             ]),
@@ -394,7 +394,7 @@ class _HelperFlowScreenState extends State<HelperFlowScreen> with Ticker<HelperF
               onTap: () => SessionScope.of(context).services.speaker.say('The pocket box ends in ${tail!.split('').join(' ')}.'),
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                decoration: BoxDecoration(color: Cx.surface, borderRadius: BorderRadius.circular(Cx.tileRadius), border: Border.all(color: Cx.outline, width: 1.5)),
+                decoration: BoxDecoration(color: Cx.surface, borderRadius: BorderRadius.circular(Cx.tileRadius), border: Border.all(color: Cx.outlineC, width: 1.5)),
                 child: Row(children: [
                   Container(width: 44, height: 44, decoration: const BoxDecoration(color: Cx.accent, shape: BoxShape.circle), child: const Icon(Icons.volume_up, size: 22, color: Cx.ground)),
                   const SizedBox(width: 14),
@@ -463,7 +463,7 @@ class _HelperFlowScreenState extends State<HelperFlowScreen> with Ticker<HelperF
           const CxText('Setup is done. Thank you, helper. The owner takes over now and confirms with their passcode.'),
           CxTile(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const Text('CORTEX SAYS OUT LOUD', style: Cx.label),
+            Text('CORTEX SAYS OUT LOUD', style: Cx.label),
             const SizedBox(height: 8),
             Text('"Setup is done. Your glasses are ready. Your helper can step away. Press the big button when you are ready."', style: Cx.body.copyWith(fontSize: 16, color: Cx.text)),
           ])),
@@ -479,7 +479,7 @@ class _HelperFlowScreenState extends State<HelperFlowScreen> with Ticker<HelperF
           if (err != null) CxNotice(err!, error: true),
         ], bottom: [
           SizedBox(height: 68, child: CxButton("Owner: I'm ready", onTap: _ready)),
-          const Text('Face ID or passcode ends Helper mode.', textAlign: TextAlign.center, style: Cx.small),
+          Text('Face ID or passcode ends Helper mode.', textAlign: TextAlign.center, style: Cx.small),
         ]),
     };
     if (page == _P.done) {

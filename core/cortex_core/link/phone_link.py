@@ -115,9 +115,13 @@ class PhoneLink:
             ws = a.get("gateway_ws_url") or self.default_ws_url
             if not ws.startswith("wss://"):
                 return {"id": rid, "ok": False, "error": "gateway address missing"}
+            cert = reply["device_cert_pem"].encode()
+            key = identity.load_or_create_key(os.path.join(self.dir, "device.key"))
+            if not identity.cert_matches_key(cert, key):  # someone else's certificate: do not adopt it
+                return {"id": rid, "ok": False, "error": "certificate is not for this box"}
             ca = reply.get("ca_cert_pem")
             provision.save(self.dir, reply, ws, ca.encode() if ca else None)
-        except (KeyError, ValueError, TypeError):
+        except (KeyError, ValueError, TypeError, AttributeError):
             return {"id": rid, "ok": False, "error": "bad provision"}
         fd = os.open(self._secret_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "wb") as f:

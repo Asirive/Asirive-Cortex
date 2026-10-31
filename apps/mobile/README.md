@@ -53,7 +53,6 @@ clickable mockups: `docs/design/mockups/`.
 - A call that arrives with the app fully closed shows the alert, but there is no CallKit/ConnectionService
   ringing screen yet.
 - The Voice, sound and text settings live on the phone; the server has no preferences endpoint.
-- The "Extra contrast" switch currently turns on bold text only; a true high-contrast colour set is not built.
 - Email links (`asirive://verify`, `reset`, `companion`) are handled in the app, but the web fallback pages are not built.
 - Grants can only be changed for people who accepted; invites that are still waiting can only be cancelled.
 - The map is coordinates plus "Open in Maps", not an in-app map.

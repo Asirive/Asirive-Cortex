@@ -16,11 +16,12 @@ import 'settings.dart';
 import 'setup.dart';
 
 class _Round extends StatelessWidget {
-  const _Round({required this.child, required this.label, this.onTap, this.border = Cx.outline, this.fill = Cx.surface});
+  const _Round({required this.child, required this.label, this.onTap, this.border, this.fill = Cx.surface});
   final Widget child;
   final String label;
   final VoidCallback? onTap;
-  final Color border, fill;
+  final Color? border;
+  final Color fill;
   @override
   Widget build(BuildContext context) => Semantics(
         button: true,
@@ -32,7 +33,7 @@ class _Round extends StatelessWidget {
               width: 44,
               height: 44,
               alignment: Alignment.center,
-              decoration: BoxDecoration(color: fill, shape: BoxShape.circle, border: Border.all(color: border, width: 1.5)),
+              decoration: BoxDecoration(color: fill, shape: BoxShape.circle, border: Border.all(color: border ?? Cx.outlineC, width: 1.5)),
               child: child),
         ),
       );
@@ -142,11 +143,11 @@ class _HomeScreenState extends State<HomeScreen> {
         child: Row(children: [
           const CxLogo(),
           const SizedBox(width: 12),
-          const Expanded(
+          Expanded(
               child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
             Text('WELCOME', style: TextStyle(fontFamily: 'Anton', fontSize: 28, height: 1, letterSpacing: .84, color: Cx.accent)),
             SizedBox(height: 5),
-            Text('ASIRIVE CORTEX', style: TextStyle(fontFamily: 'JetBrainsMono', fontSize: 12, height: 1.0, letterSpacing: 1.7, color: Cx.faint)),
+            Text('ASIRIVE CORTEX', style: TextStyle(fontFamily: 'JetBrainsMono', fontSize: 12, height: 1.0, letterSpacing: 1.7, color: Cx.faintC)),
           ])),
           _Round(label: 'Hear my status', onTap: () => s.services.speaker.say(_status(s)), child: const Icon(Icons.volume_up_outlined, size: 22, color: Cx.accent)),
           const SizedBox(width: 12),
@@ -183,11 +184,11 @@ class _HomeScreenState extends State<HomeScreen> {
             height: 52,
             padding: const EdgeInsets.only(left: 20, right: 8),
             decoration: BoxDecoration(color: Cx.surface, borderRadius: BorderRadius.circular(26)),
-            child: const Row(children: [
-              Icon(Icons.search, size: 22, color: Cx.faint),
+            child: Row(children: [
+              Icon(Icons.search, size: 22, color: Cx.faintC),
               SizedBox(width: 12),
-              Expanded(child: Text('Find a place', style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 16, fontWeight: FontWeight.w500, color: Cx.faint))),
-              SizedBox(width: 44, height: 44, child: Icon(Icons.map_outlined, size: 22, color: Cx.faint)),
+              Expanded(child: Text('Find a place', style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 16, fontWeight: FontWeight.w500, color: Cx.faintC))),
+              SizedBox(width: 44, height: 44, child: Icon(Icons.map_outlined, size: 22, color: Cx.faintC)),
             ]),
           ),
         ),
@@ -242,7 +243,7 @@ class _BatteryTab extends StatelessWidget {
                       child: Row(children: [
                         const Icon(Icons.usb, size: 18, color: Cx.accent),
                         const SizedBox(width: 9),
-                        Flexible(child: Text(word.toUpperCase(), maxLines: 1, overflow: TextOverflow.ellipsis, style: Cx.label.copyWith(color: warn ? Cx.danger : Cx.faint))),
+                        Flexible(child: Text(word.toUpperCase(), maxLines: 1, overflow: TextOverflow.ellipsis, style: Cx.label.copyWith(color: warn ? Cx.danger : Cx.faintC))),
                       ]),
                     ),
                   ),
@@ -287,7 +288,7 @@ class _WideTile extends StatelessWidget {
                 child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
                   Text(title.toUpperCase(), maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontFamily: 'Anton', fontSize: bad ? 26 : 28, height: 1, letterSpacing: .8, color: bad ? Cx.danger : Cx.ground)),
                   const SizedBox(height: 5),
-                  Text(sub, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 14, fontWeight: FontWeight.w500, color: bad ? Cx.muted : Cx.ground)),
+                  Text(sub, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 14, fontWeight: FontWeight.w500, color: bad ? Cx.mutedC : Cx.ground)),
                 ]),
               ),
               const SizedBox(width: 14),
@@ -322,8 +323,8 @@ class _GoTile extends StatelessWidget {
                 child: Container(
                     width: 30,
                     height: 30,
-                    decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Cx.outline, width: 1.5)),
-                    child: const Icon(Icons.north_east, size: 14, color: Cx.faint)),
+                    decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: Cx.outlineC, width: 1.5)),
+                    child: Icon(Icons.north_east, size: 14, color: Cx.faintC)),
               ),
             ]),
           ),
@@ -342,7 +343,7 @@ class _PeopleTile extends StatelessWidget {
       label: 'My people, $n',
       onTap: () => ShellNav.go(AppTab.people, context),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-        const Text('MY PEOPLE', style: TextStyle(fontFamily: 'JetBrainsMono', fontSize: 12, height: 1.0, letterSpacing: 1.7, color: Cx.faint)),
+        Text('MY PEOPLE', style: TextStyle(fontFamily: 'JetBrainsMono', fontSize: 12, height: 1.0, letterSpacing: 1.7, color: Cx.faintC)),
         Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
           Text(n.toString().padLeft(2, '0'), style: const TextStyle(fontFamily: 'Anton', fontSize: 44, height: .95, letterSpacing: .9, color: Cx.text)),
           const SizedBox(height: 6),
@@ -378,11 +379,11 @@ class _FollowTile extends StatelessWidget {
       label: f == null ? 'Where I am' : 'Following ${f.ownerEmail}',
       onTap: () => f == null ? push(context, const MyMapScreen()) : ShellNav.go(AppTab.following, context),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-        Text(f == null ? 'WHERE I AM' : 'FOLLOWING', style: const TextStyle(fontFamily: 'JetBrainsMono', fontSize: 12, height: 1.0, letterSpacing: 1.7, color: Cx.faint)),
+        Text(f == null ? 'WHERE I AM' : 'FOLLOWING', style: TextStyle(fontFamily: 'JetBrainsMono', fontSize: 12, height: 1.0, letterSpacing: 1.7, color: Cx.faintC)),
         const Icon(Icons.place_outlined, size: 26, color: Cx.accent),
         Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
           Text(f == null ? 'My location' : f.ownerEmail, maxLines: 1, overflow: TextOverflow.ellipsis, style: Cx.strong),
-          Text(f == null ? 'See and share' : 'Where they are', style: Cx.small.copyWith(color: Cx.muted)),
+          Text(f == null ? 'See and share' : 'Where they are', style: Cx.small.copyWith(color: Cx.mutedC)),
         ]),
       ]),
     );
@@ -401,7 +402,7 @@ class _SafetyTile extends StatelessWidget {
       'FAULT' => 'Needs attention',
       _ => 'Not reported yet',
     };
-    final color = ok ? Cx.accent : (d.safety == 'FAULT' ? Cx.danger : Cx.faint);
+    final color = ok ? Cx.accent : (d.safety == 'FAULT' ? Cx.danger : Cx.faintC);
     return Container(
       height: 72,
       padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -413,7 +414,7 @@ class _SafetyTile extends StatelessWidget {
         child: Row(children: [
           Expanded(
             child: Column(mainAxisAlignment: MainAxisAlignment.center, crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Text('SAFETY', style: Cx.label),
+              Text('SAFETY', style: Cx.label),
               const SizedBox(height: 5),
               Text(text, maxLines: 1, overflow: TextOverflow.ellipsis, style: Cx.strong),
             ]),
@@ -510,7 +511,7 @@ class _MyMapScreenState extends State<MyMapScreen> {
           bottom: 8 + MediaQuery.of(context).padding.bottom,
           child: Container(
             padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
-            decoration: BoxDecoration(color: Cx.surface, borderRadius: BorderRadius.circular(32), border: Border.all(color: Cx.line)),
+            decoration: BoxDecoration(color: Cx.surface, borderRadius: BorderRadius.circular(32), border: Border.all(color: Cx.lineC)),
             child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
               Text(p == null ? 'YOU · NOT FOUND YET' : 'YOU · UPDATED NOW', style: Cx.label),
               const SizedBox(height: 6),
@@ -671,7 +672,7 @@ class _InternetBodyState extends State<InternetBody> {
                     height: 44,
                     alignment: Alignment.center,
                     decoration: BoxDecoration(color: android == e.key ? Cx.accent : Colors.transparent, borderRadius: BorderRadius.circular(22)),
-                    child: Text(e.value, style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 15, fontWeight: FontWeight.w700, color: android == e.key ? Cx.ground : Cx.faint)),
+                    child: Text(e.value, style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 15, fontWeight: FontWeight.w700, color: android == e.key ? Cx.ground : Cx.faintC)),
                   ),
                 ),
               ),
@@ -693,7 +694,7 @@ class _InternetBodyState extends State<InternetBody> {
       const SizedBox(height: 14),
       CxTile(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('CHECK FROM THE GLASSES', style: Cx.label),
+        Text('CHECK FROM THE GLASSES', style: Cx.label),
         const SizedBox(height: 10),
         Semantics(
           liveRegion: true,
@@ -707,7 +708,7 @@ class _InternetBodyState extends State<InternetBody> {
         SizedBox(height: 48, child: CxButton('Test now', onTap: _test, busy: busy, small: true)),
       ])),
       if (widget.onContinue != null) CxYellowLink('Setting up? Continue to step 4', center: false, onTap: widget.onContinue!),
-      const Padding(padding: EdgeInsets.fromLTRB(8, 4, 8, 0), child: Text('Uses your mobile data and some phone battery. Obstacle warnings keep working without internet.', style: Cx.small)),
+      Padding(padding: EdgeInsets.fromLTRB(8, 4, 8, 0), child: Text('Uses your mobile data and some phone battery. Obstacle warnings keep working without internet.', style: Cx.small)),
     ]);
   }
 }
@@ -849,7 +850,7 @@ class _UpdateProgressScreenState extends State<UpdateProgressScreen> {
         const SizedBox(height: 8),
         const CxStep(4, 'Restart and check', 'The glasses say when they are ready'),
       ])),
-      const Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Text('If anything goes wrong, the glasses go back to the version that worked. You will hear a message and see it here.', style: Cx.small)),
+      Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Text('If anything goes wrong, the glasses go back to the version that worked. You will hear a message and see it here.', style: Cx.small)),
     ], bottom: [
       CxButton(failed ? 'Back to Home' : 'Keep going in the background', outline: true, onTap: () => Navigator.of(context).popUntil((r) => r.isFirst)),
     ]);

@@ -124,7 +124,7 @@ class AccountScreen extends StatelessWidget {
       const CxTitle('Your\naccount'),
       CxTile(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('EMAIL', style: Cx.label),
+        Text('EMAIL', style: Cx.label),
         const SizedBox(height: 6),
         Text(s.account?.email ?? '', style: Cx.strong),
       ])),
@@ -158,16 +158,16 @@ class SwitchSideScreen extends StatelessWidget {
               onTap: () => pick(side),
               child: Container(
                 padding: const EdgeInsets.all(20),
-                decoration: BoxDecoration(color: yellow ? Cx.accent : Cx.surface, borderRadius: BorderRadius.circular(28), border: yellow ? null : Border.all(color: Cx.line)),
+                decoration: BoxDecoration(color: yellow ? Cx.accent : Cx.surface, borderRadius: BorderRadius.circular(28), border: yellow ? null : Border.all(color: Cx.lineC)),
                 child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                   Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                    Text(mono.toUpperCase(), style: Cx.label.copyWith(color: yellow ? Cx.ground : Cx.faint)),
+                    Text(mono.toUpperCase(), style: Cx.label.copyWith(color: yellow ? Cx.ground : Cx.faintC)),
                     if (current) Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4), decoration: BoxDecoration(color: Cx.ground, borderRadius: BorderRadius.circular(99)), child: const Text('Current', style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 12, fontWeight: FontWeight.w700, color: Cx.accent))),
                   ]),
                   Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                     Text(big.toUpperCase(), style: TextStyle(fontFamily: 'Anton', fontSize: 44, height: 1, letterSpacing: 1.3, color: yellow ? Cx.ground : Cx.text)),
                     const SizedBox(height: 10),
-                    Text(d, style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 15, fontWeight: FontWeight.w500, height: 1.4, color: yellow ? Cx.ground : Cx.muted)),
+                    Text(d, style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 15, fontWeight: FontWeight.w500, height: 1.4, color: yellow ? Cx.ground : Cx.mutedC)),
                   ]),
                 ]),
               ),
@@ -185,7 +185,7 @@ class SwitchSideScreen extends StatelessWidget {
       SizedBox(height: 260, child: Column(children: [
         card(!owner, 'I look after someone', 'Companion', '$n ${n == 1 ? 'person' : 'people'}. See where they are and call them.', !owner, Side.companion),
       ])),
-      const Center(child: Text('We remember the side you used last.', style: Cx.small)),
+      Center(child: Text('We remember the side you used last.', style: Cx.small)),
     ]);
   }
 }
@@ -277,7 +277,7 @@ class _Seg extends StatelessWidget {
                       height: 44,
                       alignment: Alignment.center,
                       decoration: BoxDecoration(color: i == index ? Cx.accent : Colors.transparent, borderRadius: BorderRadius.circular(22)),
-                      child: Text(options[i], style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 15, fontWeight: FontWeight.w700, color: i == index ? Cx.ground : Cx.faint)),
+                      child: Text(options[i], style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 15, fontWeight: FontWeight.w700, color: i == index ? Cx.ground : Cx.faintC)),
                     ),
                   ),
                 ),
@@ -379,9 +379,9 @@ class PrivacyScreen extends StatelessWidget {
       if (owner)
         CxTile(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('WHO CAN SEE MY LOCATION', style: Cx.label),
+          Text('WHO CAN SEE MY LOCATION', style: Cx.label),
           const SizedBox(height: 6),
-          if (seen.isEmpty) const Padding(padding: EdgeInsets.symmetric(vertical: 10), child: Text('Nobody right now.', style: Cx.body)),
+          if (seen.isEmpty) Padding(padding: EdgeInsets.symmetric(vertical: 10), child: Text('Nobody right now.', style: Cx.body)),
           for (final c in seen)
             Container(
               constraints: const BoxConstraints(minHeight: 44),
@@ -389,24 +389,24 @@ class PrivacyScreen extends StatelessWidget {
                 ExcludeSemantics(child: CircleAvatar(radius: 16, backgroundColor: Cx.chipFill, child: Text(initials(c.label), style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Cx.text)))),
                 const SizedBox(width: 12),
                 Expanded(child: Text(c.label, style: const TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 16, fontWeight: FontWeight.w600, color: Cx.text))),
-                const Text('Can see', style: Cx.small),
+                Text('Can see', style: Cx.small),
               ]),
             ),
           const SizedBox(height: 6),
-          const Text('Kept up to 30 days, then deleted automatically.', style: Cx.small),
+          Text('Kept up to 30 days, then deleted automatically.', style: Cx.small),
           const SizedBox(height: 12),
           SizedBox(height: 48, child: CxButton('Delete my location history', outline: true, danger: true, small: true, onTap: clearHistory)),
         ])),
       CxDashed(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        child: const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('NEVER STORED', style: Cx.label),
           SizedBox(height: 6),
-          Text('Camera images and video. Calls are voice only and the audio is not recorded. A short record that a call happened is kept 30 days.', style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 14, height: 1.45, color: Cx.muted)),
+          Text('Camera images and video. Calls are voice only and the audio is not recorded. A short record that a call happened is kept 30 days.', style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 14, height: 1.45, color: Cx.mutedC)),
         ]),
       ),
     ], bottom: [
-      const Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Text('Deleting your account removes your companions and location history, and unlinks your glasses. This cannot be undone.', style: Cx.small)),
+      Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Text('Deleting your account removes your companions and location history, and unlinks your glasses. This cannot be undone.', style: Cx.small)),
       CxButton('Delete account', outline: true, danger: true, onTap: () => deleteAccountSheet(context)),
     ]);
   }

@@ -269,7 +269,7 @@ class _CheckEmailScreenState extends State<CheckEmailScreen> {
       ])),
       CxTile(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('GOOD TO KNOW', style: Cx.label),
+        Text('GOOD TO KNOW', style: Cx.label),
         const SizedBox(height: 8),
         Text(invited ? 'The link expires after 24 hours. If you do not see it, look in spam.' : 'The link works once and expires after 24 hours. If you do not see it, look in spam.', style: Cx.body.copyWith(fontSize: 14)),
       ])),
@@ -338,7 +338,7 @@ class _ForgotScreenState extends State<ForgotScreen> {
       const CxTitle('Forgot\npassword', size: 52, height: .98),
       const CxText('Enter your email. We will send a link to choose a new password.'),
       CxField(label: 'Email', controller: email, keyboard: TextInputType.emailAddress, onSubmit: _submit, error: err),
-      const Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Text('We will email you a link to choose a new password.', style: Cx.small)),
+      Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Text('We will email you a link to choose a new password.', style: Cx.small)),
     ], bottom: [
       CxButton('Send reset link', onTap: _submit, busy: busy),
       CxYellowLink('Back to sign in', onTap: () => Navigator.of(context).maybePop()),
@@ -395,7 +395,7 @@ class _NewPasswordScreenState extends State<NewPasswordScreen> {
         CxField(label: 'New password', controller: pw, obscure: true, autofill: const [AutofillHints.newPassword], onSubmit: _save, error: err, help: 'At least 10 characters.'),
       ], bottom: [
         CxButton('Save and sign in', onTap: _save, busy: busy),
-        const Text('You will be signed out of other phones.', textAlign: TextAlign.center, style: Cx.small),
+        Text('You will be signed out of other phones.', textAlign: TextAlign.center, style: Cx.small),
       ]);
 }
 
@@ -427,7 +427,7 @@ class SignedOutScreen extends StatelessWidget {
         const Text('Sign in again to carry on. Your glasses keep working, and obstacle warnings are not affected.', style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 17, height: 1.45, color: Cx.text)),
         CxTile(
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          const Text('WHY THIS HAPPENS', style: Cx.label),
+          Text('WHY THIS HAPPENS', style: Cx.label),
           const SizedBox(height: 6),
           Text('For safety, you stay signed in for 30 days. Changing your password also signs you out.', style: Cx.body.copyWith(fontSize: 14)),
         ])),

@@ -23,6 +23,24 @@ class Hooks:
     def code_tail(self): return "4TXD"
 
 
+def cert_for(key) -> str:
+    from datetime import datetime, timedelta, timezone
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.x509.oid import NameOID
+    n = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "d1")])
+    now = datetime.now(timezone.utc)
+    c = (x509.CertificateBuilder().subject_name(n).issuer_name(n).public_key(key.public_key())
+         .serial_number(1).not_valid_before(now).not_valid_after(now + timedelta(days=30)).sign(key, hashes.SHA256()))
+    return c.public_bytes(serialization.Encoding.PEM).decode()
+
+
+def reply_for(link):
+    from cortex_core.link import identity
+    key = identity.load_or_create_key(os.path.join(link.dir, "device.key"))
+    return {"device_id": "d1", "device_token": "tok", "device_cert_pem": cert_for(key), "command_public_key": "ab"}
+
+
 REPLY = {"device_id": "d1", "device_token": "tok", "device_cert_pem": "CERT", "command_public_key": "ab"}
 SECRET = b"s" * 32
 
@@ -42,7 +60,7 @@ def req(rid, op, args=None, secret=None, nonce="n"):
 
 
 def provision(link, rid=1):
-    return link.handle(req(rid, "provision", {"reply": REPLY, "link_secret": base64.b64encode(SECRET).decode()}), "n", {})
+    return link.handle(req(rid, "provision", {"reply": reply_for(link), "link_secret": base64.b64encode(SECRET).decode()}), "n", {})
 
 
 def test_hello_gives_key_and_tail_and_is_unpaired(tmp_path):
@@ -67,6 +85,14 @@ def test_bad_provision_is_rejected_and_stores_nothing(tmp_path):
     link, _ = mk(tmp_path)
     assert not link.handle(req(1, "provision", {"reply": REPLY, "link_secret": base64.b64encode(b"short").decode()}), "n", {})["ok"]
     assert not link.paired()
+
+
+def test_a_certificate_for_another_key_is_refused(tmp_path):
+    link, _ = mk(tmp_path)
+    from cryptography.hazmat.primitives.asymmetric import ec
+    other = dict(reply_for(link), device_cert_pem=cert_for(ec.generate_private_key(ec.SECP256R1())))
+    r = link.handle(req(1, "provision", {"reply": other, "link_secret": base64.b64encode(SECRET).decode()}), "n", {})
+    assert r["error"] == "certificate is not for this box" and not link.paired()
 
 
 def test_unsigned_or_wrongly_signed_commands_do_nothing(tmp_path):
@@ -117,7 +143,7 @@ def test_over_a_real_socket(tmp_path):
         await asyncio.sleep(0.2)
         async with websockets.connect("ws://127.0.0.1:18765") as ws:
             hello = json.loads(await ws.recv())["hello"]
-            await ws.send(req(1, "provision", {"reply": REPLY, "link_secret": base64.b64encode(SECRET).decode()}))
+            await ws.send(req(1, "provision", {"reply": reply_for(link), "link_secret": base64.b64encode(SECRET).decode()}))
             assert json.loads(await ws.recv())["ok"]
             await ws.send(req(2, "status", {}, SECRET, hello["nonce"]))
             assert json.loads(await ws.recv())["internet"] is True

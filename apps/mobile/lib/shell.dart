@@ -114,7 +114,7 @@ class _Nav extends StatelessWidget {
         height: 64,
         padding: const EdgeInsets.all(6),
         decoration: BoxDecoration(
-            color: Cx.surface, borderRadius: BorderRadius.circular(32), border: Border.all(color: Cx.line)),
+            color: Cx.surface, borderRadius: BorderRadius.circular(32), border: Border.all(color: Cx.lineC)),
         child: Row(children: [
           for (var i = 0; i < tabs.length; i++)
             Expanded(
@@ -132,7 +132,7 @@ class _Nav extends StatelessWidget {
                     decoration: BoxDecoration(
                         color: i == index ? Cx.accent : Colors.transparent, borderRadius: BorderRadius.circular(26)),
                     child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-                      Icon(_icons[tabs[i]], size: 22, color: i == index ? Cx.ground : Cx.faint),
+                      Icon(_icons[tabs[i]], size: 22, color: i == index ? Cx.ground : Cx.faintC),
                       if (i == index) ...[
                         const SizedBox(width: 6),
                         Flexible(

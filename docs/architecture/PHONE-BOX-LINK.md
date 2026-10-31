@@ -43,6 +43,7 @@ connection, so a captured request cannot be replayed.
 2. `POST /v1/claim` with `device_public_key` = the box's key.
 3. `provision` with the claim reply and a fresh random link secret. The box stores the cloud reply and
    the secret (0600), and refuses any later `provision`. The app keeps the secret in secure storage.
+   The box also checks that the certificate in the reply is for its own key, so a stranger on the hotspot cannot plant one.
 
 Factory reset on the box clears the secret, which allows pairing again.
 

@@ -222,7 +222,7 @@ class _Rb extends StatelessWidget {
             Container(
               width: size,
               height: size,
-              decoration: BoxDecoration(shape: BoxShape.circle, color: color ?? (on ? Cx.accent : Cx.surface), border: color == null && !on ? Border.all(color: Cx.outline, width: 1.5) : null),
+              decoration: BoxDecoration(shape: BoxShape.circle, color: color ?? (on ? Cx.accent : Cx.surface), border: color == null && !on ? Border.all(color: Cx.outlineC, width: 1.5) : null),
               child: Icon(icon, size: 30, color: color != null || on ? Cx.ground : Cx.text),
             ),
             const SizedBox(height: 10),
@@ -243,7 +243,7 @@ Widget _bigAvatar(String name, {bool halo = false}) => ExcludeSemantics(
           shape: BoxShape.circle,
           color: Cx.accent,
           boxShadow: halo
-              ? const [BoxShadow(color: Cx.surface, spreadRadius: 14), BoxShadow(color: Cx.line, spreadRadius: 15), BoxShadow(color: Color(0xFF0F150F), spreadRadius: 32)]
+              ? [BoxShadow(color: Cx.surface, spreadRadius: 14), BoxShadow(color: Cx.lineC, spreadRadius: 15), BoxShadow(color: Color(0xFF0F150F), spreadRadius: 32)]
               : null,
         ),
         child: Text(initials(name), style: const TextStyle(fontFamily: 'Anton', fontSize: 52, color: Cx.ground)),
@@ -309,7 +309,7 @@ class _CallScreenState extends State<CallScreen> {
             canPop: over,
             child: CxScreen(children: [
               const SizedBox(height: 62),
-              const Center(child: Text('VOICE CALL · NOT RECORDED', style: Cx.label)),
+              Center(child: Text('VOICE CALL · NOT RECORDED', style: Cx.label)),
               const SizedBox(height: 12),
               Center(child: _bigAvatar(widget.name)),
               const SizedBox(height: 12),
@@ -319,7 +319,7 @@ class _CallScreenState extends State<CallScreen> {
                   liveRegion: true,
                   label: connected ? 'Call time ${_dur()}' : status,
                   excludeSemantics: true,
-                  child: Text(status, textAlign: TextAlign.center, style: connected ? const TextStyle(fontFamily: 'JetBrainsMono', fontSize: 24, letterSpacing: 1.4, color: Cx.accent) : Cx.body.copyWith(fontSize: 18, color: over && ctl.phase == CallPhase.failed ? Cx.danger : Cx.muted)),
+                  child: Text(status, textAlign: TextAlign.center, style: connected ? const TextStyle(fontFamily: 'JetBrainsMono', fontSize: 24, letterSpacing: 1.4, color: Cx.accent) : Cx.body.copyWith(fontSize: 18, color: over && ctl.phase == CallPhase.failed ? Cx.danger : Cx.mutedC)),
                 ),
               ),
             ], bottom: [
@@ -380,7 +380,7 @@ class _IncomingCallScreenState extends State<IncomingCallScreen> {
       },
       child: CxScreen(children: [
         const SizedBox(height: 62),
-        const Center(child: Text('CORTEX VOICE CALL', style: Cx.label)),
+        Center(child: Text('CORTEX VOICE CALL', style: Cx.label)),
         const SizedBox(height: 26),
         Center(child: _bigAvatar(name, halo: true)),
         const SizedBox(height: 32),

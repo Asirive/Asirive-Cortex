@@ -49,11 +49,11 @@ class _FollowingScreenState extends State<FollowingScreen> {
         CxTile(
             child: Row(children: [
           Expanded(child: Text(note, style: Cx.body.copyWith(color: Cx.text))),
-          Semantics(button: true, label: 'Dismiss', excludeSemantics: true, child: GestureDetector(onTap: () => setState(() => s.inviteNote = null), child: const SizedBox(width: 44, height: 44, child: Icon(Icons.close, size: 20, color: Cx.faint)))),
+          Semantics(button: true, label: 'Dismiss', excludeSemantics: true, child: GestureDetector(onTap: () => setState(() => s.inviteNote = null), child: SizedBox(width: 44, height: 44, child: Icon(Icons.close, size: 20, color: Cx.faintC)))),
         ])),
       if (list.isEmpty) const CxTile(child: CxText('Nobody yet. When someone invites you, enter or scan their code here.')),
       for (var i = 0; i < list.length; i++) _PersonTile(f: list[i], first: i == 0, seen: ages[list[i].ownerId]),
-      if (list.isNotEmpty) const Padding(padding: EdgeInsets.only(top: 6), child: Center(child: Text('Nothing here uses the camera.', style: Cx.small))),
+      if (list.isNotEmpty) Padding(padding: EdgeInsets.only(top: 6), child: Center(child: Text('Nothing here uses the camera.', style: Cx.small))),
       CxButton('Enter or scan an invite code', outline: true, onTap: () => push(context, const ScanScreen())),
     ]);
   }
@@ -81,10 +81,10 @@ class _PersonTile extends StatelessWidget {
                 decoration: BoxDecoration(
                     color: outline || off ? Colors.transparent : Cx.accent,
                     borderRadius: BorderRadius.circular(24),
-                    border: outline ? Border.all(color: Cx.outline, width: 1.5) : (off ? Border.all(color: Cx.outline, width: 1.5) : null)),
+                    border: outline ? Border.all(color: Cx.outlineC, width: 1.5) : (off ? Border.all(color: Cx.outlineC, width: 1.5) : null)),
                 child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
                   if (icon != null) ...[Icon(icon, size: 18, color: outline ? Cx.text : Cx.ground), const SizedBox(width: 8)],
-                  Text(label, style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 15, fontWeight: FontWeight.w700, color: off ? Cx.faint : (outline ? Cx.text : Cx.ground))),
+                  Text(label, style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 15, fontWeight: FontWeight.w700, color: off ? Cx.faintC : (outline ? Cx.text : Cx.ground))),
                 ]),
               ),
             ),
@@ -162,7 +162,7 @@ class _WhereTheyAreScreenState extends State<WhereTheyAreScreen> {
           bottom: 8 + MediaQuery.of(context).padding.bottom,
           child: Container(
             padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(color: Cx.surface, borderRadius: BorderRadius.circular(32), border: Border.all(color: Cx.line)),
+            decoration: BoxDecoration(color: Cx.surface, borderRadius: BorderRadius.circular(32), border: Border.all(color: Cx.lineC)),
             child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
               Row(children: [
                 CxAvatar(name, yellow: true, size: 52, fontSize: 17),
@@ -180,7 +180,7 @@ class _WhereTheyAreScreenState extends State<WhereTheyAreScreen> {
                 liveRegion: true,
                 child: Text(
                     pt == null ? (msg ?? 'Looking for their location.') : 'Updated ${ago(pt.at)}.${stale ? ' This may be out of date.' : ''} Location is kept up to 30 days and they can clear it at any time.',
-                    style: Cx.body.copyWith(fontSize: 14, color: stale ? Cx.danger : Cx.muted)),
+                    style: Cx.body.copyWith(fontSize: 14, color: stale ? Cx.danger : Cx.mutedC)),
               ),
               const SizedBox(height: 14),
               Row(children: [

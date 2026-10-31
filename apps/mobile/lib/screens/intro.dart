@@ -29,7 +29,7 @@ class _IntroScreenState extends State<IntroScreen> {
       'Get there\non your own',
       'From your front door to where you are going. Walking routes and buses, told to you one step at a time.',
       'Example: a walking route from home to the hawker centre, 24 minutes, bus 175, spoken',
-      Column(crossAxisAlignment: CrossAxisAlignment.start, children: const [
+      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text('YOUR WALK', style: Cx.label),
         SizedBox(height: 6),
         SizedBox(height: 150, width: double.infinity, child: CustomPaint(painter: _RoutePainter())),
@@ -42,7 +42,7 @@ class _IntroScreenState extends State<IntroScreen> {
       'Know what\nis ahead',
       'Cortex speaks up about things in your way, like steps or a pole. Warnings work even with no signal, and the speakers leave your ears open to traffic.',
       'Example warnings Cortex speaks',
-      Column(crossAxisAlignment: CrossAxisAlignment.start, children: const [
+      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text('WHAT CORTEX TELLS YOU', style: Cx.label),
         SizedBox(height: 8),
         _Say('Something low, straight ahead'),
@@ -55,7 +55,7 @@ class _IntroScreenState extends State<IntroScreen> {
       'Ask about what\nis around you',
       'Just ask. Cortex answers out loud: signs, prices and bus times.',
       'Example question and answer',
-      Column(crossAxisAlignment: CrossAxisAlignment.start, children: const [
+      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text('JUST ASK', style: Cx.label),
         SizedBox(height: 14),
         Align(
@@ -66,17 +66,17 @@ class _IntroScreenState extends State<IntroScreen> {
             alignment: Alignment.centerLeft,
             child: _Bubble('Bus 175 comes in 3 minutes.', said: 'Cortex says')),
       ]),
-      const Wrap(spacing: 6, children: [CxChip('Signs'), CxChip('Prices'), CxChip('Bus times')]),
+      Wrap(spacing: 6, children: [CxChip('Signs'), CxChip('Prices'), CxChip('Bus times')]),
     ),
     _Step(
       'Family\nclose by',
       'Choose who can see where you are and who can call you. You decide for each person, and can change it any time. Been invited by someone? Use Scan on the next screen.',
       'Example: two people you choose',
-      Column(crossAxisAlignment: CrossAxisAlignment.start, children: const [
+      Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Text('PEOPLE YOU CHOOSE', style: Cx.label),
         SizedBox(height: 12),
         _Person('HM', 'Hui Min', ['Sees where you are', 'Can call'], lead: true),
-        Divider(color: Cx.line, height: 24),
+        Divider(color: Cx.lineC, height: 24),
         _Person('UB', 'Uncle Ben', ['Sees where you are', 'No calls']),
       ]),
       const CxChip('Family never sees your camera'),
@@ -127,7 +127,7 @@ class _Say extends StatelessWidget {
   Widget build(BuildContext context) => Container(
         constraints: const BoxConstraints(minHeight: 56),
         alignment: Alignment.centerLeft,
-        decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Cx.line))),
+        decoration: BoxDecoration(border: Border(bottom: BorderSide(color: Cx.lineC))),
         child: Row(children: [
           ExcludeSemantics(
             child: Container(
@@ -155,7 +155,7 @@ class _Bubble extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           decoration: BoxDecoration(
             color: me ? null : Cx.accent,
-            border: me ? Border.all(color: Cx.outline, width: 1.5) : null,
+            border: me ? Border.all(color: Cx.outlineC, width: 1.5) : null,
             borderRadius: BorderRadius.circular(20),
           ),
           child: Text(text,

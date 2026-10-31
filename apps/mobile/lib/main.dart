@@ -56,38 +56,69 @@ class _CortexAppState extends State<CortexApp> {
       case 'verify':
         try {
           await session.api.verify(token);
-          nav.push(MaterialPageRoute<void>(builder: (_) => const EmailConfirmedScreen()));
+          nav.push(
+            MaterialPageRoute<void>(
+              builder: (_) => const EmailConfirmedScreen(),
+            ),
+          );
         } on ApiException catch (e) {
-          nav.push(MaterialPageRoute<void>(builder: (_) => EmailConfirmedScreen(ok: false, message: e.message)));
+          nav.push(
+            MaterialPageRoute<void>(
+              builder: (_) =>
+                  EmailConfirmedScreen(ok: false, message: e.message),
+            ),
+          );
         }
       case 'reset':
-        nav.push(MaterialPageRoute<void>(builder: (_) => NewPasswordScreen(token: token)));
+        nav.push(
+          MaterialPageRoute<void>(
+            builder: (_) => NewPasswordScreen(token: token),
+          ),
+        );
       case 'companion':
         final c = inviteCodeFrom(u.queryParameters['code'] ?? '');
-        if (c != null) nav.push(MaterialPageRoute<void>(builder: (_) => AcceptScreen(code: c)));
+        if (c != null)
+          nav.push(
+            MaterialPageRoute<void>(builder: (_) => AcceptScreen(code: c)),
+          );
     }
   }
 
   @override
   Widget build(BuildContext context) => SessionScope(
-        session: session,
-        child: MaterialApp(
-          navigatorKey: navKey,
-          title: 'Asirive Cortex',
-          debugShowCheckedModeBanner: false,
-          theme: Cx.theme(),
-          builder: (context, child) => ListenableBuilder(
-            listenable: session.prefs,
-            builder: (context, _) => MediaQuery(
-              data: MediaQuery.of(context).copyWith(
-                  textScaler: TextScaler.linear(session.prefs.textScale),
-                  boldText: session.prefs.highContrast),
-              child: child!,
+    session: session,
+    child: MaterialApp(
+      navigatorKey: navKey,
+      title: 'Asirive Cortex',
+      debugShowCheckedModeBanner: false,
+      theme: Cx.theme(),
+      builder: (context, child) => ListenableBuilder(
+        listenable: session.prefs,
+        builder: (context, _) {
+          if (Cx.high != session.prefs.highContrast) {
+            Cx.high = session.prefs.highContrast;
+            // Colours are read when a widget builds, so ask everything on screen to build again.
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              void again(Element e) {
+                e.markNeedsBuild();
+                e.visitChildren(again);
+              }
+
+              (context as Element).visitChildren(again);
+            });
+          }
+          return MediaQuery(
+            data: MediaQuery.of(context).copyWith(
+              textScaler: TextScaler.linear(session.prefs.textScale),
+              boldText: session.prefs.highContrast,
             ),
-          ),
-          home: const _Gate(),
-        ),
-      );
+            child: child!,
+          );
+        },
+      ),
+      home: const _Gate(),
+    ),
+  );
 }
 
 /// Chooses the root screen from the session. Pushed screens sit above it, so

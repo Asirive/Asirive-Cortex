@@ -77,7 +77,7 @@ class _PeopleScreenState extends State<PeopleScreen> {
                     Wrap(spacing: 6, runSpacing: 6, children: [CxChip(c.location ? 'Location' : 'No location', on: c.location), CxChip(c.call ? 'Calls' : 'No calls', on: c.call)]),
                   ]),
                 ),
-                const Icon(Icons.chevron_right, color: Cx.faint),
+                Icon(Icons.chevron_right, color: Cx.faintC),
               ]),
             ),
           ),
@@ -91,7 +91,7 @@ class _PeopleScreenState extends State<PeopleScreen> {
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text('Invite sent to ${c.label}', style: const TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 16, fontWeight: FontWeight.w600, color: Cx.text)),
                 const SizedBox(height: 3),
-                const Text('Waiting for them to accept', style: Cx.small),
+                Text('Waiting for them to accept', style: Cx.small),
               ]),
             ),
             Semantics(
@@ -210,7 +210,7 @@ class _InviteScreenState extends State<InviteScreen> {
         await Clipboard.setData(ClipboardData(text: inv.link));
         if (mounted) setState(() => note = 'Link copied.');
       }),
-      const Text('The link works once and expires in 48 hours. No camera, ever.', textAlign: TextAlign.center, style: Cx.small),
+      Text('The link works once and expires in 48 hours. No camera, ever.', textAlign: TextAlign.center, style: Cx.small),
     ]);
   }
 }
@@ -281,7 +281,7 @@ class _GrantsScreenState extends State<GrantsScreen> {
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             CxTitle(name, size: 40),
             const SizedBox(height: 8),
-            const Text('COMPANION', style: Cx.label),
+            Text('COMPANION', style: Cx.label),
           ]),
         ),
       ]),
@@ -292,13 +292,13 @@ class _GrantsScreenState extends State<GrantsScreen> {
       ]),
       CxDashed(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        child: const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('NEVER SHARED', style: Cx.label),
           SizedBox(height: 6),
-          Text('Camera images, video, or anything you say to the assistant.', style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 14, height: 1.45, color: Cx.muted)),
+          Text('Camera images, video, or anything you say to the assistant.', style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: 14, height: 1.45, color: Cx.mutedC)),
         ]),
       ),
-      const Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Text('Changes apply straight away. Turning location off does not delete what was already recorded. Use Privacy and data for that.', style: Cx.small)),
+      Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Text('Changes apply straight away. Turning location off does not delete what was already recorded. Use Privacy and data for that.', style: Cx.small)),
       if (err != null) CxNotice(err!, error: true),
     ], bottom: [
       CxButton('Remove $name', outline: true, danger: true, onTap: _remove),
