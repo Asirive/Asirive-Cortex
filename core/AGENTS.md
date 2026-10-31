@@ -142,3 +142,4 @@ Run: `pip install -r requirements.txt && python3 -m pytest core` (the Go cross-c
 - 2026-10-30: `cortex_core/link/phone_link.py` added: phone-to-box link (WebSocket over the USB tether network, UDP beacon, HMAC-signed owner commands, one-time provision). Spec `docs/architecture/PHONE-BOX-LINK.md`. Wired into the link service. `test`/`install` ops answer false until audio/haptic and OTA are connected. 54 tests pass.
 - 2026-10-30: `phone_link` provision now refuses a certificate that does not match the box key (closes the junk-provision hole on the hotspot).
 - 2026-10-30: review fixes in `phone_link`: `provision` needs the printed claim code, is locked and all-or-nothing, and repeats of the same secret are accepted; beacon works on Python < 3.11 and can be pinned with CORTEX_TETHER_IFACE; link task failures are logged.
+- 2026-10-30: `docs/architecture/FIRST-RUN-BOX.md` added: checklist for the first phone-and-box session.
