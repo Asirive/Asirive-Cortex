@@ -27,6 +27,7 @@ class FakeBox {
         final id = m['id'] as int, op = m['op'] as String, args = Map<String, dynamic>.from(m['args'] as Map);
         Map<String, dynamic> out(Map<String, dynamic> b) => {'id': id, ...b};
         if (op == 'provision') {
+          if (args['claim_code'] != 'K7Q2-4TXD') return ws.add(jsonEncode(out({'ok': false, 'error': 'wrong claim code'})));
           if (paired) return ws.add(jsonEncode(out({'ok': false, 'error': 'already paired'})));
           paired = true;
           secret = base64.decode(args['link_secret'] as String);
@@ -77,7 +78,7 @@ void main() {
       expect(await link.boxCodeTail(), '4TXD');
       expect(await link.state(), LinkState.connectedOnline);
       expect(await link.pause(), isFalse); // nothing is signed before pairing
-      expect(await link.handOver({'device_id': 'd1', 'device_token': 't'}), isTrue);
+      expect(await link.handOver({'device_id': 'd1', 'device_token': 't'}, 'K7Q2-4TXD'), isTrue);
       expect(box.ops.single, 'provision:d1:wss://gw.example:8443/ws/device');
       expect(await store.read('box_link_secret'), isNotNull);
       expect(await link.pause(), isTrue);
@@ -88,7 +89,7 @@ void main() {
     });
 
     test('paired box reports internet or not', () async {
-      await link.handOver({'device_id': 'd1'});
+      await link.handOver({'device_id': 'd1'}, 'K7Q2-4TXD');
       expect(await link.state(), LinkState.connectedOnline);
       box.internet = false;
       expect(await link.state(), LinkState.connectedNoInternet);
@@ -96,15 +97,29 @@ void main() {
     });
 
     test('a phone without the secret is refused', () async {
-      await link.handOver({'device_id': 'd1'});
+      await link.handOver({'device_id': 'd1'}, 'K7Q2-4TXD');
       final other = BoxLink(MemoryStore(), find: () async => box.at);
       expect(await other.pause(), isFalse);
     });
 
+    test('a refused hand-over keeps no secret on the phone', () async {
+      expect(await link.handOver({'device_id': 'd1'}, 'WRONG-CODE'), isFalse);
+      expect(await store.read('box_link_secret'), isNull);
+    });
+
+    test('the secret is saved before sending, so a lost answer can be retried', () async {
+      final lost = BoxLink(store, find: () async => (address: InternetAddress.loopbackIPv4, port: 1), timeout: const Duration(milliseconds: 300));
+      expect(await lost.handOver({'device_id': 'd1'}, 'K7Q2-4TXD'), isFalse); // nobody answered
+      final kept = await store.read('box_link_secret');
+      expect(kept, isNotNull);
+      expect(await link.handOver({'device_id': 'd1'}, 'K7Q2-4TXD'), isTrue);
+      expect(await store.read('box_link_secret'), kept);
+    });
+
     test('a second hand-over is refused and the first secret survives', () async {
-      await link.handOver({'device_id': 'd1'});
+      await link.handOver({'device_id': 'd1'}, 'K7Q2-4TXD');
       final first = await store.read('box_link_secret');
-      expect(await link.handOver({'device_id': 'd2'}), isFalse);
+      expect(await link.handOver({'device_id': 'd2'}, 'K7Q2-4TXD'), isFalse);
       expect(await store.read('box_link_secret'), first);
     });
   });

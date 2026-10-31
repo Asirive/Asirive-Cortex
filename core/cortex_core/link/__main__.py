@@ -35,6 +35,7 @@ async def serve(hb: Path, stop: asyncio.Event) -> None:
     phone = PhoneLink(STATE_DIR, None, RuntimeHooks(STATE_DIR), os.environ.get("CORTEX_GATEWAY_WS", ""))  # type: ignore[arg-type]
     phone.control = OwnerControl(FileControls(), phone.paired)
     phone_task = asyncio.create_task(phone.serve(stop=stop))  # answers the app even while unpaired
+    phone_task.add_done_callback(lambda t: t.cancelled() or t.exception() is None or log.error("phone link stopped: %r", t.exception()))
     client = None
     task = None
     while not stop.is_set():
@@ -56,7 +57,10 @@ async def serve(hb: Path, stop: asyncio.Event) -> None:
         client.stop()
         task.cancel()
     beater.cancel()
-    await phone_task
+    try:
+        await phone_task
+    except Exception:
+        pass  # already logged when it failed
 
 
 def main() -> None:

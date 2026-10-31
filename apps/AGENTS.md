@@ -76,3 +76,4 @@ py -3 -m compileall apps         # syntax gate after changes
 - 2026-10-30: `mobile/lib/box_link.dart` added: real `DeviceLink` over the USB tether network (see `docs/architecture/PHONE-BOX-LINK.md`). `DeviceLink.handOver` now takes the whole claim reply.
 - 2026-10-30: `mobile/lib/push.dart` added: the app registers its FCM/APNs address with the gateway after sign-in and clears it on sign-out. Off without Firebase config files; see mobile/README.md for the accounts needed.
 - 2026-10-30: "Extra contrast" now really brightens secondary text and outlines (`Cx.high`, the `...C` colours in theme.dart), not just bold text.
+- 2026-10-30: review fixes: pairing needs the box's key first and keeps the link secret before sending; sign-out clears push more reliably (`session.dart`).

@@ -231,8 +231,17 @@ class _HelperFlowScreenState extends State<HelperFlowScreen> with Ticker<HelperF
       err = null;
     });
     try {
-      final r = await s.api.claim(s.token!, c, boxKey: await s.services.link.boxPublicKey());
-      final done = await s.services.link.handOver(r);
+      // The box's own key must be read first: a claim without it would spend the code for nothing.
+      final key = await s.services.link.boxPublicKey();
+      if (key == null) {
+        setState(() {
+          busy = false;
+          err = 'Could not read the box. Check the cable and that the box is on, then try again. Your code has not been used.';
+        });
+        return;
+      }
+      final r = await s.api.claim(s.token!, c, boxKey: key);
+      final done = await s.services.link.handOver(r, c);
       if (!done) {
         setState(() {
           busy = false;

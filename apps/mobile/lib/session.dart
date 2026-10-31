@@ -158,8 +158,13 @@ class Session extends ChangeNotifier {
       final a = await services.push.address();
       final t = token;
       if (a == null || t == null) return;
+      _pushToken = a.token; // noted first, so signing out mid-registration still clears it
       await api.registerPush(t, a.platform, a.token);
-      _pushToken = a.token;
+      if (token != t) {
+        // signed out while we waited: undo what just landed
+        unawaited(api.clearPush(t, a.token).then((_) {}, onError: (Object _) {}));
+        return;
+      }
       _pushSub ??= services.push.refreshed.listen((n) {
         final cur = token;
         if (cur != null) {
@@ -232,17 +237,24 @@ class Session extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> signOut() async {
+  /// This phone stops ringing for the account it is leaving. Quick and best effort: never holds up sign-out.
+  Future<void> _clearPush() async {
     final t = token;
     final pt = _pushToken;
     _pushToken = null;
-    if (t != null && pt != null) {
-      try {
-        await api.clearPush(t, pt); // this phone stops ringing for the account it just left
-      } on Object {
-        // best effort
-      }
+    unawaited(_pushSub?.cancel());
+    _pushSub = null;
+    if (t == null || pt == null) return;
+    try {
+      await api.clearPush(t, pt).timeout(const Duration(seconds: 3));
+    } on Object {
+      // best effort
     }
+  }
+
+  Future<void> signOut() async {
+    final t = token;
+    await _clearPush();
     await _forget();
     expired = false;
     phase = Phase.signedOut;
@@ -260,6 +272,11 @@ class Session extends ChangeNotifier {
     if (phase != Phase.signedIn) return;
     expired = true;
     phase = Phase.signedOut;
+    // The token is already dead, so the gateway would refuse a clear; the next account to register
+    // this phone takes the address over (the gateway moves a token to the newest account).
+    _pushToken = null;
+    unawaited(_pushSub?.cancel());
+    _pushSub = null;
     _forget();
     notifyListeners();
   }

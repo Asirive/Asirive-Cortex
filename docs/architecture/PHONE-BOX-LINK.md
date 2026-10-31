@@ -25,7 +25,7 @@ The app sends `{"id":N,"op":"...","args":{...},"mac":"<b64>"}`, the box answers 
 
 | op | args | answer | needs mac |
 |:---|:---|:---|:---|
-| `provision` | `reply` (the whole `/v1/claim` reply), `link_secret` (b64, 32+ bytes), `gateway_ws_url` | ok | no, and only while unpaired |
+| `provision` | `reply` (the whole `/v1/claim` reply), `link_secret` (b64, 32+ bytes), `gateway_ws_url`, `claim_code` (the code printed for this box) | ok | no, and only while unpaired (the same secret may be sent again) |
 | `status` | none | `paused`, `internet` | yes |
 | `pause` | `confirmed:true` | `ok`, `paused` | yes |
 | `resume` | none | `ok` | yes |
@@ -43,7 +43,7 @@ connection, so a captured request cannot be replayed.
 2. `POST /v1/claim` with `device_public_key` = the box's key.
 3. `provision` with the claim reply and a fresh random link secret. The box stores the cloud reply and
    the secret (0600), and refuses any later `provision`. The app keeps the secret in secure storage.
-   The box also checks that the certificate in the reply is for its own key, so a stranger on the hotspot cannot plant one.
+   The box also checks the claim code against the one stored for it, and that the certificate in the reply is for its own key, so a stranger on the hotspot cannot plant one. The app keeps the secret before sending it, so a lost answer can be retried; the box accepts the same secret twice. Set `CORTEX_TETHER_IFACE` to pin the beacon to the cable's interface if the box has other networks.
 
 Factory reset on the box clears the secret, which allows pairing again.
 

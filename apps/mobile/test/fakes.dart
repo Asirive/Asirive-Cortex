@@ -72,7 +72,7 @@ class FakeLink implements DeviceLink {
   @override
   Future<bool> internetFromBox() async => internetOk;
   @override
-  Future<bool> handOver(Map<String, dynamic> claimReply) async => handOverOk;
+  Future<bool> handOver(Map<String, dynamic> claimReply, String claimCode) async => handOverOk;
   @override
   Future<bool> installUpdate(Map<String, dynamic> manifest) async => installOk;
   final tested = <String>[];

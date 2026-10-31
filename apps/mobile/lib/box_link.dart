@@ -132,16 +132,22 @@ class BoxLink implements DeviceLink {
   Future<bool> playTest(String kind) => _simple('test', {'kind': kind});
 
   @override
-  Future<bool> handOver(Map<String, dynamic> claimReply) async {
+  Future<bool> handOver(Map<String, dynamic> claimReply, String claimCode) async {
+    // Keep the secret before sending it: if the box's answer is lost, the box may still have it.
+    // A retry reuses it, and the box accepts the same secret twice.
+    final kept = await _store.read(_secretKey);
     final rnd = Random.secure();
-    final secret = List<int>.generate(32, (_) => rnd.nextInt(256));
+    final secret = kept != null ? base64.decode(kept) : List<int>.generate(32, (_) => rnd.nextInt(256));
+    if (kept == null) await _store.write(_secretKey, base64.encode(secret));
     final ok = await _session<bool>((_, call) async {
-          final r = await call('provision', {'reply': claimReply, 'link_secret': base64.encode(secret), 'gateway_ws_url': _wsUrl}, signed: false);
-          return r['ok'] == true;
-        }) ??
-        false;
-    if (ok) await _store.write(_secretKey, base64.encode(secret));
-    return ok;
+      final r = await call(
+          'provision',
+          {'reply': claimReply, 'link_secret': base64.encode(secret), 'gateway_ws_url': _wsUrl, 'claim_code': claimCode},
+          signed: false);
+      return r['ok'] == true;
+    });
+    if (ok == false && kept == null) await _store.delete(_secretKey); // the box said no: nothing to keep
+    return ok == true;
   }
 }
 

@@ -113,7 +113,7 @@ abstract class DeviceLink {
   Future<bool> pause(); // local command; obstacle warnings keep running
   Future<bool> resume();
   Future<bool> internetFromBox(); // can the box reach the gateway?
-  Future<bool> handOver(Map<String, dynamic> claimReply); // the whole /claim reply, after the owner confirmed the box
+  Future<bool> handOver(Map<String, dynamic> claimReply, String claimCode); // the whole /claim reply, after the owner confirmed the box
   Future<bool> installUpdate(Map<String, dynamic> manifest); // hand the signed update to the box
   Future<bool> playTest(String kind); // 'sound' | 'vibrate' | 'voice' on the glasses
 }
@@ -133,7 +133,7 @@ class UnavailableLink implements DeviceLink {
   @override
   Future<bool> internetFromBox() async => false;
   @override
-  Future<bool> handOver(Map<String, dynamic> claimReply) async => false;
+  Future<bool> handOver(Map<String, dynamic> claimReply, String claimCode) async => false;
   @override
   Future<bool> installUpdate(Map<String, dynamic> manifest) async => false;
   @override

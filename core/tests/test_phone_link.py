@@ -21,6 +21,7 @@ class Hooks:
     def play_test(self, k): self.tests.append(k); return True
     def install_update(self, m): self.installed.append(m); return True
     def code_tail(self): return "4TXD"
+    def claim_code(self): return "K7Q2-4TXD"
 
 
 def cert_for(key) -> str:
@@ -60,7 +61,7 @@ def req(rid, op, args=None, secret=None, nonce="n"):
 
 
 def provision(link, rid=1):
-    return link.handle(req(rid, "provision", {"reply": reply_for(link), "link_secret": base64.b64encode(SECRET).decode()}), "n", {})
+    return link.handle(req(rid, "provision", {"reply": reply_for(link), "link_secret": base64.b64encode(SECRET).decode(), "claim_code": "k7q2-4txd"}), "n", {})
 
 
 def test_hello_gives_key_and_tail_and_is_unpaired(tmp_path):
@@ -78,12 +79,13 @@ def test_provision_once_then_locked(tmp_path):
     link, _ = mk(tmp_path)
     assert provision(link)["ok"] and link.paired()
     assert os.stat(tmp_path / "link.secret").st_mode & 0o777 == 0o600
-    assert provision(link, 2)["error"] == "already paired"
+    other = {"reply": reply_for(link), "link_secret": base64.b64encode(b"x" * 32).decode(), "claim_code": "K7Q2-4TXD"}
+    assert link.handle(req(2, "provision", other), "n", {})["error"] == "already paired"
 
 
 def test_bad_provision_is_rejected_and_stores_nothing(tmp_path):
     link, _ = mk(tmp_path)
-    assert not link.handle(req(1, "provision", {"reply": REPLY, "link_secret": base64.b64encode(b"short").decode()}), "n", {})["ok"]
+    assert not link.handle(req(1, "provision", {"reply": REPLY, "link_secret": base64.b64encode(b"short").decode(), "claim_code": "K7Q24TXD"}), "n", {})["ok"]
     assert not link.paired()
 
 
@@ -91,8 +93,35 @@ def test_a_certificate_for_another_key_is_refused(tmp_path):
     link, _ = mk(tmp_path)
     from cryptography.hazmat.primitives.asymmetric import ec
     other = dict(reply_for(link), device_cert_pem=cert_for(ec.generate_private_key(ec.SECP256R1())))
-    r = link.handle(req(1, "provision", {"reply": other, "link_secret": base64.b64encode(SECRET).decode()}), "n", {})
+    r = link.handle(req(1, "provision", {"reply": other, "link_secret": base64.b64encode(SECRET).decode(), "claim_code": "k7q2-4txd"}), "n", {})
     assert r["error"] == "certificate is not for this box" and not link.paired()
+
+
+def test_wrong_or_missing_claim_code_is_refused(tmp_path):
+    link, _ = mk(tmp_path)
+    for code in ("ZZZZ-ZZZZ", None):
+        a = {"reply": reply_for(link), "link_secret": base64.b64encode(SECRET).decode()}
+        if code: a["claim_code"] = code
+        assert link.handle(req(1, "provision", a), "n", {})["error"] == "wrong claim code"
+    assert not link.paired()
+
+
+def test_repeating_the_same_provision_is_fine_a_different_one_is_not(tmp_path):
+    link, _ = mk(tmp_path)
+    r = reply_for(link)
+    a = {"reply": r, "link_secret": base64.b64encode(SECRET).decode(), "claim_code": "K7Q2-4TXD"}
+    assert link.handle(req(1, "provision", a), "n", {})["ok"]
+    assert link.handle(req(2, "provision", a), "n", {})["ok"]
+    b = dict(a, link_secret=base64.b64encode(b"t" * 32).decode())
+    assert link.handle(req(3, "provision", b), "n", {})["error"] == "already paired"
+
+
+def test_a_failed_save_leaves_nothing_half_done(tmp_path, monkeypatch):
+    link, _ = mk(tmp_path)
+    monkeypatch.setattr(pl.provision, "save", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    a = {"reply": reply_for(link), "link_secret": base64.b64encode(SECRET).decode(), "claim_code": "K7Q2-4TXD"}
+    assert link.handle(req(1, "provision", a), "n", {})["error"] == "box could not save"
+    assert not os.path.exists(tmp_path / "link.secret")
 
 
 def test_unsigned_or_wrongly_signed_commands_do_nothing(tmp_path):
@@ -143,7 +172,7 @@ def test_over_a_real_socket(tmp_path):
         await asyncio.sleep(0.2)
         async with websockets.connect("ws://127.0.0.1:18765") as ws:
             hello = json.loads(await ws.recv())["hello"]
-            await ws.send(req(1, "provision", {"reply": reply_for(link), "link_secret": base64.b64encode(SECRET).decode()}))
+            await ws.send(req(1, "provision", {"reply": reply_for(link), "link_secret": base64.b64encode(SECRET).decode(), "claim_code": "k7q2-4txd"}))
             assert json.loads(await ws.recv())["ok"]
             await ws.send(req(2, "status", {}, SECRET, hello["nonce"]))
             assert json.loads(await ws.recv())["internet"] is True

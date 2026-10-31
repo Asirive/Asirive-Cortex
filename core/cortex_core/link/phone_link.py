@@ -21,6 +21,7 @@ import os
 import secrets
 import socket
 import subprocess
+import threading
 import urllib.parse
 from typing import Any, Callable, Optional, Protocol
 
@@ -39,6 +40,7 @@ BEACON_PORT = 8766  # UDP broadcast so the phone can find the box on the tether 
 class BoxHooks(Protocol):
     """Hardware and services the link needs; faked in tests."""
     def internet_ok(self) -> bool: ...
+    def claim_code(self) -> Optional[str]: ...             # the code printed for this box
     def play_test(self, kind: str) -> bool: ...          # 'sound' | 'vibrate' | 'voice'
     def install_update(self, manifest: dict) -> bool: ...  # start the OTA agent; False if it cannot
     def code_tail(self) -> Optional[str]: ...             # last 4 characters of the printed box code
@@ -57,6 +59,7 @@ class PhoneLink:
     def __init__(self, state_dir: str, control: OwnerControl, hooks: BoxHooks, default_ws_url: str = ""):
         self.dir, self.control, self.hooks, self.default_ws_url = state_dir, control, hooks, default_ws_url
         self._secret_path = os.path.join(state_dir, "link.secret")
+        self._lock = threading.Lock()  # one provision at a time
 
     # ---- state ----
     def _secret(self) -> Optional[bytes]:
@@ -88,7 +91,11 @@ class PhoneLink:
         except (ValueError, KeyError, TypeError):
             return {"id": -1, "ok": False, "error": "malformed"}
         if op == "provision":
-            return self._provision(rid, args)
+            try:
+                return self._provision(rid, args)
+            except Exception:  # a full disk must still get a reply, not a silent hang
+                log.exception("provision failed")
+                return {"id": rid, "ok": False, "error": "box could not save"}
         secret = self._secret()
         if secret is None or provision.load(self.dir) is None:
             return {"id": rid, "ok": False, "error": "not paired"}
@@ -104,9 +111,21 @@ class PhoneLink:
             log.exception("op %s failed", op)
             return {"id": rid, "ok": False, "error": f"box error: {type(e).__name__}"}
 
+    @staticmethod
+    def _norm(code: object) -> str:
+        return str(code or "").replace("-", "").replace(" ", "").upper()
+
     def _provision(self, rid: int, a: dict) -> dict:
-        if self.paired():
-            return {"id": rid, "ok": False, "error": "already paired"}
+        def no(msg: str) -> dict:
+            return {"id": rid, "ok": False, "error": msg}
+
+        # The claim code is printed for this box, so only someone holding the box (or the app that
+        # just claimed with that code) can set it up; a stranger on the hotspot cannot.
+        want = self._norm(self.hooks.claim_code())
+        if not want:
+            return no("this box has no claim code")
+        if not hmac.compare_digest(self._norm(a.get("claim_code")).encode(), want.encode()):
+            return no("wrong claim code")
         try:
             reply = a["reply"]
             secret = base64.b64decode(a["link_secret"], validate=True)
@@ -114,18 +133,32 @@ class PhoneLink:
                 raise ValueError
             ws = a.get("gateway_ws_url") or self.default_ws_url
             if not ws.startswith("wss://"):
-                return {"id": rid, "ok": False, "error": "gateway address missing"}
+                return no("gateway address missing")
             cert = reply["device_cert_pem"].encode()
+            reply["device_id"], reply["device_token"]  # all present before anything is written
+            ca = reply.get("ca_cert_pem")
             key = identity.load_or_create_key(os.path.join(self.dir, "device.key"))
             if not identity.cert_matches_key(cert, key):  # someone else's certificate: do not adopt it
-                return {"id": rid, "ok": False, "error": "certificate is not for this box"}
-            ca = reply.get("ca_cert_pem")
-            provision.save(self.dir, reply, ws, ca.encode() if ca else None)
+                return no("certificate is not for this box")
         except (KeyError, ValueError, TypeError, AttributeError):
-            return {"id": rid, "ok": False, "error": "bad provision"}
-        fd = os.open(self._secret_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "wb") as f:
-            f.write(secret)
+            return no("bad provision")
+        with self._lock:
+            have = self._secret()
+            if have is not None or provision.load(self.dir) is not None:
+                # The app may repeat itself if our answer was lost: the same secret is fine.
+                return {"id": rid, "ok": True} if have == secret else no("already paired")
+            try:
+                fd = os.open(self._secret_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "wb") as f:
+                    f.write(secret)
+                provision.save(self.dir, reply, ws, ca.encode() if ca else None)
+            except Exception:
+                for name in ("link.secret", "device.json"):  # leave nothing half-provisioned
+                    try:
+                        os.remove(os.path.join(self.dir, name))
+                    except OSError:
+                        pass
+                raise
         return {"id": rid, "ok": True}
 
     def _control(self, msg: lp.AppToDevice) -> dict:
@@ -166,12 +199,18 @@ class PhoneLink:
         payload = json.dumps({"cortex": VERSION, "port": port}).encode()
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        sock.setblocking(False)
+        iface = os.environ.get("CORTEX_TETHER_IFACE")  # pin to the cable's interface when the box has others
+        if iface:
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, iface.encode())
+            except (OSError, AttributeError):
+                log.warning("could not pin the beacon to %s", iface)
+        sock.settimeout(1)
         loop = asyncio.get_running_loop()
         try:
             while not stop.is_set():
                 try:
-                    await loop.sock_sendto(sock, payload, (dest, beacon_port))
+                    await loop.run_in_executor(None, sock.sendto, payload, (dest, beacon_port))
                 except OSError:
                     pass  # no network yet (cable out); try again
                 try:
@@ -237,9 +276,13 @@ class RuntimeHooks:
         log.warning("update requested but the OTA agent is not wired to the phone link yet")
         return False
 
-    def code_tail(self) -> Optional[str]:
+    def claim_code(self) -> Optional[str]:
         try:
             with open(os.path.join(self.dir, "claim_code")) as f:
-                return f.read().strip().replace("-", "")[-4:].upper() or None
+                return f.read().strip().replace("-", "").upper() or None
         except FileNotFoundError:
             return None
+
+    def code_tail(self) -> Optional[str]:
+        c = self.claim_code()
+        return c[-4:] if c else None

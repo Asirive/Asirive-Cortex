@@ -25,6 +25,15 @@ void main() {
     expect(h.gw.pushed.last['token'], 'fcm-2');
   });
 
+  test('signing out while registration is still in flight still clears it', () async {
+    final h = Harness();
+    final f = h.session.signIn('me@x.co', 'pw');
+    await f;
+    await h.session.signOut(); // no wait: registration may not have landed yet
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(h.gw.pushCleared, ['fcm-1']);
+  });
+
   test('without push set up nothing is sent and sign-in still works', () async {
     final h = Harness();
     h.push.addr = null;
