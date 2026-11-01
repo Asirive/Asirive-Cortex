@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Invite code error</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./cortex.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="scr" style="width:390px;height:844px;padding-bottom:20px">
+  <div class="top">
+    <a class="bk" href="Scan.dc.html" aria-label="Back"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></a>
+    <span class="mono">Invite code</span>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:10px">
+    <h1 class="ttl" style="font-size:44px;line-height:1">Enter your<br>code</h1>
+    <p class="p">Type the code from your invite.</p>
+  </div>
+  <label class="mono lbl" for="code">Invite code</label>
+  <input class="in code" id="code" value="K7Q2-XM9" placeholder="XXXX-XXX" aria-invalid="true" aria-describedby="e" style="border-color:#ff8a7d">
+  <div id="e"><p class="p" style="color:#ff8a7d" role="alert">That code did not work. It may have a typo or have run out. Check it, or ask for a new invite.</p></div>
+  <div class="bot">
+    <a class="btn" href="Accept.dc.html">Continue</a>
+    <a class="btn o" href="Scan.dc.html">Scan instead</a>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

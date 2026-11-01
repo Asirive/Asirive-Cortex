@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Create account (invited)</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./cortex.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="scr" style="width:390px;height:844px;padding-bottom:20px">
+  <div class="top">
+    <a class="bk" href="Accept.dc.html" aria-label="Back"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></a>
+    <span class="mono">Joining Hui Min</span>
+  </div>
+  <div class="tile" style="flex-direction:row;align-items:center;justify-content:flex-start;gap:14px;padding:12px 16px;background:#eaff00;color:#0a0a08">
+    <span class="av" style="width:44px;height:44px;font-size:15px;background:#0a0a08;color:#eaff00">HM</span>
+    <span style="display:flex;flex-direction:column;gap:2px"><span style="font:700 16px 'Space Grotesk'">Hui Min invited you</span><span style="font:500 13px 'Space Grotesk'">You will look after them as a companion.</span></span>
+  </div>
+  <h1 class="ttl" style="font-size:48px;line-height:.98;margin-top:6px">Create<br>account</h1>
+  <div style="display:flex;flex-direction:column;gap:14px">
+    <div><label class="mono lbl" for="e">Email</label><input id="e" class="in" type="email" value="you@example.com"></div>
+    <div><label class="mono lbl" for="pw">Password</label><input id="pw" class="in" type="password" value="••••••••••••"><p class="p s" style="margin:8px 0 0 8px">At least 10 characters.</p></div>
+    <div style="display:flex;gap:12px;align-items:flex-start;padding:4px 8px">
+      <input id="t" type="checkbox" style="flex:none;width:26px;height:26px;accent-color:#eaff00;margin:2px 0 0"><label for="t" class="p" style="font-size:14px">I agree to the Terms and the Privacy notice.</label>
+    </div>
+  </div>
+  <div class="bot">
+    <a class="btn" href="VerifyC.dc.html">Create account</a>
+    <p class="p s" style="text-align:center">No glasses needed. We will email you a link to confirm this address.</p>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

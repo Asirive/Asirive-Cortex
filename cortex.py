@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 # ─── Constants ──────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).parent
-CORE_DIR = PROJECT_ROOT / "core"
+CORE_DIR = PROJECT_ROOT / "v3_core"
 
 # ─── ANSI Colors ──────────────────────────────────────────────────
 class Colors:
@@ -185,7 +185,7 @@ def cmd_run(args):
     # Standard run — just import and run main
     try:
         sys.path.insert(0, str(PROJECT_ROOT))
-        from core.system import main
+        from v3_core.system import main
         
         if asyncio.iscoroutinefunction(main):
             asyncio.run(main())
@@ -300,7 +300,7 @@ def cmd_test(args):
 def _test_layer0(args):
     print(f"{Colors.BOLD}🛡️ Testing Layer 0 (Guardian)...{Colors.RESET}")
     try:
-        from core.layer0_guardian import YOLOGuardian
+        from v3_core.layer0_guardian import YOLOGuardian
         g = YOLOGuardian(enable_haptic=False)
         print(f"   {Colors.GREEN}✅{Colors.RESET} YOLOGuardian initialized")
         
@@ -324,7 +324,7 @@ def _test_layer1(args):
 def _test_layer2(args):
     print(f"{Colors.BOLD}💭 Testing Layer 2 (Thinker)...{Colors.RESET}")
     try:
-        from core.layer2_thinker.gemini_live_handler import GeminiLiveHandler
+        from v3_core.layer2_thinker.gemini_live_handler import GeminiLiveHandler
         api_key = os.getenv("GEMINI_API_KEY", "")
         if not api_key:
             print(f"   {Colors.YELLOW}⚠️ GEMINI_API_KEY not set — cannot test connection{Colors.RESET}")
@@ -342,7 +342,7 @@ def _test_tts(args):
     
     # Test Supertonic
     try:
-        from core.layer1_reflex.supertonic_handler import SupertonicTTS
+        from v3_core.layer1_reflex.supertonic_handler import SupertonicTTS
         tts = SupertonicTTS()
         if tts.available:
             wav = tts.generate_speech("Supertonic test successful")
@@ -354,7 +354,7 @@ def _test_tts(args):
     
     # Test Cartesia
     try:
-        from core.layer2_thinker.cartesia_handler import CartesiaTTS
+        from v3_core.layer2_thinker.cartesia_handler import CartesiaTTS
         ct = CartesiaTTS()
         if ct.available:
             print(f"   {Colors.GREEN}✅{Colors.RESET} Cartesia Sonic 3.5 ready")
@@ -370,7 +370,7 @@ def _test_stt(args):
     
     # Test Cartesia batch
     try:
-        from core.layer1_reflex.cartesia_stt import CartesiaSTT
+        from v3_core.layer1_reflex.cartesia_stt import CartesiaSTT
         stt = CartesiaSTT()
         print(f"   {'✅' if stt.available else '❌'} Cartesia batch STT: {'ready' if stt.available else 'no API key'}")
     except Exception as e:
@@ -378,7 +378,7 @@ def _test_stt(args):
     
     # Test WebSocket
     try:
-        from core.layer1_reflex.cartesia_stt_ws import CartesiaSTTWebSocket
+        from v3_core.layer1_reflex.cartesia_stt_ws import CartesiaSTTWebSocket
         ws = CartesiaSTTWebSocket()
         print(f"   {'✅' if ws.available else '❌'} Cartesia Ink 2 WebSocket: {'ready' if ws.available else 'no API key'}")
     except Exception as e:
@@ -386,7 +386,7 @@ def _test_stt(args):
     
     # Test Whisper
     try:
-        from core.layer1_reflex.whisper_handler import WhisperSTT
+        from v3_core.layer1_reflex.whisper_handler import WhisperSTT
         w = WhisperSTT()
         print(f"   ✅ Whisper STT: {w.model_size} model loaded")
     except Exception as e:
@@ -419,7 +419,7 @@ def _test_audio(args):
     print(f"{Colors.BOLD}🎙️ Testing Audio...{Colors.RESET}")
     
     try:
-        from core.layer1_reflex.vad_handler import VADHandler
+        from v3_core.layer1_reflex.vad_handler import VADHandler
         vad = VADHandler()
         print(f"   ✅ Silero VAD loaded")
     except Exception as e:
@@ -445,7 +445,7 @@ def _test_hailo(args):
         return 1
     
     try:
-        from core.hailo_depth import HailoDepthEstimator
+        from v3_core.hailo_depth import HailoDepthEstimator
         est = HailoDepthEstimator(str(hef_path))
         if est.is_available:
             print(f"   {Colors.GREEN}✅{Colors.RESET} Hailo depth estimator ready")

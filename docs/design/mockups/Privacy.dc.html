@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Privacy and data</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./cortex.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>body{margin:0}.sr{display:flex;align-items:center;gap:12px;min-height:44px}.sr .t{flex:1;font:600 16px 'Space Grotesk',sans-serif}.sr .m{font:400 13px 'Space Grotesk',sans-serif;color:#9aa394}</style>
+</helmet>
+<div class="scr" style="width:390px;height:844px;padding-bottom:20px">
+  <div class="top">
+    <a class="bk" href="Settings.dc.html" aria-label="Back"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></a>
+    <span class="mono">Settings</span>
+  </div>
+  <h1 class="ttl" style="font-size:44px;line-height:1">Privacy<br>and data</h1>
+  <div class="tile" style="gap:6px">
+    <span class="mono">Who can see my location</span>
+    <div class="sr"><span class="av" style="width:32px;height:32px;font-size:12px">HM</span><span class="t">Hui Min</span><span class="m">Can see</span></div>
+    <div class="sr"><span class="av" style="width:32px;height:32px;font-size:12px;background:#34463a">DL</span><span class="t">Dr. Lim</span><span class="m">Can see</span></div>
+    <p class="p s">Kept up to 30 days, then deleted automatically.</p>
+    <a class="btn d" href="ConfirmHistory.dc.html" style="height:48px;margin-top:6px;font-size:16px">Delete my location history</a>
+  </div>
+  <div class="tile" style="gap:6px;background:transparent;border:1.5px dashed #5c6f5f">
+    <span class="mono">Never stored</span>
+    <p class="p" style="font-size:14px">Camera images and video. Calls are voice only and the audio is not recorded. A short record that a call happened is kept 30 days.</p>
+  </div>
+  <div class="bot">
+    <p class="p s" style="padding:0 8px">Deleting your account removes your companions and location history, and unlinks your glasses. This cannot be undone.</p>
+    <a class="btn d" href="ConfirmDelete.dc.html">Delete account</a>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

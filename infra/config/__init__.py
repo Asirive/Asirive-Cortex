@@ -13,7 +13,7 @@ from .exceptions import ConfigurationError
 
 # Default config paths
 RPI5_CONFIG_PATHS = [
-    "core/config/config.yaml",
+    "v3_core/config/config.yaml",
     "rpi5/config.yaml",
     "config.yaml",
 ]

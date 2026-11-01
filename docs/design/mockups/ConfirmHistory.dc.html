@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Delete location history</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./cortex.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="scr" style="width:390px;height:844px;padding:0">
+  <div style="position:absolute;inset:0;background:#000;opacity:.65" aria-hidden="true"></div>
+  <div role="alertdialog" aria-label="Delete location history" style="position:absolute;left:8px;right:8px;bottom:8px;background:#131a14;border-radius:32px;padding:14px 20px 22px;display:flex;flex-direction:column;gap:16px;border:1px solid #223024">
+    <div style="width:44px;height:5px;border-radius:3px;background:#5c6f5f;align-self:center" aria-hidden="true"></div>
+    <span class="mono">Privacy and data</span>
+    <h1 class="ttl" style="font-size:40px;line-height:1">Delete location history?</h1>
+    <p class="p" style="font-size:16px;color:#d6ddd0">Your recorded locations are deleted for everyone. Sharing keeps working and starts a fresh trail. This cannot be undone.</p>
+    <div style="display:flex;flex-direction:column;gap:10px">
+      <a class="btn o" href="Privacy.dc.html">Keep it</a>
+      <a class="btn d" href="Privacy.dc.html">Delete location history</a>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

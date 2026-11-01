@@ -54,7 +54,7 @@ class RPiWebSocketClient:
     ):
         # Load from config if host not provided
         if host is None:
-            from core.config.config import get_config
+            from v3_core.config.config import get_config
             config = get_config()
             host = config.get('laptop_server', {}).get('host', '10.127.61.101')
         

@@ -1,0 +1,41 @@
+syntax = "proto3";
+package cortex.v1;
+option go_package = "github.com/asirive/cortex/gateway/internal/gen/cortex/v1;cortexv1";
+
+// LOCAL phone <-> compute module link (USB, BLE fallback). NEVER carried over the
+// cloud: the gateway has no handler for these, so an operator or a hacked server
+// cannot stop or break a user's device. Only the owner's signed-in, paired app sends them.
+
+enum StopMode {
+  STOP_MODE_UNSPECIFIED = 0;
+  // Assistant off (agent, voice, navigation). Safety T0-T3 hazard alerts keep running.
+  STOP_MODE_PAUSE = 1;
+  // Full power off. The device announces it by voice and haptic first.
+  STOP_MODE_SHUTDOWN = 2;
+}
+
+message StopRequest {
+  StopMode mode = 1;
+  string request_id = 2;
+  bool user_confirmed = 3;  // the app asked the user to confirm; the device refuses false
+}
+message ResumeRequest { string request_id = 1; }
+message MicMuteRequest { bool muted = 1; string request_id = 2; }
+
+message AppToDevice {
+  oneof body {
+    StopRequest stop = 1;
+    ResumeRequest resume = 2;
+    MicMuteRequest mic_mute = 3;
+  }
+}
+
+message ControlAck {
+  string request_id = 1;
+  bool ok = 2;
+  string error = 3;       // e.g. "not paired", "safety self-test running"
+  StopMode state = 4;     // current mode after the request; UNSPECIFIED = running normally
+}
+message DeviceToApp {
+  oneof body { ControlAck ack = 1; }
+}

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Check your email (invited)</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./cortex.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="scr" style="width:390px;height:844px;padding-bottom:20px">
+  <div class="top">
+    <a class="bk" href="CreateC.dc.html" aria-label="Back"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></a>
+    <span class="mono">Joining Hui Min</span>
+  </div>
+  <div style="margin-top:30px;width:84px;height:84px;background:#eaff00;color:#0a0a08;border-radius:26px;display:flex;align-items:center;justify-content:center"><svg width="42" height="42" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg></div>
+  <div style="margin-top:10px;display:flex;flex-direction:column;gap:12px">
+    <h1 class="ttl" style="font-size:52px;line-height:.98">Check<br>your email</h1>
+    <p class="p">We sent a link to <strong style="color:#f4f4ec">you@example.com</strong>. Open it on this phone. You will then see Hui Min in your list.</p>
+  </div>
+  <div class="tile" style="margin-top:6px">
+    <span class="mono" style="margin-bottom:8px">Good to know</span>
+    <p class="p" style="font-size:14px">The link expires after 24 hours. If you do not see it, look in spam.</p>
+  </div>
+  <div class="bot">
+    <a class="btn" href="CHome.dc.html">Open mail app</a>
+    <a class="btn o" href="VerifyC.dc.html" aria-live="polite">Send the email again</a>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

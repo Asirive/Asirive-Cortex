@@ -27,7 +27,8 @@ GPS cannot guide indoors. Visual and spatial understanding IS the product.
 ┌─ COMPUTE MODULE (pocket) ────────────────────────────────┐
 │  Radxa Dragon Q8B (Alpha) → custom SoM + carrier (Final) │
 │  8 GB RAM · stock Radxa OS · Python brain + C hot paths  │
-│  NPU: YOLO-World · GPU: quantized sub-1B LFM · safety    │
+│  NPU: YOLO-World · LFM3-Omni-2B (local-first brain)      │
+│  safety                                                  │
 │  wake word · VAD · AEC · dual STT/TTS · agent harness    │
 └──┬───────────────────────────────────────┬───────────────┘
    │ USB-C (data + internet; phone never    │ BLE (fallback:
@@ -90,20 +91,26 @@ Runs entirely on the compute module (Python + C hot paths):
   beside bridge mics) · STT · TTS. Mic can be muted by voice ("I'm going to the
   door"), confirmed by haptic; wake word re-enables. Wake word + all processing
   live on the compute module.
-- **Agent harness:** function-calling runtime with **two interchangeable brains**
-  (see §8).
+- **Agent harness:** function-calling runtime with **two interchangeable brains**,
+  local-first (see §8).
+- **Inference engine:** power-efficient runtime for LFM3-Omni, built in measured
+  phases (see [CORTEX-ENGINE.md](CORTEX-ENGINE.md)).
 - **Navigation:** offline OSM-based walking maps + routing on-device; LTA bus
   data when online; indoor guidance via visual understanding (headline feature).
 - **Memory:** local SQLite always; syncs to infra under the retention rules (§9).
 
 ### Voice routing policy
+LFM3-Omni-2B is speech-native (audio in, speech out), so the local path leads;
+the cloud stack is the online fallback / escalation.
+
 | State | STT | TTS |
 |---|---|---|
-| Online | Cartesia (fast) | Cloud voices (Cartesia; fast) |
-| Offline | Local Whisper-class | Local Supertonic |
+| Local-first (default) | LFM3-Omni audio encoder | LFM3-Omni speech output (24 kHz) |
+| Cloud fallback (online, local insufficient) | Cartesia | Cloud voices (Cartesia) |
+| Local floor if LFM3-Omni speech is not good enough | Local Whisper-class | Local Supertonic |
 
-Cloud voices are preferred when connected for latency/quality; the local stack
-is the guaranteed floor.
+The local stack is the guaranteed floor. Which TTS path ships as default is
+decided by measurement (see CORTEX-ENGINE.md), not assumption.
 
 ---
 
@@ -145,6 +152,51 @@ navigation mode while tethered. GPS is outdoor-only (off indoors, saves power).
 
 ---
 
+### 6.1 Access tiers
+
+| Tier | Device sends | Cloud can do |
+|---|---|---|
+| ALPHA (team bench) | everything: full logs, full event feed, debug state; on request camera relay and dataset capture | OTA, debug commands, config, restart |
+| BETA (opted in) | health, versions, trimmed logs (WARN+), feedback | OTA via ring |
+| STABLE | health, versions, feedback | OTA only |
+
+Alpha-only messages (`contracts/proto/cortex/v1/alpha.proto`) are compiled into
+alpha builds only, and the gateway also rejects them from any device that is not
+ALPHA and flagged `bench_device`. Production devices cannot be commanded or
+switched into debug remotely because the handlers do not exist in the build.
+
+### 6.2 Transport and security
+
+- **Transport:** WebSocket over TLS 1.3, protobuf frames, device-initiated and
+  kept open. The device dials out (phone tether and NAT friendly); the gateway
+  sends commands down the same connection. Reconnect with backoff, resume by
+  sequence number, queue while offline.
+- **Layers:** mutual TLS with a per-device certificate (alpha: team CA, production:
+  real PKI); signed, end-to-end sealed `Envelope`; replay protection (seq + clock
+  window); signed commands and OTA manifests verified on the device; tier-gated
+  message sets; per-user dashboard roles, short-lived tokens, audit log of every
+  command.
+- **Status today (2026-10-30):** mutual TLS 1.3 is built: the gateway runs a device CA,
+  issues each device a 90-day ECDSA P-256 client certificate bound to the key the device
+  generated, and a dedicated device listener refuses any connection without a valid
+  certificate (plus the per-device token as a second factor). Signed commands, operator
+  roles, and OTA signing are built. **Sealed envelope: decided against for now.** Its
+  purpose was to hide payloads from the phone relay; if the phone only tunnels the device's
+  own TLS stream (the device terminates mTLS itself) the relay already sees only ciphertext.
+  Revisit only if a proxy or CDN ever terminates device TLS.
+
+### 6.3 Stack
+
+- Gateway: Go, single static binary (`infra/gateway`).
+- State: Postgres (`infra/supabase/migrations/002_fleet.sql`); in-memory store
+  behind the same API for the skeleton.
+- Console: embedded single-page Asirive fleet console served by the gateway
+  (`infra/gateway/web`); fleet view, per-device detail, rings and updates, audit.
+  Moves to React/TypeScript if it outgrows a single page.
+- Hosting: self-host server in alpha (Docker, TLS via a reverse proxy), VPS at beta.
+- Uptime: heartbeat every 5 s, offline after 3 missed, staged rollout with
+  health-gated halt and automatic rollback.
+
 ## 7. Contracts — the Polyglot Glue
 
 The ecosystem is deliberately polyglot: Python (device), Dart (app), Go (infra),
@@ -162,27 +214,34 @@ Schemas change first; generated code follows. No hand-written drift.
 
 ---
 
-## 8. Agent Harness — Dual Brain, One Toolset
+## 8. Agent Harness — Dual Brain, One Toolset, Local Leads
 
 - One tool registry — navigate, bus-arrivals, describe-scene, remember-this,
-  camera-snap, … — callable by **Gemini Live (function calling)** or by the
-  **local sub-1B model (function calling)**. The tools never know which brain
-  calls them. The local stack must support function calling too — the agent
-  harness is not a cloud luxury.
-- Selection policy: **connected → Gemini** (wins on indoor/spatial/sign
-  inference — malls, bus interchanges); **offline → local** (LFM-class quantized
-  sub-1B on the GPU now; in-house custom model later).
+  camera-snap, … — callable by the **local brain (LFM3-Omni-2B)** or by
+  **Gemini Live (function calling)**. The tools never know which brain calls them.
+- **Selection policy: local leads.** LFM3-Omni-2B (Liquid AI, ~2.17B params,
+  text/image/video/audio in; text/speech out) is the default brain for full
+  localized navigation, online or offline. **Gemini Live is the online fallback
+  and escalation path**: it is still the more powerful model, so it handles
+  cases the local brain cannot (hard indoor/spatial/sign inference in malls and
+  interchanges, low-confidence local answers). Escalation triggers and
+  thresholds are set by measurement, not by guess.
 - "No internet = useless device" is impossible by construction: safety, voice,
   memory and walking navigation all run locally.
+- The local brain must pass the same function-calling contract as Gemini. If
+  LFM3-Omni cannot meet it, Gemini stays primary for that tool until it can.
 
 ### Local model roadmap
-1. Pre-made LFM-class sub-1B (quantized, 8 GB SKU) + YOLO-World on NPU — start.
-2. Fine-tune a VLM (LFM-VL or similar) for navigation + scene description.
-3. In-house custom **non-transformer** sub-1B scene model (research goal:
-   scene understanding under 1B parameters) — replace the pre-made model when
-   validated. Needs funding, training data and architecture validation.
-
----
+1. **LFM3-Omni-2B** (released 2026-10-27) as the local brain, on stock llama.cpp
+   first, plus YOLO-World on the NPU. Measure before optimizing.
+2. Fine-tune LFM3-Omni (single-GPU fine-tuning is supported) for navigation,
+   scene description and our tool schemas.
+3. Inference engine optimized for power efficiency (CORTEX-ENGINE.md): a
+   power-aware serving layer first, a Hexagon NPU backend next, and a fully
+   custom runtime only if measurements show it is needed.
+4. In-house custom **non-transformer** sub-1B scene model (research goal) —
+   replace the pre-made model when validated. Needs funding, training data and
+   architecture validation.
 
 ## 9. Data & Privacy Model
 
@@ -199,6 +258,24 @@ E2E encryption on every device↔app↔infra path. Privacy mic-off is a first-cl
 UX state with haptic confirmation.
 
 ---
+
+### 9.1 Training data collection (amendment, 2026-10-29)
+
+The zero-retention rule above protects users. AI training still needs real data,
+so data collection is a separate, consented pipeline, never a side effect of
+telemetry:
+
+- **Who:** alpha bench devices only (team-owned, `bench_device = true`), operated
+  by team members or consented testers.
+- **How:** an explicit `DatasetControl` session with a consent record, chosen
+  streams (video, ToF, audio, IMU, GPS), a time limit, and an on-device indicator.
+- **Where:** a dataset store separate from the telemetry database, chunked and
+  hashed, carrying no account identity. Consent revocation deletes the session.
+- **Not covered:** beta and stable users. Collecting from user devices needs its
+  own opt-in design, consent text, retention and review, and is not authorized by
+  this document. Until then the zero-retention rule holds for every user device.
+- **Open:** dataset store technology and location, retention period, bystander
+  handling (people in frame), and review of consent wording.
 
 ## 10. Update Rings & Feedback
 
@@ -219,7 +296,8 @@ the team key; production = real PKI from V4-Final manufacturing.
 
 - iOS support mandatory (majority of blind users are on iOS/VoiceOver); Android kept in mind.
 - USB-C tether to phone = primary link (data + internet; phone never powers device); BLE = fallback control link.
-- Hybrid: Gemini Live + function calling primary when connected; local stack = fallback + full offline autonomy; local does function calling too. Priority may flip local when the custom model matures.
+- Local-first: LFM3-Omni-2B is the default brain for full localized navigation (online or offline). Gemini Live stays as the online fallback/escalation because it is still more powerful. Both use one function-calling tool registry. (Supersedes the earlier "Gemini primary when connected" decision, 2026-10-29.)
+- Inference engine: staged and measurement-gated — llama.cpp baseline, power-aware serving, Hexagon NPU backend, custom runtime only if measurements justify it. See CORTEX-ENGINE.md.
 - ESP32-S3 = dumb I/O bridge; all processing on the compute module.
 - Wake word "Hey Cortex" on the compute module; voice-commandable mic mute with haptic confirmation.
 - Haptics on glasses AND compute module. Magnetic pogo charging dock.
@@ -232,6 +310,9 @@ the team key; production = real PKI from V4-Final manufacturing.
 - One device per user (spare/multi-device later).
 - Login: Apple ID + email.
 - Infra: Go gateway + web dashboard; dev self-host → VPS at beta.
+- Core language: Python (C for measured hot paths), hardened: safety is a separate real-time process, systemd + hardware watchdog, A/B OTA with rollback. Rust not used unless measurement forces it. V4 core is built new; V3 frozen in `v3_core/`. See core/AGENTS.md. (2026-10-29)
+- App decisions (2026-10-29): ALPHA tier is assigned only by the team at registration; BETA is a user opt-in under app settings (STABLE <-> BETA only, with a consent record). App login is email + password plus Sign in with Apple. Device pairing uses a QR code (typed code as fallback). Account deletion is supported and deletes the account's data. The owner can stop the device from the app (pause or shutdown) over the LOCAL phone link only; the cloud, operators and companions cannot. See contracts/openapi/app.yaml and contracts/proto/cortex/v1/local.proto.
+- Fleet transport: WebSocket over TLS, protobuf `Envelope`, device-initiated; tiered message sets; alpha-only debug, camera relay and dataset capture. See §6.1-6.3 and §9.1. (2026-10-29)
 - Test plan: home/room lab first; field tests (MRT, real routes) only after lab-proven.
 - Partners: NTU (professor support — injection molding + 3D printing), SVH
   (visually-handicapped org collaboration). V4-Final funded via grants.
@@ -260,7 +341,7 @@ Do not build on these; they remain in the repo only until refactored out:
 
 | Area | V4 treatment |
 |---|---|
-| `core/` | **Heavy refactor.** Decompose the `CortexSystem` monolith (`core/system.py`, ~8.4k lines) into services: perception, safety, voice, agent harness, nav, memory. Preserve proven logic: safety T0–T3, Gemini Live handler patterns, voice pipeline. Strip every deprecated system (§12). Add: local-brain adapter, dual STT/TTS policy, wake word service, offline routing, retention-aware sync. |
+| `v3_core/` → new V4 `core/` | **Build new (Python, hardened); V3 frozen as reference in `v3_core/`.** Replace the `CortexSystem` monolith (`v3_core/system.py`, ~8.4k lines) with isolated services (process model in core/AGENTS.md): perception, safety, voice, agent harness, nav, memory. Preserve proven logic: safety T0–T3, Gemini Live handler patterns, voice pipeline. Strip every deprecated system (§12). Add: local-brain adapter, dual STT/TTS policy, wake word service, offline routing, retention-aware sync. |
 | `device/` | **Replace.** New ESP32-S3 firmware (ESP-IDF, C) for the glasses bridge + compute-module board support for Dragon Q8B. Current RPi-specific handlers are reference only. |
 | `infra/` | **Greenfield.** Go fleet gateway + OTA + contracts. Current `infra/api/protocol.py` + `infra/supabase/` schema are seeds/reference for message shapes and tables. |
 | App | **Greenfield.** Flutter (iOS-first). `apps/laptop_dashboard` is deprecated; its message protocol is the only reference worth keeping. |
@@ -275,7 +356,7 @@ Do not build on these; they remain in the repo only until refactored out:
 
 - **Orchestrator (source of truth for product + ecosystem):** owns this doc, the
   contracts, cross-domain consistency, and arbitrates between domains.
-- **Domain agent — core/device:** compute-module runtime + ESP32-S3 firmware +
+- **Domain agent — v3_core/device:** compute-module runtime + ESP32-S3 firmware +
   local AI stack (Python / C / Rust).
 - **Domain agent — app:** Flutter app (Dart, iOS/Android).
 - **Domain agent — cloud infra:** Go gateway + OTA + web dashboard.
@@ -292,5 +373,13 @@ because the ecosystem spans languages, hardware and organizations.
 - [ ] Glasses miniaturization (custom PCB vs dev board; NTU partnership)
 - [ ] Mic-off quality-of-life flows (door/toilet scenarios)
 - [ ] Custom model funding, training data pipeline, architecture validation
+- [ ] LFM3-Omni baseline on Dragon Q8B: tok/s, time-to-first-audio, RAM, watts per query
+- [ ] LFM3-Omni function-calling reliability vs Gemini Live on our tool registry
+- [ ] LFM3-Omni license check for the weights (commercial use, shipping in hardware)
+- [ ] Gemini escalation policy: triggers, thresholds, user-facing behavior
+- [ ] LFM3-Omni speech output quality vs Supertonic / Cartesia for navigation cues
 - [ ] Spare device / multi-device support (post-alpha)
 - [ ] Field-test protocol with SVH (after lab-proven)
+- [ ] Fleet: mTLS + device PKI, sealed envelope, dashboard roles, Postgres wiring
+- [ ] Dataset store, retention, consent wording, bystander policy (§9.1)
+- [ ] Gateway hosting plan: self-host server, domain, TLS, backups

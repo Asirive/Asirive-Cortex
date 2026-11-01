@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Following</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./cortex.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>body{margin:0}.ac{display:flex;gap:10px}.sm{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;height:48px;border-radius:24px;background:#eaff00;color:#0a0a08;font:700 15px 'Space Grotesk',sans-serif;text-decoration:none;box-sizing:border-box}.sm.o{background:transparent;color:#f4f4ec;border:1.5px solid #5c6f5f}.sm.off{background:transparent;color:#9aa394;border:1.5px dashed #5c6f5f}</style>
+</helmet>
+<div class="scr" style="width:390px;height:844px">
+  <div class="top"><h1 class="ttl" style="font-size:36px">Following</h1></div>
+  <p class="p" style="padding:0 8px">You only see what each person allowed.</p>
+  <div class="tile" style="gap:14px;margin-top:4px">
+    <div style="display:flex;align-items:center;gap:14px"><span class="av" style="width:52px;height:52px;font-size:17px;background:#eaff00;color:#0a0a08">HM</span><span style="flex:1;display:flex;flex-direction:column;gap:3px"><span style="font:700 18px 'Space Grotesk'">Hui Min</span><span class="p s" style="font-size:14px">Orchard Road · 4 min ago</span></span></div>
+    <div class="ac">
+      <a class="sm" href="Location.dc.html"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s7-6.2 7-11.5A7 7 0 0 0 5 9.5C5 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>Where</a>
+      <a class="sm o" href="Call.dc.html"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z"/></svg>Call</a>
+    </div>
+  </div>
+  <div class="tile" style="gap:14px">
+    <div style="display:flex;align-items:center;gap:14px"><span class="av" style="width:52px;height:52px;font-size:17px;background:#34463a">TB</span><span style="flex:1;display:flex;flex-direction:column;gap:3px"><span style="font:700 18px 'Space Grotesk'">Mr Tan Boon</span><span class="p s" style="font-size:14px">Has not shared location with you</span></span></div>
+    <div class="ac"><span class="sm off">Where · not shared</span><a class="sm o" href="Call.dc.html">Call</a></div>
+  </div>
+  <p class="p s" style="text-align:center;margin-top:6px">You can still call him. Nothing here uses the camera.</p>
+  <nav class="nav" aria-label="Main">
+    <a class="nv on" aria-current="page" href="CHome.dc.html"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s7-6.2 7-11.5A7 7 0 0 0 5 9.5C5 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg>Following</a>
+    <a class="nv" href="CSettings.dc.html" aria-label="Settings"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg></a>
+  </nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

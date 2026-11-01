@@ -1,0 +1,136 @@
+openapi: 3.0.3
+info:
+  title: Asirive Cortex App API
+  version: 0.1.0-draft
+  description: |
+    What the Flutter companion app (user mode and companion mode) calls on the
+    cloud. DRAFT. Only /v1/claim exists in the gateway today (x-status: implemented);
+    everything else is planned (x-status: planned) and must be agreed here before
+    the app or gateway implements it. The app is also the device's relay: device
+    traffic rides the device<->gateway WebSocket (proto contracts), not this API.
+    Privacy: no endpoint carries live camera or stored media. Location and calls
+    are per-companion, consented, location kept 30 days.
+servers: [{ url: https://gateway.example/v1 }]
+security: [{ bearer: [] }]
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer, description: "Account session token (Apple ID or email login)" }
+  schemas:
+    Device:
+      type: object
+      properties:
+        id: { type: string }
+        label: { type: string }
+        online: { type: boolean }
+        battery_pct: { type: integer }
+        firmware: { type: string }
+        update: { type: string, enum: [none, available, installing, failed] }
+        mic_muted: { type: boolean }
+    Companion:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        kind: { type: string, enum: [friend, family, medical_professional] }
+        can_see_location: { type: boolean }
+        can_call: { type: boolean }
+        status: { type: string, enum: [invited, active, revoked] }
+paths:
+  /auth/register:
+    post:
+      x-status: implemented
+      security: []
+      summary: Create an account with email and password
+  /auth/login:
+    post:
+      x-status: implemented
+      security: []
+      summary: Email and password login. Returns a short-lived access token and a refresh token.
+  /auth/apple:
+    post:
+      x-status: dropped
+      security: []
+      summary: (Dropped 2026-10-29, email and password only for now.) Sign in with Apple (identity token exchange). Preferred on iOS.
+  /auth/logout:
+    post: { x-status: implemented, summary: Revoke the refresh token }
+  /me:
+    delete:
+      x-status: implemented
+      summary: |
+        Delete the account and its data (decided 2026-10-29: yes). Removes companions and
+        grants, location history, call records, feedback and the device link. The device is
+        released so it can be claimed by a new owner. Confirmation step required in the app.
+  /claim:
+    post:
+      x-status: implemented
+      security: []
+      summary: |
+        Claim a registered device with its one-time code (called by the app during USB pairing).
+        The code is delivered as a QR code (payload asirive://claim?code=XXXXXXXX, preferred; the app
+        scans it, which also works with VoiceOver) or typed. IMPLEMENTED: this call now requires an
+        authenticated account (bearer token) and takes the account from the token, never the body.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [claim_code]
+              properties:
+                claim_code: { type: string, example: K7QM-4TXD }
+                device_public_key: { type: string, format: byte }
+                account_id: { type: string }
+      responses:
+        "200": { description: "device_id + device_token (shown once; app hands it to the device over USB)" }
+        "422": { description: invalid, used or expired code }
+        "429": { description: too many attempts from this source }
+  /me/devices:
+    get:
+      x-status: implemented
+      summary: The signed-in user's device(s). One device per user in alpha.
+      responses: { "200": { description: ok } }
+  /me/devices/{id}/settings:
+    put:
+      x-status: implemented-as-PUT-/v1/me/beta
+      summary: |
+        Beta opt-in and notification prefs. Tier rules (decided 2026-10-29): ALPHA is assigned only by
+        the Asirive team at registration and can never be set here. A user may switch STABLE <-> BETA
+        (opt-in under app settings); opting in records a consent record (who, when, text version)
+        and changes the telemetry level to the BETA set. Opting out reverts to STABLE.
+  /me/devices/{id}/update:
+    get:
+      x-status: implemented
+      summary: Signed manifest the user's ring should install (app downloads, then hands to device over USB)
+    post:
+      x-status: implemented
+      summary: Report relay result (downloaded, handed to device, device outcome)
+  /me/devices/{id}/stop:
+    post:
+      x-status: not-cloud
+      summary: |
+        NOT a cloud endpoint. Stopping the device (pause or shutdown) is a LOCAL command from the
+        owner's paired app over USB/BLE (contracts/proto/cortex/v1/local.proto). The cloud, operators
+        and companions cannot stop a device. Listed here so nobody adds a cloud version.
+  /feedback:
+    post:
+      x-status: implemented
+      summary: Text + trimmed log excerpt. No media.
+  /companions:
+    get: { x-status: implemented, summary: List companions and their grants }
+    post: { x-status: implemented, summary: Invite a companion (link or QR) }
+  /companions/{id}/grants:
+    put:
+      x-status: implemented
+      summary: Set exactly what this companion may see (location, call). Revocable at any time.
+  /companion/users/{id}/location:
+    get:
+      x-status: implemented
+      summary: Companion mode. Latest location of a user who granted it. 30 day retention, no camera.
+  /calls:
+    post: { x-status: implemented, summary: WebRTC signaling for a voice call between user and companion }
+
+# Implemented 2026-10-29 beyond the paths above (all under /v1):
+#   POST /companions/accept {code}            companion redeems an invite (48 h, one use)
+#   DELETE /companions/{id}                   owner OR companion ends the link; ends open calls
+#   PUT/DELETE /me/location                   owner uploads / wipes location (history kept 30 days, 5-min granularity)
+#   GET /calls/inbox, GET /calls/{id}, POST /calls/{id}/answer|ice|end   polling signalling; SDP wiped when a call ends
+#   PUT /me/beta {enabled, consent_version}   replaces the per-device settings call

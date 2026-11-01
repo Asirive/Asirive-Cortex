@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Share internet</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./cortex.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>body{margin:0}.seg{display:flex;background:#131a14;border-radius:26px;padding:4px;gap:4px}.seg a{flex:1;height:44px;border-radius:22px;display:flex;align-items:center;justify-content:center;font:700 15px 'Space Grotesk',sans-serif;color:#9aa394;text-decoration:none}.seg a.on{background:#eaff00;color:#0a0a08}</style>
+</helmet>
+<div class="scr" style="width:390px;height:844px;padding-bottom:20px">
+  <div class="top">
+    <a class="bk" href="PairConfirm.dc.html" aria-label="Back"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></a>
+    <span class="mono">Helper · step 3 of 5</span>
+    <a href="Home.dc.html" style="margin-left:auto;color:#ff8a7d;font:600 14px 'Space Grotesk',sans-serif;text-decoration:none;min-height:44px;display:flex;align-items:center;padding:0 6px">Stop helper mode</a>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <h1 class="ttl" style="font-size:44px;line-height:1">Share your<br>internet</h1>
+    <p class="p">The glasses use this phone's internet through the USB cable.</p>
+  </div>
+  <div class="seg"><a class="on" aria-current="true" href="Internet.dc.html">iPhone</a><a href="Internet.dc.html">Android</a></div>
+  <div class="list" style="padding:12px 14px;gap:16px">
+    <div class="step"><span class="n d"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg></span><span><b>Cable plugged in</b><span class="s">Pocket box found on the USB-C port</span></span></div>
+    <div class="step"><span class="n c">2</span><span><b>Open Settings, then Personal Hotspot</b><span class="s">On your iPhone</span></span></div>
+    <div class="step"><span class="n">3</span><span><b>Turn on Allow Others to Join</b><span class="s">Tap Trust if the phone asks</span></span></div>
+  </div>
+  <div class="tile" style="gap:10px">
+    <span class="mono">Check from the glasses</span>
+    <div role="status" style="display:flex;align-items:center;gap:10px"><span aria-hidden="true" style="width:12px;height:12px;border-radius:50%;background:#ff8a7d;flex:none"></span><span style="font:600 16px 'Space Grotesk'">Not reachable yet</span></div>
+    <a class="btn" href="Home.dc.html" style="height:48px;font-size:16px">Test now</a>
+  </div>
+  <a href="SetupTest.dc.html" style="color:#eaff00;font:600 15px 'Space Grotesk',sans-serif;text-decoration:none;min-height:44px;display:flex;align-items:center;padding-left:8px">Setting up? Continue to step 4</a>
+  <p class="p s" style="padding:0 8px">Uses your mobile data and some phone battery. Obstacle warnings keep working without internet.</p>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

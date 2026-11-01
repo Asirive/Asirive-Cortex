@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Invite someone</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./cortex.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="scr" style="width:390px;height:844px;padding-bottom:20px">
+  <div class="top">
+    <a class="bk" href="People.dc.html" aria-label="Back"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></a>
+    <span class="mono">New invite</span>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:8px">
+    <h1 class="ttl" style="font-size:44px;line-height:1">Invite<br>someone</h1>
+  </div>
+  <div><label class="mono lbl" for="n">Their name or label</label><input id="n" class="in" type="text" value="Hui Min"></div>
+  <span class="mono" style="margin:0 0 -4px 8px">They can see, to begin with</span>
+  <div class="list">
+    <div class="row"><span class="g"><b>My location</b><span class="s">Now, and the last 5 minutes</span></span><button class="sw y" role="switch" aria-checked="true" type="button" aria-label="Share my location"><i></i></button></div>
+    <div class="row"><span class="g"><b>Calls</b><span class="s">They can ring me from the app</span></span><button class="sw y" role="switch" aria-checked="true" type="button" aria-label="Allow calls"><i></i></button></div>
+  </div>
+  <div class="tile" style="flex-direction:row;align-items:center;justify-content:flex-start;gap:16px;padding:14px">
+    <svg width="84" height="84" viewBox="0 0 132 132" role="img" aria-label="QR code placeholder" style="flex:none"><rect width="132" height="132" rx="12" fill="#f4f4ec"/><g fill="#0a0a08"><rect x="12" y="12" width="36" height="36"/><rect x="84" y="12" width="36" height="36"/><rect x="12" y="84" width="36" height="36"/><rect x="56" y="12" width="12" height="12"/><rect x="56" y="36" width="24" height="12"/><rect x="56" y="60" width="12" height="24"/><rect x="80" y="60" width="12" height="12"/><rect x="100" y="76" width="20" height="12"/><rect x="60" y="100" width="24" height="20"/><rect x="100" y="100" width="20" height="20"/><rect x="20" y="20" width="20" height="20" fill="#f4f4ec"/><rect x="92" y="20" width="20" height="20" fill="#f4f4ec"/><rect x="20" y="92" width="20" height="20" fill="#f4f4ec"/><rect x="26" y="26" width="8" height="8"/><rect x="98" y="26" width="8" height="8"/><rect x="26" y="98" width="8" height="8"/></g></svg>
+    <span style="display:flex;flex-direction:column;gap:6px"><span class="mono">Scan in person</span><span style="font:500 14px/1.3 'JetBrains Mono',monospace;color:#eaff00;word-break:break-all">cortex.asirive.com/companion?code=…</span><span class="p s">Or send the link below.</span></span>
+  </div>
+  <div class="bot">
+    <a class="btn" href="People.dc.html"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V3M7 8l5-5 5 5M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/></svg>Share the link</a>
+    <a class="btn o" href="People.dc.html">Copy link</a>
+    <p class="p s" style="text-align:center">The link works once and expires in 48 hours. No camera, ever.</p>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+[Unit]
+Description=Cortex ota
+After=cortex-safety.service
+Requires=cortex-safety.service
+StartLimitIntervalSec=300
+StartLimitBurst=20
+
+[Service]
+Type=simple
+User=cortex
+Group=cortex
+Environment=PYTHONPATH=/opt/cortex CORTEX_HB_DIR=/run/cortex/hb
+ExecStart=/opt/cortex/venv/bin/python -m cortex_core.ota
+Restart=always
+RestartSec=1
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/run/cortex /var/lib/cortex
+
+[Install]
+WantedBy=cortex.target

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>My location</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./cortex.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="scr" style="width:390px;height:844px;padding:0">
+  <svg width="390" height="520" viewBox="0 0 390 520" role="img" aria-label="Map placeholder showing your position and walking trail" style="position:absolute;top:0;left:0">
+    <rect width="390" height="520" fill="#0f130f"/>
+    <g stroke="#1a221b" stroke-width="16" fill="none" stroke-linecap="round"><path d="M-10 170 L400 220"/><path d="M-10 400 L400 350"/><path d="M90 -10 L130 530"/><path d="M290 -10 L250 530"/></g>
+    <g stroke="#141b15" stroke-width="6" fill="none"><path d="M-10 290 L400 300"/><path d="M200 -10 L190 530"/></g>
+    <path d="M70 440 L110 400 L130 350 L190 330 L215 285" stroke="#eaff00" stroke-width="4" stroke-dasharray="1 9" stroke-linecap="round" fill="none"/>
+    <circle cx="215" cy="285" r="34" fill="#eaff00" opacity=".16"/>
+    <circle cx="215" cy="285" r="13" fill="#eaff00" stroke="#0a0a08" stroke-width="4"/>
+  </svg>
+  <div style="position:absolute;top:28px;left:14px;right:14px;display:flex;align-items:center;gap:10px">
+    <a class="bk" href="Home.dc.html" aria-label="Back"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></a>
+    <div style="flex:1;height:44px;border-radius:22px;background:#131a14;border:1px solid #223024;display:flex;align-items:center;gap:10px;padding:0 16px;box-sizing:border-box;color:#9aa394">
+      <label for="s" style="position:absolute;left:-9999px">Find a place</label>
+      <input id="s" type="search" placeholder="Find a place" style="flex:1;background:transparent;border:0;outline:0;color:#f4f4ec;font:500 15px 'Space Grotesk',sans-serif;min-width:0">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/></svg>
+    </div>
+  </div>
+  <div style="position:absolute;left:8px;right:8px;bottom:8px;background:#131a14;border-radius:32px;padding:18px 20px 20px;display:flex;flex-direction:column;gap:14px;border:1px solid #223024">
+    <div style="display:flex;flex-direction:column;gap:6px"><span class="mono">You · walking · updated now</span><h2 style="margin:0;font:400 28px/1 'Anton',sans-serif;letter-spacing:.03em;text-transform:uppercase" role="status">Orchard Road</h2></div>
+    <div style="display:flex;align-items:center;gap:12px;background:#0a0a08;border-radius:22px;padding:12px 14px">
+      <span style="display:flex"><span class="av" style="width:34px;height:34px;font-size:12px;border:2px solid #0a0a08;background:#eaff00;color:#0a0a08">HM</span><span class="av" style="width:34px;height:34px;font-size:12px;border:2px solid #0a0a08;margin-left:-10px;background:#34463a">DL</span></span>
+      <span style="flex:1;display:flex;flex-direction:column;gap:2px"><span style="font:600 15px 'Space Grotesk'">2 people can see this</span><span class="p s">Hui Min, Dr. Lim</span></span>
+      <a href="People.dc.html" style="color:#eaff00;font:600 14px 'Space Grotesk',sans-serif;text-decoration:none;min-height:44px;display:flex;align-items:center"aria-label="Manage who can see my location">Manage</a>
+    </div>
+    <button class="btn" type="button" style="height:52px;font-size:16px"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9zM16 9a4 4 0 0 1 0 6"/></svg>Say where I am</button>
+    <div style="display:flex;gap:10px">
+      <button class="btn o" type="button" aria-pressed="false" style="height:48px;font-size:15px">Pause sharing for 1 hour</button>
+      <a class="btn o" href="Privacy.dc.html" style="height:48px;font-size:15px">Clear history</a>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

@@ -226,7 +226,7 @@ Measured on V3 hardware. Community trials with the Singapore Association for the
 
 ```
 ProjectCortex/
-├── core/           The five-layer brain, being refactored for V4
+├── v3_core/        The V3 five-layer brain, frozen as reference while V4 core is built new
 │   └── device/     Cameras, sensors, GPS, power
 ├── infra/          Protocol seeds, Go fleet gateway lives here
 ├── apps/           Device CLI and companion surfaces
@@ -234,7 +234,7 @@ ProjectCortex/
 └── miscellaneous/  Models, media, archive, tools, tests, legacy deploy
 ```
 
-Deprecated V2 and V3 systems still ship in this repository while they are refactored out. Each of core/, infra/ and apps/ carries an AGENTS.md that must be updated with every change in that domain.
+Deprecated V2 and V3 systems still ship in this repository while they are refactored out. Each of v3_core/, infra/ and apps/ carries an AGENTS.md that must be updated with every change in that domain.
 
 ---
 

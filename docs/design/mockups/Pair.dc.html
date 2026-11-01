@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pair glasses</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./cortex.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>body{margin:0}</style>
+</helmet>
+<div class="scr" style="width:390px;height:844px;padding-bottom:20px">
+  <div class="top">
+    <a class="bk" href="SetupHelper.dc.html" aria-label="Back"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></a>
+    <span style="background:#eaff00;color:#0a0a08;border-radius:99px;padding:6px 12px;font:700 13px 'Space Grotesk',sans-serif">Helper · step 2 of 5</span>
+    <a href="Home.dc.html" style="margin-left:auto;color:#ff8a7d;font:600 14px 'Space Grotesk',sans-serif;text-decoration:none;min-height:44px;display:flex;align-items:center;padding:0 6px">Stop helper mode</a>
+  </div>
+  <h1 class="ttl" style="font-size:52px;line-height:.98">Connect<br>your glasses</h1>
+  <p class="p">This links the pocket box on the cable to the owner's account. It is done once.</p>
+  <div class="list" style="padding:10px 14px;gap:14px;margin-top:4px">
+    <div class="step"><span class="n d"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg></span><span><b>Plug in the pocket box</b><span class="s">USB-C cable between the box and this phone</span></span></div>
+    <div class="step"><span class="n d"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7"/></svg></span><span><b>Pocket box found</b><span class="s">It is waiting for a pairing code</span></span></div>
+    <div class="step"><span class="n c">3</span><span><b>Enter the code</b><span class="s">8 characters, on the label of the pocket box</span></span></div>
+  </div>
+  <div>
+    <label class="mono lbl" for="c">Pairing code</label>
+    <input id="c" class="in code" type="text" value="K7M2 9QDX">
+  </div>
+  <a class="btn o" href="Pair.dc.html" style="height:48px;font-size:16px"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M8 12h8"/></svg>Helper: scan the box code instead</a>
+  <div class="bot">
+    <a class="btn" href="PairConfirm.dc.html">Pair glasses</a>
+    <p class="p s" style="text-align:center">Helper: read the code to the owner from the box label.</p>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

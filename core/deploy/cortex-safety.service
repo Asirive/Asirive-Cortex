@@ -1,0 +1,32 @@
+# Started first and independent of everything else: no network, no phone, no model.
+# Real-time scheduling and pinned cores; the supervisor watches its heartbeat file.
+[Unit]
+Description=Cortex safety (real-time)
+DefaultDependencies=no
+After=local-fs.target
+Before=cortex-supervisor.service cortex-link.service cortex-ota.service
+
+[Service]
+Type=simple
+User=cortex
+Group=cortex
+Environment=PYTHONPATH=/opt/cortex CORTEX_HB_DIR=/run/cortex/hb
+RuntimeDirectory=cortex
+RuntimeDirectoryPreserve=yes
+ExecStart=/opt/cortex/venv/bin/python -m cortex_core.safety
+Restart=always
+RestartSec=0.5
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=80
+AllowedCPUs=3
+LimitMEMLOCK=infinity
+LimitRTPRIO=90
+OOMScoreAdjust=-900
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateNetwork=yes
+IPAddressDeny=any
+
+[Install]
+WantedBy=cortex.target

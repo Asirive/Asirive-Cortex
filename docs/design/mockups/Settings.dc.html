@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Settings</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./cortex.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>body{margin:0}.scr .row{min-height:54px;padding:4px 0}.scr .top{min-height:40px}</style>
+</helmet>
+<div class="scr" style="width:390px;height:844px;gap:8px">
+  <div class="top"><h1 class="ttl" style="font-size:36px">Settings</h1></div>
+  <span class="mono" style="margin:6px 0 0 8px">Account</span>
+  <div class="list">
+    <a class="row" href="Settings.dc.html"><span class="g"><b>Email and password</b><span class="s">you@example.com</span></span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9aa394" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></a>
+    <a class="row" href="Assist.dc.html"><span class="g"><b>Voice, sound and text</b><span class="s">Speaking speed, haptics, text size</span></span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9aa394" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></a>
+  </div>
+  <span class="mono" style="margin:6px 0 0 8px">Early access</span>
+  <div class="list">
+    <div class="row"><span class="g"><b>Join the beta</b><span class="s">New features first, more diagnostics shared</span></span><a class="sw" href="Beta.dc.html" aria-label="Join the beta. Currently off. Opens details."><i></i></a></div>
+  </div>
+  <span class="mono" style="margin:6px 0 0 8px">Notifications</span>
+  <div class="list">
+    <div class="row"><span class="g"><b>Incoming calls</b><span class="s">From people you added</span></span><button class="sw y" role="switch" aria-checked="true" type="button" aria-label="Incoming calls"><i></i></button></div>
+    <div class="row"><span class="g"><b>Glasses alerts</b><span class="s">Offline for a while, update problems</span></span><button class="sw y" role="switch" aria-checked="true" type="button" aria-label="Glasses alerts"><i></i></button></div>
+  </div>
+  <span class="mono" style="margin:6px 0 0 8px">More</span>
+  <div class="list">
+    <a class="row" href="Privacy.dc.html"><span class="g"><b>Privacy and data</b></span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9aa394" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></a>
+    <a class="row" href="Feedback.dc.html"><span class="g"><b>Send feedback</b></span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9aa394" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg></a>
+    <a class="row" href="Main.dc.html"><span class="g"><b style="color:#ff8a7d">Sign out</b></span></a>
+  </div>
+  <nav class="nav" aria-label="Main">
+    <a class="nv" href="Home.dc.html" aria-label="Home"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11l9-8 9 8v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/></svg></a>
+    <a class="nv" href="People.dc.html" aria-label="My people"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.5-4 3-6 6.5-6s6 2 6.5 6M16 4.5a3.5 3.5 0 0 1 0 7M18 14c2.2.6 3.4 2.6 3.7 6"/></svg></a>
+    <a class="nv" href="CHome.dc.html" aria-label="Following"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 21s7-6.2 7-11.5A7 7 0 0 0 5 9.5C5 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg></a>
+    <a class="nv on" aria-current="page" href="Settings.dc.html"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h12M20 18h0"/><circle cx="16" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>Settings</a>
+  </nav>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

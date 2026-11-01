@@ -24,8 +24,24 @@ Reference architecture: `docs/architecture/V4-ECOSYSTEM.md`.
 | `supabase/migrations/001_initial_schema.sql` | 7 tables (detections, queries, memories, adaptive_prompts, system_logs, device_status, device_commands) + heartbeat RPC + RLS + realtime |
 | `video_streamer.py`, `fastapi_client.py`, `websocket_client.py` | Device-side links (moved here from the old rpi5 package) |
 
-Legacy consumers: `core/` (device links, hybrid memory sync),
+Legacy consumers: `v3_core/` (device links, hybrid memory sync),
 `apps/laptop_dashboard/` (deprecated, message-shape reference only).
+
+## V4 build status (2026-10-29)
+
+- `contracts/` (repo root): protobuf contracts + buf config. Lints and generates Go.
+- `gateway/`: Go gateway skeleton. Device WebSocket, heartbeat/log/event/OTA
+  status handling, tier enforcement, dashboard API, audit, embedded Asirive
+  fleet console (`gateway/web/index.html`), `cmd/simdevice` fake devices. Dev
+  token auth and in-memory state only. See `gateway/README.md`.
+- `supabase/migrations/002_fleet.sql`: V4 Postgres schema (not applied anywhere yet).
+- `gateway/internal/ota` + `cmd/cortex-sign`: signed manifests (ed25519, offline key),
+  ring/anti-rollback checks, staged rollout engine with halt. Unit-tested and
+  run end to end against simulated devices.
+- `gateway/internal/registry`: register -> claim -> revoke, one-time claim codes, per-device tokens, tier from registry. `contracts/openapi/app.yaml`: draft app API (only /claim live).
+- Not built: hardware-backed device key, CA key custody off the box, phone-side TCP tunnel for the device TLS stream
+  verifier/A-B client, camera relay, dataset pipeline, Python/Dart codegen. Gap
+  table: docs/architecture/FLEET-OTA-AND-SECURITY.md.
 
 ## V4 target (greenfield)
 
@@ -67,5 +83,17 @@ psql -f supabase/migrations/001_initial_schema.sql   # schema apply (reference)
 
 ## Change log (append one line per meaningful change)
 
+- 2026-10-29: Added contracts/, gateway skeleton, fleet console, 002_fleet.sql. Tiered access and dataset-capture policy documented in V4-ECOSYSTEM.md 6.1 and 9.1.
 - 2026-10-12: AGENTS.md created. Directory holds V3 seeds; Go gateway to be
   created here per V4-ECOSYSTEM.md section 6.
+- 2026-10-29: Added OTA control plane (internal/ota), cortex-sign, release API, FLEET-OTA-AND-SECURITY.md.
+- 2026-10-29: Added device registry (register/claim/revoke), console registration UI, app API draft.
+- 2026-10-29: QA-pass fixes: console rewrite (state-preserving render, keyboard, mobile sheet, releases panel, feedback tab), rollout engine hardening, registry id/claim fixes, command allowlist, security headers, claim QR. contracts: local.proto (owner stop over the local link only), app.yaml auth/deletion/opt-in decisions.
+- 2026-10-29: Durable gateway state: registrations (credential hashes), releases (re-verified on load) and audit saved atomically to --state file (0600) every 3 s and on SIGTERM; a restart no longer locks claimed devices out. Bad state file refuses to start. Postgres (002_fleet.sql) remains the planned multi-node store; the file is the single-node self-host store.
+- 2026-10-29: Per-user operators with viewer/operator/release/admin roles, personal tokens (hashed, persisted), real actor in audit, whoami badge in console.
+- 2026-10-29: App accounts in the gateway: email+password (argon2id), Resend verification/reset mail, sessions, login lockout, delete account (releases devices), beta opt-in with consent record, authenticated /v1/claim, /v1/me/devices. Sign in with Apple dropped for now.
+- 2026-10-29: App cloud features: companions with per-grant consent, location (30-day TTL), call signalling, app feedback, app-side OTA relay (offer/report). Account deletion purges all of it. Open: push wake-up for calls, TURN, per-device settings.
+- 2026-10-29: Push wake-up (FCM v1, APNs token auth) for incoming calls, TURN ephemeral credentials, infra/deploy compose (untested). Real providers not exercised.
+- 2026-10-29: Fleet alerting by email; signed alpha debug commands (cmdsign + alpha.proto fields). Device-side verification belongs in core/.
+- 2026-10-29: Postgres state store with advisory-lock leader election (warm standby failover), tested on PG16. Not active-active.
+- 2026-10-30: Device mTLS: internal/pki device CA, certificate issued at claim over the device-generated P-256 key, dedicated device listener (TLS 1.3, client cert required, revocation at handshake, renewal endpoint). Public handler no longer serves /ws/device when enabled. Sealed envelope decided against (see V4-ECOSYSTEM section 6).

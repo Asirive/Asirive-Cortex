@@ -19,6 +19,7 @@ Reference architecture: `docs/architecture/V4-ECOSYSTEM.md`.
 | `cortex/` | Device CLI + Textual TUI launcher (`python -m apps.cortex all`) | Active dev tooling |
 | `cortex/__main__.py` | Command router: all, test, test-live, layer0, camera, audio, status, tui | Active |
 | `cortex/cli/` | Rich logging setup, command implementations, live TUI | Active |
+| `mobile/` | Flutter companion app (owner and companion sides, calls, helper setup). See `mobile/README.md` | Built, untested on device; USB link missing |
 | `laptop_dashboard/` | V3 FastAPI/WebSocket browser dashboard + GPU layer-1 service | DEPRECATED: replaced by the companion app + web dashboard. Keep only as message-shape reference |
 
 Root entry wrappers `cortex.py`, `cortex`, `cortex.bat` call into this package.
@@ -71,3 +72,8 @@ py -3 -m compileall apps         # syntax gate after changes
 
 - 2026-10-12: AGENTS.md created. laptop_dashboard marked deprecated; Flutter
   app and web dashboard defined as greenfield targets.
+- 2026-10-30: `mobile/` Flutter app added and every screen matched to the mockups; tests rewritten (49 pass). USB link, push and device testing still open.
+- 2026-10-30: `mobile/lib/box_link.dart` added: real `DeviceLink` over the USB tether network (see `docs/architecture/PHONE-BOX-LINK.md`). `DeviceLink.handOver` now takes the whole claim reply.
+- 2026-10-30: `mobile/lib/push.dart` added: the app registers its FCM/APNs address with the gateway after sign-in and clears it on sign-out. Off without Firebase config files; see mobile/README.md for the accounts needed.
+- 2026-10-30: "Extra contrast" now really brightens secondary text and outlines (`Cx.high`, the `...C` colours in theme.dart), not just bold text.
+- 2026-10-30: review fixes: pairing needs the box's key first and keeps the link secret before sending; sign-out clears push more reliably (`session.dart`).

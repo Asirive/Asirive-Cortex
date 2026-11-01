@@ -60,7 +60,7 @@ local_cortex.db
 README.old.md
 
 # Local agent / handoff docs (personal notes, not for the repo).
-# Domain AGENTS.md files under core/, infra/, apps/ ARE tracked and maintained.
+# Domain AGENTS.md files under v3_core/, infra/, apps/ ARE tracked and maintained.
 /AGENTS.md
 ContextHistory.md
 

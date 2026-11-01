@@ -1,0 +1,7 @@
+[Unit]
+Description=Asirive Cortex device runtime
+Wants=cortex-supervisor.service
+After=multi-user.target
+
+[Install]
+WantedBy=multi-user.target

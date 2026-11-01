@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Test sound and touch</title>
+<script src="./support.js"></script>
+<link rel="stylesheet" href="./cortex.css">
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Anton&family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>body{margin:0}.hb{display:inline-flex;align-items:center;gap:8px;background:#eaff00;color:#0a0a08;border-radius:99px;padding:6px 12px;font:700 13px 'Space Grotesk',sans-serif}.tt{display:flex;align-items:center;gap:14px;background:#131a14;border-radius:22px;padding:14px 16px;border:0;color:#f4f4ec;text-align:left;font:inherit;cursor:pointer;width:100%;box-sizing:border-box}.tt .i{width:48px;height:48px;border-radius:50%;background:#eaff00;color:#0a0a08;display:flex;align-items:center;justify-content:center;flex:none}.tt b{display:block;font:600 17px 'Space Grotesk',sans-serif}.tt .s{display:block;font:400 13px 'Space Grotesk',sans-serif;color:#9aa394;margin-top:2px}</style>
+</helmet>
+<div class="scr" style="width:390px;height:844px;padding-bottom:20px">
+  <div class="top">
+    <a class="bk" href="Internet.dc.html" aria-label="Back"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg></a>
+    <span class="hb">Helper · step 4 of 5</span>
+    <a href="Home.dc.html" style="margin-left:auto;color:#ff8a7d;font:600 14px 'Space Grotesk',sans-serif;text-decoration:none;min-height:44px;display:flex;align-items:center;padding:0 6px">Stop helper mode</a>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:10px">
+    <h1 class="ttl" style="font-size:44px;line-height:1">Test sound<br>and touch</h1>
+    <p class="p">Ask the owner to wear the glasses and listen. Play each test, then ask what they heard and felt.</p>
+  </div>
+  <button class="tt" type="button"><span class="i"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 9v6h4l5 4V5L8 9zM16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/></svg></span><span><b>Play a sound</b><span class="s">A short tone in the glasses</span></span></button>
+  <button class="tt" type="button"><span class="i"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 9v6M6.5 6.5v11M17.5 6.5v11M21 9v6M10 4h4v16h-4z"/></svg></span><span><b>Make the glasses vibrate</b><span class="s">The owner should feel a pulse</span></span></button>
+  <button class="tt" type="button"><span class="i"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg></span><span><b>Say a word</b><span class="s">Owner says "Cortex". The glasses answer.</span></span></button>
+  <div class="bot">
+    <p class="p" style="text-align:center;font-weight:600;color:#f4f4ec">Did the owner hear and feel all three?</p>
+    <a class="btn" href="SetupDone.dc.html">Yes, all good</a>
+    <a class="btn o" href="SetupTest.dc.html">No, try again</a>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"$preview":{"width":390,"height":844}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
