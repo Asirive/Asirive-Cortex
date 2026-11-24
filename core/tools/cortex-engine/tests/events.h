@@ -23,7 +23,11 @@ inline std::string config(const std::string& extra = "") {
     return std::string("{\"model\":\"/var/lib/cortex/models/LFM3-Omni-2B-Q4_0.gguf\",") +
            "\"mmproj\":\"/var/lib/cortex/models/mmproj-LFM3-Omni-2B-Q8_0.gguf\"," +
            "\"split_dir\":\"/var/lib/cortex/bench/npu/split\"," + "\"qnn_lib_dir\":\"" + (home ? home : "") +
-           "/qnn-deb/x/usr/lib/aarch64-linux-gnu\"" + extra + "}";
+           "/qnn-deb/x/usr/lib/aarch64-linux-gnu\",\"speak\":false" + extra + "}";  // a later "speak" wins
+}
+
+inline double now_ms() {
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
 struct Events {
@@ -35,12 +39,14 @@ struct Events {
         {
             std::lock_guard<std::mutex> g(e->mu);
             e->all.push_back(json::parse(line));
+            e->all.back()["_rx_ms"] = now_ms();  // arrival, steady clock (the clock of sound events' at_ms)
         }
         e->cv.notify_all();
     }
     // waits for the first event of this type at or after index *from; advances *from past it
     bool wait(const std::string& type, json* out, size_t* from, int timeout_ms = 20000) {
         std::unique_lock<std::mutex> l(mu);
+        if (out->is_null()) *out = json::object();  // a timeout leaves an empty object, so value() checks just fail
         return cv.wait_for(l, std::chrono::milliseconds(timeout_ms), [&] {
             for (size_t i = *from; i < all.size(); i++)
                 if (all[i]["type"] == type) {
