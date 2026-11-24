@@ -7,11 +7,15 @@ Spec: `docs/superpowers/specs/2026-11-24-npu-vision-design.md`.
 
 | | ONNX on CPU (fp32) | llama.cpp mmproj on CPU | **NPU split (this work)** |
 |:---|---:|---:|---:|
-| Encode, 640x360 frame | 1190 ms | 1424 ms | **255 ms** (median of 20, all 12 frames 254-258 ms) |
-| Answers matching the CPU answer's keywords | n/a | 12/12 | **12/12** |
-| Cosine vs ONNX fp32 (mean over frames) | 1.0 | n/a | **0.985-0.994** |
+| Encode, one frame | 1190 ms | 1424 ms | **253-268 ms** (median of 20 per frame) |
+| Landscape frames answered right (12 test + 1080p) | n/a | 12/12 * | **13/13** |
+| Portrait frame (360x640) | n/a | n/a | **fails** (see below) |
+| Cosine vs ONNX fp32, landscape frames | 1.0 | n/a | **0.985-0.994** mean |
 
-Targets: ≤ 300 ms encode **met**. ≥ 0.98 cosine mean **met** on every frame.
+\* The 12 cases were *chosen* as the ones llama.cpp on CPU answered right (Task 4), so 12/12 there is true by construction.
+
+Targets: ≤ 300 ms encode is **met**. A cosine mean of at least 0.98 is **met on landscape frames only**.
+A portrait frame **breaks** the NPU encoder.
 The whole "ask, then hear the answer" path is still **not** under 1 s. Answering from ready-made features has a
 2.3-2.9 s ttft, almost all of it the LM prefilling 220 image tokens. See "What is still slow".
 
@@ -25,51 +29,84 @@ The whole "ask, then hear the answer" path is still **not** under 1 s. Answering
 - **Split:** v68 can only multiply two activations at 8 x 8 bit. 16-bit activations are needed for accuracy: w8a8
   everywhere gave cosine 0.40. So the attention cores of 6 layers (Q.K^T, softmax, P.V) run on the CPU
   (onnxruntime, 8 threads). Everything else runs on the NPU as 7 segments, w8a16, per-channel weights, calibrated on
-  52 frames from the box camera (40 normal, 12 dim). See `cortex_core/npu/split.py` and `core/scripts/npu/`.
-- Runner: `libcortex_npu.so` (`core/tools/cortex-npu/`). It loads the 7 context binaries once (416 ms) and calls
-  `graphExecute` per segment with the HTP in burst mode. Python (`cortex_core/npu/qnn.py`, `split_encoder.py`)
-  quantises inputs and dequantises outputs. Calling `qnn-net-run` per segment cost ~400 ms each (a context reload
-  every call), so it cannot serve as the runtime.
+  52 full landscape frames from the box camera (40 normal, 12 dim). See `cortex_core/npu/split.py` and `core/scripts/npu/`.
+- Runner: `libcortex_npu.so` (`core/tools/cortex-npu/`). It loads the 7 context binaries once (~0.4 s; 3.1 s on the
+  first run after boot) and calls `graphExecute` per segment with the HTP in burst mode. Python
+  (`cortex_core/npu/qnn.py`, `split_encoder.py`) quantises inputs and dequantises outputs.
+- `python -m cortex_core.npu.run_npu` runs the whole bench as one supervised child process under a timeout, and
+  opens the NPU once (see "Box reset" below).
 
 ## Per-frame stage time (scene_640, median of 10)
 
 | npu0 | cpu1 | npu2 | cpu3 | npu4 | cpu5 | npu6 | cpu7 | npu8 | cpu9 | npu10 | cpu11 | npu12 | total |
-|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+|:---|:---|:---|:---|:---|:---|:---|:---|:---|:---|:---|:---|:---|:---|
 | 29.2 | 16.8 | 21.7 | 16.9 | 21.9 | 16.9 | 21.8 | 16.9 | 21.9 | 16.9 | 21.8 | 16.9 | 17.7 | **257** |
 
 NPU 156 ms (including numpy quantise/dequantise), CPU attention 102 ms.
 
-## Per frame (`python -m cortex_core.npu.run_npu`, 20 runs each)
+## Per frame (final run, 20 timed runs each, CPU reference warmed)
 
-| frame | light | CPU ms | NPU ms (med / p90) | cos mean / min | CPU answer | NPU answer | match |
-|:---|:---|---:|---:|---:|:---|:---|:---:|
-| t001 | low | 1409 | 254 / 256 | 0.986 / 0.40 | The large toy in front of you is a plush shark. | identical | ✓ |
-| t002 | low | 1195 | 254 / 268 | 0.990 / 0.68 | This toy is a plush shark. | identical | ✓ |
-| t003 | low | 1196 | 254 / 258 | 0.987 / 0.53 | The plush toy is teal (a blue-green) with a white belly. | identical | ✓ |
-| t004 | low | 1192 | 257 / 259 | 0.989 / 0.58 | A teal plush shark toy is directly in front of you. | identical | ✓ |
-| t005 | normal | 1187 | 257 / 262 | 0.990 / 0.77 | The person's hand is holding a black computer mouse. | identical | ✓ |
-| t006 | normal | 1189 | 255 / 257 | 0.993 / 0.83 | A black computer mouse is in front of you, resting on a wrinkled gray fabric surface. | A black computer mouse is in front of you. | ✓ |
-| t007 | normal | 1192 | 256 / 260 | 0.988 / 0.42 | The mouse is black. | identical | ✓ |
-| t008 | normal | 1190 | 255 / 259 | 0.994 / 0.87 | This object is a television remote control. | This is a television remote control. | ✓ |
-| t009 | normal | 1194 | 255 / 259 | 0.992 / 0.78 | A white television remote control is lying on the bed. | identical | ✓ |
-| t010 | normal | 1191 | 256 / 261 | 0.985 / 0.66 | A black smartphone is resting on the desk in front of you. | identical | ✓ |
-| t011 | normal | 1197 | 256 / 259 | 0.989 / 0.75 | This is a smartphone (an iPhone), shown with its screen on and a charging cable plugged into its bottom port. | …screen on and home button visible. | ✓ |
-| t012 | normal | 1191 | 258 / 260 | 0.992 / 0.73 | …a black rectangular power bank (portable power station). | …a black portable power bank (power station). | ✓ |
+"tok < 0.9" is the share of the 220 tokens whose cosine to the CPU features is under 0.9. A layout or token-order
+bug shows up here even when the mean looks fine.
+CPU MHz is the min-max over all cores, sampled after each of the 20 runs.
 
-8 of 12 answers are word-for-word identical. All 12 name the right object. Two answers lost a detail:
+| frame | size | light | CPU ms | NPU ms med/p90 | cos mean/min | tok < 0.9 | CPU MHz | CPU °C max | NPU answer | match |
+|:---|:---|:---|:---|:---|:---|:---|:---|:---|:---|:---|
+| t001 | 640x360 | dim | 1191 | 256 / 256 | 0.986 / 0.40 | 3.2% | 2438-2995 | 54.7 | The large toy in front of you is a plush shark. | ✓ |
+| t002 | 640x360 | dim | 1190 | 253 / 257 | 0.990 / 0.68 | 2.7% | 2438-2995 | 62.1 | This toy is a plush shark. | ✓ |
+| t003 | 640x360 | dim | 1188 | 255 / 257 | 0.987 / 0.53 | 2.7% | 2438-2995 | 63.1 | The plush toy is teal (a blue-green) with a white belly. | ✓ |
+| t004 | 640x360 | dim | 1188 | 253 / 257 | 0.989 / 0.58 | 1.8% | 2438-2995 | 56.7 | A teal plush shark toy is directly in front of you. | ✓ |
+| t005 | 640x360 | normal | 1188 | 257 / 259 | 0.990 / 0.77 | 1.8% | 2438-2995 | 64.4 | The person's hand is holding a black computer mouse. | ✓ |
+| t006 | 640x360 | normal | 1188 | 257 / 263 | 0.993 / 0.83 | 0.9% | 2438-2995 | 57.4 | A black computer mouse is in front of you. | ✓ |
+| t007 | 640x360 | normal | 1190 | 257 / 268 | 0.988 / 0.42 | 1.8% | 2438-2995 | 60.4 | The mouse is black. | ✓ |
+| t008 | 640x360 | normal | 1190 | 255 / 267 | 0.994 / 0.87 | 0.5% | 2438-2995 | 57.7 | This is a television remote control. | ✓ |
+| t009 | 640x360 | normal | 1187 | 255 / 257 | 0.992 / 0.78 | 1.8% | 2438-2995 | 60.4 | A white television remote control is lying on the bed. | ✓ |
+| t010 | 640x360 | normal | 1190 | 268 / 271 | 0.985 / 0.66 | 4.1% | 2438-2995 | 57.0 | A black smartphone is resting on the desk in front of you. | ✓ |
+| t011 | 640x360 | normal | 1189 | 256 / 258 | 0.989 / 0.75 | 2.3% | 2438-2995 | 61.1 | This is a smartphone (an iPhone), shown with its screen on and home button visible. | ✓ |
+| t012 | 640x360 | normal | 1188 | 255 / 256 | 0.992 / 0.73 | 1.4% | 2438-2995 | 57.4 | The device with the cable plugged in is a black portable power bank (power station). | ✓ |
+| h008 (t008 upscaled) | 1920x1080 | normal | 1190 | 256 / 257 | 0.989 / 0.48 | 2.7% | 2438-2995 | 63.4 | This is a white television remote control resting on a gray bed sheet. | ✓ |
+| **p001 (t001 rotated)** | **360x640** | dim | 1187 | 257 / 259 | **0.683 / 0.39** | **95.9%** | 2438-2995 | 61.4 | The large toy in front of me is a soft, teal‑colored plush **hand**. | **✗** |
+
+Against the CPU answers from the first run, 8 of the 12 landscape answers are word for word the same. All 12 name the
+right object. Two lost a detail:
 - t006 dropped "wrinkled gray fabric surface".
-- t011 swapped "charging cable plugged in" for "home button visible". That is a content change, not just a shorter answer.
+- t011 swapped "charging cable plugged in" for "home button visible". That is a content change, not a shorter answer.
+
+No throttling: CPU clocks stayed at 2438-2995 MHz and CPU zones at 55-64 °C throughout.
+
+## Portrait frames break the NPU encoder
+
+The CPU and NPU get the identical prepared input here: a 360x640 frame fitted into the 640x352 canvas, with grey bars
+on both sides. Even so, the NPU features disagree with the CPU on 96% of tokens, and the answer goes wrong ("plush hand").
+Likely cause: calibration saw only full landscape frames, never large flat grey padding, so the w8a16 ranges do not
+cover the activations that padding produces. The 1080p frame fills the canvas with no padding and works.
+
+Fix options, not yet chosen:
+- (a) Recalibrate with padded and portrait frames in the set (a ~40 min WSL rebuild).
+- (b) Fill the canvas instead of padding (centre-crop portrait frames).
+
+## Box reset during the review rerun
+
+The box hard-reset once, at 09:39:24. A probe process had opened the NPU, run one frame and exited; the kernel logged
+`fastrpc … unmmap pt … ERROR`; the main process reopened the NPU one second later; then the box died, with no kernel
+panic or thermal message.
+- The unmap error is intermittent. It appeared on the first NPU session after a fresh boot. It did not appear on two
+  later sessions, one with the old shim build and one with the new one. So the shim change is not the cause.
+- The runner now opens the NPU only once per run. The full 14-frame run then finished with no new unmap error and no reset.
+- The QNN/fastrpc root cause is unknown. Anything long-running (the brain) must not close and reopen the NPU rapidly.
 
 ## Honest caveats
 
-- **Narrow test set.** 12 frames show 5 objects in one room. This proves "NPU ≈ CPU". It does not prove accuracy in the world.
-- **Worst tokens drift.** Min per-token cosine falls to 0.40 (t001) and 0.42 (t007). The mean holds, but a few
-  image patches are poorly represented. Fine detail (text, small objects) is the likely casualty. Not yet tested.
-- **Low light** is slightly worse (cos mean 0.986-0.990 vs 0.985-0.994 overall; min drops lower).
-- **Wrong camera.** Calibration and test used the Sony ZV-1F, not the product camera. Recalibrate (a ~40 min
-  WSL rebuild) once the real camera is in.
-- **Power not measured.** There is no meter. The hottest thermal zone during the run was the PMIC sensor
-  (`pmc8280c-thermal`) at 88-92 °C. The CPU zones were not separated in this run. Treat thermals as unknown.
+- **Narrow test set.** 12 frames show 5 objects in one room. This proves "NPU ≈ CPU" on landscape frames. It does not
+  prove accuracy in the world.
+- **Worst tokens drift.** Min per-token cosine falls to 0.40 (t001). 0.5-4.1% of tokens sit under 0.9 on the
+  landscape frames. Fine detail (text, small objects) is the likely casualty. Not yet tested.
+- **Dim, not dark.** The "low light" frames are dim (mean brightness 39-75 of 255), not dark. Their cosine means
+  (0.986-0.990) sit inside the normal-light range; only the min tokens are lower. Truly dark frames are untested.
+- **Wrong camera.** Calibration and test used the Sony ZV-1F, not the product camera. Recalibrate once the real camera is in.
+- **Power not measured.** There is no meter. The `pmc8280c-thermal` zone is a stepped alarm sensor (it reads fixed
+  levels such as 37 / 88 / 92 °C, and sat at exactly 88.000 °C for minutes with the box idle). It is not a live
+  temperature and is not used as one. The runner's pause on it is capped at 60 s, and it fired on 5 frames.
 - The NPU number includes Python quantise/dequantise. A C path could shave a few ms per stage. Not worth doing yet.
 
 ## What is still slow

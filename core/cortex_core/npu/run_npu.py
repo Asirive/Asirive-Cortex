@@ -98,13 +98,17 @@ def probe_npu(cmd: list[str], timeout: float = 60) -> NpuOpen:
     return NpuOpen(True)
 
 
-def wait_cool(read_temp, limit: float = 90, resume: float = 80, sleep=time.sleep, step: float = 10) -> float:
-    """If the power chip is above limit, pause in steps until it is below resume. Returns seconds waited."""
+def wait_cool(read_temp, limit: float = 90, resume: float = 80, sleep=time.sleep, step: float = 10,
+              max_wait: float = 60) -> float:
+    """If the power chip is above limit, pause in steps until it is below resume, at most max_wait seconds.
+
+    pmc8280c is a stepped alarm sensor (37 / 88 / 92 C levels), not a live temperature: it can sit at 88 C
+    for minutes with the box idle, so the wait must be capped. Returns seconds waited."""
     t = read_temp()
     if t is None or t <= limit:
         return 0
     waited = 0.0
-    while t is not None and t >= resume:
+    while t is not None and t >= resume and waited < max_wait:
         sleep(step)
         waited += step
         t = read_temp()

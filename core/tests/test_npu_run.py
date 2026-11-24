@@ -119,3 +119,13 @@ def test_wait_cool_does_nothing_when_cool_or_unknown():
 
     assert wait_cool(lambda: 60.0, limit=90, resume=80, sleep=pytest.fail) == 0
     assert wait_cool(lambda: None, limit=90, resume=80, sleep=pytest.fail) == 0
+
+
+def test_wait_cool_gives_up_after_max_wait():
+    # pmc8280c is a stepped alarm sensor: it sat at exactly 88.000 C for minutes with the box idle and the
+    # CPU at 35 C, so waiting for it to fall below resume hung the 2026-11-24 rerun
+    from cortex_core.npu.run_npu import wait_cool
+
+    slept = []
+    assert wait_cool(lambda: 95.0, limit=90, resume=80, sleep=slept.append, step=10, max_wait=60) == 60
+    assert len(slept) == 6

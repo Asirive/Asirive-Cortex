@@ -63,7 +63,8 @@ watts. Prior art: third-party QHexRT on LFM2.5-230M; nothing published for
 LFM3-Omni, so our own conversion may be needed.
 **Exit:** meets the < 1 s target and beats Phase 1 on watts at equal quality.
 **Status (2026-11-24):** vision encoder runs on the NPU via QNN. Attention cores stay on the CPU, because v68 only
-multiplies activations at 8 bit. Result: 255 ms per 640 px frame vs 1190 ms on CPU, 12/12 test answers match, see
+multiplies activations at 8 bit. Result: 255 ms per 640 px frame vs 1190 ms on CPU, 13/13 landscape answers right
+(portrait frames still break it: calibration never saw padding), see
 `docs/measurements/2026-11-npu-vision.md`. Still over 1 s overall: the LM prefill of 220 image tokens takes 2.3-2.9 s.
 Next: background encode + prefill of the latest frame, then the backbone.
 
