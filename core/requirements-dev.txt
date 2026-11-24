@@ -2,3 +2,5 @@
 -r requirements.txt
 textual==8.2.8
 pytest>=8
+numpy>=2
+pillow>=11
