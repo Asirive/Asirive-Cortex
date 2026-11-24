@@ -44,12 +44,15 @@ struct LmConfig {
     bool speak = false;
     std::string voice = "female";  // "Speak using a <voice> voice." joins the system prompt
     int max_speech_s = 30;         // audio frames per answer are capped at this (stop "max")
-    // codes -> PCM inside the generation loop on this model's mtmd context. Off when the engine runs the codec on its
-    // own thread and context (it then takes the codes through on_codes).
-    bool codec_inline = true;
+    // Codes -> PCM. Normally on its own thread and mtmd context on codec_cpus, behind the LM (one mtmd context runs
+    // one graph at a time, so sharing the LM's would make the depthformer wait). Inline runs it in the LM loop.
+    bool codec_inline = false;
+    std::vector<int> codec_cpus = {3};
+    int codec_threads = 1;
     uint32_t seed = 0;  // the depthformer's sampling seed (fixed: the same question gives the same voice)
-    std::function<void(const float* pcm, int n, bool end)> on_pcm;  // 24 kHz mono; end once per answer
-    std::function<void(const int32_t* codes, int kind)> on_codes;   // kind 0 frame, 1 flush the tail, 2 end of answer
+    // 24 kHz mono, end once per answer (also after a cut). Inline: called on the LM thread during ask(); threaded:
+    // on the codec thread, and the end may come after ask() has returned.
+    std::function<void(const float* pcm, int n, bool end)> on_pcm;
 };
 
 struct AskResult {

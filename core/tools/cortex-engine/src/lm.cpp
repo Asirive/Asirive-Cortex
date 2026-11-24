@@ -42,6 +42,7 @@ struct LmImpl {
     std::atomic<bool> abortable{false};
     std::unique_ptr<Speech> speech;  // speak mode: the MIXED loop
     std::unique_ptr<Codec> codec;    // speak mode with the codec inline
+    std::unique_ptr<CodecThread> codec_thread;  // speak mode, codec on its own thread and context
     std::vector<float> pcm;
 };
 
@@ -203,6 +204,10 @@ std::unique_ptr<Lm> Lm::open(const LmConfig& cfg, std::string* err) {
         if (cfg.codec_inline) {
             im->codec = Codec::open(lm->mctx_, &e);
             if (!im->codec) return fail("codec: " + e);
+        } else {
+            im->codec_thread =
+                CodecThread::open(cfg.mmproj, lm->model_, cfg.codec_cpus, cfg.codec_threads, cfg.on_pcm, &e);
+            if (!im->codec_thread) return fail("codec: " + e);
         }
     }
     if (!lm->rebuild_history(&e)) return fail(e);
@@ -212,6 +217,9 @@ std::unique_ptr<Lm> Lm::open(const LmConfig& cfg, std::string* err) {
 Lm::~Lm() {
     LmImpl* im = im_;
     if (im) {
+        im->codec_thread.reset();  // its context uses the model: stop it before the model goes
+        im->speech.reset();
+        im->codec.reset();
         if (im->smpl) llama_sampler_free(im->smpl);
         if (im->one.token) llama_batch_free(im->one);
         if (im->chunks) mtmd_input_chunks_free(im->chunks);
@@ -485,12 +493,13 @@ void Lm::generate(AskResult& r, int max_tokens, const std::function<void(const s
 }
 
 // The answer in Cortex's voice: the MIXED loop on S after "assistant\n" (already decoded). Each frame's codes go to
-// the inline codec (sound out through on_pcm) or to the engine's codec thread (on_codes). One end per answer, also
-// after a cut or an error, so the speaker always closes the answer.
+// the codec thread (or the inline codec); sound comes out through on_pcm. One end per answer, also after a cut or an
+// error, so the speaker always closes the answer.
 void Lm::generate_speech(AskResult& r, int max_tokens, const std::function<void(const std::string&)>& on_token,
                          std::chrono::steady_clock::time_point t0) {
     LmImpl* im = im_;
     Codec* codec = im->codec.get();
+    CodecThread* ct = im->codec_thread.get();
     if (codec) codec->reset();
     bool first = true;
     double codec_total = 0;
@@ -514,21 +523,26 @@ void Lm::generate_speech(AskResult& r, int max_tokens, const std::function<void(
             codec_total += codec->last_ms();
             emit(false);
         }
-        if (cfg_.on_codes) cfg_.on_codes(codes, 0);
+        if (ct) ct->push(codes);
     };
     io.on_flush = [&] {
         if (codec) {
             codec->flush(&im->pcm);
             emit(false);
         }
-        if (cfg_.on_codes) cfg_.on_codes(nullptr, 1);
+        if (ct) ct->flush();
     };
     io.cancelled = [this] { return cancel_.load(); };
     const int max_frames = std::max(1, cfg_.max_speech_s * 1000 / 80);
     SpeakResult s = im->speech->run(3, &pos_[3], "", max_tokens, max_frames, cfg_.seed, io);
-    if (s.stop != "cancel" && codec) codec->flush(&im->pcm);  // the last frame's tail; a cut drops it
-    emit(true);
-    if (cfg_.on_codes) cfg_.on_codes(nullptr, 2);
+    if (codec) {
+        if (s.stop != "cancel") codec->flush(&im->pcm);  // the last frame's tail; a cut drops it
+        emit(true);
+    }
+    if (ct) {
+        if (s.stop == "cancel") ct->clear();  // nothing of this answer comes out after ask() returns
+        else ct->end();                       // the queued frames play out behind us
+    }
     // the loop decoded into S itself: take its position from the memory, whatever happened
     pos_[3] = llama_memory_seq_pos_max(llama_get_memory(ctx_), 3) + 1;
     r.stop = s.stop;
@@ -540,7 +554,7 @@ void Lm::generate_speech(AskResult& r, int max_tokens, const std::function<void(
     r.n_out = s.n_text;
     r.frames = s.frames;
     r.frame_ms = s.frame_ms;
-    r.codec_ms = s.frames && codec ? codec_total / s.frames : 0;
+    r.codec_ms = ct ? ct->mean_ms() : s.frames && codec ? codec_total / s.frames : 0;
     r.sound_ms = s.frames * 80.0;
     r.total_ms = ms_since(t0);
 }

@@ -1,9 +1,17 @@
 #include "speech.h"
 
+#include <pthread.h>
+#include <sched.h>
+
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
+#include <mutex>
+#include <thread>
 
 #include "llama.h"
 #include "mtmd.h"
@@ -74,6 +82,179 @@ bool Codec::flush(std::vector<float>* pcm) {
 void Codec::reset() {
     mtmd_gen_state_reset(st_);
     pending_tail_ = false;
+}
+
+// ---------------------------------------------------------------- codec thread
+
+struct CodecThread::Impl {
+    enum Kind { FRAME, FLUSH, END, CLEAR };
+    struct Item {
+        Kind kind;
+        std::array<int32_t, kCodebooks> codes;
+        long id;
+    };
+    std::function<void(const float*, int, bool)> on_pcm;
+    std::mutex mu;
+    std::condition_variable cv, done_cv;
+    std::deque<Item> q;
+    bool stop = false, opened = false;
+    std::string open_err;
+    long clear_req = 0, clear_done = 0;
+    double total_ms = 0;  // this answer
+    int n = 0;
+    bool fresh = true;  // the next frame starts an answer
+    std::thread th;
+
+    void run(const std::string& mmproj, const llama_model* model, const std::vector<int>& cpus, int n_threads);
+};
+
+void CodecThread::Impl::run(const std::string& mmproj, const llama_model* model, const std::vector<int>& cpus,
+                            int n_threads) {
+    if (!cpus.empty()) {  // before the context exists: ggml's compute threads start from here and inherit the cores
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        for (int c : cpus) CPU_SET(c, &set);
+        pthread_setaffinity_np(pthread_self(), sizeof set, &set);
+    }
+    mtmd_context_params mcp = mtmd_context_params_default();
+    mcp.use_gpu = false, mcp.print_timings = false, mcp.warmup = false, mcp.n_threads = n_threads;
+    mtmd_context* ctx = mtmd_init_from_file(mmproj.c_str(), model, mcp);
+    std::string err = ctx ? "" : "cannot load mmproj " + mmproj;
+    std::unique_ptr<Codec> codec = ctx ? Codec::open(ctx, &err) : nullptr;
+    {
+        std::lock_guard<std::mutex> g(mu);
+        opened = true;
+        open_err = codec ? "" : err;
+        if (!codec) stop = true;
+    }
+    done_cv.notify_all();
+    std::vector<float> pcm;
+    auto emit = [&](bool end) {
+        if (!pcm.empty() || end) on_pcm(pcm.data(), (int)pcm.size(), end);
+        pcm.clear();
+    };
+    while (codec) {
+        Item it;
+        {
+            std::unique_lock<std::mutex> l(mu);
+            cv.wait(l, [&] { return stop || !q.empty(); });
+            if (stop) break;
+            it = q.front();
+            q.pop_front();
+        }
+        switch (it.kind) {
+        case FRAME: {
+            const bool ok = codec->decode(it.codes.data(), &pcm);
+            {
+                std::lock_guard<std::mutex> g(mu);
+                if (fresh) total_ms = 0, n = 0, fresh = false;
+                if (ok) total_ms += codec->last_ms(), n++;
+            }
+            emit(false);
+            break;
+        }
+        case FLUSH:
+            codec->flush(&pcm);
+            emit(false);
+            break;
+        case END:
+            codec->flush(&pcm);
+            emit(true);
+            codec->reset();
+            {
+                std::lock_guard<std::mutex> g(mu);
+                fresh = true;
+            }
+            break;
+        case CLEAR:
+            pcm.clear();
+            codec->reset();
+            on_pcm(nullptr, 0, true);
+            {
+                std::lock_guard<std::mutex> g(mu);
+                fresh = true;
+                clear_done = it.id;
+            }
+            done_cv.notify_all();
+            break;
+        }
+    }
+    codec.reset();
+    if (ctx) mtmd_free(ctx);
+}
+
+std::unique_ptr<CodecThread> CodecThread::open(const std::string& mmproj, const llama_model* model,
+                                               const std::vector<int>& cpus, int n_threads,
+                                               std::function<void(const float*, int, bool)> on_pcm,
+                                               std::string* err) {
+    std::unique_ptr<CodecThread> t(new CodecThread());
+    t->im_.reset(new Impl());
+    Impl* im = t->im_.get();
+    im->on_pcm = on_pcm ? std::move(on_pcm) : [](const float*, int, bool) {};
+    im->th = std::thread([im, mmproj, model, cpus, n_threads] { im->run(mmproj, model, cpus, n_threads); });
+    std::unique_lock<std::mutex> l(im->mu);
+    im->done_cv.wait(l, [&] { return im->opened; });
+    if (!im->open_err.empty()) {
+        if (err) *err = im->open_err;
+        l.unlock();
+        return nullptr;  // the destructor joins the finished thread
+    }
+    return t;
+}
+
+CodecThread::~CodecThread() {
+    if (!im_) return;
+    {
+        std::lock_guard<std::mutex> g(im_->mu);
+        im_->stop = true;
+    }
+    im_->cv.notify_all();
+    if (im_->th.joinable()) im_->th.join();
+}
+
+void CodecThread::push(const int32_t* codes) {
+    Impl::Item it{Impl::FRAME, {}, 0};
+    std::copy(codes, codes + kCodebooks, it.codes.begin());
+    {
+        std::lock_guard<std::mutex> g(im_->mu);
+        im_->q.push_back(it);
+    }
+    im_->cv.notify_one();
+}
+
+void CodecThread::flush() {
+    {
+        std::lock_guard<std::mutex> g(im_->mu);
+        im_->q.push_back({Impl::FLUSH, {}, 0});
+    }
+    im_->cv.notify_one();
+}
+
+void CodecThread::end() {
+    {
+        std::lock_guard<std::mutex> g(im_->mu);
+        im_->q.push_back({Impl::END, {}, 0});
+    }
+    im_->cv.notify_one();
+}
+
+void CodecThread::clear() {
+    std::unique_lock<std::mutex> l(im_->mu);
+    if (im_->stop) return;
+    // only this answer's items go: an earlier answer still queued (up to its END) plays out whole
+    size_t keep = 0;
+    for (size_t i = 0; i < im_->q.size(); i++)
+        if (im_->q[i].kind == Impl::END) keep = i + 1;
+    im_->q.erase(im_->q.begin() + (long)keep, im_->q.end());
+    const long id = ++im_->clear_req;
+    im_->q.push_back({Impl::CLEAR, {}, id});
+    im_->cv.notify_one();
+    im_->done_cv.wait(l, [&] { return im_->stop || im_->clear_done >= id; });
+}
+
+double CodecThread::mean_ms() const {
+    std::lock_guard<std::mutex> g(im_->mu);
+    return im_->n ? im_->total_ms / im_->n : 0;
 }
 
 // ---------------------------------------------------------------- speech loop
@@ -207,7 +388,6 @@ SpeakResult Speech::run(int seq, int* pos, const std::string& lead, int max_toke
             const float* fb = nullptr;
             bool is_eos = false;
             if (!sample_frame(h_state_.data(), codes, &fb, &is_eos)) return fail("depthformer pass failed");
-            double spent = ms_since(t);
             if (is_eos) {
                 if (io.on_flush) io.on_flush();  // the segment ends; the answer goes on in text
                 mode = TEXT;
@@ -216,10 +396,8 @@ SpeakResult Speech::run(int seq, int* pos, const std::string& lead, int max_toke
                 if (io.on_frame) io.on_frame(codes.data());
                 r.frames++;
             }
-            const auto t2 = clk::now();
             if (!decode_embd(fb, seq, pos)) return fail("feedback decode failed");
-            spent += ms_since(t2);
-            if (!is_eos) frame_total += spent;
+            if (!is_eos) frame_total += ms_since(t);
         }
         // a slot emitted while interleaving counts down the block, the switching token itself does not
         if (interleaving && !text_done && --slots_left == 0) {

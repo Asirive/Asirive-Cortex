@@ -21,6 +21,7 @@
 #include <vector>
 
 struct llama_context;
+struct llama_model;
 struct llama_sampler;
 struct mtmd_context;
 struct mtmd_gen_state;
@@ -48,6 +49,31 @@ private:
     double last_ms_ = 0;
 };
 
+// The codec on its own thread and its own mtmd context (one context runs one graph at a time, so a codec on the LM's
+// context would wait for the depthformer). The thread pins itself to `cpus` and opens the context from there, so
+// ggml's compute threads stay on those cores. Frames are decoded in order, behind the LM, and come out through
+// on_pcm, which is called on the codec thread.
+class CodecThread {
+public:
+    static std::unique_ptr<CodecThread> open(const std::string& mmproj, const llama_model* model,
+                                             const std::vector<int>& cpus, int n_threads,
+                                             std::function<void(const float*, int, bool end)> on_pcm,
+                                             std::string* err);
+    ~CodecThread();
+    void push(const int32_t* codes);  // copies the 12 codes, returns at once
+    void flush();                     // an audio segment ended: its ISTFT tail, after the queued frames
+    void end();                       // the answer ended: after the queued frames, the tail, on_pcm(.., end), reset
+    // The answer was cut: queued frames are dropped, the state reset, on_pcm(nullptr, 0, true). Returns when done,
+    // so nothing of this answer comes out afterwards.
+    void clear();
+    double mean_ms() const;  // mean codec time per frame, this answer so far
+
+private:
+    CodecThread() = default;
+    struct Impl;
+    std::unique_ptr<Impl> im_;
+};
+
 struct SpeakIo {
     std::function<void(const std::string&)> on_token;  // shown text pieces
     std::function<void(const int32_t* codes)> on_frame;  // 12 codes per audio frame
@@ -58,7 +84,7 @@ struct SpeakIo {
 struct SpeakResult {
     std::string text, stop, error;  // stop: "eog", "max", "cancel", "error"
     int n_text = 0, frames = 0;
-    double frame_ms = 0;  // mean wall time per audio frame (depthformer + feedback decode), without on_frame
+    double frame_ms = 0;  // mean LM-thread time per audio frame: depthformer + on_frame + feedback decode
 };
 
 class Speech {
