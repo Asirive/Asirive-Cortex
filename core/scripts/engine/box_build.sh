@@ -10,4 +10,4 @@ tar -C "$here/tools" -cf - cortex-engine cortex-npu/cortex_npu.cpp | ssh "$BOX" 
 ssh "$BOX" "cd /opt/cortex/build/cortex-engine && { [ -f CMakeCache.txt ] || cmake /opt/cortex/tools/cortex-engine >/dev/null; } \
   && { cmake --build . -j8 > build.log 2>&1 || { grep -E -A3 'error' build.log | head -40; echo BUILD-FAILED; exit 1; }; } \
   && grep -E 'warning' build.log | head -10; \
-  cd /var/lib/cortex/bench/engine && /opt/cortex/build/cortex-engine/engine_tests ${1:-}"
+  cd /var/lib/cortex/bench/engine && . ./qnn.env && /opt/cortex/build/cortex-engine/engine_tests ${1:-}"

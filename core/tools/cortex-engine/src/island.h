@@ -26,6 +26,7 @@ private:
     ggml_context* ctx_ = nullptr;
     ggml_cgraph* gf_ = nullptr;
     ggml_tensor *q_ = nullptr, *k_ = nullptr, *v_ = nullptr, *out_ = nullptr;
+    ggml_tensor *qp_ = nullptr, *kp_ = nullptr, *vp_ = nullptr;  // permute views of q_, k_, v_
     ggml_threadpool* tp_ = nullptr;
     std::vector<unsigned char> work_;
     double last_ms_ = 0;

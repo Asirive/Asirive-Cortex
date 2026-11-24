@@ -12,7 +12,7 @@ set(LLAMA_ROOT "/opt/llama.cpp/b12679" CACHE PATH "llama.cpp source tree")
 set(LLAMA_BUILD "${LLAMA_ROOT}/build-cpu" CACHE PATH "llama.cpp CPU build tree")
 set(QNN_INCLUDE "$ENV{HOME}/qnn-inc/QNN" CACHE PATH "QNN headers")
 
-set(ENGINE_SRC src/fixed.cpp src/island.cpp)
+set(ENGINE_SRC src/fixed.cpp src/island.cpp src/vision.cpp ../cortex-npu/cortex_npu.cpp)
 
 add_library(cortex_engine SHARED ${ENGINE_SRC})
 target_include_directories(cortex_engine PUBLIC

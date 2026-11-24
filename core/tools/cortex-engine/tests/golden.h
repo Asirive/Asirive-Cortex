@@ -9,7 +9,7 @@
 
 namespace golden {
 inline const std::string dir = "/var/lib/cortex/bench/engine/golden/";
-inline const std::string review = "/var/lib/cortex/bench/npu/test_review/";
+inline const std::string npu_feats = "/var/lib/cortex/bench/npu/npu_run2/";  // Python NPU features (oracle)
 
 inline std::vector<float> load_f32(const std::string& path) {
     std::ifstream f(path, std::ios::binary | std::ios::ate);
