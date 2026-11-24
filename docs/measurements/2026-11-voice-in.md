@@ -42,3 +42,15 @@ Test media on the box only: `/var/lib/cortex/bench/media/` (`question1.wav`, `ro
   `<|mixed_start|>` (logit bias −∞), as llama.cpp's text mode does.
 - Next refinement: start answering speculatively after ~250 ms of silence and drop it if speech resumes, to cut most
   of the 500 ms hangover.
+
+## Live run with the real camera and mic (2026-11-24)
+
+Live TUI session code (`LiveSession`) headless on the Q8B: Sony ZV-1F as UVC camera (/dev/video2, 640x360 at 5 fps) and its mic through PipeWire (`pw-record --raw`, 16 kHz mono, room level about -37 dBFS).
+
+| What | Result |
+|---|---|
+| Mic chunks | 122 of 20 ms in 3 s (pipe start-up eats the rest) |
+| Room speech heard | 2 turns (3.7 s, 0.7 s), both answered |
+| End of speech to first word | 191 ms (wait 131 ms, TTFT 61 ms) |
+| View refresh | 1.43 s |
+| Native log lines on screen | none (908 bytes to live_native.log) |

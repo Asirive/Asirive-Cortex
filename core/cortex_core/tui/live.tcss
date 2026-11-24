@@ -1,0 +1,48 @@
+Screen {
+    background: #0A0A08;
+    color: #D8D8D0;
+}
+
+#title {
+    height: 1;
+    padding: 0 1;
+    color: #0A0A08;
+    background: #EAFF00;
+    text-style: bold;
+}
+
+#panels {
+    grid-size: 2 3;
+    grid-columns: 3fr 2fr;
+    grid-rows: 1fr 1fr 1fr;
+    grid-gutter: 0 1;
+    padding: 0 1;
+    height: 1fr;
+}
+
+#conv-box {
+    row-span: 3;
+}
+
+.panel {
+    border: round #EAFF00;
+    border-title-color: #EAFF00;
+    border-title-style: bold;
+    padding: 0 1;
+    background: #0A0A08;
+}
+
+#ask {
+    margin: 0 1;
+    border: tall #EAFF00 50%;
+    background: #0A0A08;
+}
+
+#log {
+    height: 6;
+    margin: 0 1;
+}
+
+Footer {
+    background: #0A0A08;
+}
