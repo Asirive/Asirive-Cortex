@@ -9,13 +9,13 @@ Spec: `docs/superpowers/specs/2026-11-24-npu-vision-design.md`.
 |:---|---:|---:|---:|
 | Encode, one frame | 1190 ms | 1424 ms | **253-268 ms** (median of 20 per frame) |
 | Landscape frames answered right (12 test + 1080p) | n/a | 12/12 * | **13/13** |
-| Portrait frame (360x640) | n/a | n/a | **fails** (see below) |
+| Portrait frame (360x640, out of scope) | n/a | n/a | fails (see below) |
 | Cosine vs ONNX fp32, landscape frames | 1.0 | n/a | **0.985-0.994** mean |
 
 \* The 12 cases were *chosen* as the ones llama.cpp on CPU answered right (Task 4), so 12/12 there is true by construction.
 
 Targets: ≤ 300 ms encode is **met**. A cosine mean of at least 0.98 is **met on landscape frames only**.
-A portrait frame **breaks** the NPU encoder.
+The camera is always landscape, so portrait is out of scope; a non-16:9 camera would not be (see below).
 The whole "ask, then hear the answer" path is still **not** under 1 s. Answering from ready-made features has a
 2.3-2.9 s ttft, almost all of it the LM prefilling 220 image tokens. See "What is still slow".
 
@@ -74,16 +74,18 @@ right object. Two lost a detail:
 
 No throttling: CPU clocks stayed at 2438-2995 MHz and CPU zones at 55-64 °C throughout.
 
-## Portrait frames break the NPU encoder
+## Frames that need padding break the NPU encoder
 
 The CPU and NPU get the identical prepared input here: a 360x640 frame fitted into the 640x352 canvas, with grey bars
 on both sides. Even so, the NPU features disagree with the CPU on 96% of tokens, and the answer goes wrong ("plush hand").
 Likely cause: calibration saw only full landscape frames, never large flat grey padding, so the w8a16 ranges do not
 cover the activations that padding produces. The 1080p frame fills the canvas with no padding and works.
 
-Fix options, not yet chosen:
-- (a) Recalibrate with padded and portrait frames in the set (a ~40 min WSL rebuild).
-- (b) Fill the canvas instead of padding (centre-crop portrait frames).
+Decision (Haziq, 2026-11-24): the product camera is always landscape, so portrait frames are out of scope and
+nothing is changed. What matters is the **aspect ratio**: any frame that does not fill the 16:9 canvas gets grey
+bars. A 4:3 product camera (common for small modules) would hit this on every frame. When the real camera is
+chosen, check its aspect ratio: if it is not 16:9, recalibrate with its own frames (already needed anyway) or
+crop them to 16:9 before `prepare`.
 
 ## Box reset during the review rerun
 
