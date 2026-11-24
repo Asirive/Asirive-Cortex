@@ -12,7 +12,7 @@ set(LLAMA_ROOT "/opt/llama.cpp/b12679" CACHE PATH "llama.cpp source tree")
 set(LLAMA_BUILD "${LLAMA_ROOT}/build-cpu" CACHE PATH "llama.cpp CPU build tree")
 set(QNN_INCLUDE "$ENV{HOME}/qnn-inc/QNN" CACHE PATH "QNN headers")
 
-set(ENGINE_SRC src/fixed.cpp)
+set(ENGINE_SRC src/fixed.cpp src/island.cpp)
 
 add_library(cortex_engine SHARED ${ENGINE_SRC})
 target_include_directories(cortex_engine PUBLIC
@@ -23,7 +23,7 @@ target_link_directories(cortex_engine PUBLIC ${LLAMA_BUILD}/bin)
 target_link_libraries(cortex_engine PUBLIC mtmd llama ggml ggml-base ggml-cpu dl pthread)
 set_target_properties(cortex_engine PROPERTIES BUILD_RPATH "${LLAMA_BUILD}/bin" INSTALL_RPATH "${LLAMA_BUILD}/bin")
 
-file(GLOB TEST_SRC tests/*.cpp)
+file(GLOB TEST_SRC CONFIGURE_DEPENDS tests/*.cpp)
 add_executable(engine_tests ${TEST_SRC})
 target_link_libraries(engine_tests PRIVATE cortex_engine)
 set_target_properties(engine_tests PROPERTIES BUILD_RPATH "${LLAMA_BUILD}/bin;${CMAKE_BINARY_DIR}")
