@@ -134,7 +134,7 @@ struct Engine {
     std::vector<uint8_t> frame;
     int fw = 0, fh = 0;
     long fid = -1;
-    bool refresh_pending = false;
+    bool refresh_pending = false, commit_pending = false;
     // ask queue (one slot)
     bool ask_pending = false;
     std::string ask_text;
@@ -183,8 +183,16 @@ struct Engine {
             long id;
             {
                 std::unique_lock<std::mutex> l(mu);
-                cv.wait(l, [&] { return stop || refresh_pending; });
+                cv.wait(l, [&] { return stop || refresh_pending || (commit_pending && !asking && !ask_pending); });
                 if (stop) return;
+                if (!refresh_pending) {
+                    // background: the last answer joins the history now, off the next refresh's critical path
+                    commit_pending = false;
+                    l.unlock();
+                    std::string err;
+                    if (!lm->commit_turns(&err) && err != "preempted") error("history: " + err);
+                    continue;
+                }
                 refresh_pending = false;
                 if (fid < 0) {
                     l.unlock();
@@ -272,6 +280,7 @@ struct Engine {
             {
                 std::lock_guard<std::mutex> g(mu);
                 asking = false;
+                commit_pending = true;
             }
             cv.notify_all();
         }

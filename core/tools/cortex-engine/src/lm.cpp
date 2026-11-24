@@ -192,11 +192,70 @@ static std::string turn_text(const std::string& q, const std::string& a) {
     return std::string(kUser) + q + kEnd + a + kTurnEnd;
 }
 
-bool Lm::rebuild_history(std::string* err) {
-    clear(0);
+std::string Lm::head_text() const {
     std::string head = kStart;
     if (!cfg_.system_prompt.empty()) head += "<|im_start|>system\n" + cfg_.system_prompt + kTurnEnd;
-    if (!decode_text(head, 0, false, err)) return false;
+    return head;
+}
+
+bool Lm::commit_turns(std::string* err) {
+    std::lock_guard<std::mutex> g(mu_);
+    reading_ = true;
+    struct Done {
+        Lm* lm;
+        ~Done() { lm->reading_ = false; }
+    } done{this};
+    if (preempt_) {
+        if (err) *err = "preempted";
+        return false;
+    }
+    return commit_locked(err);
+}
+
+// H + pending turns, built in slot 2 and swapped into H only when complete (a slot cannot be rewound, so a
+// preempted build is simply dropped and the turns stay pending).
+bool Lm::commit_locked(std::string* err) {
+    if (pending_.empty()) return true;
+    std::vector<Turn> hist = history_;
+    hist.insert(hist.end(), pending_.begin(), pending_.end());
+    int total = 0;
+    std::vector<int> sizes;
+    for (auto& t : hist) {
+        sizes.push_back((int)tokenize(model_, turn_text(t.q, t.a)).size());
+        total += sizes.back();
+    }
+    size_t drop = 0;
+    while (drop < hist.size() && total > cfg_.max_history_tokens) total -= sizes[drop++];
+    hist.erase(hist.begin(), hist.begin() + (long)drop);
+    im_->abortable = true;
+    bool ok;
+    if (drop > 0) {  // the oldest turns go: read H again from the start
+        clear(2);
+        ok = decode_text(head_text(), 2, false, err);
+        for (size_t i = 0; ok && i < hist.size(); i++) ok = decode_text(turn_text(hist[i].q, hist[i].a), 2, false, err);
+    } else {  // H already holds the older turns; read only the new ones
+        copy(0, 2);
+        ok = true;
+        for (size_t i = history_.size(); ok && i < hist.size(); i++)
+            ok = decode_text(turn_text(hist[i].q, hist[i].a), 2, false, err);
+    }
+    im_->abortable = false;
+    if (!ok) {
+        clear(2);
+        if (err && preempt_) *err = "preempted";
+        return false;
+    }
+    copy(2, 0);
+    clear(2);
+    history_ = std::move(hist);
+    pending_.clear();
+    pending_n_ = 0;
+    return true;
+}
+
+bool Lm::rebuild_history(std::string* err) {
+    clear(0);
+    if (!decode_text(head_text(), 0, false, err)) return false;
     pos_base_ = pos_[0];
     for (const auto& t : history_)
         if (!decode_text(turn_text(t.q, t.a), 0, false, err)) return false;
@@ -209,6 +268,7 @@ void Lm::reset_history() {
     std::lock_guard<std::mutex> g(mu_);
     history_.clear();
     pending_.clear();
+    pending_n_ = 0;
     std::string e;
     rebuild_history(&e);
     clear(1);
@@ -231,26 +291,10 @@ bool Lm::read_view(const float* features, int n_tok, long frame_id, std::string*
                         std::to_string(mtmd_input_chunk_get_n_tokens(im->image));
         return false;
     }
-    // finished turns join H (text only), oldest dropped past the budget
-    if (!pending_.empty()) {
-        const size_t n_new = pending_.size();
-        for (auto& t : pending_) history_.push_back(t);
-        pending_.clear();
-        int total = 0;
-        std::vector<int> sizes;
-        for (auto& t : history_) {
-            sizes.push_back((int)tokenize(model_, turn_text(t.q, t.a)).size());
-            total += sizes.back();
-        }
-        size_t drop = 0;
-        while (drop < history_.size() && total > cfg_.max_history_tokens) total -= sizes[drop++];
-        if (drop > 0) {  // the oldest turns go: H is re-read from the start (a slot cannot be cut)
-            history_.erase(history_.begin(), history_.begin() + (long)drop);
-            if (!rebuild_history(err)) return false;
-        } else {  // H already holds the older turns; read only the new ones
-            for (size_t i = history_.size() - n_new; i < history_.size(); i++)
-                if (!decode_text(turn_text(history_[i].q, history_[i].a), 0, false, err)) return false;
-        }
+    // finished turns join H (text only), oldest dropped past the budget; normally already done by commit_turns
+    if (preempt_ || !commit_locked(err)) {
+        if (err && preempt_) *err = "preempted";
+        return false;
     }
     if (preempt_) {
         if (err) *err = "preempted";
@@ -338,6 +382,7 @@ AskResult Lm::ask(const std::string& question, int max_tokens, const std::functi
     }
     r.total_ms = ms_since(t0);
     pending_.push_back({question, r.text});
+    pending_n_ = (int)pending_.size();
     return r;
 }
 

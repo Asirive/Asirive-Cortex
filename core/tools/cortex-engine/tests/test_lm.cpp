@@ -118,6 +118,28 @@ TEST(lm_ask_without_view) {
     CHECK(r.view_frame_id == -1);
 }
 
+TEST(lm_commit_turns_keeps_read_image_only) {
+    auto lm = open_lm(cfg());
+    if (!lm) { CHECK(false); return; }
+    auto f1 = feat("t001"), f8 = feat("t008");
+    std::string err;
+    CHECK(lm->read_view(f1.data(), 220, 1, &err));
+    const double first = lm->last_read_ms();
+    lm->ask(kQuestion, 40, nullptr);
+    CHECK(lm->has_pending_turns());
+    const int before = lm->history_tokens();
+    CHECK(lm->commit_turns(&err));
+    CHECK(!lm->has_pending_turns() && lm->history_tokens() > before);
+    CHECK(lm->read_view(f8.data(), 220, 8, &err));
+    std::printf("  read %.0f ms, after a committed turn %.0f ms (history %d tokens)\n", first, lm->last_read_ms(),
+                lm->history_tokens());
+    CHECK(lm->last_read_ms() <= first + 60.0);
+    // the committed turn is in the conversation: a follow-up about the earlier question still works
+    auto r = lm->ask("What did I ask you before this? One sentence.", 30, nullptr);
+    std::printf("  recall: %s\n", strip(r.text).c_str());
+    CHECK(strip(r.text).find("toy") != std::string::npos);
+}
+
 TEST(lm_history_overflow_drops_oldest) {
     auto c = cfg();
     c.max_history_tokens = 64;

@@ -55,6 +55,11 @@ public:
     // when an ask arrived meanwhile (V unchanged), or another error.
     bool read_view(const float* features, int n_tok, long frame_id, std::string* err);
     AskResult ask(const std::string& question, int max_tokens, const std::function<void(const std::string&)>& on_token);
+    // Moves finished turns into H (built in scratch slot V', swapped in when complete), so the next read_view only
+    // reads the image. Background work: an ask preempts it (*err = "preempted", turns stay pending). read_view does
+    // this itself when turns are still pending.
+    bool commit_turns(std::string* err);
+    bool has_pending_turns() const { return pending_n_ > 0; }
     // cancel() stops the running ask; the flag stays set until clear_cancel(), so a cancel that lands while the ask
     // is still queued or prefilling is not lost. The caller clears it before starting the next ask.
     void cancel() { cancel_ = true; }
@@ -69,6 +74,8 @@ private:
     struct Turn { std::string q, a; };
     bool decode_text(const std::string& text, int seq, bool logits_last, std::string* err);
     bool rebuild_history(std::string* err);  // H from scratch: start + system + kept turns
+    bool commit_locked(std::string* err);
+    std::string head_text() const;
     void clear(int seq);
     void copy(int src, int dst);
     static bool abort_cb(void* self);
@@ -83,7 +90,8 @@ private:
     int pos_[4] = {0, 0, 0, 0};
     int pos_base_ = 0;                    // H position after start + system
     std::vector<Turn> history_;           // turns already in H
-    std::vector<Turn> pending_;           // turns in S, moved into H at the next view
+    std::vector<Turn> pending_;           // turns in S, not yet in H
+    std::atomic<int> pending_n_{0};
     bool have_view_ = false, s_on_view_ = false;
     long view_frame_id_ = -1, s_frame_id_ = -1;
     std::chrono::steady_clock::time_point view_time_{};

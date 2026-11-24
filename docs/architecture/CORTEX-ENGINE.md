@@ -70,6 +70,11 @@ Next: background encode + prefill of the latest frame, then the backbone.
 Step 1 speed tests (`docs/measurements/2026-11-speedups.md`): Q4_0 weights adopted (image prefill 1.94x faster,
 12/12), LM on the 4 big cores. One full image read is now ~1.3 s. Engine layout decided (Haziq, 2026-11-24): one
 C++ process holding the LM, the NPU vision encoder and the audio encoder.
+Step 2 engine core built (`core/tools/cortex-engine`, `docs/measurements/2026-11-engine-core.md`): the latest frame is
+encoded and read into the LM in the background, so an ask only reads the question. Time to first token 115 ms
+median (was 1.23 s), 12/12 with a fresh conversation per case; view refresh 1.42 s (target 1.4 s, the 220-token read
+is the floor); never on cpu0. Python binding `cortex_core/engine/native.py`. Next: step 3, hands-free VAD + streaming
+audio in.
 
 ### Phase 3 — Custom runtime (only if needed)
 C core, static memory plan, streaming speech-token path, no Python on the hot
