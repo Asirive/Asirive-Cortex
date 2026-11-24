@@ -22,6 +22,8 @@ struct llama_model;
 struct llama_context;
 struct mtmd_context;
 
+#include "audio_in.h"
+
 namespace ce {
 struct LmImpl;
 
@@ -35,6 +37,8 @@ struct LmConfig {
     int chunk = 256;
     int max_history_tokens = 1536;  // H beyond start + system; oldest turns dropped past this
     int stand_in_w = 640, stand_in_h = 360;  // image size that lays out the NPU canvas's 220 tokens
+    // audio encoder threads; they run on the cores of the thread that calls AudioIn (the engine's audio thread)
+    int audio_threads = 3;
 };
 
 struct AskResult {
@@ -44,6 +48,7 @@ struct AskResult {
     long view_frame_id = -1;
     double view_age_ms = 0;
     bool cancelled = false;
+    std::string stop;  // why generation ended: "eog", "max", "cancel", "error"
     std::string error;
 };
 
@@ -69,9 +74,32 @@ public:
     int history_tokens() const;
     double last_read_ms() const { return last_read_ms_; }
 
+    // ---- spoken questions
+    // An audio encoder over this model (call it from the audio thread; it never touches the LM context).
+    std::unique_ptr<AudioIn> audio_in(std::string* err);
+    int n_embd_inp() const;
+    // Decodes the next rows of the utterance into S while the user talks. S is built on the current view at the first
+    // rows (or continues the conversation about it), and is rebuilt from the new V with all rows so far when a new
+    // view lands mid-utterance. Does not preempt a background read: it waits for it, so the speech-start view lands.
+    bool voice_feed(const float* rows, int n, std::string* err);
+    // Closes the spoken turn and answers it: preempts any background read, decodes rows not yet in S, generates.
+    AskResult voice_answer(int max_tokens, const std::function<void(const std::string&)>& on_token);
+    void voice_drop();  // forgets the utterance (S is rebuilt from V at the next question)
+    // makes a running background read give way now (the speech just ended; voice_answer is about to lock)
+    void preempt() { preempt_ = true; }
+    bool reading() const { return reading_; }
+
 private:
     Lm() = default;
-    struct Turn { std::string q, a; };
+    struct Turn {
+        std::string q, a;
+        std::vector<float> rows;  // a spoken question: its audio rows instead of q
+    };
+    bool voice_s_locked(std::string* err);  // S ready for the utterance's rows on the current view
+    bool decode_turn(const Turn& t, int seq, std::string* err);
+    int turn_tokens(const Turn& t) const;
+    void generate(AskResult& r, int max_tokens, const std::function<void(const std::string&)>& on_token,
+                  std::chrono::steady_clock::time_point t0);
     bool decode_text(const std::string& text, int seq, bool logits_last, std::string* err);
     bool rebuild_history(std::string* err);  // H from scratch: start + system + kept turns
     bool commit_locked(std::string* err);
@@ -96,6 +124,12 @@ private:
     long view_frame_id_ = -1, s_frame_id_ = -1;
     std::chrono::steady_clock::time_point view_time_{};
     double copy_ms_ = 0, last_read_ms_ = 0;
+    long view_gen_ = 0;                   // bumped by every new V (and reset)
+    // the utterance being spoken: all its rows, how many are in S, and the view generation S was built on
+    std::vector<float> v_rows_;
+    int v_n_ = 0, v_in_s_ = 0;
+    long v_gen_ = -1;
+    bool v_active_ = false;
 };
 
 }  // namespace ce

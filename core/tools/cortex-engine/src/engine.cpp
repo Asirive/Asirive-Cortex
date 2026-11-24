@@ -2,7 +2,10 @@
 //
 //   control thread (vision_cpus)  frame -> prepare -> NPU + islands -> skip check -> Lm::read_view (background)
 //   LM worker      (lm_cpus)      asks, one at a time; an ask preempts a background read (Lm) and goes ahead of the
-//                                 next island (BigCores gate): priority ask > island > background read
+//                                 next island (BigCores gate): priority ask > island > background read.
+//                                 Also decodes the audio rows of an utterance into S while the user talks.
+//   audio thread   (audio_cpus)   pushed PCM -> VAD (Listener) -> audio encoder (AudioIn) -> rows to the worker.
+//                                 It never calls llama_decode, so it is never pinned to an LM core.
 //
 // Each thread opens its own part (Vision::shared on control, Lm::open on the worker) because ggml pins the thread
 // that creates or drives a threadpool to the pool's first core; the caller of ce_open is never pinned.
@@ -24,8 +27,10 @@
 #include <thread>
 #include <vector>
 
+#include "audio_in.h"
 #include "lm.h"
 #include "prep.h"
+#include "vad.h"
 #include "vision.h"
 
 using nlohmann::json;
@@ -41,9 +46,11 @@ constexpr int kCanvasW = 640, kCanvasH = 352;
 
 struct Config {
     std::string model, mmproj, split_dir, qnn_lib_dir, system_prompt;
-    std::vector<int> lm_cpus{4, 5, 6, 7}, vision_cpus{1, 2, 3}, island_cpus{4, 5, 6, 7};
+    std::vector<int> lm_cpus{4, 5, 6, 7}, vision_cpus{1, 2, 3}, island_cpus{4, 5, 6, 7}, audio_cpus{1, 2, 3};
     double skip_cos = 0.98;
     int max_tokens = 60, max_history_tokens = 1536;
+    std::string vad_weights = "/var/lib/cortex/models/silero_vad_v4.bin";
+    ListenConfig listen;
     int fail_encode_after = 0;  // test-only fault injection: encodes after this many fail
 };
 
@@ -61,7 +68,12 @@ Config parse_config(const char* text) {
     c.max_tokens = j.value("max_tokens", c.max_tokens);
     c.max_history_tokens = j.value("max_history_tokens", c.max_history_tokens);
     c.fail_encode_after = j.value("fail_encode_after", 0);
-    for (auto* set : {&c.lm_cpus, &c.vision_cpus, &c.island_cpus}) {
+    c.audio_cpus = j.value("audio_cpus", c.audio_cpus);
+    c.vad_weights = j.value("vad_weights", c.vad_weights);
+    c.listen.on = j.value("vad_on", c.listen.on);
+    c.listen.off = j.value("vad_off", c.listen.off);
+    c.listen.hangover_ms = j.value("vad_hangover_ms", c.listen.hangover_ms);
+    for (auto* set : {&c.lm_cpus, &c.vision_cpus, &c.island_cpus, &c.audio_cpus}) {
         if (set->empty()) throw std::runtime_error("config: a cpu set is empty");
         for (int cpu : *set)
             if (cpu <= 0 || cpu >= CPU_SETSIZE)
@@ -145,9 +157,25 @@ struct Engine {
     int n_encodes = 0;
     std::atomic<long> view_id{-1};
     std::atomic<bool> force_read{false};
+    // voice handoff, audio thread -> worker (guarded by mu)
+    std::atomic<bool> speaking{false};  // an utterance is open: host refreshes wait, typed asks are busy
+    std::vector<float> v_rows;          // encoded rows not yet given to the LM
+    bool v_end = false, v_drop = false;
+    clk::time_point v_end_time{};
+    double v_speech_ms = 0;
 
-    std::thread control, worker;
-    std::atomic<long> control_tid{0}, worker_tid{0};
+    // listening (audio thread); amu guards aq, listening, listen_gen, astop
+    std::unique_ptr<Listener> listener;
+    std::unique_ptr<AudioIn> audio_in;
+    std::string listen_error;
+    std::mutex amu;
+    std::condition_variable acv;
+    std::vector<float> aq;
+    bool listening = false, astop = false;
+    long listen_gen = 0;
+
+    std::thread control, worker, audio;
+    std::atomic<long> control_tid{0}, worker_tid{0}, audio_tid{0};
     std::string status_buf;
 
     void emit(const json& j) {
@@ -184,7 +212,9 @@ struct Engine {
             long id;
             {
                 std::unique_lock<std::mutex> l(mu);
-                cv.wait(l, [&] { return stop || refresh_pending || (commit_pending && !asking && !ask_pending); });
+                cv.wait(l, [&] {
+                    return stop || refresh_pending || (commit_pending && !asking && !ask_pending && !v_end);
+                });
                 if (stop) return;
                 if (!refresh_pending) {
                     // background: the last answer joins the history now, off the next refresh's critical path
@@ -232,9 +262,9 @@ struct Engine {
             if (lm->read_view(feat.data(), vision->n_tokens(), id, &err)) break;
             if (err != "preempted") return error("read view: " + err);
             preempted++;
-            // an ask took the LM: read again once it is answered
+            // an ask (typed or spoken) took the LM: read again once it is answered
             std::unique_lock<std::mutex> l(mu);
-            cv.wait(l, [&] { return stop || (!asking && !ask_pending); });
+            cv.wait(l, [&] { return stop || (!asking && !ask_pending && !v_end); });
             if (stop) return;
         }
         last_read = feat;
@@ -256,29 +286,59 @@ struct Engine {
         lm = Lm::open(lc, &err);
         opened(lm ? "" : "lm: " + err);
         if (!lm) return;
+        const int n_embd = lm->n_embd_inp();
         for (;;) {
             std::string text;
-            int max;
+            int max = cfg.max_tokens;
+            std::vector<float> rows;
+            bool drop = false, end = false, typed = false;
+            clk::time_point end_time;
+            double speech_ms = 0;
             {
                 std::unique_lock<std::mutex> l(mu);
-                cv.wait(l, [&] { return stop || ask_pending; });
+                cv.wait(l, [&] { return stop || ask_pending || v_drop || v_end || !v_rows.empty(); });
                 if (stop) return;
-                text = ask_text, max = ask_max;
-                ask_pending = false;
+                drop = v_drop, v_drop = false;
+                rows.swap(v_rows);
+                if (v_end) {
+                    end = true, v_end = false, asking = true;  // asking from here on, so background reads keep waiting
+                    end_time = v_end_time, speech_ms = v_speech_ms;
+                } else if (!drop && rows.empty()) {
+                    typed = true;
+                    text = ask_text, max = ask_max;
+                    ask_pending = false;
+                }
             }
+            if (drop) lm->voice_drop();
+            std::string err;
+            if (!rows.empty() && !lm->voice_feed(rows.data(), (int)(rows.size() / n_embd), &err)) error("voice: " + err);
+            if (!end && !typed) continue;
             big.ask_enter();
-            AskResult r = lm->ask(text, max, [this](const std::string& piece) {
+            bool first = true;
+            double end_to_first = 0;
+            auto on_token = [&](const std::string& piece) {
+                if (first && end) end_to_first = ms_since(end_time);
+                first = false;
                 emit({{"type", "token"}, {"text", piece}});
-            });
+            };
+            AskResult r;
+            if (end) {
+                lm->clear_cancel();
+                r = lm->voice_answer(max, on_token);
+            } else {
+                r = lm->ask(text, max, on_token);
+            }
             big.ask_exit();
-            if (!r.error.empty()) error("ask: " + r.error);
-            emit({{"type", "done"},
-                  {"ttft_ms", r.ttft_ms},
-                  {"total_ms", r.total_ms},
-                  {"n_out", r.n_out},
-                  {"view_frame_id", r.view_frame_id},
-                  {"view_age_ms", r.view_age_ms},
-                  {"cancelled", r.cancelled}});
+            if (!r.error.empty()) error((end ? "voice: " : "ask: ") + r.error);
+            json done = {{"type", "done"},
+                         {"ttft_ms", r.ttft_ms},
+                         {"total_ms", r.total_ms},
+                         {"n_out", r.n_out},
+                         {"view_frame_id", r.view_frame_id},
+                         {"view_age_ms", r.view_age_ms},
+                         {"cancelled", r.cancelled},
+                         {"stop", r.stop}};            if (end) done["voice"] = true, done["end_to_first_ms"] = end_to_first, done["speech_ms"] = speech_ms;
+            emit(done);
             {
                 std::lock_guard<std::mutex> g(mu);
                 asking = false;
@@ -288,16 +348,115 @@ struct Engine {
         }
     }
 
+    // ---- listening
+    void audio_main() {
+        audio_tid = (long)syscall(SYS_gettid);
+        pin_self(cfg.audio_cpus);  // the audio encoder's threads start from this thread and inherit its cores
+        std::vector<float> buf, rows;
+        std::vector<VadEvent> evs;
+        long gen_seen = 0;
+        int64_t base = 0;  // first sample of the current listening period, in the Listener's count
+        bool in_utt = false;
+        for (;;) {
+            bool on;
+            {
+                std::unique_lock<std::mutex> l(amu);
+                acv.wait(l, [&] { return astop || !aq.empty() || listen_gen != gen_seen; });
+                if (astop) return;
+                if (listen_gen != gen_seen) {  // toggled: an open utterance is dropped, the VAD starts clean
+                    gen_seen = listen_gen;
+                    if (in_utt) {
+                        audio_in->drop();
+                        {
+                            std::lock_guard<std::mutex> g(mu);
+                            speaking = false;
+                            v_rows.clear();
+                            v_drop = true;
+                        }
+                        cv.notify_all();
+                        in_utt = false;
+                    }
+                    listener->reset();
+                    base = 0;
+                }
+                on = listening;
+                buf.swap(aq);
+                aq.clear();
+            }
+            if (!on) {
+                buf.clear();
+                continue;
+            }
+            evs.clear();
+            listener->push(buf.data(), buf.size(), &evs);
+            buf.clear();
+            for (auto& e : evs) {
+                const double at_ms = (e.sample - base) / 16.0;
+                std::string err;
+                if (e.kind == VadEvent::Start) {
+                    in_utt = audio_in->begin(&err);
+                    if (!in_utt) {
+                        error("audio: " + err);
+                        continue;
+                    }
+                    {
+                        std::lock_guard<std::mutex> g(mu);
+                        speaking = true;
+                        if (asking) lm->cancel();     // barge-in: the user talks over the answer
+                        if (fid >= 0) refresh_pending = true;  // the view the question is about
+                    }
+                    cv.notify_all();
+                    emit({{"type", "speech_start"}, {"at_ms", at_ms}});
+                    utt_start_ms_ = at_ms;
+                } else if (e.kind == VadEvent::Audio) {
+                    if (!in_utt) continue;
+                    rows.clear();
+                    if (audio_in->push(e.pcm.data(), e.pcm.size(), &rows) < 0) error("audio: encode failed");
+                    if (rows.empty()) continue;
+                    {
+                        std::lock_guard<std::mutex> g(mu);
+                        v_rows.insert(v_rows.end(), rows.begin(), rows.end());
+                    }
+                    cv.notify_all();
+                } else {
+                    if (!in_utt) continue;
+                    in_utt = false;
+                    rows.clear();
+                    if (audio_in->end(&rows) < 0) error("audio: encode failed");
+                    {
+                        std::lock_guard<std::mutex> g(mu);
+                        v_rows.insert(v_rows.end(), rows.begin(), rows.end());
+                        v_end = true;
+                        v_end_time = clk::now();
+                        v_speech_ms = at_ms - utt_start_ms_;
+                        speaking = false;
+                    }
+                    lm->preempt();  // a background read gives way now, not after its whole image
+                    cv.notify_all();
+                    emit({{"type", "speech_end"}, {"at_ms", at_ms}, {"speech_ms", at_ms - utt_start_ms_}});
+                }
+            }
+        }
+    }
+    double utt_start_ms_ = 0;  // audio thread only
+
     void shutdown() {
         {
             std::lock_guard<std::mutex> g(mu);
             stop = true;
         }
+        {
+            std::lock_guard<std::mutex> g(amu);
+            astop = true;
+        }
+        acv.notify_all();
+        if (audio.joinable()) audio.join();
         if (lm) lm->cancel();
         cv.notify_all();
         if (control.joinable()) control.join();
         if (worker.joinable()) worker.join();
         if (vision) vision->set_island_gate(nullptr, nullptr);
+        audio_in.reset();  // uses the LM's mtmd context
         lm.reset();
     }
 };
@@ -343,6 +502,18 @@ void* ce_open(const char* config_json, ce_event_cb cb, void* user) {
         delete e;
         return nullptr;
     }
+    // Listening is optional: without the VAD weights or an audio encoder the engine still serves typed asks, and
+    // ce_set_listening says why it cannot listen.
+    e->listener.reset(new ce::Listener());
+    if (!e->listener->open(e->cfg.vad_weights, e->cfg.listen, &err)) {
+        e->listen_error = "vad: " + err;
+        e->listener.reset();
+    } else if (!(e->audio_in = e->lm->audio_in(&err))) {
+        e->listen_error = "audio: " + err;
+        e->listener.reset();
+    } else {
+        e->audio = std::thread([e] { e->audio_main(); });
+    }
     return e;
 }
 
@@ -362,6 +533,7 @@ int ce_refresh(void* h) {
     if (!e) return -1;
     {
         std::lock_guard<std::mutex> g(e->mu);
+        if (e->speaking) return 0;  // the view stays the one taken when the user started talking
         e->refresh_pending = true;
     }
     e->cv.notify_all();
@@ -373,7 +545,7 @@ int ce_ask(void* h, const char* text, int max_tokens) {
     if (!e || !text) return -1;
     {
         std::unique_lock<std::mutex> g(e->mu);
-        if (e->asking) {
+        if (e->asking || e->speaking || e->v_end) {
             g.unlock();
             e->error("busy");
             return -1;
@@ -407,6 +579,41 @@ int ce_reset_history(void* h) {
     return 0;
 }
 
+int ce_set_listening(void* h, int on) {
+    auto* e = static_cast<Engine*>(h);
+    if (!e) return -1;
+    if (!e->listener) {
+        ce::t_last_error = e->listen_error;
+        e->error("listen: " + e->listen_error);
+        return -1;
+    }
+    {
+        std::lock_guard<std::mutex> g(e->amu);
+        if (e->listening == (on != 0)) return 0;
+        e->listening = on != 0;
+        e->listen_gen++;
+        e->aq.clear();
+    }
+    e->acv.notify_all();
+    return 0;
+}
+
+int ce_push_audio(void* h, const float* pcm, int n) {
+    auto* e = static_cast<Engine*>(h);
+    if (!e || !pcm || n < 0) return -1;
+    {
+        std::lock_guard<std::mutex> g(e->amu);
+        if (!e->listening) return 0;
+        if (e->aq.size() + (size_t)n > 10 * 16000) {  // the audio thread is 10 s behind: drop the backlog
+            e->aq.clear();
+            e->error("audio: backlog dropped");
+        }
+        e->aq.insert(e->aq.end(), pcm, pcm + n);
+    }
+    e->acv.notify_one();
+    return 0;
+}
+
 const char* ce_status(void* h) {
     auto* e = static_cast<Engine*>(h);
     if (!e) return "{}";
@@ -415,10 +622,17 @@ const char* ce_status(void* h) {
         std::lock_guard<std::mutex> g(e->mu);
         st["asking"] = e->asking.load();
         st["frame_id"] = e->fid;
+        st["speaking"] = e->speaking.load();
     }
+    {
+        std::lock_guard<std::mutex> g(e->amu);
+        st["listening"] = e->listening;
+    }
+    if (!e->listen_error.empty()) st["listen_error"] = e->listen_error;
     st["view_frame_id"] = e->view_id.load();
     st["history_tokens"] = e->lm->history_tokens();
     st["threads"] = {ce::thread_info("control", e->control_tid), ce::thread_info("lm", e->worker_tid)};
+    if (e->audio_tid) st["threads"].push_back(ce::thread_info("audio", e->audio_tid));
     e->status_buf = st.dump();
     return e->status_buf.c_str();
 }

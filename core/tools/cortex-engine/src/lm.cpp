@@ -1,6 +1,7 @@
 #include "lm.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -70,6 +71,29 @@ static int decode_tokens(llama_context* ctx, const std::vector<llama_token>& tok
     return rc;
 }
 
+// embedding rows ([n * n_embd], e.g. audio) at the next positions of seq; 0 ok, 2 aborted
+static int decode_rows(llama_context* ctx, const float* rows, int n, int n_embd, int seq, int* pos) {
+    if (n <= 0) return 0;
+    const int cap = std::min(n, kBatch);
+    llama_batch b = llama_batch_init(cap, n_embd, 1);
+    int rc = 0;
+    for (int i = 0; i < n && rc == 0; i += cap) {
+        const int m = std::min(n - i, cap);
+        b.n_tokens = m;
+        std::memcpy(b.embd, rows + (size_t)i * n_embd, (size_t)m * n_embd * sizeof(float));
+        for (int j = 0; j < m; j++) {
+            b.pos[j] = *pos + j;
+            b.n_seq_id[j] = 1;
+            b.seq_id[j][0] = seq;
+            b.logits[j] = false;
+        }
+        rc = llama_decode(ctx, b);
+        if (rc == 0) *pos += m;
+    }
+    llama_batch_free(b);
+    return rc;
+}
+
 bool Lm::abort_cb(void* self) {
     auto* lm = static_cast<Lm*>(self);
     return lm->im_ && lm->im_->abortable.load() && lm->preempt_.load();
@@ -112,7 +136,8 @@ std::unique_ptr<Lm> Lm::open(const LmConfig& cfg, std::string* err) {
     mtmd_context_params mcp = mtmd_context_params_default();
     mcp.use_gpu = false;
     mcp.print_timings = false;
-    mcp.warmup = false;  // the NPU encodes; mtmd only lays out the prompt
+    mcp.warmup = false;  // the NPU encodes images; mtmd lays out the prompt and runs the audio encoder
+    mcp.n_threads = cfg.audio_threads;
     lm->mctx_ = mtmd_init_from_file(cfg.mmproj.c_str(), lm->model_, mcp);
     if (!lm->mctx_) return fail("cannot load mmproj " + cfg.mmproj);
 
@@ -146,7 +171,22 @@ std::unique_ptr<Lm> Lm::open(const LmConfig& cfg, std::string* err) {
         return fail("view prompt does not split cleanly before the question");
     im->tail.assign(post.begin(), post.end() - q.size());
 
-    im->smpl = llama_sampler_init_greedy();
+    // Greedy, text only. LFM3-Omni can answer in speech: <|mixed_start|> opens interleaved text + audio blocks and
+    // <|audio_start|> audio alone (after a spoken question it often picks mixed, then ends the turn after one short
+    // text block). Speech output is not ours to make here, so both are banned, as in llama.cpp's own text mode.
+    im->smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    {
+        std::vector<llama_logit_bias> ban;
+        for (const char* s : {"<|audio_start|>", "<|mixed_start|>"}) {
+            const auto t = tokenize(lm->model_, s);
+            if (t.size() == 1) ban.push_back({t[0], -INFINITY});
+        }
+        if (!ban.empty())
+            llama_sampler_chain_add(im->smpl, llama_sampler_init_logit_bias(
+                                                  llama_vocab_n_tokens(llama_model_get_vocab(lm->model_)),
+                                                  (int32_t)ban.size(), ban.data()));
+        llama_sampler_chain_add(im->smpl, llama_sampler_init_greedy());
+    }
     im->one = llama_batch_init(1, 0, 1);
     std::string e;
     if (!lm->rebuild_history(&e)) return fail(e);
@@ -192,6 +232,24 @@ static std::string turn_text(const std::string& q, const std::string& a) {
     return std::string(kUser) + q + kEnd + a + kTurnEnd;
 }
 
+int Lm::turn_tokens(const Turn& t) const {
+    if (t.rows.empty()) return (int)tokenize(model_, turn_text(t.q, t.a)).size();
+    return (int)(tokenize(model_, kUser).size() + t.rows.size() / n_embd_inp() +
+                 tokenize(model_, std::string(kEnd) + t.a + kTurnEnd).size());
+}
+
+// a finished turn in H: text, or a spoken question kept as its audio rows (no transcript is made)
+bool Lm::decode_turn(const Turn& t, int seq, std::string* err) {
+    if (t.rows.empty()) return decode_text(turn_text(t.q, t.a), seq, false, err);
+    if (!decode_text(kUser, seq, false, err)) return false;
+    const int rc = decode_rows(ctx_, t.rows.data(), (int)(t.rows.size() / n_embd_inp()), n_embd_inp(), seq, &pos_[seq]);
+    if (rc != 0) {
+        if (err) *err = rc == 2 ? "preempted" : "audio rows decode failed (" + std::to_string(rc) + ")";
+        return false;
+    }
+    return decode_text(std::string(kEnd) + t.a + kTurnEnd, seq, false, err);
+}
+
 std::string Lm::head_text() const {
     std::string head = kStart;
     if (!cfg_.system_prompt.empty()) head += "<|im_start|>system\n" + cfg_.system_prompt + kTurnEnd;
@@ -221,7 +279,7 @@ bool Lm::commit_locked(std::string* err) {
     int total = 0;
     std::vector<int> sizes;
     for (auto& t : hist) {
-        sizes.push_back((int)tokenize(model_, turn_text(t.q, t.a)).size());
+        sizes.push_back(turn_tokens(t));
         total += sizes.back();
     }
     size_t drop = 0;
@@ -232,12 +290,11 @@ bool Lm::commit_locked(std::string* err) {
     if (drop > 0) {  // the oldest turns go: read H again from the start
         clear(2);
         ok = decode_text(head_text(), 2, false, err);
-        for (size_t i = 0; ok && i < hist.size(); i++) ok = decode_text(turn_text(hist[i].q, hist[i].a), 2, false, err);
+        for (size_t i = 0; ok && i < hist.size(); i++) ok = decode_turn(hist[i], 2, err);
     } else {  // H already holds the older turns; read only the new ones
         copy(0, 2);
         ok = true;
-        for (size_t i = history_.size(); ok && i < hist.size(); i++)
-            ok = decode_text(turn_text(hist[i].q, hist[i].a), 2, false, err);
+        for (size_t i = history_.size(); ok && i < hist.size(); i++) ok = decode_turn(hist[i], 2, err);
     }
     im_->abortable = false;
     if (!ok) {
@@ -258,7 +315,7 @@ bool Lm::rebuild_history(std::string* err) {
     if (!decode_text(head_text(), 0, false, err)) return false;
     pos_base_ = pos_[0];
     for (const auto& t : history_)
-        if (!decode_text(turn_text(t.q, t.a), 0, false, err)) return false;
+        if (!decode_turn(t, 0, err)) return false;
     return true;
 }
 
@@ -275,6 +332,10 @@ void Lm::reset_history() {
     clear(3);
     have_view_ = s_on_view_ = false;
     view_frame_id_ = -1;
+    view_gen_++;
+    v_rows_.clear();
+    v_n_ = v_in_s_ = 0;
+    v_active_ = false;
 }
 
 bool Lm::read_view(const float* features, int n_tok, long frame_id, std::string* err) {
@@ -321,6 +382,7 @@ bool Lm::read_view(const float* features, int n_tok, long frame_id, std::string*
     clear(2);
     have_view_ = true;
     s_on_view_ = false;  // the next ask starts a fresh conversation about this view
+    view_gen_++;         // an utterance in progress moves onto it (voice_s_locked)
     view_frame_id_ = frame_id;
     view_time_ = clk::now();
     last_read_ms_ = ms_since(t0);
@@ -334,9 +396,13 @@ AskResult Lm::ask(const std::string& question, int max_tokens, const std::functi
     preempt_ = true;
     std::lock_guard<std::mutex> g(mu_);
     preempt_ = false;
-    LmImpl* im = im_;
     AskResult r;
     std::string text;
+    if (v_active_) {  // a typed question over an unfinished utterance: S holds half a turn
+        s_on_view_ = v_active_ = false;
+        v_rows_.clear();
+        v_n_ = v_in_s_ = 0;
+    }
     if (s_on_view_) {
         text = std::string(kTurnEnd) + kUser + question + kEnd;  // follow-up: S already holds the conversation
     } else {
@@ -351,16 +417,31 @@ AskResult Lm::ask(const std::string& question, int max_tokens, const std::functi
         s_on_view_ = false;
         return r;
     }
+    generate(r, max_tokens, on_token, t0);
+    pending_.push_back({question, r.text, {}});
+    pending_n_ = (int)pending_.size();
+    return r;
+}
+
+// samples the answer greedily into S (seq 3) from the logits of the last decode
+void Lm::generate(AskResult& r, int max_tokens, const std::function<void(const std::string&)>& on_token,
+                  std::chrono::steady_clock::time_point t0) {
+    LmImpl* im = im_;
     const llama_vocab* vocab = llama_model_get_vocab(model_);
     llama_sampler_reset(im->smpl);
+    r.stop = "max";
     for (; r.n_out < max_tokens; r.n_out++) {
         if (cancel_) {
             r.cancelled = true;
+            r.stop = "cancel";
             break;
         }
         const llama_token tok = llama_sampler_sample(im->smpl, ctx_, -1);
         if (r.n_out == 0) r.ttft_ms = ms_since(t0);
-        if (llama_vocab_is_eog(vocab, tok)) break;
+        if (llama_vocab_is_eog(vocab, tok)) {
+            r.stop = "eog";
+            break;
+        }
         char buf[256];
         const int n = llama_token_to_piece(vocab, tok, buf, sizeof buf, 0, false);
         if (n > 0) {
@@ -377,15 +458,113 @@ AskResult Lm::ask(const std::string& question, int max_tokens, const std::functi
         const int rc = llama_decode(ctx_, im->one);
         if (rc != 0) {
             r.error = "llama_decode failed while generating (" + std::to_string(rc) + ")";
+            r.stop = "error";
             s_on_view_ = false;
             break;
         }
         pos_[3]++;
     }
     r.total_ms = ms_since(t0);
-    pending_.push_back({question, r.text});
+}
+
+// ---------------------------------------------------------------- spoken questions
+
+std::unique_ptr<AudioIn> Lm::audio_in(std::string* err) {
+    if (!mtmd_support_audio_stream(mctx_)) {
+        if (err) *err = "this mmproj has no streaming audio encoder";
+        return nullptr;
+    }
+    return std::unique_ptr<AudioIn>(new AudioIn(mctx_, n_embd_inp()));
+}
+
+int Lm::n_embd_inp() const { return llama_model_n_embd_inp(model_); }
+
+// S ready to take the utterance's rows: the first rows open a turn on the current view (or continue the
+// conversation about it); a view that landed since the utterance began restarts S from it, rows to come again.
+bool Lm::voice_s_locked(std::string* err) {
+    if (v_active_ && v_gen_ == view_gen_) return true;
+    std::string pre;
+    if (!v_active_ && s_on_view_) {
+        pre = std::string(kTurnEnd) + kUser;  // follow-up on the same view
+    } else {
+        copy(have_view_ ? 1 : 0, 3);
+        pre = have_view_ ? "\n" : kUser;
+        s_on_view_ = true;
+        s_frame_id_ = have_view_ ? view_frame_id_ : -1;
+    }
+    v_in_s_ = 0;
+    if (!decode_text(pre, 3, false, err)) {
+        s_on_view_ = v_active_ = false;
+        return false;
+    }
+    v_active_ = true;
+    v_gen_ = view_gen_;
+    return true;
+}
+
+bool Lm::voice_feed(const float* rows, int n, std::string* err) {
+    std::lock_guard<std::mutex> g(mu_);
+    v_rows_.insert(v_rows_.end(), rows, rows + (size_t)n * n_embd_inp());
+    v_n_ += n;
+    if (!voice_s_locked(err)) return false;
+    const int rc = decode_rows(ctx_, v_rows_.data() + (size_t)v_in_s_ * n_embd_inp(), v_n_ - v_in_s_, n_embd_inp(), 3,
+                               &pos_[3]);
+    if (rc != 0) {
+        if (err) *err = "audio rows decode failed (" + std::to_string(rc) + ")";
+        s_on_view_ = v_active_ = false;
+        return false;
+    }
+    v_in_s_ = v_n_;
+    return true;
+}
+
+AskResult Lm::voice_answer(int max_tokens, const std::function<void(const std::string&)>& on_token) {
+    const auto t0 = clk::now();
+    preempt_ = true;  // as ask(): a background read gives way at once
+    std::lock_guard<std::mutex> g(mu_);
+    preempt_ = false;
+    AskResult r;
+    struct Reset {
+        Lm* lm;
+        ~Reset() {
+            lm->v_rows_.clear();
+            lm->v_n_ = lm->v_in_s_ = 0;
+            lm->v_active_ = false;
+        }
+    } reset{this};
+    if (v_n_ == 0) {
+        r.error = "no speech";
+        return r;
+    }
+    if (!voice_s_locked(&r.error)) return r;
+    if (v_in_s_ < v_n_) {
+        const int rc = decode_rows(ctx_, v_rows_.data() + (size_t)v_in_s_ * n_embd_inp(), v_n_ - v_in_s_,
+                                   n_embd_inp(), 3, &pos_[3]);
+        if (rc != 0) {
+            r.error = "audio rows decode failed (" + std::to_string(rc) + ")";
+            s_on_view_ = false;
+            return r;
+        }
+        v_in_s_ = v_n_;
+    }
+    r.view_frame_id = s_frame_id_;
+    if (s_frame_id_ >= 0) r.view_age_ms = std::chrono::duration<double, std::milli>(t0 - view_time_).count();
+    if (!decode_text(kEnd, 3, true, &r.error)) {
+        s_on_view_ = false;
+        return r;
+    }
+    generate(r, max_tokens, on_token, t0);
+    pending_.push_back({std::string(), r.text, std::move(v_rows_)});
     pending_n_ = (int)pending_.size();
     return r;
+}
+
+void Lm::voice_drop() {
+    std::lock_guard<std::mutex> g(mu_);
+    if (v_active_) s_on_view_ = false;  // S holds half a turn: the next question starts again from V
+    v_rows_.clear();
+    v_n_ = v_in_s_ = 0;
+    v_active_ = false;
 }
 
 }  // namespace ce
