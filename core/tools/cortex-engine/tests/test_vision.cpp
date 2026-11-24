@@ -12,14 +12,14 @@ static const std::string kQnnLib = std::string(getenv("HOME") ? getenv("HOME") :
 
 TEST(vision_open_missing_dir_is_clear_error) {
     std::string err;
-    auto v = ce::Vision::open("/nope", kQnnLib, {4, 5, 6, 7}, 4, &err);
+    auto v = ce::Vision::open("/nope", kQnnLib, {4, 5, 6, 7}, 4, {1, 2}, &err);
     CHECK(!v);
     CHECK(err.find("/nope") != std::string::npos);
 }
 
 TEST(vision_port_check) {
     std::string err;
-    auto v = ce::Vision::shared(kSplit, kQnnLib, {4, 5, 6, 7}, 4, &err);  // the API tests may have opened it
+    auto v = ce::Vision::shared(kSplit, kQnnLib, {4, 5, 6, 7}, 4, {1, 2}, &err);  // the API tests may have opened it
     if (!v) std::printf("  open failed: %s\n", err.c_str());
     CHECK(v != nullptr);
     if (!v) return;
@@ -66,7 +66,7 @@ TEST(vision_port_check) {
 // Runs after a successful open in this process: the NPU is never reopened (fastrpc reset, 2026-11-24).
 TEST(vision_open_twice_refused) {
     std::string err;
-    auto v = ce::Vision::open(kSplit, kQnnLib, {4, 5, 6, 7}, 4, &err);
+    auto v = ce::Vision::open(kSplit, kQnnLib, {4, 5, 6, 7}, 4, {1, 2}, &err);
     CHECK(!v);
     CHECK(err.find("already opened") != std::string::npos);
 }

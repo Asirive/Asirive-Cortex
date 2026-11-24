@@ -1,8 +1,9 @@
 // The engine's scheduler behind the C API.
 //
 //   control thread (vision_cpus)  frame -> prepare -> NPU + islands -> skip check -> Lm::read_view (background)
-//   LM worker      (lm_cpus)      asks, one at a time; an ask preempts a background read (Lm) and goes ahead of the
-//                                 next island (BigCores gate): priority ask > island > background read.
+//   LM worker      (lm_cpus)      asks, one at a time; an ask preempts a background read (Lm) and holds the big cores
+//                                 for its whole answer (BigCores gate): islands that come meanwhile run on
+//                                 island_small_cpus instead of waiting, so the view keeps moving while Cortex speaks.
 //                                 Also decodes the audio rows of an utterance into S while the user talks.
 //   audio thread   (audio_cpus)   pushed PCM -> VAD (Listener) -> audio encoder (AudioIn) -> rows to the worker.
 //                                 It never calls llama_decode, so it is never pinned to an LM core.
@@ -28,6 +29,7 @@
 #include <vector>
 
 #include "audio_in.h"
+#include "big_cores.h"
 #include "lm.h"
 #include "prep.h"
 #include "vad.h"
@@ -47,6 +49,7 @@ constexpr int kCanvasW = 640, kCanvasH = 352;
 struct Config {
     std::string model, mmproj, split_dir, qnn_lib_dir, system_prompt;
     std::vector<int> lm_cpus{4, 5, 6, 7}, vision_cpus{1, 2, 3}, island_cpus{4, 5, 6, 7}, audio_cpus{1, 2, 3};
+    std::vector<int> island_small_cpus{1, 2};  // islands during an answer
     double skip_cos = 0.98;
     int max_tokens = 60, max_history_tokens = 1536;
     std::string vad_weights = "/var/lib/cortex/models/silero_vad_v4.bin";
@@ -64,6 +67,7 @@ Config parse_config(const char* text) {
     c.lm_cpus = j.value("lm_cpus", c.lm_cpus);
     c.vision_cpus = j.value("vision_cpus", c.vision_cpus);
     c.island_cpus = j.value("island_cpus", c.island_cpus);
+    c.island_small_cpus = j.value("island_small_cpus", c.island_small_cpus);
     c.skip_cos = j.value("skip_cos", c.skip_cos);
     c.max_tokens = j.value("max_tokens", c.max_tokens);
     c.max_history_tokens = j.value("max_history_tokens", c.max_history_tokens);
@@ -73,7 +77,7 @@ Config parse_config(const char* text) {
     c.listen.on = j.value("vad_on", c.listen.on);
     c.listen.off = j.value("vad_off", c.listen.off);
     c.listen.hangover_ms = j.value("vad_hangover_ms", c.listen.hangover_ms);
-    for (auto* set : {&c.lm_cpus, &c.vision_cpus, &c.island_cpus, &c.audio_cpus}) {
+    for (auto* set : {&c.lm_cpus, &c.vision_cpus, &c.island_cpus, &c.audio_cpus, &c.island_small_cpus}) {
         if (set->empty()) throw std::runtime_error("config: a cpu set is empty");
         for (int cpu : *set)
             if (cpu <= 0 || cpu >= CPU_SETSIZE)
@@ -100,32 +104,6 @@ double mean_row_cos(const std::vector<float>& a, const std::vector<float>& b, in
     }
     return sum / rows;
 }
-
-// The big cores (cpu4-7) are shared by the LM and the vision islands. An ask holds them for its whole answer;
-// islands wait while an ask is running or waiting.
-struct BigCores {
-    std::mutex m;
-    std::condition_variable cv;
-    bool ask = false, island = false;
-    void island_enter() {
-        std::unique_lock<std::mutex> l(m);
-        cv.wait(l, [&] { return !ask; });
-        island = true;
-    }
-    void island_exit() {
-        { std::lock_guard<std::mutex> g(m); island = false; }
-        cv.notify_all();
-    }
-    void ask_enter() {
-        std::unique_lock<std::mutex> l(m);
-        ask = true;
-        cv.wait(l, [&] { return !island; });
-    }
-    void ask_exit() {
-        { std::lock_guard<std::mutex> g(m); ask = false; }
-        cv.notify_all();
-    }
-};
 
 struct Engine {
     Config cfg;
@@ -196,12 +174,13 @@ struct Engine {
         control_tid = (long)syscall(SYS_gettid);
         pin_self(cfg.vision_cpus);
         std::string err;
-        vision = Vision::shared(cfg.split_dir, cfg.qnn_lib_dir, cfg.island_cpus, (int)cfg.island_cpus.size(), &err);
+        vision = Vision::shared(cfg.split_dir, cfg.qnn_lib_dir, cfg.island_cpus, (int)cfg.island_cpus.size(),
+                                cfg.island_small_cpus, &err);
         if (vision) {
             if ((int)vision->pixel_count() != kCanvasW / 32 * (kCanvasH / 32) * 4 * 1536)
                 err = "split encoder input does not match the 640x352 canvas", vision.reset();
             else
-                vision->set_island_gate([this] { big.island_enter(); }, [this] { big.island_exit(); });
+                vision->set_island_gate([this] { return big.island_enter(); }, [this](bool b) { big.island_exit(b); });
         }
         opened(vision ? "" : "vision: " + err);
         if (!vision) return;

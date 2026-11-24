@@ -74,7 +74,8 @@ static NpuIo io_info(void* g, int is_out, int i) {
 }
 
 std::unique_ptr<Vision> Vision::open(const std::string& dir, const std::string& qnn_lib_dir,
-                                     const std::vector<int>& island_cpus, int island_threads, std::string* err) {
+                                     const std::vector<int>& island_cpus, int island_threads,
+                                        const std::vector<int>& island_small_cpus, std::string* err) {
     try {
         if (!is_file(dir + "/io.json") || !is_file(dir + "/npu0.bin"))
             throw std::runtime_error("no split encoder in " + dir + " (need io.json + npu*.bin)");
@@ -114,7 +115,7 @@ std::unique_ptr<Vision> Vision::open(const std::string& dir, const std::string& 
                 const auto& d = io["islands"][label];
                 st->island = std::make_unique<Island>(d.at("n_tok").get<int>(), d.at("heads").get<int>(),
                                                       d.at("dim").get<int>(), d.at("scale").get<float>(), island_cpus,
-                                                      island_threads);
+                                                      island_threads, island_small_cpus);
                 st->q = d.at("q"), st->k = d.at("k"), st->v = d.at("v"), st->o = d.at("out");
                 v->env_[st->o].resize(st->island->numel());
             }
@@ -133,14 +134,15 @@ std::unique_ptr<Vision> Vision::open(const std::string& dir, const std::string& 
 }
 
 std::shared_ptr<Vision> Vision::shared(const std::string& split_dir, const std::string& qnn_lib_dir,
-                                       const std::vector<int>& island_cpus, int island_threads, std::string* err) {
+                                       const std::vector<int>& island_cpus, int island_threads,
+                                        const std::vector<int>& island_small_cpus, std::string* err) {
     static std::mutex mu;
     static std::shared_ptr<Vision> one;
     std::lock_guard<std::mutex> g(mu);
     // Never freed: destroying it during static destruction runs after QNN's own teardown (error spam at exit), and
     // the NPU is closed by process exit anyway.
     if (!one)
-        if (Vision* v = open(split_dir, qnn_lib_dir, island_cpus, island_threads, err).release())
+        if (Vision* v = open(split_dir, qnn_lib_dir, island_cpus, island_threads, island_small_cpus, err).release())
             one = std::shared_ptr<Vision>(v, [](Vision*) {});
     return one;
 }
@@ -173,10 +175,9 @@ bool Vision::encode(const float* pixel_values, std::vector<float>* features, std
                 last_ms_[st->label + ":d"] =
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t2).count();
             } else {
-                if (gate_enter_) gate_enter_();
-                st->island->run(get(st->q), get(st->k), get(st->v), env_[st->o].data());
-                if (gate_exit_) gate_exit_();
-            }
+                const bool big = gate_enter_ ? gate_enter_() : true;
+                st->island->run(get(st->q), get(st->k), get(st->v), env_[st->o].data(), !big);
+                if (gate_exit_) gate_exit_(big);            }
             last_ms_[st->label] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         }
         *features = env_.at("image_features");

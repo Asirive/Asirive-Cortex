@@ -17,7 +17,7 @@
  * answer still running (barge-in). Audio between utterances is never given to the model.
  *
  * Config JSON: model, mmproj, split_dir, qnn_lib_dir (required); system_prompt, lm_cpus [4-7], vision_cpus [1-3],
- * island_cpus [4-7], skip_cos 0.98, max_tokens 60, max_history_tokens 1536; audio_cpus [1-3],
+ * island_cpus [4-7], island_small_cpus [1,2] (islands while an answer holds the big cores), skip_cos 0.98, max_tokens 60, max_history_tokens 1536; audio_cpus [1-3],
  * vad_weights "/var/lib/cortex/models/silero_vad_v4.bin", vad_on 0.5, vad_off 0.35, vad_hangover_ms 500.
  * cpu0 is the safety core and is refused.
  */

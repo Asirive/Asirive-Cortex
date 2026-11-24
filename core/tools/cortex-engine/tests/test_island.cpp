@@ -42,6 +42,23 @@ TEST(island_matches_naive) {
     CHECK(golden::max_abs(want.data(), got.data(), want.size()) <= 2e-3);
 }
 
+// the small-core pool computes the same island (what the engine runs during an answer)
+TEST(island_small_pool_matches_big) {
+    auto q = golden::load_f32(golden::dir + "island1_q.f32"), k = golden::load_f32(golden::dir + "island1_k.f32"),
+         v = golden::load_f32(golden::dir + "island1_v.f32");
+    CHECK(q.size() == 880u * 16 * 64);
+    if (q.size() != 880u * 16 * 64) return;
+    std::vector<float> big(q.size()), small(q.size());
+    ce::Island isl(880, 16, 64, 0.125f, {4, 5, 6, 7}, 4, {1, 2});
+    isl.run(q.data(), k.data(), v.data(), big.data(), false);
+    const double big_ms = isl.last_ms();
+    isl.run(q.data(), k.data(), v.data(), small.data(), true);
+    const double small_ms = isl.last_ms();
+    const double d = golden::max_abs(big.data(), small.data(), big.size());
+    std::printf("  island1: big cores %.1f ms, small cores %.1f ms, max |diff| %.2e\n", big_ms, small_ms, d);
+    CHECK(d <= 1e-6);
+}
+
 TEST(island_matches_onnx_golden) {
     auto q = golden::load_f32(golden::dir + "island1_q.f32"), k = golden::load_f32(golden::dir + "island1_k.f32"),
          v = golden::load_f32(golden::dir + "island1_v.f32"), want = golden::load_f32(golden::dir + "island1_out.f32");
