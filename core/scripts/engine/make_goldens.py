@@ -22,6 +22,7 @@ def main() -> int:
     for a in ("--split", "--lib", "--qnn-lib", "--frames", "--out"):
         ap.add_argument(a, required=True)
     ap.add_argument("--write-io")
+    ap.add_argument("--rgb-only", action="store_true", help="only the prepared frames and decoded pixels; no NPU")
     a = ap.parse_args()
     split, out = Path(a.split), Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -31,7 +32,13 @@ def main() -> int:
         (split / "io.json").write_text(json.dumps(io))
         print("io.json: islands", sorted(io["islands"]))
     for f in sorted(Path(a.frames).glob("*.jpg")):
-        prepare(np.asarray(Image.open(f).convert("RGB"))).astype("<f4").tofile(out / (f.stem + ".pv.f32"))
+        rgb = np.asarray(Image.open(f).convert("RGB"))
+        prepare(rgb).astype("<f4").tofile(out / (f.stem + ".pv.f32"))
+        # decoded pixels for the C++ prepare test: int32 w, int32 h, then h*w*3 uint8
+        with open(out / (f.stem + ".rgb"), "wb") as fh:
+            fh.write(np.array([rgb.shape[1], rgb.shape[0]], "<i4").tobytes() + rgb.tobytes())
+    if a.rgb_only:
+        return 0
     from cortex_core.npu.qnn import Runtime
     from cortex_core.npu.split_encoder import SplitEncoder
 
