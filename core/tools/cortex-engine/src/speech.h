@@ -66,6 +66,9 @@ public:
     // The answer was cut: queued frames are dropped, the state reset, on_pcm(nullptr, 0, true). Returns when done,
     // so nothing of this answer comes out afterwards.
     void clear();
+    // A new answer starts: every queued item of every earlier answer is dropped (their sound is being cut), the state
+    // reset, nothing sent. Returns when done, so nothing of those answers comes out afterwards.
+    void drop();
     double mean_ms() const;  // mean codec time per frame, this answer so far
 
 private:

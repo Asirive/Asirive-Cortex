@@ -87,7 +87,7 @@ void Codec::reset() {
 // ---------------------------------------------------------------- codec thread
 
 struct CodecThread::Impl {
-    enum Kind { FRAME, FLUSH, END, CLEAR };
+    enum Kind { FRAME, FLUSH, END, CLEAR, DROP };
     struct Item {
         Kind kind;
         std::array<int32_t, kCodebooks> codes;
@@ -167,9 +167,10 @@ void CodecThread::Impl::run(const std::string& mmproj, const llama_model* model,
             }
             break;
         case CLEAR:
+        case DROP:
             pcm.clear();
             codec->reset();
-            on_pcm(nullptr, 0, true);
+            if (it.kind == CLEAR) on_pcm(nullptr, 0, true);
             {
                 std::lock_guard<std::mutex> g(mu);
                 fresh = true;
@@ -248,6 +249,16 @@ void CodecThread::clear() {
     im_->q.erase(im_->q.begin() + (long)keep, im_->q.end());
     const long id = ++im_->clear_req;
     im_->q.push_back({Impl::CLEAR, {}, id});
+    im_->cv.notify_one();
+    im_->done_cv.wait(l, [&] { return im_->stop || im_->clear_done >= id; });
+}
+
+void CodecThread::drop() {
+    std::unique_lock<std::mutex> l(im_->mu);
+    if (im_->stop) return;
+    im_->q.clear();
+    const long id = ++im_->clear_req;
+    im_->q.push_back({Impl::DROP, {}, id});
     im_->cv.notify_one();
     im_->done_cv.wait(l, [&] { return im_->stop || im_->clear_done >= id; });
 }

@@ -88,6 +88,9 @@ public:
     // is still queued or prefilling is not lost. The caller clears it before starting the next ask.
     void cancel() { cancel_ = true; }
     void clear_cancel() { cancel_ = false; }
+    // Speak mode, before a new answer: the codec drops what is still queued from earlier answers (their sound is cut
+    // by the new answer), so nothing of them reaches on_pcm afterwards. Call it from the thread that asks.
+    void drop_sound();
     void reset_history();
     double copy_ms() const { return copy_ms_; }
     int history_tokens() const;
@@ -121,6 +124,15 @@ private:
                   std::chrono::steady_clock::time_point t0);
     void generate_speech(AskResult& r, int max_tokens, const std::function<void(const std::string&)>& on_token,
                          std::chrono::steady_clock::time_point t0);
+    // Speak mode: one end through on_pcm per answer. An ask opens it; generate_speech or, on an early return,
+    // SoundEnd's destructor sends it.
+    struct SoundEnd {
+        Lm* lm;
+        explicit SoundEnd(Lm* l) : lm(l) { lm->sound_open_ = true; }
+        ~SoundEnd() { lm->end_sound(); }
+    };
+    void end_sound();
+    bool sound_open_ = false;
     bool decode_text(const std::string& text, int seq, bool logits_last, std::string* err);
     bool rebuild_history(std::string* err);  // H from scratch: start + system + kept turns
     bool commit_locked(std::string* err);

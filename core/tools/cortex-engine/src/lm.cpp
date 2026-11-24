@@ -421,6 +421,7 @@ AskResult Lm::ask(const std::string& question, int max_tokens, const std::functi
     std::lock_guard<std::mutex> g(mu_);
     preempt_ = false;
     AskResult r;
+    SoundEnd sound_end(this);
     std::string text;
     if (v_active_) {  // a typed question over an unfinished utterance: S holds half a turn
         s_on_view_ = v_active_ = false;
@@ -445,6 +446,18 @@ AskResult Lm::ask(const std::string& question, int max_tokens, const std::functi
     pending_.push_back({question, r.text, {}});
     pending_n_ = (int)pending_.size();
     return r;
+}
+
+void Lm::end_sound() {
+    if (!sound_open_) return;
+    sound_open_ = false;
+    if (!im_->speech) return;
+    if (im_->codec_thread) im_->codec_thread->end();
+    else if (cfg_.on_pcm) cfg_.on_pcm(nullptr, 0, true);
+}
+
+void Lm::drop_sound() {
+    if (im_->codec_thread) im_->codec_thread->drop();
 }
 
 // samples the answer greedily into S (seq 3) from the logits of the last decode
@@ -543,6 +556,7 @@ void Lm::generate_speech(AskResult& r, int max_tokens, const std::function<void(
         if (s.stop == "cancel") ct->clear();  // nothing of this answer comes out after ask() returns
         else ct->end();                       // the queued frames play out behind us
     }
+    sound_open_ = false;  // this answer's end is sent
     // the loop decoded into S itself: take its position from the memory, whatever happened
     pos_[3] = llama_memory_seq_pos_max(llama_get_memory(ctx_), 3) + 1;
     r.stop = s.stop;
@@ -616,6 +630,7 @@ AskResult Lm::voice_answer(int max_tokens, const std::function<void(const std::s
     std::lock_guard<std::mutex> g(mu_);
     preempt_ = false;
     AskResult r;
+    SoundEnd sound_end(this);
     struct Reset {
         Lm* lm;
         ~Reset() {

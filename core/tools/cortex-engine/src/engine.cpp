@@ -192,9 +192,6 @@ struct Engine {
     std::unique_ptr<Speaker> speaker;
     std::atomic<bool> talking{false}, muted{false}, sound_voice{false};
     std::atomic<double> mute_until{0}, sound_start_at{0};
-    std::mutex pmu;  // pcm_open: the codec has not yet sent this answer's end
-    std::condition_variable pcv;
-    bool pcm_open = false;
 
     void on_sound(const SoundEvent& s) {  // speaker thread or a cutting caller, under the speaker's lock
         json j = {{"type", s.type}, {"at_ms", s.at_ms}};
@@ -215,22 +212,13 @@ struct Engine {
 
     void on_pcm(const float* pcm, int n, bool end) {  // codec thread (or the LM thread with codec_inline)
         if (n > 0) speaker->push(pcm, n);
-        if (!end) return;
-        speaker->end();
-        {
-            std::lock_guard<std::mutex> g(pmu);
-            pcm_open = false;
-        }
-        pcv.notify_all();
+        if (end) speaker->end();
     }
 
-    // a new answer: the last one's codec tail is in (or dropped), its sound is cut, the mic goes off
+    // a new answer (LM worker): what the codec still holds of earlier answers is dropped, so none of it reaches this
+    // answer; their sound is cut; the mic goes off
     void sound_begin(bool voice, clk::time_point end_time) {
-        {
-            std::unique_lock<std::mutex> l(pmu);
-            pcv.wait_for(l, std::chrono::seconds(2), [&] { return !pcm_open; });
-            pcm_open = true;
-        }
+        lm->drop_sound();
         speaker->begin();
         sound_voice = voice;
         end_at_ms = std::chrono::duration<double, std::milli>(end_time.time_since_epoch()).count();
@@ -403,14 +391,6 @@ struct Engine {
             }
             big.ask_exit();
             if (!r.error.empty()) error((end ? "voice: " : "ask: ") + r.error);
-            if (speaker && !r.error.empty()) {  // an ask that failed before speaking sends no end: close it here
-                std::unique_lock<std::mutex> l(pmu);
-                if (!pcv.wait_for(l, std::chrono::seconds(2), [&] { return !pcm_open; })) {
-                    pcm_open = false;
-                    l.unlock();
-                    speaker->end();
-                }
-            }
             json done = {{"type", "done"},
                          {"ttft_ms", r.ttft_ms},
                          {"total_ms", r.total_ms},

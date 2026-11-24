@@ -393,6 +393,34 @@ TEST(speech_cancel_clears_codec_queue) {
     CHECK(at_clear < (size_t)30 * 1920);  // queued frames were dropped
     CHECK(got.size() == want.size());     // nothing of the cut answer came after clear()
     CHECK(d <= 1e-5);                     // and the codec started cold
+
+    // answer C ended with 30 frames still queued; a new answer starts: drop() throws away everything queued, C's end
+    // too, sends nothing, and the next answer starts on a cold codec
+    for (int i = 0; i < 30; i++) ct->push(codes[(size_t)i].data());
+    ct->end();
+    ct->drop();
+    size_t at_drop;
+    {
+        std::lock_guard<std::mutex> g(pcm.mu);
+        at_drop = pcm.all.size();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    {
+        std::lock_guard<std::mutex> g(pcm.mu);
+        CHECK(pcm.all.size() == at_drop);  // nothing of C after drop() returned
+        CHECK(pcm.ends == 2);              // C's end went with it
+    }
+    for (int i = 0; i < 10; i++) ct->push(codes[(size_t)i].data());
+    ct->end();
+    CHECK(pcm.wait_ends(3));
+    {
+        std::lock_guard<std::mutex> g(pcm.mu);
+        got.assign(pcm.all.begin() + (long)at_drop, pcm.all.end());
+    }
+    std::printf("  dropped answer: %zu samples of C came out before drop() returned; next answer %zu samples, "
+                "max |diff| %g\n", at_drop - want.size() - at_clear, got.size(), max_diff(got, want, want.size()));
+    CHECK(got.size() == want.size());
+    CHECK(max_diff(got, want, want.size()) <= 1e-5);
     ct.reset();
     mtmd_free(mctx);
     llama_free(ctx);

@@ -4,6 +4,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -226,6 +228,29 @@ TEST(voice_answer_from_vad_segment_is_complete) {
         CHECK(r.n_out >= 15);
         CHECK(lm->read_view(f.data(), 220, 2 + (long)u, &err));
     }
+}
+
+TEST(voice_no_speech_still_ends_the_sound) {
+    // speak mode: every answer sends one end through on_pcm, also one that fails before it speaks
+    auto c = cfg();
+    c.speak = true;
+    std::mutex mu;
+    std::condition_variable cv;
+    int ends = 0;
+    c.on_pcm = [&](const float*, int, bool end) {
+        if (!end) return;
+        std::lock_guard<std::mutex> g(mu);
+        ends++;
+        cv.notify_all();
+    };
+    std::string err;
+    auto lm = ce::Lm::open(c, &err);
+    CHECK(lm != nullptr);
+    if (!lm) return;
+    const auto r = lm->voice_answer(10, nullptr);
+    CHECK(r.error == "no speech");
+    std::unique_lock<std::mutex> l(mu);
+    CHECK(cv.wait_for(l, std::chrono::seconds(1), [&] { return ends == 1; }));
 }
 
 TEST(voice_drop_forgets_the_utterance) {
