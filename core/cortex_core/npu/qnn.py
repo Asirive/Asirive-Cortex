@@ -117,6 +117,8 @@ class Graph:
     def __call__(self, feed: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
         ins = []
         for t in self.inputs:
+            if tuple(np.shape(feed[t.name])) != t.shape:  # same byte count in another layout is still wrong
+                raise ValueError(f"{t.name}: shape {np.shape(feed[t.name])}, graph wants {t.shape}")
             a = to_fixed(feed[t.name], t.dtype, t.scale, t.offset)
             if a.nbytes != t.nbytes:
                 raise ValueError(f"{t.name}: {a.nbytes} bytes, graph wants {t.nbytes} {t.shape}")

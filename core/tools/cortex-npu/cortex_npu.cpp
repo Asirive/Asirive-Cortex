@@ -12,6 +12,7 @@
 //   cnpu_execute(graph, ins, outs)         ins/outs: arrays of buffers, in the order cnpu_io_info gives
 //   cnpu_set_burst()                       vote the HTP to max clocks, no sleep, DCVS off
 #include <dlfcn.h>
+#include <exception>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -135,11 +136,24 @@ bool fill_from_graphs(const Info& bi, Graph& g, std::string& gname, const char* 
 
 }  // namespace
 
+// Nothing may throw across the C boundary (ctypes would abort the interpreter).
+template <class F>
+static int guarded(F f) {
+  try {
+    return f();
+  } catch (const std::exception& e) {
+    fail("C++ exception: %s", e.what());
+  } catch (...) {
+    fail("unknown C++ exception");
+  }
+  return 1;
+}
+
 extern "C" {
 
 const char* cnpu_last_error() { return g_err.c_str(); }
 
-int cnpu_init(const char* backend_so, const char* system_so) {
+static int cnpu_init_impl(const char* backend_so, const char* system_so) {
   if (g_ready) return 0;
   void* hb = dlopen(backend_so, RTLD_NOW | RTLD_GLOBAL);
   if (!hb) { fail("dlopen %s: %s", backend_so, dlerror()); return 1; }
@@ -186,14 +200,16 @@ int cnpu_init(const char* backend_so, const char* system_so) {
   return 0;
 }
 
-int cnpu_load(const char* path, void** out) {
+static int cnpu_load_impl(const char* path, void** out) {
   *out = nullptr;
   if (!g_ready) { fail("cnpu_init not called"); return 1; }
   std::ifstream f(path, std::ios::binary | std::ios::ate);
   if (!f) { fail("cannot open %s", path); return 1; }
-  std::vector<char> buf((size_t)f.tellg());
+  std::streamoff size = f.tellg();
+  if (size <= 0) { fail("%s: empty or unreadable", path); return 1; }
+  std::vector<char> buf((size_t)size);
   f.seekg(0);
-  f.read(buf.data(), buf.size());
+  if (!f.read(buf.data(), buf.size())) { fail("%s: short read", path); return 1; }
 
   QnnSystemContext_Handle_t sc = nullptr;
   if (g_sys.systemContextCreate(&sc) != QNN_SUCCESS) { fail("systemContextCreate failed"); return 1; }
@@ -237,7 +253,7 @@ int cnpu_num_io(void* h, int is_out) {
 
 // dtype is the raw Qnn_DataType_t value (0x0232 float32, 0x0416 ufixed16, 0x0408 ufixed8, ...).
 // float = (q + offset) * scale for fixed-point tensors; scale = 0 when the tensor is not quantised.
-int cnpu_io_info(void* h, int is_out, int i, const char** name, int* dtype, float* scale, int* offset,
+static int cnpu_io_info_impl(void* h, int is_out, int i, const char** name, int* dtype, float* scale, int* offset,
                  int* rank, uint32_t* dims8, uint64_t* bytes) {
   auto* g = (Graph*)h;
   auto& v = is_out ? g->out : g->in;
@@ -263,7 +279,7 @@ int cnpu_io_info(void* h, int is_out, int i, const char** name, int* dtype, floa
   return 0;
 }
 
-int cnpu_execute(void* h, void** ins, void** outs) {
+static int cnpu_execute_impl(void* h, void** ins, void** outs) {
   auto* g = (Graph*)h;
   std::vector<Qnn_Tensor_t> ti, to;
   for (size_t i = 0; i < g->in.size(); ++i) {
@@ -282,7 +298,7 @@ int cnpu_execute(void* h, void** ins, void** outs) {
   return 0;
 }
 
-int cnpu_set_burst() {
+static int cnpu_set_burst_impl() {
   if (!g_ready) { fail("cnpu_init not called"); return 1; }
   QnnDevice_Infrastructure_t infra = nullptr;
   if (g_qnn.deviceGetInfrastructure(&infra) != QNN_SUCCESS || !infra) { fail("deviceGetInfrastructure failed"); return 1; }
@@ -311,6 +327,16 @@ int cnpu_set_burst() {
   return 0;
 }
 
+int cnpu_init(const char* b, const char* s) { return guarded([&] { return cnpu_init_impl(b, s); }); }
+int cnpu_load(const char* path, void** out) { return guarded([&] { return cnpu_load_impl(path, out); }); }
+int cnpu_io_info(void* h, int is_out, int i, const char** name, int* dtype, float* scale, int* offset, int* rank,
+                 uint32_t* dims8, uint64_t* bytes) {
+  return guarded([&] { return cnpu_io_info_impl(h, is_out, i, name, dtype, scale, offset, rank, dims8, bytes); });
+}
+int cnpu_execute(void* h, void** ins, void** outs) { return guarded([&] { return cnpu_execute_impl(h, ins, outs); }); }
+int cnpu_set_burst() { return guarded([] { return cnpu_set_burst_impl(); }); }
+
+// Not thread-safe: one caller at a time per graph (Python reuses one set of output buffers per graph).
 void cnpu_free(void* h) {
   auto* g = (Graph*)h;
   if (!g) return;

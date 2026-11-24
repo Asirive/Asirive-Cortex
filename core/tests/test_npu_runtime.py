@@ -69,3 +69,12 @@ def test_split_encoder_missing_tensor_names_the_stage():
               ("cpu", ["zzz"], lambda f: {"image_features": f["zzz"]})]
     with pytest.raises(KeyError, match="cpu1.*zzz"):
         SplitEncoder(stages).encode(np.zeros(1, np.float32))
+
+
+def test_graph_refuses_a_same_size_wrong_shape_input():
+    from cortex_core.npu.qnn import Graph, Tensor
+
+    g = Graph.__new__(Graph)
+    g.inputs = [Tensor("x", FLOAT_32, 0.0, 0, (2, 3), 24)]
+    with pytest.raises(ValueError, match="shape"):
+        g({"x": np.zeros((3, 2), np.float32)})

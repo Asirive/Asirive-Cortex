@@ -33,12 +33,21 @@ def save_feat(path: Path, a: np.ndarray, **extra) -> None:
     _meta_path(path).write_text(json.dumps({"n_tokens": a.shape[0], "n_embd": a.shape[1], **extra}) + "\n")
 
 
-def cosine_rows(a: np.ndarray, b: np.ndarray) -> tuple[float, float]:
-    """(mean, min) cosine similarity between matching rows (tokens) of a and b."""
+def _row_cos(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     if a.shape != b.shape:
         raise ValueError(f"shape mismatch: {a.shape} vs {b.shape}")
     a64, b64 = a.astype(np.float64), b.astype(np.float64)
     num = (a64 * b64).sum(axis=1)
     den = np.linalg.norm(a64, axis=1) * np.linalg.norm(b64, axis=1)
-    cos = num / np.maximum(den, 1e-30)
+    return num / np.maximum(den, 1e-30)
+
+
+def cosine_rows(a: np.ndarray, b: np.ndarray) -> tuple[float, float]:
+    """(mean, min) cosine similarity between matching rows (tokens) of a and b."""
+    cos = _row_cos(a, b)
     return float(cos.mean()), float(cos.min())
+
+
+def frac_below(a: np.ndarray, b: np.ndarray, threshold: float = 0.9) -> float:
+    """Share of tokens whose cosine is under threshold: a few misplaced tokens show here, not in the mean."""
+    return float((_row_cos(a, b) < threshold).mean())

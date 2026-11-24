@@ -56,3 +56,14 @@ def test_load_rejects_truncated_file(tmp_path):
     (tmp_path / "t.f32.json").write_text('{"n_tokens": 4, "n_embd": 8}')
     with pytest.raises(ValueError):
         load_feat(p)
+
+
+def test_frac_below_flags_token_order_changes_that_the_mean_hides():
+    from cortex_core.npu.compare import frac_below
+
+    rng = np.random.default_rng(1)
+    a = rng.standard_normal((220, 64)).astype(np.float32)
+    assert frac_below(a, a.copy()) == 0.0
+    b = a.copy()
+    b[:20] = b[:20][::-1]  # 20 tokens out of order
+    assert frac_below(a, b) == pytest.approx(20 / 220)

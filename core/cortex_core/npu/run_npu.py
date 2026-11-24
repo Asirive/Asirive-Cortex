@@ -10,17 +10,17 @@ and the keyword check (any of "expect"). Writes results.json in --out-dir.
 from __future__ import annotations
 
 import argparse
-import glob
 import json
 import statistics
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
-from .compare import cosine_rows, save_feat
+from .compare import cosine_rows, frac_below, save_feat
 
 
 @dataclass
@@ -47,11 +47,63 @@ def open_npu(split_dir: Path, lib: Path, qnn_lib_dir: Path) -> NpuOpen:
         return NpuOpen(False, f"NPU load failed: {e}")
 
 
-def _soc_state() -> dict:
-    temps = [int(Path(p).read_text()) / 1000 for p in glob.glob("/sys/class/thermal/thermal_zone*/temp")
-             if Path(p).read_text().strip().lstrip("-").isdigit()]
-    mhz = [int(Path(p).read_text()) / 1000 for p in glob.glob("/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq")]
-    return {"temp_max_c": max(temps, default=None), "cpu_mhz_mean": round(statistics.mean(mhz)) if mhz else None}
+def soc_state(root: str | Path = "/") -> dict:
+    """CPU-zone and power-chip (pmc8280c) temperatures (max each) and current CPU frequencies.
+
+    Unreadable files are skipped. The power chip is reported apart from the CPU: it idles ~37 C, ran 88-92 C
+    under the NPU bench and trips at 95 C, so it is the one to watch."""
+    root = Path(root)
+    temps: list[float] = []
+    pmic: list[float] = []
+    for z in sorted((root / "sys/class/thermal").glob("thermal_zone*")):
+        try:
+            typ = (z / "type").read_text().strip()
+            if typ.startswith("cpu"):
+                temps.append(int((z / "temp").read_text()) / 1000)
+            elif typ.startswith("pmc8280c"):
+                pmic.append(int((z / "temp").read_text()) / 1000)
+        except (OSError, ValueError):
+            continue
+    mhz = []
+    for f in (root / "sys/devices/system/cpu").glob("cpu*/cpufreq/scaling_cur_freq"):
+        try:
+            mhz.append(int(f.read_text()) // 1000)
+        except (OSError, ValueError):
+            continue
+    return {"cpu_temp_c": max(temps, default=None), "pmic_temp_c": max(pmic, default=None), "cpu_mhz_min": min(mhz, default=None),
+            "cpu_mhz_max": max(mhz, default=None)}
+
+
+# cortex-embd builds a grey stand-in image of this size so llama.cpp lays out the same 220 tokens the NPU
+# canvas (vision_prep.INPUT_W x INPUT_H) produces. Every frame, whatever its size, is fitted into that canvas.
+STAND_IN_W, STAND_IN_H = 640, 360
+
+
+def save_npu_feat(path: Path, feat: np.ndarray) -> None:
+    save_feat(path, feat, image_w=STAND_IN_W, image_h=STAND_IN_H)
+
+
+def probe_npu(cmd: list[str], timeout: float = 60) -> NpuOpen:
+    """Run cmd (a one-frame NPU open + encode) in a child process so a QNN hang or crash cannot take us down."""
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return NpuOpen(False, f"NPU probe timed out after {timeout:.0f} s (fastrpc busy or CDSP down?)")
+    if r.returncode:
+        tail = (r.stdout + r.stderr).strip()[-400:]
+        return NpuOpen(False, f"NPU probe failed with exit code {r.returncode}: {tail}")
+    return NpuOpen(True)
+
+
+def _probe_main(split: str, lib: str, qnn_lib: str) -> int:
+    npu = open_npu(Path(split), Path(lib), Path(qnn_lib))
+    if not npu.ok:
+        print(npu.error)
+        return 1
+    from .vision_prep import INPUT_H, INPUT_W, prepare
+
+    npu.encoder.encode(prepare(np.zeros((INPUT_H, INPUT_W, 3), np.uint8)))
+    return 0
 
 
 def _answer(embd: str, model: str, mmproj: str, feat: Path, prompt: str) -> tuple[str, dict]:
@@ -66,10 +118,16 @@ def _answer(embd: str, model: str, mmproj: str, feat: Path, prompt: str) -> tupl
 
 
 def main(argv: list[str] | None = None) -> int:
+    import sys
+
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["--probe"]:
+        return _probe_main(*argv[1:4])
     ap = argparse.ArgumentParser(prog="cortex_core.npu.run_npu")
     for a in ("--split", "--lib", "--qnn-lib", "--onnx", "--cases", "--embd", "--model", "--mmproj", "--out-dir"):
         ap.add_argument(a, required=True)
     ap.add_argument("--runs", type=int, default=20)
+    ap.add_argument("--probe-timeout", type=float, default=60)
     a = ap.parse_args(argv)
 
     import onnxruntime as ort
@@ -77,6 +135,11 @@ def main(argv: list[str] | None = None) -> int:
 
     from .vision_prep import prepare
 
+    probe = probe_npu([sys.executable, "-m", "cortex_core.npu.run_npu", "--probe", a.split, a.lib, a.qnn_lib],
+                      a.probe_timeout)
+    if not probe.ok:
+        print(probe.error)
+        return 1
     npu = open_npu(Path(a.split), Path(a.lib), Path(a.qnn_lib))
     if not npu.ok:
         print(npu.error)
@@ -92,12 +155,13 @@ def main(argv: list[str] | None = None) -> int:
         img = Image.open(Path(a.cases).parent / c["image"]).convert("RGB")
         pv = prepare(np.asarray(img))
         enc.encode(pv)  # warm
-        ms = []
+        ms, socs = [], []
         for _ in range(a.runs):
             t = time.perf_counter()
             feat = enc.encode(pv)
             ms.append((time.perf_counter() - t) * 1000)
-        soc = _soc_state()
+            socs.append(soc_state())  # sampled right after each run, while clocks are still up
+        cpu.run(None, {cpu_in: pv})  # warm, like the NPU
         t = time.perf_counter()
         ref = cpu.run(None, {cpu_in: pv})[0]
         cpu_ms = (time.perf_counter() - t) * 1000
@@ -105,14 +169,19 @@ def main(argv: list[str] | None = None) -> int:
         feat = np.asarray(feat, np.float32).reshape(-1, feat.shape[-1])
         cos_mean, cos_min = cosine_rows(ref, feat)
         fp = out / (Path(c["image"]).stem + ".npu.f32")
-        save_feat(fp, feat, image_w=img.width, image_h=img.height)
+        save_npu_feat(fp, feat)
         ans, stats = _answer(a.embd, a.model, a.mmproj, fp, c["question"] + " One sentence.")
         ok = any(k in ans.lower() for k in c["expect"])
         ms.sort()
         row = {"image": c["image"], "light": c.get("light"), "cpu_ms": round(cpu_ms),
                "npu_median_ms": round(statistics.median(ms)), "npu_p90_ms": round(ms[int(0.9 * (len(ms) - 1))]),
-               "cos_mean": round(cos_mean, 5), "cos_min": round(cos_min, 4), "cpu_answer": c.get("cpu_answer"),
-               "npu_answer": ans, "match": ok, "ttft_s": stats.get("ttft_s"), **soc}
+               "cos_mean": round(cos_mean, 5), "cos_min": round(cos_min, 4),
+               "tok_below_0_9": round(frac_below(ref, feat), 4), "size": f"{img.width}x{img.height}", "cpu_answer": c.get("cpu_answer"),
+               "npu_answer": ans, "match": ok, "ttft_s": stats.get("ttft_s"),
+               "cpu_mhz_min": min((x["cpu_mhz_min"] for x in socs if x["cpu_mhz_min"]), default=None),
+               "cpu_mhz_max": max((x["cpu_mhz_max"] for x in socs if x["cpu_mhz_max"]), default=None),
+               "cpu_temp_max_c": max((x["cpu_temp_c"] for x in socs if x["cpu_temp_c"]), default=None),
+               "pmic_temp_max_c": max((x["pmic_temp_c"] for x in socs if x["pmic_temp_c"]), default=None)}
         rows.append(row)
         print(json.dumps(row), flush=True)
     (out / "results.json").write_text(json.dumps(rows, indent=1))
