@@ -1,8 +1,15 @@
 # Cortex Engine — LFM3-Omni Inference Plan
 
 **Status:** plan, nothing built yet. Companion to [V4-ECOSYSTEM.md](V4-ECOSYSTEM.md) §8.
-**Rule:** every phase is gated by measurements on real hardware. We only build
-the next layer if the numbers say the previous one is not enough.
+Updated 2026-11-24 to the approved core design
+(`docs/superpowers/specs/2026-11-24-v4-core-design.md` §6.12).
+**Rule:** the CPU/GPU/NPU split is the goal from the start (the NPU is the
+lowest-power place for the model block). The stock baseline comes first only
+to get numbers to beat. Custom kernels / a custom runtime are built only if the
+split misses the targets.
+**Targets:** first audio < 1 s after the question ends, answers about the
+current view (fresh frame encoded while the user speaks), half a day to a full
+day of battery.
 
 ## 1. Goal
 
@@ -25,9 +32,11 @@ remains the online fallback/escalation (more powerful); local leads.
 
 ## 3. Phases
 
-### Phase 0 — Baseline (stock llama.cpp on Dragon Q8B)
+### Phase 0 — Baseline (stock llama.cpp on Dragon Q8B, CPU then GPU)
 Measure: tokens/s (prefill and decode), time-to-first-audio, peak RAM next to
 YOLO-World and the safety stack, watts per query, idle draw, thermals.
+Also prove the NPU is reachable from the box's Ubuntu (driver / fastrpc /
+Qualcomm runtime), since Phase 2 depends on it.
 Also measure quality: tool-call success on our registry, navigation prompts,
 speech cue quality vs Supertonic/Cartesia, vs Gemini Live on the same cases.
 **Exit:** a numbers table committed to docs, and a decision on Phase 1 targets.
@@ -41,11 +50,15 @@ speech cue quality vs Supertonic/Cartesia, vs Gemini Live on the same cases.
 - Gemini escalation hook (confidence/capability triggers).
 **Exit:** measured watts-per-interaction improvement vs Phase 0.
 
-### Phase 2 — Hexagon NPU backend
-Move the heaviest, most regular work (encoders, prefill) to the NPU via QNN /
-Hexagon; decode may stay on CPU/GPU. Pick quantization against accuracy and
-watts. Prior art: third-party QHexRT on LFM2.5-230M; nothing for LFM3-Omni.
-**Exit:** NPU path beats Phase 1 on watts at equal quality.
+### Phase 2 — CPU/GPU/NPU split (the goal)
+Model block (backbone) on the Hexagon NPU; vision and audio encoders and the
+speech decoder on GPU/CPU, running in parallel (vision encodes while the user
+speaks; decode streams while the next frame encodes). Try llama.cpp's
+experimental Hexagon backend first (one runtime); fall back to Qualcomm QNN /
+Genie if it cannot run LFM3-Omni. Pick quantization against accuracy and
+watts. Prior art: third-party QHexRT on LFM2.5-230M; nothing published for
+LFM3-Omni, so our own conversion may be needed.
+**Exit:** meets the < 1 s target and beats Phase 1 on watts at equal quality.
 
 ### Phase 3 — Custom runtime (only if needed)
 C core, static memory plan, streaming speech-token path, no Python on the hot

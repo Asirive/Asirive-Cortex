@@ -87,10 +87,11 @@ Runs entirely on the compute module (Python + C hot paths):
 - **Safety:** T0–T3 alerts are **hard-coded and model-independent** — no AI model
   sits between a hazard and a haptic/TTS alert. Local-only, never depends on
   phone/infra/cloud.
-- **Voice:** wake word ("Hey Cortex") · VAD · AEC (mandatory — open-ear speakers
-  beside bridge mics) · STT · TTS. Mic can be muted by voice ("I'm going to the
-  door"), confirmed by haptic; wake word re-enables. Wake word + all processing
-  live on the compute module.
+- **Voice:** button-tap toggle (no wake word in alpha, 2026-11-24) · VAD · AEC
+  (mandatory — open-ear speakers beside bridge mics) + ambient-mic noise
+  cancellation · speech understanding · speech out. Mic can be muted by voice,
+  confirmed by haptic; a button tap re-enables. All processing lives on the
+  compute module, inside the single real-time `brain` process (core/AGENTS.md).
 - **Agent harness:** function-calling runtime with **two interchangeable brains**,
   local-first (see §8).
 - **Inference engine:** power-efficient runtime for LFM3-Omni, built in measured
@@ -299,7 +300,8 @@ the team key; production = real PKI from V4-Final manufacturing.
 - Local-first: LFM3-Omni-2B is the default brain for full localized navigation (online or offline). Gemini Live stays as the online fallback/escalation because it is still more powerful. Both use one function-calling tool registry. (Supersedes the earlier "Gemini primary when connected" decision, 2026-10-29.)
 - Inference engine: staged and measurement-gated — llama.cpp baseline, power-aware serving, Hexagon NPU backend, custom runtime only if measurements justify it. See CORTEX-ENGINE.md.
 - ESP32-S3 = dumb I/O bridge; all processing on the compute module.
-- Wake word "Hey Cortex" on the compute module; voice-commandable mic mute with haptic confirmation.
+- ~~Wake word "Hey Cortex" on the compute module~~ Superseded 2026-11-24: listening starts/stops with a button TAP on the glasses (toggle, haptic tick); no wake word in alpha. Voice-commandable mic mute with haptic confirmation stays.
+- V4 core design approved 2026-11-24 (`docs/superpowers/specs/2026-11-24-v4-core-design.md`): one real-time `brain` process (voice + vision + LFM) plus separate services; CPU/GPU/NPU split is the engine goal from the start (baseline first); Gemini Live off by default (voice command or takeover only); offline-only maps (OSM + LTA DataMall; no Google Maps); ToF safety = head-level/silent obstacles, vibration only; English + Singapore English in alpha; no V3 code ported.
 - Haptics on glasses AND compute module. Magnetic pogo charging dock.
 - GPS = phone only, outdoor only (own GPS modules rejected: need sky view, too bulky).
 - No-fold frame; partial-sight rule (never block the visual field).
@@ -341,7 +343,7 @@ Do not build on these; they remain in the repo only until refactored out:
 
 | Area | V4 treatment |
 |---|---|
-| `v3_core/` → new V4 `core/` | **Build new (Python, hardened); V3 frozen as reference in `v3_core/`.** Replace the `CortexSystem` monolith (`v3_core/system.py`, ~8.4k lines) with isolated services (process model in core/AGENTS.md): perception, safety, voice, agent harness, nav, memory. Preserve proven logic: safety T0–T3, Gemini Live handler patterns, voice pipeline. Strip every deprecated system (§12). Add: local-brain adapter, dual STT/TTS policy, wake word service, offline routing, retention-aware sync. |
+| `v3_core/` → new V4 `core/` | **Build new (Python, hardened); V3 frozen as reference in `v3_core/`.** Replace the `CortexSystem` monolith (`v3_core/system.py`, ~8.4k lines) with isolated services (process model in core/AGENTS.md): perception, safety, voice, agent harness, nav, memory. Updated 2026-11-24: no V3 code is ported; only ideas (tool harness, modes) are rebuilt. V3 safety and memory are not used. Strip every deprecated system (§12). See the approved design `docs/superpowers/specs/2026-11-24-v4-core-design.md`. |
 | `device/` | **Replace.** New ESP32-S3 firmware (ESP-IDF, C) for the glasses bridge + compute-module board support for Dragon Q8B. Current RPi-specific handlers are reference only. |
 | `infra/` | **Greenfield.** Go fleet gateway + OTA + contracts. Current `infra/api/protocol.py` + `infra/supabase/` schema are seeds/reference for message shapes and tables. |
 | App | **Greenfield.** Flutter (iOS-first). `apps/laptop_dashboard` is deprecated; its message protocol is the only reference worth keeping. |
