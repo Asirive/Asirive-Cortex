@@ -3,7 +3,7 @@
 //   cortex-embd dump   -m MODEL --mmproj MMPROJ --image IMG --out FEAT.f32
 //       CPU image features as raw little-endian float32 [n_tokens, n_embd] + FEAT.f32.json
 //       {"n_tokens":..,"n_embd":..,"encode_ms":..,"image_w":..,"image_h":..}
-//   cortex-embd answer -m MODEL --mmproj MMPROJ --feat FEAT.f32 -p PROMPT [-n 60]
+//   cortex-embd answer -m MODEL --mmproj MMPROJ --feat FEAT.f32 -p PROMPT [-n 60] [-t THREADS]
 //       answers PROMPT with the features placed where an image of FEAT's size would be,
 //       prints the answer, then one JSON line {"ttft_s":..,"decode_tps":..,"n_out":..}
 //
@@ -64,7 +64,8 @@ struct Loaded {
     mtmd_context * mctx = nullptr;
 };
 
-Loaded load(const std::string & model_path, const std::string & mmproj_path) {
+// n_threads 0 = llama.cpp's default
+Loaded load(const std::string & model_path, const std::string & mmproj_path, int n_threads = 0) {
     Loaded L;
     llama_model_params mp = llama_model_default_params();
     mp.n_gpu_layers = 0;
@@ -74,6 +75,7 @@ Loaded load(const std::string & model_path, const std::string & mmproj_path) {
     cp.n_ctx = 4096;
     cp.n_batch = 2048;
     cp.n_ubatch = 2048;
+    if (n_threads > 0) cp.n_threads = cp.n_threads_batch = n_threads;
     L.lctx = llama_init_from_model(L.model, cp);
     if (!L.lctx) die("cannot create context");
     mtmd_context_params mcp = mtmd_context_params_default();
@@ -136,7 +138,7 @@ int json_int(const std::string & s, const std::string & key) {
 }
 
 int cmd_answer(const std::map<std::string, std::string> & a) {
-    Loaded L = load(need(a, "-m"), need(a, "--mmproj"));
+    Loaded L = load(need(a, "-m"), need(a, "--mmproj"), a.count("-t") ? std::atoi(a.at("-t").c_str()) : 0);
     const std::string feat = need(a, "--feat");
     const int n_predict = a.count("-n") ? std::atoi(a.at("-n").c_str()) : 60;
     std::stringstream js;

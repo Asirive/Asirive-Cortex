@@ -20,6 +20,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .answer_cases import answer
 from .compare import cosine_rows, frac_below, save_feat
 
 
@@ -115,17 +116,6 @@ def wait_cool(read_temp, limit: float = 90, resume: float = 80, sleep=time.sleep
     return waited
 
 
-def _answer(embd: str, model: str, mmproj: str, feat: Path, prompt: str) -> tuple[str, dict]:
-    r = subprocess.run([embd, "answer", "-m", model, "--mmproj", mmproj, "--feat", str(feat), "-p", prompt],
-                       capture_output=True, text=True, timeout=120)
-    if r.returncode:
-        return f"ERROR: {r.stderr.strip()[-300:]}", {}
-    lines = [ln for ln in r.stdout.strip().splitlines() if ln.strip()]
-    stats = json.loads(lines.pop()) if lines and lines[-1].startswith("{") else {}
-    ans = " ".join(lines).replace("<think></think>", "").strip()
-    return ans, stats
-
-
 def main(argv: list[str] | None = None) -> int:
     import sys
 
@@ -184,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
         cos_mean, cos_min = cosine_rows(ref, feat)
         fp = out / (Path(c["image"]).stem + ".npu.f32")
         save_npu_feat(fp, feat)
-        ans, stats = _answer(a.embd, a.model, a.mmproj, fp, c["question"] + " One sentence.")
+        ans, stats = answer(a.embd, a.model, a.mmproj, fp, c["question"] + " One sentence.")
         ok = any(k in ans.lower() for k in c["expect"])
         ms.sort()
         row = {"image": c["image"], "light": c.get("light"), "cpu_ms": round(cpu_ms),
