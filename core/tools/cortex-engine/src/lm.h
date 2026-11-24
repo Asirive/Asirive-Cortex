@@ -39,6 +39,17 @@ struct LmConfig {
     int stand_in_w = 640, stand_in_h = 360;  // image size that lays out the NPU canvas's 220 tokens
     // audio encoder threads; they run on the cores of the thread that calls AudioIn (the engine's audio thread)
     int audio_threads = 3;
+
+    // ---- speech out: every answer in LFM3-Omni's own voice (interleaved text + audio)
+    bool speak = false;
+    std::string voice = "female";  // "Speak using a <voice> voice." joins the system prompt
+    int max_speech_s = 30;         // audio frames per answer are capped at this (stop "max")
+    // codes -> PCM inside the generation loop on this model's mtmd context. Off when the engine runs the codec on its
+    // own thread and context (it then takes the codes through on_codes).
+    bool codec_inline = true;
+    uint32_t seed = 0;  // the depthformer's sampling seed (fixed: the same question gives the same voice)
+    std::function<void(const float* pcm, int n, bool end)> on_pcm;  // 24 kHz mono; end once per answer
+    std::function<void(const int32_t* codes, int kind)> on_codes;   // kind 0 frame, 1 flush the tail, 2 end of answer
 };
 
 struct AskResult {
@@ -50,6 +61,11 @@ struct AskResult {
     bool cancelled = false;
     std::string stop;  // why generation ended: "eog", "max", "cancel", "error"
     std::string error;
+    // speech out
+    int frames = 0;          // audio frames (80 ms each)
+    double frame_ms = 0;     // mean time to make one frame on the LM (depthformer + feedback decode)
+    double codec_ms = 0;     // mean time to turn one frame into sound (inline codec only)
+    double sound_ms = 0;     // audio length: frames * 80
 };
 
 class Lm {
@@ -100,6 +116,8 @@ private:
     int turn_tokens(const Turn& t) const;
     void generate(AskResult& r, int max_tokens, const std::function<void(const std::string&)>& on_token,
                   std::chrono::steady_clock::time_point t0);
+    void generate_speech(AskResult& r, int max_tokens, const std::function<void(const std::string&)>& on_token,
+                         std::chrono::steady_clock::time_point t0);
     bool decode_text(const std::string& text, int seq, bool logits_last, std::string* err);
     bool rebuild_history(std::string* err);  // H from scratch: start + system + kept turns
     bool commit_locked(std::string* err);

@@ -10,6 +10,7 @@
 #include "llama.h"
 #include "mtmd-helper.h"
 #include "mtmd.h"
+#include "speech.h"
 
 namespace ce {
 
@@ -39,6 +40,9 @@ struct LmImpl {
     llama_sampler* smpl = nullptr;
     llama_batch one{};
     std::atomic<bool> abortable{false};
+    std::unique_ptr<Speech> speech;  // speak mode: the MIXED loop
+    std::unique_ptr<Codec> codec;    // speak mode with the codec inline
+    std::vector<float> pcm;
 };
 
 static std::vector<llama_token> tokenize(const llama_model* model, const std::string& text) {
@@ -111,6 +115,10 @@ std::unique_ptr<Lm> Lm::open(const LmConfig& cfg, std::string* err) {
     });
     std::unique_ptr<Lm> lm(new Lm());
     lm->cfg_ = cfg;
+    if (cfg.speak) {  // LFM3-Omni picks its voice from the system prompt
+        std::string& sp = lm->cfg_.system_prompt;
+        sp += (sp.empty() ? "" : "\n") + std::string("Speak using a ") + cfg.voice + " voice.";
+    }
     auto* im = lm->im_ = new LmImpl();
     llama_model_params mp = llama_model_default_params();
     mp.n_gpu_layers = 0;
@@ -189,6 +197,14 @@ std::unique_ptr<Lm> Lm::open(const LmConfig& cfg, std::string* err) {
     }
     im->one = llama_batch_init(1, 0, 1);
     std::string e;
+    if (cfg.speak) {
+        im->speech = Speech::open(lm->ctx_, lm->mctx_, &e);
+        if (!im->speech) return fail("speech: " + e);
+        if (cfg.codec_inline) {
+            im->codec = Codec::open(lm->mctx_, &e);
+            if (!im->codec) return fail("codec: " + e);
+        }
+    }
     if (!lm->rebuild_history(&e)) return fail(e);
     return lm;
 }
@@ -426,6 +442,7 @@ AskResult Lm::ask(const std::string& question, int max_tokens, const std::functi
 // samples the answer greedily into S (seq 3) from the logits of the last decode
 void Lm::generate(AskResult& r, int max_tokens, const std::function<void(const std::string&)>& on_token,
                   std::chrono::steady_clock::time_point t0) {
+    if (im_->speech) return generate_speech(r, max_tokens, on_token, t0);
     LmImpl* im = im_;
     const llama_vocab* vocab = llama_model_get_vocab(model_);
     llama_sampler_reset(im->smpl);
@@ -464,6 +481,67 @@ void Lm::generate(AskResult& r, int max_tokens, const std::function<void(const s
         }
         pos_[3]++;
     }
+    r.total_ms = ms_since(t0);
+}
+
+// The answer in Cortex's voice: the MIXED loop on S after "assistant\n" (already decoded). Each frame's codes go to
+// the inline codec (sound out through on_pcm) or to the engine's codec thread (on_codes). One end per answer, also
+// after a cut or an error, so the speaker always closes the answer.
+void Lm::generate_speech(AskResult& r, int max_tokens, const std::function<void(const std::string&)>& on_token,
+                         std::chrono::steady_clock::time_point t0) {
+    LmImpl* im = im_;
+    Codec* codec = im->codec.get();
+    if (codec) codec->reset();
+    bool first = true;
+    double codec_total = 0;
+    auto mark_first = [&] {
+        if (first) r.ttft_ms = ms_since(t0), first = false;
+    };
+    auto emit = [&](bool end) {
+        if (cfg_.on_pcm && (!im->pcm.empty() || end)) cfg_.on_pcm(im->pcm.data(), (int)im->pcm.size(), end);
+        im->pcm.clear();
+    };
+    SpeakIo io;
+    io.on_token = [&](const std::string& piece) {
+        mark_first();
+        r.text += piece;
+        if (on_token) on_token(piece);
+    };
+    io.on_frame = [&](const int32_t* codes) {
+        mark_first();
+        if (codec) {
+            if (!codec->decode(codes, &im->pcm)) return;
+            codec_total += codec->last_ms();
+            emit(false);
+        }
+        if (cfg_.on_codes) cfg_.on_codes(codes, 0);
+    };
+    io.on_flush = [&] {
+        if (codec) {
+            codec->flush(&im->pcm);
+            emit(false);
+        }
+        if (cfg_.on_codes) cfg_.on_codes(nullptr, 1);
+    };
+    io.cancelled = [this] { return cancel_.load(); };
+    const int max_frames = std::max(1, cfg_.max_speech_s * 1000 / 80);
+    SpeakResult s = im->speech->run(3, &pos_[3], "", max_tokens, max_frames, cfg_.seed, io);
+    if (s.stop != "cancel" && codec) codec->flush(&im->pcm);  // the last frame's tail; a cut drops it
+    emit(true);
+    if (cfg_.on_codes) cfg_.on_codes(nullptr, 2);
+    // the loop decoded into S itself: take its position from the memory, whatever happened
+    pos_[3] = llama_memory_seq_pos_max(llama_get_memory(ctx_), 3) + 1;
+    r.stop = s.stop;
+    r.cancelled = s.stop == "cancel";
+    if (s.stop == "error") {
+        r.error = s.error;
+        s_on_view_ = false;
+    }
+    r.n_out = s.n_text;
+    r.frames = s.frames;
+    r.frame_ms = s.frame_ms;
+    r.codec_ms = s.frames && codec ? codec_total / s.frames : 0;
+    r.sound_ms = s.frames * 80.0;
     r.total_ms = ms_since(t0);
 }
 
