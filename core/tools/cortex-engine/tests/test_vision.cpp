@@ -19,7 +19,7 @@ TEST(vision_open_missing_dir_is_clear_error) {
 
 TEST(vision_port_check) {
     std::string err;
-    auto v = ce::Vision::open(kSplit, kQnnLib, {4, 5, 6, 7}, 4, &err);
+    auto v = ce::Vision::shared(kSplit, kQnnLib, {4, 5, 6, 7}, 4, &err);  // the API tests may have opened it
     if (!v) std::printf("  open failed: %s\n", err.c_str());
     CHECK(v != nullptr);
     if (!v) return;

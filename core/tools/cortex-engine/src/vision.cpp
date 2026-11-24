@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <fstream>
+#include <mutex>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <sys/stat.h>
@@ -131,6 +132,19 @@ std::unique_ptr<Vision> Vision::open(const std::string& dir, const std::string& 
     }
 }
 
+std::shared_ptr<Vision> Vision::shared(const std::string& split_dir, const std::string& qnn_lib_dir,
+                                       const std::vector<int>& island_cpus, int island_threads, std::string* err) {
+    static std::mutex mu;
+    static std::shared_ptr<Vision> one;
+    std::lock_guard<std::mutex> g(mu);
+    // Never freed: destroying it during static destruction runs after QNN's own teardown (error spam at exit), and
+    // the NPU is closed by process exit anyway.
+    if (!one)
+        if (Vision* v = open(split_dir, qnn_lib_dir, island_cpus, island_threads, err).release())
+            one = std::shared_ptr<Vision>(v, [](Vision*) {});
+    return one;
+}
+
 bool Vision::encode(const float* pixel_values, std::vector<float>* features, std::string* err) {
     try {
         last_ms_.clear();
@@ -159,7 +173,9 @@ bool Vision::encode(const float* pixel_values, std::vector<float>* features, std
                 last_ms_[st->label + ":d"] =
                     std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t2).count();
             } else {
+                if (gate_enter_) gate_enter_();
                 st->island->run(get(st->q), get(st->k), get(st->v), env_[st->o].data());
+                if (gate_exit_) gate_exit_();
             }
             last_ms_[st->label] = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
         }

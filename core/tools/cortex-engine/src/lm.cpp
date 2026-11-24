@@ -288,7 +288,6 @@ AskResult Lm::ask(const std::string& question, int max_tokens, const std::functi
     if (reading_) preempt_ = true;
     std::lock_guard<std::mutex> g(mu_);
     preempt_ = false;
-    cancel_ = false;
     LmImpl* im = im_;
     AskResult r;
     std::string text;

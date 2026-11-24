@@ -55,7 +55,10 @@ public:
     // when an ask arrived meanwhile (V unchanged), or another error.
     bool read_view(const float* features, int n_tok, long frame_id, std::string* err);
     AskResult ask(const std::string& question, int max_tokens, const std::function<void(const std::string&)>& on_token);
+    // cancel() stops the running ask; the flag stays set until clear_cancel(), so a cancel that lands while the ask
+    // is still queued or prefilling is not lost. The caller clears it before starting the next ask.
     void cancel() { cancel_ = true; }
+    void clear_cancel() { cancel_ = false; }
     void reset_history();
     double copy_ms() const { return copy_ms_; }
     int history_tokens() const;
