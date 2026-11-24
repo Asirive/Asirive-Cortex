@@ -1,0 +1,6 @@
+[
+  {"id": "text_short", "text": "What can you help me with? Answer in one sentence.", "image": null, "audio": null, "audio_out": false},
+  {"id": "image_describe", "text": "What is directly in front of me? One sentence.", "image": "scene1.jpg", "audio": null, "audio_out": false},
+  {"id": "audio_question", "text": "Answer the spoken question in one sentence.", "image": null, "audio": "question1.wav", "audio_out": false},
+  {"id": "audio_image", "text": "Answer the spoken question about what the camera sees, in one sentence.", "image": "scene1.jpg", "audio": "question2.wav", "audio_out": false}
+]
