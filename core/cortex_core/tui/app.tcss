@@ -1,0 +1,30 @@
+Screen {
+    background: #0A0A08;
+    color: #D8D8D0;
+}
+
+#title {
+    height: 1;
+    padding: 0 1;
+    color: #0A0A08;
+    background: #EAFF00;
+    text-style: bold;
+}
+
+#panels {
+    grid-size: 2 2;
+    grid-gutter: 1;
+    padding: 1;
+}
+
+.panel {
+    border: round #EAFF00;
+    border-title-color: #EAFF00;
+    border-title-style: bold;
+    padding: 0 1;
+    background: #0A0A08;
+}
+
+Footer {
+    background: #0A0A08;
+}

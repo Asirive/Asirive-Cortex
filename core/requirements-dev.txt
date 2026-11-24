@@ -1,0 +1,4 @@
+# Dev builds and dev machines only. Never baked into user builds (core/AGENTS.md).
+-r requirements.txt
+textual==8.2.8
+pytest>=8
