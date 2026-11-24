@@ -67,6 +67,9 @@ multiplies activations at 8 bit. Result: 255 ms per 640 px frame vs 1190 ms on C
 (frames that are not 16:9 get padded and break it; camera must be 16:9 or recalibrated), see
 `docs/measurements/2026-11-npu-vision.md`. Still over 1 s overall: the LM prefill of 220 image tokens takes 2.3-2.9 s.
 Next: background encode + prefill of the latest frame, then the backbone.
+Step 1 speed tests (`docs/measurements/2026-11-speedups.md`): Q4_0 weights adopted (image prefill 1.94x faster,
+12/12), LM on the 4 big cores. One full image read is now ~1.3 s. Engine layout decided (Haziq, 2026-11-24): one
+C++ process holding the LM, the NPU vision encoder and the audio encoder.
 
 ### Phase 3 — Custom runtime (only if needed)
 C core, static memory plan, streaming speech-token path, no Python on the hot
