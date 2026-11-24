@@ -84,26 +84,31 @@ def save_npu_feat(path: Path, feat: np.ndarray) -> None:
 
 
 def probe_npu(cmd: list[str], timeout: float = 60) -> NpuOpen:
-    """Run cmd (a one-frame NPU open + encode) in a child process so a QNN hang or crash cannot take us down."""
+    """Run cmd (the NPU work) in a child process so a QNN hang or crash is reported, not inherited.
+
+    On success the child's stdout is passed through."""
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired:
-        return NpuOpen(False, f"NPU probe timed out after {timeout:.0f} s (fastrpc busy or CDSP down?)")
+        return NpuOpen(False, f"NPU run timed out after {timeout:.0f} s (fastrpc busy or CDSP down?)")
     if r.returncode:
         tail = (r.stdout + r.stderr).strip()[-400:]
-        return NpuOpen(False, f"NPU probe failed with exit code {r.returncode}: {tail}")
+        return NpuOpen(False, f"NPU run failed with exit code {r.returncode}: {tail}")
+    print(r.stdout, end="")
     return NpuOpen(True)
 
 
-def _probe_main(split: str, lib: str, qnn_lib: str) -> int:
-    npu = open_npu(Path(split), Path(lib), Path(qnn_lib))
-    if not npu.ok:
-        print(npu.error)
-        return 1
-    from .vision_prep import INPUT_H, INPUT_W, prepare
-
-    npu.encoder.encode(prepare(np.zeros((INPUT_H, INPUT_W, 3), np.uint8)))
-    return 0
+def wait_cool(read_temp, limit: float = 90, resume: float = 80, sleep=time.sleep, step: float = 10) -> float:
+    """If the power chip is above limit, pause in steps until it is below resume. Returns seconds waited."""
+    t = read_temp()
+    if t is None or t <= limit:
+        return 0
+    waited = 0.0
+    while t is not None and t >= resume:
+        sleep(step)
+        waited += step
+        t = read_temp()
+    return waited
 
 
 def _answer(embd: str, model: str, mmproj: str, feat: Path, prompt: str) -> tuple[str, dict]:
@@ -121,25 +126,29 @@ def main(argv: list[str] | None = None) -> int:
     import sys
 
     argv = sys.argv[1:] if argv is None else argv
-    if argv[:1] == ["--probe"]:
-        return _probe_main(*argv[1:4])
+    child = argv[:1] == ["--child"]
+    if child:
+        argv = argv[1:]
     ap = argparse.ArgumentParser(prog="cortex_core.npu.run_npu")
     for a in ("--split", "--lib", "--qnn-lib", "--onnx", "--cases", "--embd", "--model", "--mmproj", "--out-dir"):
         ap.add_argument(a, required=True)
     ap.add_argument("--runs", type=int, default=20)
-    ap.add_argument("--probe-timeout", type=float, default=60)
+    ap.add_argument("--timeout", type=float, default=1800, help="whole-run limit, seconds")
     a = ap.parse_args(argv)
+    if not child:
+        # The NPU is opened exactly once, inside one supervised child: a probe that closed the NPU and a
+        # reopen one second later reset the whole box (fastrpc unmap error, 2026-11-24).
+        r = probe_npu([sys.executable, "-m", "cortex_core.npu.run_npu", "--child", *argv], a.timeout)
+        if not r.ok:
+            print(r.error)
+            return 1
+        return 0
 
     import onnxruntime as ort
     from PIL import Image
 
     from .vision_prep import prepare
 
-    probe = probe_npu([sys.executable, "-m", "cortex_core.npu.run_npu", "--probe", a.split, a.lib, a.qnn_lib],
-                      a.probe_timeout)
-    if not probe.ok:
-        print(probe.error)
-        return 1
     npu = open_npu(Path(a.split), Path(a.lib), Path(a.qnn_lib))
     if not npu.ok:
         print(npu.error)
@@ -152,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
     cases = json.loads(Path(a.cases).read_text())
     rows = []
     for c in cases:
+        cooled = wait_cool(lambda: soc_state()["pmic_temp_c"])
         img = Image.open(Path(a.cases).parent / c["image"]).convert("RGB")
         pv = prepare(np.asarray(img))
         enc.encode(pv)  # warm
@@ -177,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
                "npu_median_ms": round(statistics.median(ms)), "npu_p90_ms": round(ms[int(0.9 * (len(ms) - 1))]),
                "cos_mean": round(cos_mean, 5), "cos_min": round(cos_min, 4),
                "tok_below_0_9": round(frac_below(ref, feat), 4), "size": f"{img.width}x{img.height}", "cpu_answer": c.get("cpu_answer"),
-               "npu_answer": ans, "match": ok, "ttft_s": stats.get("ttft_s"),
+               "npu_answer": ans, "match": ok, "ttft_s": stats.get("ttft_s"), "cooled_s": cooled,
                "cpu_mhz_min": min((x["cpu_mhz_min"] for x in socs if x["cpu_mhz_min"]), default=None),
                "cpu_mhz_max": max((x["cpu_mhz_max"] for x in socs if x["cpu_mhz_max"]), default=None),
                "cpu_temp_max_c": max((x["cpu_temp_c"] for x in socs if x["cpu_temp_c"]), default=None),

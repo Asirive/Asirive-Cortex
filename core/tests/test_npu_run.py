@@ -89,3 +89,33 @@ def test_probe_reports_a_hang_within_the_timeout():
 def test_probe_reports_a_crash_with_its_exit_code():
     r = probe_npu([sys.executable, "-c", "import sys; print('boom'); sys.exit(-11 & 0xff)"], timeout=10)
     assert not r.ok and "245" in r.error and "boom" in r.error
+
+
+def test_the_cli_opens_the_npu_once_inside_one_supervised_child(monkeypatch):
+    # opening the NPU in a probe, closing it, then reopening it a second later crashed the box (2026-11-24),
+    # so the parent never touches the NPU: it runs the whole bench as one child under a timeout
+    from cortex_core.npu import run_npu
+
+    seen = []
+    monkeypatch.setattr(run_npu, "probe_npu", lambda cmd, timeout: seen.append((cmd, timeout)) or run_npu.NpuOpen(True))
+    monkeypatch.setattr(run_npu, "open_npu", lambda *a: pytest.fail("parent must not open the NPU"))
+    args = ["--split", "s", "--lib", "l", "--qnn-lib", "q", "--onnx", "o", "--cases", "c", "--embd", "e",
+            "--model", "m", "--mmproj", "p", "--out-dir", "d", "--timeout", "77"]
+    assert run_npu.main(args) == 0
+    (cmd, timeout), = seen
+    assert "--child" in cmd and cmd[cmd.index("--child") + 1:] == args and timeout == 77
+
+
+def test_wait_cool_pauses_above_the_limit_until_resume():
+    from cortex_core.npu.run_npu import wait_cool
+
+    temps, slept = iter([92.0, 85.0, 79.0]), []
+    waited = wait_cool(lambda: next(temps), limit=90, resume=80, sleep=slept.append)
+    assert len(slept) == 2 and waited == sum(slept)
+
+
+def test_wait_cool_does_nothing_when_cool_or_unknown():
+    from cortex_core.npu.run_npu import wait_cool
+
+    assert wait_cool(lambda: 60.0, limit=90, resume=80, sleep=pytest.fail) == 0
+    assert wait_cool(lambda: None, limit=90, resume=80, sleep=pytest.fail) == 0
