@@ -24,6 +24,7 @@ def row_from_events(case: dict, events: list[dict]) -> dict:
     """One case's view + answer events -> a result row."""
     view = next((e for e in events if e["type"] == "view"), {})
     done = next((e for e in events if e["type"] == "done"), {})
+    sound_end = next((e for e in events if e["type"] == "sound_end"), {})
     err = next((e for e in events if e["type"] == "error"), None)
     text = "".join(e["text"] for e in events if e["type"] == "token")
     text = text.replace("<think></think>", "").strip()
@@ -38,7 +39,29 @@ def row_from_events(case: dict, events: list[dict]) -> dict:
         "refresh_ms": sum(parts) if all(p is not None for p in parts) else None,
         "skipped": view.get("skipped"), "cos": view.get("cos"), "preempted": view.get("preempted"),
         "view_frame_id": done.get("view_frame_id"), "view_age_ms": done.get("view_age_ms"),
+        # speech out (speak: true)
+        "frames": done.get("frames"), "frame_ms": done.get("frame_ms"), "codec_ms": done.get("codec_ms"),
+        "sound_ms": done.get("sound_ms"), "played_ms": sound_end.get("sound_ms"), "gaps": sound_end.get("gaps"),
+        "cut": sound_end.get("cut"),
     }
+
+
+def sound_until_end(eng, timeout: float = 40.0) -> list[dict]:
+    """The voice-queue events up to this answer's sound_end (none if the engine is not speaking)."""
+    import queue
+
+    out, end = [], time.monotonic() + timeout
+    while time.monotonic() < end:
+        try:
+            ev = eng.next_voice(timeout=max(0.0, end - time.monotonic()))
+        except queue.Empty:
+            break
+        out.append(ev)
+        if ev["type"] == "sound_end":
+            break
+        if ev["type"] == "error" and str(ev.get("what", "")).startswith("speaker:"):
+            break
+    return out
 
 
 def vm_hwm_kb() -> int | None:
@@ -66,7 +89,9 @@ def main(argv: list[str] | None = None) -> int:
     cases = json.loads(Path(a.cases).read_text())
     base = Path(a.cases).parent
     rows, still = [], []
-    with Engine(a.lib, json.loads(Path(a.config).read_text())) as eng:
+    config = json.loads(Path(a.config).read_text())
+    speak = config.get("speak", True)
+    with Engine(a.lib, config) as eng:
         rgb = None
         for i, c in enumerate(cases, 1):
             img = Path(c["image"])
@@ -81,6 +106,8 @@ def main(argv: list[str] | None = None) -> int:
             events = [eng.wait_view()]
             if events[0]["type"] == "view":
                 events += list(eng.ask(c["question"] + " One sentence."))
+                if speak:  # the sound plays out after done: wait for its end before the next case
+                    events += sound_until_end(eng)
             row = row_from_events(c, events)
             rows.append(row)
             print(json.dumps(row), flush=True)
@@ -98,6 +125,14 @@ def main(argv: list[str] | None = None) -> int:
         "still_frames": len(still), "still_skipped": sum(bool(v.get("skipped")) for v in still),
         "vm_hwm_kb": vm_hwm_kb(), "status": status, "fresh": a.fresh, "gap_s": a.gap,
     }
+    spoken = [r for r in rows if r.get("frames")]
+    if spoken:
+        summary.update({
+            "spoken": len(spoken), "gapless": sum(r["gaps"] == 0 for r in spoken),
+            "frame_ms_median": statistics.median(r["frame_ms"] for r in spoken),
+            "codec_ms_median": statistics.median(r["codec_ms"] for r in spoken),
+            "sound_ms_median": statistics.median(r["sound_ms"] for r in spoken),
+        })
     Path(a.out).write_text(json.dumps({"rows": rows, "still": still, "summary": summary}, indent=1))
     print(json.dumps(summary))
     print(f"matched {summary['matched']}/{summary['cases']}")

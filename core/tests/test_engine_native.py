@@ -82,6 +82,20 @@ def test_bench_row_from_events():
     assert row["view_age_ms"] == 3.0 and row["view_frame_id"] == 1
 
 
+def test_bench_row_speech_fields():
+    case = {"image": "t.jpg", "question": "q", "expect": ["cup"]}
+    row = row_from_events(case, [
+        {"type": "view", "frame_id": 1},
+        {"type": "token", "text": "A cup."},
+        {"type": "sound_start", "at_ms": 1000.0},
+        {"type": "done", "ttft_ms": 150.0, "frames": 40, "frame_ms": 64.0, "codec_ms": 19.0, "sound_ms": 3200.0},
+        {"type": "sound_end", "at_ms": 4500.0, "sound_ms": 3200.0, "gaps": 0, "cut": False},
+    ])
+    assert row["match"] is True
+    assert (row["frames"], row["frame_ms"], row["codec_ms"]) == (40, 64.0, 19.0)
+    assert (row["sound_ms"], row["played_ms"], row["gaps"], row["cut"]) == (3200.0, 3200.0, 0, False)
+
+
 def test_bench_row_error_is_no_match():
     case = {"image": "t.jpg", "question": "q", "expect": ["x"]}
     row = row_from_events(case, [{"type": "error", "what": "encode: boom"}])
