@@ -319,9 +319,12 @@ struct Engine {
             auto on_token = [&](const std::string& piece) {
                 if (first && end) end_to_first = ms_since(end_time);
                 first = false;
-                emit({{"type", "token"}, {"text", piece}});
+                json tok = {{"type", "token"}, {"text", piece}};
+                if (end) tok["voice"] = true;  // so a client can route spoken answers apart from typed asks
+                emit(tok);
             };
             AskResult r;
+            const double wait_ms = end ? ms_since(end_time) : 0;  // last rows decoded + gate, before the answer
             if (end) {
                 lm->clear_cancel();
                 r = lm->voice_answer(max, on_token);
@@ -337,7 +340,11 @@ struct Engine {
                          {"view_frame_id", r.view_frame_id},
                          {"view_age_ms", r.view_age_ms},
                          {"cancelled", r.cancelled},
-                         {"stop", r.stop}};            if (end) done["voice"] = true, done["end_to_first_ms"] = end_to_first, done["speech_ms"] = speech_ms;
+                         {"stop", r.stop}};
+            if (end) {
+                done["voice"] = true, done["end_to_first_ms"] = end_to_first, done["speech_ms"] = speech_ms;
+                done["wait_ms"] = wait_ms;
+            }
             emit(done);
             {
                 std::lock_guard<std::mutex> g(mu);

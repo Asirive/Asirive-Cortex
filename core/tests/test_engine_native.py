@@ -5,8 +5,38 @@ from cortex_core.engine.native_bench import row_from_events
 
 
 def test_parse_event_types():
-    for t in ("token", "done", "view", "error"):
+    for t in ("token", "done", "view", "error", "speech_start", "speech_end"):
         assert native.parse_event('{"type": "%s", "x": 1}' % t) == {"type": t, "x": 1}
+
+
+@pytest.mark.parametrize(
+    "ev, asking, where",
+    [
+        ({"type": "speech_start", "at_ms": 10.0}, False, "voice"),
+        ({"type": "speech_end", "at_ms": 900.0}, True, "voice"),
+        ({"type": "token", "text": "Hi", "voice": True}, True, "voice"),  # a spoken answer, even during an ask
+        ({"type": "done", "voice": True}, False, "voice"),
+        ({"type": "error", "what": "voice: decode failed"}, True, "voice"),
+        ({"type": "error", "what": "audio: encode failed"}, False, "voice"),
+        ({"type": "token", "text": "Hi"}, True, "answer"),
+        ({"type": "done", "cancelled": True}, True, "answer"),  # the typed ask a barge-in cancelled
+        ({"type": "error", "what": "ask: busy"}, True, "answer"),
+        ({"type": "error", "what": "encode: boom"}, False, "views"),
+        ({"type": "view", "frame_id": 1}, False, "views"),
+    ],
+)
+def test_route_event(ev, asking, where):
+    assert native.route_event(ev, asking) == where
+
+
+def test_pcm16k_float_accepts_int16_and_float():
+    np = pytest.importorskip("numpy")
+    f = native.pcm16k_float(np.array([0, 16384, -32768], dtype=np.int16))
+    assert f.dtype == np.float32 and f.tolist() == [0.0, 0.5, -1.0]
+    g = native.pcm16k_float([0.25, -0.5])
+    assert g.dtype == np.float32 and g.tolist() == [0.25, -0.5]
+    with pytest.raises(ValueError):
+        native.pcm16k_float(np.zeros((2, 2), dtype=np.float32))
 
 
 def test_parse_event_rejects_unknown_type():

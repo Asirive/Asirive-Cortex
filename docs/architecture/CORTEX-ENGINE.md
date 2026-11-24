@@ -73,8 +73,11 @@ C++ process holding the LM, the NPU vision encoder and the audio encoder.
 Step 2 engine core built (`core/tools/cortex-engine`, `docs/measurements/2026-11-engine-core.md`): the latest frame is
 encoded and read into the LM in the background, so an ask only reads the question. Time to first token 115 ms
 median (was 1.23 s), 12/12 with a fresh conversation per case; view refresh 1.42 s (target 1.4 s, the 220-token read
-is the floor); never on cpu0. Python binding `cortex_core/engine/native.py`. Next: step 3, hands-free VAD + streaming
-audio in.
+is the floor); never on cpu0. Python binding `cortex_core/engine/native.py`.
+Step 3 hands-free voice in built (`docs/measurements/2026-11-voice-in.md`): the button toggles listening, a C++ port
+of Silero VAD v4 finds speech start and end, the LFM3 audio encoder runs on cpu1-3 while the user talks and its rows
+go into the conversation slot at once. VAD end of speech → first token 108–306 ms (plus the 500 ms silence
+hangover). Talking over an answer cancels it; speech start refreshes the view. Next: step 4, parallel speech output.
 
 ### Phase 3 — Custom runtime (only if needed)
 C core, static memory plan, streaming speech-token path, no Python on the hot

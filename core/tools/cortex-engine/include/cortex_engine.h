@@ -4,14 +4,15 @@
  * only reads the question. Every call returns immediately; results arrive as JSON lines through the event callback
  * given to ce_open, from engine threads:
  *   {"type":"token","text":...}
- *   {"type":"done","ttft_ms":..,"total_ms":..,"n_out":..,"view_frame_id":..,"view_age_ms":..,"cancelled":..}
+ *   {"type":"done","ttft_ms":..,"total_ms":..,"n_out":..,"view_frame_id":..,"view_age_ms":..,"cancelled":..,"stop":..}
  *   {"type":"view","frame_id":..,"skipped":..,"cos":..,"prep_ms":..,"encode_ms":..[,"read_ms":..,"preempted":..]}
  *   {"type":"error","what":...}
  * Hands-free listening (ce_set_listening on): the VAD finds each utterance in the pushed audio, its speech is encoded
  * and read into the LM while the user talks, and the answer starts when they stop:
  *   {"type":"speech_start","at_ms":..}            at_ms: position in the pushed audio since listening went on
  *   {"type":"speech_end","at_ms":..,"speech_ms":..}
- *   then token events and a done event with "voice":true and "end_to_first_ms" (speech end called -> first token).
+ *   then token events with "voice":true and a done event with "voice":true, "end_to_first_ms" (speech end called ->
+ *   first token), "wait_ms" (speech end -> generation starts) and "speech_ms".
  * Speech start refreshes the view from the latest frame (ce_refresh is ignored while the user talks) and cancels an
  * answer still running (barge-in). Audio between utterances is never given to the model.
  *
