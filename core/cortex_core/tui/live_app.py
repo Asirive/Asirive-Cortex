@@ -1,6 +1,7 @@
 """Live dev TUI: talk to Cortex through the engine with the real camera and mic.
 
-    space / l   the button: hands-free listening on / off (the VAD finds where questions start and end)
+    space / l   the button: hands-free listening on / off (the VAD finds where questions start and end); while
+                Cortex is talking it cuts the answer off instead
     /           type a question (enter sends, esc leaves the box)
     r           clear the conversation history        q  quit
 """
@@ -55,7 +56,10 @@ def status(s: LiveState) -> Text:
         t.append(" LISTENING ", style=f"bold #0A0A08 on {YELLOW}")
     else:
         t.append(" listening off ", style="bold on #333330")
-    if s.speaking:
+    if s.talking:
+        t.append("  SPEAKING · mic muted ", style="bold #0A0A08 on #7FD4FF")
+        t.append("  space cuts it off", style="dim")
+    elif s.speaking:
         t.append("  ● you are speaking", style=f"bold {YELLOW}")
     elif s.asking:
         t.append("  answering…", style="#7FD4FF")
@@ -84,6 +88,13 @@ def timings(s: LiveState) -> Text:
     t.append(f"First token after start  {_ms(d.get('ttft_ms'))}{NL}")
     t.append(f"Answer total             {_ms(d.get('total_ms'))}  ({d.get('n_out', '?')} tokens){NL}")
     t.append(f"View used                frame {d.get('view_frame_id')}  age {_ms(d.get('view_age_ms'))}")
+    if d.get("frames") or d.get("sound_ms"):
+        t.append(NL)
+        if "end_to_sound_ms" in d:
+            t.append(f"Speech end → first sound {_ms(d.get('end_to_sound_ms'))}{NL}", style="bold")
+        cut = "  cut off" if d.get("cut") else ""
+        t.append(f"Sound                    {_ms(d.get('sound_ms'))}  gaps {d.get('gaps', '—')}{cut}{NL}")
+        t.append(f"  per 80 ms frame        LM {_ms(d.get('frame_ms'))}, codec {_ms(d.get('codec_ms'))}")
     return t
 
 
@@ -140,7 +151,7 @@ class LiveTUI(App):
         self.query_one("#system", Static).update(_system(self.collector.snapshot()))
 
     def action_listen(self) -> None:
-        self.session.toggle_listening()
+        self.session.button()
 
     def action_type(self) -> None:
         self.query_one("#ask", Input).focus()

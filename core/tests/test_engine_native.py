@@ -29,6 +29,16 @@ def test_route_event(ev, asking, where):
     assert native.route_event(ev, asking) == where
 
 
+def test_sound_events_are_known_and_routed():
+    for t in ("sound_start", "sound_end"):
+        assert native.parse_event('{"type": "%s"}' % t)["type"] == t
+    # sound outlives the ask that made it: always the voice queue, which the session always drains
+    assert native.route_event({"type": "sound_end", "voice": True}, False) == "voice"
+    assert native.route_event({"type": "sound_start"}, True) == "voice"
+    assert native.route_event({"type": "sound_end", "cut": True}, False) == "voice"
+    assert native.route_event({"type": "error", "what": "speaker: plughw:9,9: no device"}, False) == "voice"
+
+
 def test_pcm16k_float_accepts_int16_and_float():
     np = pytest.importorskip("numpy")
     f = native.pcm16k_float(np.array([0, 16384, -32768], dtype=np.int16))

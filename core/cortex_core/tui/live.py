@@ -2,7 +2,7 @@
 
     vision thread  latest camera frame -> push_frame + refresh, waits for the view, at most every refresh_s
     mic            every 20 ms of audio -> push_audio (the engine ignores it while listening is off) + level
-    voice thread   speech_start / speech_end / spoken answer events -> state
+    voice thread   speech_start / speech_end / spoken answer / sound_start / sound_end events -> state
     ask            a typed question runs on its own thread
 
 The engine is duck-typed (cortex_core.engine.native.Engine), so tests run with a fake."""
@@ -65,6 +65,16 @@ class LiveSession:
                 self.state.speaking = False
             self.state.log.append("listening " + ("ON" if on else "off"))
         return on
+
+    def button(self) -> str:
+        """The one button: while Cortex talks it cuts the answer ("cut"); otherwise listening on/off."""
+        with self.lock:
+            talking = self.state.talking
+        if talking:
+            self.eng.cancel()  # the engine sends sound_end (cut) at once; the voice thread clears talking
+            self.note("cut off")
+            return "cut"
+        return "listen" if self.toggle_listening() else "stop listening"
 
     def ask(self, question: str) -> None:
         question = question.strip()

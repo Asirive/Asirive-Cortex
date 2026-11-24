@@ -23,16 +23,17 @@ import threading
 from pathlib import Path
 from typing import Iterator
 
-EVENT_TYPES = {"token", "done", "view", "error", "speech_start", "speech_end"}
+EVENT_TYPES = {"token", "done", "view", "error", "speech_start", "speech_end", "sound_start", "sound_end"}
 _CB = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_void_p)
 
 
 def route_event(ev: dict, asking: bool) -> str:
-    """Which queue an event belongs to: "voice" (hands-free), "answer" (the running typed ask) or "views"."""
+    """Which queue an event belongs to: "voice" (hands-free, and the sound, which outlives the ask that made it),
+    "answer" (the running typed ask) or "views"."""
     t = ev["type"]
-    if t in ("speech_start", "speech_end") or ev.get("voice"):
+    if t in ("speech_start", "speech_end", "sound_start", "sound_end") or ev.get("voice"):
         return "voice"
-    if t == "error" and str(ev.get("what", "")).startswith(("voice:", "audio:")):
+    if t == "error" and str(ev.get("what", "")).startswith(("voice:", "audio:", "speaker:")):
         return "voice"
     if t in ("token", "done") or (t == "error" and asking):
         return "answer"
@@ -109,8 +110,8 @@ class Engine:
             raise RuntimeError("ce_push_audio refused the audio")
 
     def next_voice(self, timeout: float | None = None) -> dict:
-        """The next hands-free event: speech_start, speech_end, a voice token, the voice done, or a voice error.
-        Raises queue.Empty on timeout."""
+        """The next hands-free event: speech_start, speech_end, a voice token, the voice done, a voice error, or
+        sound_start / sound_end (any answer's). Raises queue.Empty on timeout."""
         return self._voice.get(timeout=timeout)
 
     def push_frame(self, rgb, frame_id: int) -> None:
@@ -151,6 +152,7 @@ class Engine:
             self._asking.clear()
 
     def cancel(self) -> None:
+        """Stops the answer being made and cuts its sound now."""
         self._lib.ce_cancel(self._h)
 
     def reset_history(self) -> None:

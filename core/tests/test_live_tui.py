@@ -40,3 +40,28 @@ def test_space_toggles_listening_and_typed_question_is_answered(tmp_path):
         asyncio.run(go())
     finally:
         session.close()
+
+
+def test_space_while_talking_cuts_the_answer(tmp_path):
+    eng = FakeEngine()
+    session = LiveSession(eng).start()
+    eng.voice.put({"type": "sound_start", "at_ms": 1.0})  # Cortex is talking
+
+    async def go():
+        app = LiveTUI(session, Collector(tmp_path, tmp_path, tmp_path, tmp_path))
+        async with app.run_test(size=(100, 32)) as pilot:
+            for _ in range(20):
+                await pilot.pause(0.1)
+                if "SPEAKING" in str(app.query_one("#status", Static).render()):
+                    break
+            assert "SPEAKING" in str(app.query_one("#status", Static).render())
+            await pilot.press("space")
+            await pilot.pause(0.3)
+            assert eng.cancelled == 1
+            assert eng.listening == []  # the button cut the answer, it did not toggle listening
+            assert "SPEAKING" not in str(app.query_one("#status", Static).render())
+
+    try:
+        asyncio.run(go())
+    finally:
+        session.close()

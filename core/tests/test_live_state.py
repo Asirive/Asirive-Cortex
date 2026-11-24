@@ -63,6 +63,24 @@ def test_errors_go_to_log_and_turns_are_capped():
     assert len(s.turns) == 4 and s.turns[-1].text == "q5"
 
 
+def test_live_state_talking_flags():
+    s = run(LiveState(), {"type": "sound_start", "at_ms": 1.0, "voice": True, "end_to_sound_ms": 320.0})
+    assert s.talking and s.muted
+    run(s, {"type": "done", "voice": True, "end_to_sound_ms": 320.0, "sound_ms": 2400.0, "frames": 30,
+            "frame_ms": 64.0, "codec_ms": 19.0, "n_out": 9, "stop": "eog", "cancelled": False})
+    assert s.talking  # the sound plays on after the answer is made
+    run(s, {"type": "sound_end", "at_ms": 2.0, "sound_ms": 2400.0, "gaps": 0, "cut": False, "voice": True})
+    assert not s.talking
+    assert s.last["end_to_sound_ms"] == 320.0 and s.last["sound_ms"] == 2400.0 and s.last["gaps"] == 0
+    assert s.last["frame_ms"] == 64.0 and s.last["codec_ms"] == 19.0
+
+
+def test_sound_end_cut_marks_nothing_new_and_unmutes_later():
+    s = run(LiveState(), {"type": "sound_start", "at_ms": 1.0},
+            {"type": "sound_end", "at_ms": 2.0, "sound_ms": 400.0, "gaps": 1, "cut": True})
+    assert not s.talking and s.last["gaps"] == 1 and s.last["cut"] is True
+
+
 def test_think_block_split_over_tokens_is_never_shown():
     s = LiveState()
     s.typed("what is this")

@@ -15,6 +15,11 @@ class FakeEngine:
         self.views = queue.Queue()
         self.pushed, self.audio, self.listening = [], 0, []
         self.asks = []
+        self.cancelled = 0
+
+    def cancel(self):  # like the engine: the sound is cut at once
+        self.cancelled += 1
+        self.voice.put({"type": "sound_end", "at_ms": 2.0, "sound_ms": 400.0, "gaps": 0, "cut": True})
 
     def set_listening(self, on):
         self.listening.append(on)

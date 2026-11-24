@@ -27,6 +27,8 @@ class LiveState:
     speaking: bool = False
     listening: bool = False
     asking: bool = False
+    talking: bool = False  # Cortex's voice is coming out
+    muted: bool = False    # the engine drops the mic while Cortex talks
     view: dict = field(default_factory=dict)  # frame_id, refresh_ms, prep/encode/read ms
     views_skipped: int = 0
     last: dict = field(default_factory=dict)  # timings of the last answer
@@ -77,7 +79,15 @@ class LiveState:
             if not a.text and not ev.get("cancelled"):
                 a.text = "(no answer)"
             self.last = {k: ev[k] for k in ("ttft_ms", "end_to_first_ms", "wait_ms", "n_out", "total_ms",
-                                            "view_frame_id", "view_age_ms", "speech_ms", "voice") if k in ev}
+                                            "view_frame_id", "view_age_ms", "speech_ms", "voice", "frames",
+                                            "frame_ms", "codec_ms", "sound_ms", "end_to_sound_ms") if k in ev}
+        elif t == "sound_start":
+            self.talking = self.muted = True
+            if "end_to_sound_ms" in ev:
+                self.last["end_to_sound_ms"] = ev["end_to_sound_ms"]
+        elif t == "sound_end":
+            self.talking = self.muted = False  # the engine keeps the mic off ~300 ms longer (the room's tail)
+            self.last.update({"sound_ms": ev.get("sound_ms"), "gaps": ev.get("gaps"), "cut": ev.get("cut")})
         elif t == "view":
             if ev.get("skipped"):
                 self.views_skipped += 1
