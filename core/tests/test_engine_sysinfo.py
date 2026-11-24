@@ -70,3 +70,24 @@ def test_power_from_voltage_current(tmp_path):
 def test_power_absent(tmp_path):
     assert read_power_w(tmp_path) is None
     assert read_power_w(tmp_path / "nope") is None
+
+
+def test_power_skips_offline_and_zero_supplies(tmp_path):
+    # Dragon Q8B: only USB-C UCSI ports, offline, voltage/current 0 -> unknown, not "0.00 W"
+    for name in ("ucsi.01", "ucsi.02"):
+        d = tmp_path / name
+        d.mkdir()
+        (d / "online").write_text("0")
+        (d / "voltage_now").write_text("0")
+        (d / "current_now").write_text("0")
+    assert read_power_w(tmp_path) is None
+
+
+def test_power_uses_online_supply_after_an_offline_one(tmp_path):
+    off, on = tmp_path / "a_off", tmp_path / "b_on"
+    off.mkdir(), on.mkdir()
+    (off / "online").write_text("0")
+    (off / "power_now").write_text("5000000")
+    (on / "online").write_text("1")
+    (on / "power_now").write_text("7000000")
+    assert read_power_w(tmp_path) == 7.0

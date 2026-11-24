@@ -40,6 +40,9 @@ Qualcomm runtime), since Phase 2 depends on it.
 Also measure quality: tool-call success on our registry, navigation prompts,
 speech cue quality vs Supertonic/Cartesia, vs Gemini Live on the same cases.
 **Exit:** a numbers table committed to docs, and a decision on Phase 1 targets.
+**Status:** CPU/GPU baseline and NPU probe done 2026-11-24, see `docs/measurements/2026-11-lfm3-omni-baseline.md`.
+Power (needs a meter) and real-voice quality still open. Headline: voice 0.2–0.7 s on CPU, vision 3.3 s at 640 px,
+Vulkan GPU slower and unstable, NPU reachable but no QNN runtime → vision encoder is the first NPU target.
 
 ### Phase 1 — Power-aware serving (on llama.cpp)
 - Brain idle until wake word / trigger; wake word stays outside the model.

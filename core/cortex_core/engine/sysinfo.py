@@ -85,22 +85,31 @@ def cpu_load(prev: tuple[int, int], cur: tuple[int, int]) -> float:
 
 
 def read_power_w(root: Path = Path("/sys/class/power_supply")) -> Optional[float]:
-    """Watts from the first supply reporting power_now, else voltage_now x current_now."""
+    """Watts from the first online supply reporting a non-zero power_now, else voltage_now x current_now.
+
+    Offline supplies and zero readings are skipped: an idle USB-C port reads 0 V / 0 A, which means
+    "not measured here", not "the board draws 0 W".
+    """
     try:
         supplies = sorted(p for p in root.iterdir() if p.is_dir())
     except OSError:
         return None
     for s in supplies:
+        if (_read(s / "online") or "").strip() == "0":
+            continue
         p = _read(s / "power_now")
         if p is not None:
             try:
-                return int(p) / 1e6
+                if int(p) != 0:
+                    return abs(int(p)) / 1e6
             except ValueError:
                 pass
         v, c = _read(s / "voltage_now"), _read(s / "current_now")
         if v is not None and c is not None:
             try:
-                return abs(int(v) * int(c)) / 1e12
+                w = abs(int(v) * int(c)) / 1e12
+                if w != 0:
+                    return w
             except ValueError:
                 pass
     return None
