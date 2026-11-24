@@ -114,7 +114,7 @@ def test_report_files(tmp_path):
     write_report(r, meta, oj, om, state)
     md = om.read_text(encoding="utf-8")
     assert ("| case | ok/failed | first token s (med/p90) | first audio s (med/p90) | prefill tok/s | decode tok/s "
-            "| peak RAM MB | max temp °C | power W | < 1 s? |") in md
+            "| prompt tok / cached | server peak RAM MB (so far) | max temp °C | power W (mean/max) | < 1 s? |") in md
     assert "n/a" in md and "text_short" in md
     data = json.loads(oj.read_text(encoding="utf-8"))
     assert data["meta"]["backend"] == "cpu" and "text_short" in data["cases"]
@@ -125,3 +125,89 @@ def test_example_cases_file_is_valid():
     from importlib.resources import files
     data = json.loads(files("cortex_core.engine").joinpath("cases.example.json").read_text(encoding="utf-8"))
     assert [c["id"] for c in data] == ["text_short", "image_describe", "audio_question", "audio_image"]
+
+
+# --- final-review fixes ---
+import time
+
+from cortex_core.engine.bench import main as bench_main
+
+
+def test_audio_out_case_without_audio_has_no_verdict():
+    c = Case("speak", "hi", None, None, True)
+    r = run_bench([c], "http://x", reps=1, warmup=0, chat=scripted([ok(0.3)]))
+    s = r["cases"]["speak"]
+    assert s["over_target"] is None and s["no_audio"] is True
+
+
+def test_cache_counts_summarised():
+    a = ok(0.3)
+    a.prompt_n, a.cache_n = 800, 0
+    b = ok(0.3)
+    b.prompt_n, b.cache_n = 800, 12
+    s = summarise([a, b])
+    assert s["prompt_n"] == 800 and s["cache_n_max"] == 12
+
+
+def test_temperature_and_power_sampled_while_running(tmp_path):
+    zone = tmp_path / "thermal" / "thermal_zone0"
+    zone.mkdir(parents=True)
+    (zone / "type").write_text("cpu")
+    (zone / "temp").write_text("40000")
+    supply = tmp_path / "power" / "bat"
+    supply.mkdir(parents=True)
+    (supply / "power_now").write_text("1000000")
+
+    def chat(base_url, messages, **kw):  # hot and hungry only while "inferring"
+        (zone / "temp").write_text("70000")
+        (supply / "power_now").write_text("9000000")
+        time.sleep(0.15)
+        (zone / "temp").write_text("40000")
+        (supply / "power_now").write_text("1000000")
+        return ok(0.2)
+
+    r = run_bench([CASE], "http://x", reps=1, warmup=0, chat=chat, proc=tmp_path, thermal=tmp_path / "thermal",
+                  power=tmp_path / "power", sample_s=0.01)
+    s = r["cases"]["text_short"]
+    assert s["max_temp_c"] == 70.0
+    assert s["power_max_w"] == 9.0 and s["power_w"] > 1.0
+
+
+def test_state_dir_unwritable_still_writes_md(tmp_path, capsys):
+    r = run_bench([CASE], "http://x", reps=1, warmup=0, chat=scripted([ok(0.2)]),
+                  proc=tmp_path, thermal=tmp_path, power=tmp_path)
+    blocker = tmp_path / "state"
+    blocker.write_text("i am a file, not a directory")
+    om = tmp_path / "o.md"
+    write_report(r, {"backend": "cpu"}, tmp_path / "o.json", om, blocker)
+    assert "text_short" in om.read_text(encoding="utf-8")
+    assert "latest.json" in capsys.readouterr().err
+
+
+def test_md_says_ram_is_server_peak_so_far(tmp_path):
+    r = run_bench([CASE], "http://x", reps=1, warmup=0, chat=scripted([ok(0.2)]),
+                  proc=tmp_path, thermal=tmp_path, power=tmp_path)
+    om = tmp_path / "o.md"
+    write_report(r, {"backend": "cpu"}, tmp_path / "o.json", om, None)
+    assert "server peak RAM MB (so far)" in om.read_text(encoding="utf-8")
+
+
+def test_interrupt_keeps_finished_cases(tmp_path):
+    f = tmp_path / "cases.json"
+    f.write_text(json.dumps([{"id": "first", "text": "a", "image": None, "audio": None},
+                             {"id": "second", "text": "b", "image": None, "audio": None}]))
+    calls = []
+
+    def chat(base_url, messages, **kw):
+        calls.append(1)
+        if len(calls) > 1:
+            raise KeyboardInterrupt
+        return ok(0.2)
+
+    oj, om = tmp_path / "o.json", tmp_path / "o.md"
+    rc = bench_main(["--cases", str(f), "--media", str(tmp_path), "--backend", "cpu", "--llama-tag", "t",
+                     "--model", "m", "--mmproj", "p", "--reps", "1", "--warmup", "0",
+                     "--out-json", str(oj), "--out-md", str(om)], chat=chat)
+    assert rc == 130
+    data = json.loads(oj.read_text(encoding="utf-8"))
+    assert list(data["cases"]) == ["first"] and data["meta"]["partial"] is True

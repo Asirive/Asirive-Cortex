@@ -1,11 +1,15 @@
 import asyncio
 import json
 
-from textual.widgets import Static
+import pytest
 
-from cortex_core.tui.__main__ import main
-from cortex_core.tui.app import CortexTUI
-from cortex_core.tui.state import Collector, fmt
+pytest.importorskip("textual")  # dev-only dependency: skip, never break the core suite
+
+from textual.widgets import Static  # noqa: E402
+
+from cortex_core.tui.__main__ import main  # noqa: E402
+from cortex_core.tui.app import CortexTUI, _engine, _npu  # noqa: E402
+from cortex_core.tui.state import Collector, Snapshot, fmt  # noqa: E402
 
 
 def collector(tmp_path):
@@ -92,5 +96,39 @@ def test_app_shows_baseline(tmp_path):
             eng = panel_text(app, "#engine")
             assert "image_describe" in eng and "21.7" in eng and "0.42" in eng
             assert "yes" in panel_text(app, "#npu").lower()
+            await pilot.press("q")
+    asyncio.run(run())
+
+
+# --- final-review fixes ---
+
+def snap(baseline=None, npu=None):
+    return Snapshot({}, None, None, None, baseline, npu)
+
+
+@pytest.mark.parametrize("b", [{"cases": [1, 2]}, {"cases": {"x": "str"}},
+                               {"cases": {"x": {"ttft_s": "bad", "unsupported": 5, "decode_tps": [1]}}},
+                               {"meta": "odd", "cases": {}}])
+def test_engine_panel_survives_odd_json(b):
+    assert isinstance(str(_engine(snap(baseline=b))), str)
+
+
+@pytest.mark.parametrize("n", [{"notes": "str"}, {"notes": [1, None]}, {"reachable": "maybe"}])
+def test_npu_panel_survives_odd_json(n):
+    assert isinstance(str(_npu(snap(npu=n))), str)
+
+
+def test_engine_lines_fit_a_80_column_terminal():
+    b = baseline()
+    b["cases"]["a_rather_long_case_name_here"] = b["cases"]["image_describe"]
+    assert max(len(line) for line in str(_engine(snap(baseline=b))).splitlines()) <= 74
+
+
+def test_engine_panel_is_full_width_at_80x24(tmp_path):
+    async def run():
+        app = CortexTUI(collector(tmp_path), refresh_s=0.05)
+        async with app.run_test(size=(80, 24)) as pilot:
+            await pilot.pause()
+            assert app.query_one("#engine").size.width >= 70
             await pilot.press("q")
     asyncio.run(run())

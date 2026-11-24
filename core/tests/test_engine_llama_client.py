@@ -115,3 +115,41 @@ def test_user_message_parts(tmp_path):
     assert m["content"][0]["image_url"]["url"] == "data:image/jpeg;base64," + base64.b64encode(b"\xff\xd8jpeg").decode()
     assert m["content"][1]["input_audio"] == {"data": base64.b64encode(b"RIFFwav").decode(), "format": "wav"}
     assert m["content"][2]["text"] == "what is this"
+
+
+# --- final-review fixes ---
+
+def test_body_disables_prompt_cache():
+    seen = []
+    stream_chat("http://x", [user_message("q")], clock=Clock(), open_url=opener(["data: [DONE]"], seen))
+    assert json.loads(seen[0].data)["cache_prompt"] is False
+
+
+def test_records_prompt_and_cache_counts():
+    t = {"choices": [{"delta": {}}], "timings": {"prompt_n": 812, "cache_n": 0, "predicted_n": 3}}
+    r = stream_chat("http://x", [user_message("q")], clock=Clock(),
+                    open_url=opener([sse(delta(content="Hi")), sse(t), "data: [DONE]"]))
+    assert (r.prompt_n, r.cache_n) == (812, 0)
+
+
+def test_non_dict_chunks_are_skipped():
+    lines = ["data: 5", "data: []", sse({"choices": ["x"]}), sse(delta(content="Hi")), "data: [DONE]"]
+    r = stream_chat("http://x", [user_message("q")], clock=Clock(), open_url=opener(lines))
+    assert r.ok and r.text == "Hi"
+
+
+def test_non_str_content_is_ignored():
+    lines = [sse(delta(content=["odd"])), sse(delta(content="Hi")), "data: [DONE]"]
+    r = stream_chat("http://x", [user_message("q")], clock=Clock(), open_url=opener(lines))
+    assert r.ok and r.text == "Hi"
+
+
+def test_error_inside_stream_marks_failed():
+    lines = [sse(delta(content="Hi")), sse({"error": {"message": "context overflow"}}), "data: [DONE]"]
+    r = stream_chat("http://x", [user_message("q")], clock=Clock(), open_url=opener(lines))
+    assert not r.ok and "context overflow" in r.error
+
+
+def test_stream_with_no_output_is_failed():
+    r = stream_chat("http://x", [user_message("q")], clock=Clock(), open_url=opener(["data: [DONE]"]))
+    assert not r.ok and r.error == "no output"

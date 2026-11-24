@@ -28,6 +28,8 @@ class RunResult:
     decode_tps: Optional[float]
     tokens_out: Optional[int]
     wall_s: float
+    prompt_n: Optional[int] = None   # prompt tokens actually processed (proves the prefill was not cached)
+    cache_n: Optional[int] = None    # prompt tokens reused from the server's cache
 
 
 def _b64(path: Path) -> str:
@@ -48,18 +50,21 @@ def user_message(text: str, image: Optional[Path] = None, audio: Optional[Path] 
 def stream_chat(base_url: str, messages: list[dict], *, max_tokens: int = 128, audio_out: bool = False,
                 timeout_s: float = 60.0, clock: Callable[[], float] = time.monotonic,
                 open_url: Callable = urllib.request.urlopen) -> RunResult:
-    body: dict = {"messages": messages, "max_tokens": max_tokens, "stream": True}
+    # cache_prompt off: on the device every question has a new frame and new audio, so a benchmark that
+    # reuses the previous run's prompt cache would report a prefill the user never gets.
+    body: dict = {"messages": messages, "max_tokens": max_tokens, "stream": True, "cache_prompt": False}
     if audio_out:
         body["modalities"] = ["text", "audio"]
     req = urllib.request.Request(base_url.rstrip("/") + "/v1/chat/completions", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"}, method="POST")
     start = clock()
     ttft = ttfa = prefill = decode = None
-    tokens: Optional[int] = None
+    tokens = prompt_n = cache_n = None
     text: list[str] = []
 
     def result(ok: bool, error: Optional[str] = None, status: Optional[int] = None) -> RunResult:
-        return RunResult(ok, error, status, ttft, ttfa, "".join(text), prefill, decode, tokens, clock() - start)
+        return RunResult(ok, error, status, ttft, ttfa, "".join(text), prefill, decode, tokens, clock() - start,
+                         prompt_n, cache_n)
 
     try:
         with open_url(req, timeout=timeout_s) as resp:
@@ -76,19 +81,32 @@ def stream_chat(base_url: str, messages: list[dict], *, max_tokens: int = 128, a
                     chunk = json.loads(payload)
                 except ValueError:
                     continue  # malformed line: keep what we have
-                choices = chunk.get("choices") or [{}]
-                d = (choices[0] or {}).get("delta") or {}
+                if not isinstance(chunk, dict):
+                    continue
+                if chunk.get("error"):
+                    err = chunk["error"]
+                    msg = err.get("message") if isinstance(err, dict) else None
+                    return result(False, str(msg or err)[:300], status)
+                choices = chunk.get("choices")
+                c0 = choices[0] if isinstance(choices, list) and choices else {}
+                d = c0.get("delta") if isinstance(c0, dict) else None
+                d = d if isinstance(d, dict) else {}
                 if d.get("audio") and ttfa is None:
                     ttfa = now - start
-                if d.get("content"):
+                content = d.get("content")
+                if isinstance(content, str) and content:
                     if ttft is None:
                         ttft = now - start
-                    text.append(d["content"])
+                    text.append(content)
                 t = chunk.get("timings")
                 if isinstance(t, dict):
                     prefill = t.get("prompt_per_second", prefill)
                     decode = t.get("predicted_per_second", decode)
                     tokens = t.get("predicted_n", tokens)
+                    prompt_n = t.get("prompt_n", prompt_n)
+                    cache_n = t.get("cache_n", cache_n)
+            if ttft is None and ttfa is None:
+                return result(False, "no output", status)
             return result(True, status=status)
     except urllib.error.HTTPError as e:
         try:

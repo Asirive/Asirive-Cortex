@@ -1,54 +1,81 @@
 """Asirive Cortex dev terminal UI: system, engine baseline, NPU and log panels."""
 from __future__ import annotations
 
+from typing import Optional
+
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Grid
+from textual.containers import Grid, VerticalScroll
 from textual.widgets import Footer, RichLog, Static
 
 from cortex_core.tui.state import Collector, Snapshot, fmt
 
 HELP = "q quit · ? help"
+NL = "\n"
 
 
 def _system(s: Snapshot) -> Text:
     hot = max(s.temps_c.items(), key=lambda kv: kv[1]) if s.temps_c else None
     t = Text()
-    t.append(f"CPU load   {fmt(None if s.cpu_load is None else s.cpu_load * 100, '%', 0)}\n")
-    t.append(f"RAM used   {fmt(s.mem_used_mb, 'MB', 0)}\n")
-    t.append(f"Hottest    {fmt(hot[1] if hot else None, '°C')}" + (f"  ({hot[0]})" if hot else "") + "\n")
+    t.append(f"CPU load   {fmt(None if s.cpu_load is None else s.cpu_load * 100, '%', 0)}{NL}")
+    t.append(f"RAM used   {fmt(s.mem_used_mb, 'MB', 0)}{NL}")
+    t.append(f"Hottest    {fmt(hot[1] if hot else None, '°C')}" + (f"  ({hot[0]})" if hot else "") + NL)
     t.append(f"Power      {fmt(s.power_w, 'W', 2)}")
     return t
 
 
-def _ms(m: dict) -> str:
-    return "n/a" if not m or m.get("median") is None else f"{m['median']:.2f} s"
+def _num(v: object) -> Optional[float]:
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _med(c: dict, key: str) -> Optional[float]:
+    m = c.get(key)
+    return _num(m.get("median")) if isinstance(m, dict) else None
+
+
+def _s(v: Optional[float]) -> str:
+    return "n/a" if v is None else f"{v:.2f}s"
 
 
 def _engine(s: Snapshot) -> Text:
+    """Baseline table, at most 74 columns per line; any odd JSON shape degrades, never crashes."""
     b = s.baseline
     if not b:
-        return Text("no baseline yet\nrun: python -m cortex_core.engine.bench …")
-    meta = b.get("meta", {})
-    t = Text(f"{meta.get('backend', '?')} · {meta.get('model', '?')}\n\n", style="bold")
-    for cid, c in (b.get("cases") or {}).items():
-        if c.get("unsupported"):
-            t.append(f"{cid}: unsupported ({c['unsupported'][:60]})\n")
-            continue
-        decode = (c.get("decode_tps") or {}).get("median")
-        ok = {True: "over 1 s", False: "< 1 s", None: "n/a"}[c.get("over_target")]
-        t.append(f"{cid}: first token {_ms(c.get('ttft_s'))} · first audio {_ms(c.get('ttfa_s'))} · "
-                 f"decode {fmt(decode, 'tok/s')} · {ok}\n")
-    return t
+        return Text("no baseline yet" + NL + "run: python -m cortex_core.engine.bench ...")
+    try:
+        meta = b.get("meta") if isinstance(b.get("meta"), dict) else {}
+        cases = b.get("cases") if isinstance(b.get("cases"), dict) else {}
+        t = Text(f"{meta.get('backend', '?')} · {meta.get('model', '?')}"[:72] + NL, style="bold")
+        t.append(f"{'case':<20} {'1st tok':>8} {'1st aud':>8} {'decode':>10}  < 1 s{NL}", style="#EAFF00")
+        for cid, c in cases.items():
+            name = str(cid)[:20]
+            if not isinstance(c, dict):
+                t.append(f"{name:<20} unreadable{NL}")
+                continue
+            if isinstance(c.get("unsupported"), str):
+                t.append(f"{name:<20} unsupported: {c['unsupported'][:38]}{NL}")
+                continue
+            dec = _med(c, "decode_tps")
+            dec_s = "n/a" if dec is None else f"{dec:.1f} t/s"
+            if c.get("no_audio") is True:
+                verdict = "no audio"
+            else:
+                verdict = {True: "over", False: "yes"}.get(c.get("over_target"), "n/a")
+            t.append(f"{name:<20} {_s(_med(c, 'ttft_s')):>8} {_s(_med(c, 'ttfa_s')):>8} {dec_s:>10}  {verdict}{NL}")
+        return t
+    except Exception:
+        return Text("baseline file unreadable")
 
 
 def _npu(s: Snapshot) -> Text:
     n = s.npu
     if not n:
-        return Text("not probed yet\nrun: python -m cortex_core.engine.npu_probe --out …")
-    t = Text("Reachable: " + ("YES" if n.get("reachable") else "no") + "\n", style="bold")
-    for note in n.get("notes") or []:
-        t.append(f"· {note}\n")
+        return Text("not probed yet" + NL + "run: python -m cortex_core.engine.npu_probe --out ...")
+    t = Text("Reachable: " + ("YES" if n.get("reachable") is True else "no") + NL, style="bold")
+    notes = n.get("notes")
+    for note in notes if isinstance(notes, list) else []:
+        if isinstance(note, str):
+            t.append(f"· {note}{NL}")
     return t
 
 
@@ -64,11 +91,13 @@ class CortexTUI(App):
     def compose(self) -> ComposeResult:
         yield Static(self.TITLE, id="title")
         with Grid(id="panels"):
-            for pid, title in (("system", "SYSTEM"), ("engine", "ENGINE · LFM3-OMNI"), ("npu", "NPU")):
-                p = Static(id=pid, classes="panel")
-                p.border_title = title
-                yield p
-            log = RichLog(id="log", classes="panel", markup=False)
+            for pid, title, extra in (("system", "SYSTEM", ""), ("npu", "NPU", ""),
+                                      ("engine", "ENGINE · LFM3-OMNI", " wide")):
+                box = VerticalScroll(classes="panel" + extra, id=pid + "-box")
+                box.border_title = title
+                with box:
+                    yield Static(id=pid)
+            log = RichLog(id="log", classes="panel wide", markup=False)
             log.border_title = "LOG"
             yield log
         yield Footer()

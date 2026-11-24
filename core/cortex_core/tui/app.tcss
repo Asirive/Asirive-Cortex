@@ -12,9 +12,10 @@ Screen {
 }
 
 #panels {
-    grid-size: 2 2;
-    grid-gutter: 1;
-    padding: 1;
+    grid-size: 2 3;
+    grid-rows: 7 2fr 1fr;
+    grid-gutter: 0 1;
+    padding: 0 1;
 }
 
 .panel {
@@ -23,6 +24,10 @@ Screen {
     border-title-style: bold;
     padding: 0 1;
     background: #0A0A08;
+}
+
+.wide {
+    column-span: 2;
 }
 
 Footer {
