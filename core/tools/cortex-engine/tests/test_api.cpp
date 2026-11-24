@@ -140,6 +140,15 @@ TEST(api_refresh_ask_skip_busy_cancel) {
     CHECK(done["view_frame_id"] == 108);
     at = ev.size();
 
+    // reset_history drops the view too (it was read on the old history): the same scene must be read again
+    CHECK(ce_reset_history(h) == 0);
+    CHECK(show(h, ev, "t008", 109, &view, &at));
+    std::printf("  after reset: %s\n", view.dump().c_str());
+    CHECK(view["skipped"] == false && view.contains("read_ms"));
+    CHECK(ce_ask(h, "What is this object? One sentence.", 20) == 0);
+    CHECK(ev.wait("done", &done, &at));
+    CHECK(done["view_frame_id"] == 109);
+
     // threads_stay_off_safety_cores
     json st = json::parse(ce_status(h));
     std::printf("  status: %s\n", st.dump().c_str());

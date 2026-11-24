@@ -144,6 +144,7 @@ struct Engine {
     std::vector<float> last_read;  // features of the view in the LM
     int n_encodes = 0;
     std::atomic<long> view_id{-1};
+    std::atomic<bool> force_read{false};
 
     std::thread control, worker;
     std::atomic<long> control_tid{0}, worker_tid{0};
@@ -218,6 +219,7 @@ struct Engine {
         n_encodes++;
         const double encode_ms = ms_since(t);
         json ev = {{"type", "view"}, {"frame_id", id}, {"prep_ms", prep_ms}, {"encode_ms", encode_ms}};
+        if (force_read.exchange(false)) last_read.clear();  // the view was dropped (reset_history): read it again
         const double cos = last_read.empty() ? 0.0 : mean_row_cos(last_read, feat, vision->n_tokens());
         ev["cos"] = cos;
         if (!last_read.empty() && cos >= cfg.skip_cos) {
@@ -397,7 +399,11 @@ int ce_cancel(void* h) {
 int ce_reset_history(void* h) {
     auto* e = static_cast<Engine*>(h);
     if (!e) return -1;
+    // The view in the LM was read on the old history and goes too; asks are text-only until the next refresh,
+    // which reads the scene again even if it has not changed.
+    e->force_read = true;
     e->lm->reset_history();
+    e->view_id = -1;
     return 0;
 }
 

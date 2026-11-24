@@ -329,7 +329,9 @@ bool Lm::read_view(const float* features, int n_tok, long frame_id, std::string*
 
 AskResult Lm::ask(const std::string& question, int max_tokens, const std::function<void(const std::string&)>& on_token) {
     const auto t0 = clk::now();
-    if (reading_) preempt_ = true;
+    // Always raise the flag before taking the lock: a background read or commit that wins the lock now sees it and
+    // gives way at once (checking reading_ first left a window where the ask waited a whole read).
+    preempt_ = true;
     std::lock_guard<std::mutex> g(mu_);
     preempt_ = false;
     LmImpl* im = im_;
