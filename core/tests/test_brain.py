@@ -322,3 +322,49 @@ def test_registry_covers_every_service_tool(bundle):
     s, _ = nav(bundle)
     names = {t.name for t in reg.tools}
     assert names == set(s.tools) | {"set_mode", "camera"}
+
+
+def test_chitchat_set_mode_to_the_same_mode_lets_the_model_answer():
+    """Small LMs call set_mode IDLE on "hi". Cortex is already IDLE: the user must hear the answer, not "Okay."."""
+    eng = FakeEngine(lambda k, t, sy: calls(call("set_mode", mode="IDLE")) if k == "ask" else toks("Hi! I'm here."))
+    b = Brain(eng, None)
+    turn = b.ask("hi there")
+    kind, result, say = [x for x in eng.log if x[0] == "tool_result"][0]
+    assert say is None  # no template: the LM answers
+    assert json.loads(result)["changed"] is False
+    assert turn.text.endswith("Hi! I'm here.") and turn.said is None
+    assert b.mode == "IDLE"
+
+
+def test_leaving_explore_still_speaks_the_template():
+    eng = FakeEngine(lambda k, t, sy: calls(call("set_mode", mode="EXPLORE")) if k == "ask" else toks("x"))
+    b = Brain(eng, None)
+    b.ask("what's around me")
+    assert eng.log[-1][2] == "Exploring. I'll describe what's around you."
+    eng.script = lambda k, t, sy: calls(call("set_mode", mode="IDLE")) if k == "ask" else toks("x")
+    b.ask("stop exploring")
+    assert eng.log[-1][2] == "Okay." or eng.log[-1][2].startswith("Stopped exploring")
+    assert b.mode == "IDLE"
+
+
+def test_repeated_same_mode_call_ends_with_the_template_not_a_loop():
+    # the LM keeps calling; once a template is spoken the engine ends the turn (say != None)
+    eng = FakeEngine(lambda k, t, sy: None if sy else calls(call("set_mode", mode="IDLE")))
+    b = Brain(eng, None)
+    turn = b.ask("hello")
+    results = [x for x in eng.log if x[0] == "tool_result"]
+    assert [x[2] for x in results] == [None, "Okay."]
+    assert turn.said == "Okay."
+
+
+def test_answered_then_same_mode_call_does_not_answer_twice():
+    """Seen on the stand-in: the LM answers in words, then also calls set_mode IDLE."""
+    def script(k, t, sy):
+        if k == "ask":
+            return [{"type": "token", "text": "Four."}, *calls(call("set_mode", mode="IDLE"))]
+        return None
+    eng = FakeEngine(script)
+    b = Brain(eng, None)
+    turn = b.ask("what is two plus two")
+    assert [x[2] for x in eng.log if x[0] == "tool_result"] == ["Okay."]
+    assert turn.text == "Four."

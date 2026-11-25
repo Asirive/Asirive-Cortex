@@ -29,7 +29,11 @@ load and only comes back with a power cycle), so this run uses what the server h
   - Still failing: "Bus 167 reach already or not?" and "Is the 39 coming soon?".
 - **Chit-chat calls.** "What is two plus two?" and "Wah today very hot hor." answer correctly in words, then *also*
   call `set_mode IDLE`.
-  - Harmless to the user: Cortex is already IDLE. It still costs a tool round trip.
+  - Cortex is already IDLE, so nothing changes, but the user heard the answer and then "Okay.".
+  - Brain since 2026-11-26: `set_mode IDLE` while IDLE is a no-op (`noop: true`). If the LM has said nothing yet,
+    it gets no template and answers the user itself (a bare "hi" no longer gets just "Okay."); if it already
+    answered, or repeats the call, the template ends the turn as before. The eval still counts these as
+    chit-chat calls: the model behaviour is unchanged, only what the user hears.
   - A prompt line ("general questions and small talk need no tool") made the score *worse* (tool 88 %, 3 chit-chat
     calls), so it was reverted.
   - The first run also had "What day comes after Monday?" call `search_places home`. That one would be wrong to
@@ -44,4 +48,4 @@ load and only comes back with a power cycle), so this run uses what the server h
 2. `tool_eval wavs`, then `tool_eval run --spoken`. Typed and spoken on LFM3-Omni-2B Q4_0 is the real gate.
 3. If chit-chat calls remain:
    - LoRA (planned on the Windows PC), or
-   - have the Brain drop a `set_mode` to the mode Cortex is already in, so the turn is not lengthened.
+   - (done for IDLE -> IDLE, see above; other same-mode calls still speak "Already ...").

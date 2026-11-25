@@ -200,6 +200,9 @@ class Brain:
         self._follow_trip()
         self._update_state()
         say = run.say if tool.spoken_by == "template" and run.say else None
+        if isinstance(run.result, dict) and run.result.get("noop") and not t.text.strip() and \
+                sum(isinstance(c.result, dict) and bool(c.result.get("noop")) for c in t.calls) == 1:
+            say = None  # a bare no-op call: let the LM answer. Already answered, or a repeat: the template (no loop)
         if say is not None:
             t.said = say
         return self.eng.tool_result(json.dumps(run.result, ensure_ascii=False, separators=(",", ":")), say)
@@ -228,6 +231,9 @@ class Brain:
 
     def _exec(self, call: T.Call) -> tuple[dict, str | None]:
         if call.name == "set_mode":
+            if str(call.args["mode"]).strip().upper() == "IDLE" == self.modes.mode:
+                # small LMs call this on "hi": nothing to change, so the LM answers the user itself
+                return {"mode": "IDLE", "changed": False, "noop": True, "note": "already idle; answer the user"}, "Okay."
             nav_on = self.nav is not None and self.nav.navigating
             ch = self.modes.request(call.args["mode"], nav_on, self.nav.mode_hint() if nav_on else None)
             r = {"mode": ch.mode, "changed": ch.ok}
