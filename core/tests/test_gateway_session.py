@@ -66,7 +66,10 @@ def gateway(tmp_path_factory):
     (d / "s.key").write_bytes(k.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
     api, dev = free_port(), free_port()
     log = open(d / "gw.log", "w")
-    env = dict(os.environ, CORTEX_DEV_TOKEN="boot")
+    dm = _fake_datamall()
+    (d / "lta_key").write_text("dm-key\n")
+    env = dict(os.environ, CORTEX_DEV_TOKEN="boot", CORTEX_LTA_KEY_FILE=str(d / "lta_key"),
+               CORTEX_LTA_BASE=f"http://127.0.0.1:{dm.server_port}/BusArrival")
     p = subprocess.Popen([binp, "-addr", f"127.0.0.1:{api}", "-device-addr", f"127.0.0.1:{dev}", "-device-cert", str(d / "s.crt"),
                           "-device-key", str(d / "s.key"), "-pki-dir", str(d / "pki"), "-state", str(d / "st.json")],
                          env=env, stdout=log, stderr=log)
@@ -79,6 +82,39 @@ def gateway(tmp_path_factory):
     yield {"api": f"http://127.0.0.1:{api}", "dev": f"wss://127.0.0.1:{dev}/ws/device", "dir": d, "log": d / "gw.log"}
     p.terminate()
     p.wait(5)
+    dm.shutdown()
+
+
+def _fake_datamall():
+    """LTA DataMall's BusArrival v3 for stop 59009: 858 in 2 and 11 minutes, 969 in 7."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from urllib.parse import parse_qs, urlparse
+
+    class H(BaseHTTPRequestHandler):
+        def do_GET(self):
+            q = parse_qs(urlparse(self.path).query)
+            if self.headers.get("AccountKey") != "dm-key" or q.get("BusStopCode") != ["59009"]:
+                self.send_response(404)
+                self.end_headers()
+                return
+            now = datetime.now(timezone(timedelta(hours=8)))
+            at = lambda m: (now + timedelta(minutes=m, seconds=30)).isoformat(timespec="seconds")
+            body = {"BusStopCode": "59009", "Services": [
+                {"ServiceNo": "858", "NextBus": {"EstimatedArrival": at(2), "Monitored": 1},
+                 "NextBus2": {"EstimatedArrival": at(11), "Monitored": 1}, "NextBus3": {"EstimatedArrival": ""}},
+                {"ServiceNo": "969", "NextBus": {"EstimatedArrival": at(7), "Monitored": 0}}]}
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(body).encode())
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
 
 
 def login(gw, email):
@@ -204,3 +240,38 @@ def test_provisioning_files_and_certificate_renewal(gateway):
     key = identity.load_or_create_key(p.key_path)
     assert identity.cert_matches_key(after.encode(), key)  # ...for the same key
     assert provision.renew_if_due(p) is False  # 90 days left: nothing to do
+
+
+def test_live_bus_arrivals_through_the_gateway(gateway):
+    """Box -> gateway (mTLS) -> DataMall (server key) -> the nav service's bus_arrivals answer."""
+    from cortex_core.link import provision
+    c, keyp, certp = pair(gateway, "BETA", False)
+    d = str(gateway["dir"] / "prov-arr")
+    os.makedirs(d, exist_ok=True)
+    os.replace(keyp, os.path.join(d, "device.key"))
+    p = provision.save(d, c, gateway["dev"], (gateway["dir"] / "s.crt").read_bytes())
+    arrivals = provision.arrivals_client(p)
+    got = arrivals(59009, None)
+    assert got == [{"service": "858", "minutes": [2, 11], "live": True},
+                   {"service": "969", "minutes": [7], "live": False}]
+    assert arrivals(59009, "858") == [got[0]]
+    with pytest.raises(provision.ArrivalsError, match="502|LTA"):
+        arrivals(59010, None)  # DataMall has nothing for it
+
+    import nav_city as C
+    from cortex_core.nav import bundle as B
+    from cortex_core.nav.service import NavService
+    b = B.Bundle(C.make(gateway["dir"] / "city"))
+    nav = NavService(b, saved={}, arrivals=lambda code, svc: arrivals(59009, svc))  # the city's stops are not 59009
+    nav.on_fix(*C.latlon(0, 0), 5.0)
+    r = nav.call("bus_arrivals", {})
+    assert r.data.get("live") is True, r
+    assert "in 2 minutes" in r.say or "in 7 minutes" in r.say, r.say
+
+    # revoked: the box gets an error and the nav service falls back to headways
+    http("POST", gateway["api"] + f"/api/registrations/{c['device_id']}/revoke", "boot")
+    with pytest.raises(provision.ArrivalsError):
+        arrivals(59009, None)
+    r = nav.call("bus_arrivals", {})
+    assert r.data.get("live") is not True
+

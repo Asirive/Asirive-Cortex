@@ -32,6 +32,17 @@ def native_output_to(path: Path) -> None:
     sys.stderr = sys.__stderr__ = os.fdopen(tty_err, "w", buffering=1)
 
 
+def gateway_arrivals(identity_dir: str | None):
+    """Live bus arrivals through the gateway when this box is claimed (else None: headway estimates)."""
+    from cortex_core.link import provision
+
+    try:
+        p = provision.load(identity_dir) if identity_dir else None
+    except (OSError, ValueError, KeyError):  # unreadable as this user, half-written
+        p = None
+    return provision.arrivals_client(p) if p is not None else None
+
+
 def make_brain(eng, a: argparse.Namespace):
     """The agent harness over the engine: the newest nav bundle, the box's saved places, the tools contract."""
     from cortex_core.brain import tools as T
@@ -40,7 +51,7 @@ def make_brain(eng, a: argparse.Namespace):
     from cortex_core.nav.service import NavService
 
     b = B.Bundle(B.latest(a.nav_bundles))
-    nav = NavService(b, saved=a.saved_places)
+    nav = NavService(b, saved=a.saved_places, arrivals=gateway_arrivals(a.identity_dir))
     reg = T.load(a.tools) if a.tools else T.load()
     return Brain(eng, nav, reg)
 
@@ -107,6 +118,8 @@ def main(argv: Optional[list[str]] = None, env: Mapping[str, str] = os.environ) 
     p.add_argument("--nav", action="store_true", help="host the agent harness: tools, modes, navigation, GPS")
     p.add_argument("--nav-bundles", default="/var/lib/cortex/nav/bundles", help="newest bundle here is used")
     p.add_argument("--saved-places", default="/var/lib/cortex/nav/saved_places.json")
+    p.add_argument("--identity-dir", default="/var/lib/cortex/identity",
+                   help="claimed-box identity; live bus arrivals go through its gateway (missing = headway estimates)")
     p.add_argument("--tools", default="", help="tools.json (default: the contract the package finds)")
     p.add_argument("--gps-sock", default="/run/cortex/gps.sock")
     a = p.parse_args(argv)

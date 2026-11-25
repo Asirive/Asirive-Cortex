@@ -33,6 +33,7 @@ import (
 
 	"github.com/asirive/cortex/gateway/internal/fleet"
 	pb "github.com/asirive/cortex/gateway/internal/gen/cortex/v1"
+	"github.com/asirive/cortex/gateway/internal/lta"
 	"github.com/asirive/cortex/gateway/internal/ota"
 	"github.com/asirive/cortex/gateway/internal/registry"
 	"github.com/asirive/cortex/gateway/web"
@@ -64,9 +65,12 @@ type Server struct {
 	// (DeviceHandler) demand one; with it set, /ws/device is NOT served on the public Handler.
 	CA          *pki.CA
 	RequireMTLS bool
-	AlertTo     []string // ops email recipients for fleet alerts
-	alerts      map[string]*alertState
-	Pusher      push.Pusher // nil = no wake-up
+	// Arrivals is the live bus-arrivals proxy (nil or keyless = not offered; the box falls back to headways).
+	Arrivals     *lta.Client
+	arrivalsRate rateWindow
+	AlertTo      []string // ops email recipients for fleet alerts
+	alerts       map[string]*alertState
+	Pusher       push.Pusher // nil = no wake-up
 	// TurnSecret is coturn static-auth-secret; TurnURLs e.g. turn:turn.asirive.com:3478?transport=udp
 	TurnSecret string
 	TurnURLs   []string

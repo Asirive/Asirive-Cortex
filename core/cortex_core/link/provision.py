@@ -10,6 +10,8 @@ import json
 import os
 import ssl
 import tempfile
+import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Optional
@@ -84,3 +86,35 @@ def renew_if_due(p: Provisioning) -> bool:
         if not identity.needs_renewal(f.read()):
             return False
     return renew_certificate(p)
+
+
+class ArrivalsError(RuntimeError):
+    pass
+
+
+def arrivals_client(p: Provisioning, timeout: float = 3.0):
+    """The nav service's `arrivals(stop_code, service|None)`: live bus arrivals from the gateway over mTLS
+    (GET /device/bus-arrivals; the gateway holds the LTA key and caches each stop ~20 s). Returns
+    [{"service", "minutes": [..], "live": GPS-tracked?}]; raises ArrivalsError when offline, refused or
+    unconfigured, so the caller falls back to headways. The SSL context is built per call, so a renewed
+    certificate is used at once."""
+    base = p.gateway_ws_url.replace("wss://", "https://", 1).rsplit("/ws/device", 1)[0]
+
+    def arrivals(stop_code: int, service: Optional[str] = None) -> list[dict]:
+        q = {"stop": f"{int(stop_code):05d}"}
+        if service:
+            q["service"] = service
+        url = base + "/device/bus-arrivals?" + urllib.parse.urlencode(q)
+        try:
+            ctx = identity.ssl_context(p.key_path, p.cert_path, p.server_ca_path)
+            with urllib.request.urlopen(url, context=ctx, timeout=timeout) as r:
+                body = json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            raise ArrivalsError(f"gateway HTTP {e.code}") from None
+        except (OSError, ValueError) as e:  # offline, TLS refused, timeout, bad JSON
+            raise ArrivalsError(f"gateway unreachable: {type(e).__name__}") from None
+        return [{"service": s["service"], "minutes": [int(m) for m in s.get("minutes", [])],
+                 "live": bool((s.get("monitored") or [False])[0])} for s in body.get("services", [])]
+
+    return arrivals
+

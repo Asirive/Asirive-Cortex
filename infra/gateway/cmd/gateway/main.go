@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/asirive/cortex/gateway/internal/fleet"
+	"github.com/asirive/cortex/gateway/internal/lta"
 	"github.com/asirive/cortex/gateway/internal/ota"
 	"github.com/asirive/cortex/gateway/internal/server"
 )
@@ -82,6 +83,25 @@ func main() {
 		srv.StartAlerts()
 	} else {
 		log.Print("alerts off: set CORTEX_ALERT_EMAILS to be emailed when devices need attention")
+	}
+	// Live bus arrivals for devices: the LTA DataMall key from CORTEX_LTA_KEY_FILE (preferred, chmod 600) or
+	// CORTEX_LTA_KEY. It is never logged; without it the box falls back to headway estimates.
+	ltaKey := os.Getenv("CORTEX_LTA_KEY")
+	if f := os.Getenv("CORTEX_LTA_KEY_FILE"); f != "" {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			log.Fatalf("CORTEX_LTA_KEY_FILE: %v", err)
+		}
+		ltaKey = string(b)
+	}
+	if strings.TrimSpace(ltaKey) != "" {
+		srv.Arrivals = lta.New(ltaKey)
+		if b := os.Getenv("CORTEX_LTA_BASE"); b != "" { // tests and staging only
+			srv.Arrivals.Base = b
+		}
+		log.Print("live bus arrivals: on (device listener /device/bus-arrivals)")
+	} else {
+		log.Print("live bus arrivals: off (no CORTEX_LTA_KEY_FILE)")
 	}
 	if b := os.Getenv("CORTEX_APP_LINK_BASE"); b != "" {
 		srv.AppLinkBase = b

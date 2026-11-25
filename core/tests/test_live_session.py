@@ -251,3 +251,12 @@ def test_vision_follows_the_mode_idle_looks_only_on_talk():
         assert until(lambda: eng.pushed[-1] == 2)  # EXPLORE: views every second by itself
     finally:
         s.close()
+
+
+def test_gateway_arrivals_only_when_claimed(tmp_path):
+    from cortex_core.tui.__main__ import gateway_arrivals
+    assert gateway_arrivals(None) is None and gateway_arrivals(str(tmp_path)) is None
+    (tmp_path / "device.json").write_text("{half")
+    assert gateway_arrivals(str(tmp_path)) is None
+    (tmp_path / "device.json").write_text('{"device_id": "d", "token": "t", "gateway_ws_url": "wss://gw:8443/ws/device"}')
+    assert callable(gateway_arrivals(str(tmp_path)))

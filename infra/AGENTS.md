@@ -46,7 +46,8 @@ Legacy consumers: `v3_core/` (device links, hybrid memory sync),
 - `navbundle/lta_fetch.py`: DataMall BusServices / BusRoutes / BusStops, paged, written atomically into the
   `--lta-dir` the builder reads; key from `LTA_ACCOUNT_KEY` or `~/.config/cortex/lta_key` (chmod 600), never logged.
   Tested against a local stand-in (`core/tests/test_lta_fetch.py`); NOT yet run against DataMall (no key on the
-  server yet). The gateway's live-arrivals proxy is NOT built.
+  server yet).
+- `gateway/internal/lta` + `GET /device/bus-arrivals?stop=&service=` (device mTLS listener only): live bus arrivals from DataMall BusArrival v3 with the server's key (`CORTEX_LTA_KEY_FILE`, chmod 600, or `CORTEX_LTA_KEY`; `CORTEX_LTA_BASE` for tests). 20 s cache per stop, one upstream fetch per stop for concurrent askers, last good answer served marked stale for up to 2 min, 30 requests/min per device, key never in errors or logs. Tested (`go test -race ./internal/lta ./internal/server`, and end to end with the Python box in `core/tests/test_gateway_session.py`); NOT yet run against DataMall (no key on the server yet).
 - Not built: hardware-backed device key, CA key custody off the box, phone-side TCP tunnel for the device TLS stream
   verifier/A-B client, camera relay, dataset pipeline, Python/Dart codegen. Gap
   table: docs/architecture/FLEET-OTA-AND-SECURITY.md.
@@ -107,3 +108,4 @@ psql -f supabase/migrations/001_initial_schema.sql   # schema apply (reference)
 - 2026-10-30: Device mTLS: internal/pki device CA, certificate issued at claim over the device-generated P-256 key, dedicated device listener (TLS 1.3, client cert required, revocation at handshake, renewal endpoint). Public handler no longer serves /ws/device when enabled. Sealed envelope decided against (see V4-ECOSYSTEM section 6).
 - 2026-11-26: `navbundle/build.py` (offline Singapore nav bundle: walking graph, bus stops/routes, all MRT/LRT lines incl. Punggol/Bukit Panjang LRT, 100k places incl. multipolygons with ways in, LTA headways). 50 s, 1.13 GB peak RSS, 52 MB out on the server.
 - 2026-11-26: `navbundle/lta_fetch.py` (DataMall static bus data for the builder's headways; key outside the repo).
+- 2026-11-26: Gateway live bus arrivals (`internal/lta`, `/device/bus-arrivals` on the mTLS listener); box client `cortex_core/link/provision.arrivals_client`. Go 1.27 on the dev server (`~/.local/go`).
