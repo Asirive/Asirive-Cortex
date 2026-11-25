@@ -57,6 +57,8 @@ constexpr int kCanvasW = 640, kCanvasH = 352;
 
 struct Config {
     std::string model, mmproj, split_dir, qnn_lib_dir, system_prompt;
+    std::string tools, tts_language = "American English";  // tools: one JSON object per line ("" = no tool calls)
+    float tool_bias = 0;
     std::vector<int> lm_cpus{4, 5, 6, 7}, vision_cpus{1, 2, 3}, island_cpus{4, 5, 6, 7}, audio_cpus{1, 2, 3};
     std::vector<int> island_small_cpus{1, 2};  // islands during an answer
     double skip_cos = 0.98;
@@ -80,6 +82,10 @@ Config parse_config(const char* text) {
         if (!j.contains(k) || !j[k].is_string()) throw std::runtime_error(std::string("config needs \"") + k + "\"");
     c.model = j["model"], c.mmproj = j["mmproj"], c.split_dir = j["split_dir"], c.qnn_lib_dir = j["qnn_lib_dir"];
     c.system_prompt = j.value("system_prompt", "");
+    if (j.contains("tools") && !j["tools"].is_string()) throw std::runtime_error("config \"tools\" must be a string");
+    c.tools = j.value("tools", "");
+    c.tool_bias = j.value("tool_bias", c.tool_bias);
+    c.tts_language = j.value("tts_language", c.tts_language);
     c.lm_cpus = j.value("lm_cpus", c.lm_cpus);
     c.vision_cpus = j.value("vision_cpus", c.vision_cpus);
     c.island_cpus = j.value("island_cpus", c.island_cpus);
@@ -168,9 +174,12 @@ struct Engine {
     long fid = -1;
     bool refresh_pending = false, commit_pending = false;
     // ask queue (one slot)
+    enum AskKind { ASK, TOOL_RESULT, SAY };
     bool ask_pending = false;
-    std::string ask_text;
+    AskKind ask_kind = ASK;
+    std::string ask_text, ask_say;  // ASK: the question; TOOL_RESULT: the result + say; SAY: the text
     int ask_max = 0;
+    std::atomic<bool> sound_open{false};  // from an answer's sound_begin to its sound_end
     std::atomic<bool> asking{false};
     // view state (control thread)
     std::vector<float> last_read;  // features of the view in the LM
@@ -211,6 +220,7 @@ struct Engine {
             sound_start_at = s.at_ms;
         } else {
             talking = false;
+            sound_open = false;
             mute_until = s.at_ms + cfg.mute_tail_ms;
             muted = false;
             j["sound_ms"] = s.sound_ms, j["gaps"] = s.gaps, j["cut"] = s.cut;
@@ -242,6 +252,7 @@ struct Engine {
         lm->drop_sound();  // the codec holds nothing of earlier answers now: on_pcm is quiet until this one's sound
         pcm_n = 0, loud_off_ms = -1;
         speaker->begin();
+        sound_open = true;
         sound_voice = voice;
         end_at_ms = std::chrono::duration<double, std::milli>(end_time.time_since_epoch()).count();
         muted = true;
@@ -354,6 +365,7 @@ struct Engine {
         pin_self(cfg.lm_cpus);
         LmConfig lc;
         lc.model = cfg.model, lc.mmproj = cfg.mmproj, lc.system_prompt = cfg.system_prompt;
+        lc.tools = cfg.tools, lc.tool_bias = cfg.tool_bias, lc.tts_language = cfg.tts_language;
         lc.cpus = cfg.lm_cpus, lc.n_threads = (int)cfg.lm_cpus.size();
         lc.max_history_tokens = cfg.max_history_tokens;
         if (speaker) {
@@ -367,7 +379,8 @@ struct Engine {
         if (!lm) return;
         const int n_embd = lm->n_embd_inp();
         for (;;) {
-            std::string text;
+            std::string text, say;
+            AskKind kind = ASK;
             int max = cfg.max_tokens;
             std::vector<float> rows;
             bool drop = false, end = false, typed = false;
@@ -384,7 +397,7 @@ struct Engine {
                     end_time = v_end_time, speech_ms = v_speech_ms;
                 } else if (!drop && rows.empty()) {
                     typed = true;
-                    text = ask_text, max = ask_max;
+                    text = ask_text, say = ask_say, max = ask_max, kind = ask_kind;
                     ask_pending = false;
                 }
             }
@@ -392,6 +405,10 @@ struct Engine {
             std::string err;
             if (!rows.empty() && !lm->voice_feed(rows.data(), (int)(rows.size() / n_embd), &err)) error("voice: " + err);
             if (!end && !typed) continue;
+            if (speaker && kind != ASK) {  // a result or a cue follows a sound still playing ("Checking.") instead
+                const auto until = clk::now() + std::chrono::seconds(15);  // of cutting it
+                while (sound_open && !stop && clk::now() < until) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
             if (speaker) sound_begin(end, end_time);
             big.ask_enter();
             bool first = true;
@@ -408,11 +425,21 @@ struct Engine {
             if (end) {
                 lm->clear_cancel();
                 r = lm->voice_answer(max, on_token);
+            } else if (kind == TOOL_RESULT) {
+                r = lm->tool_result(text, say, max, on_token);
+            } else if (kind == SAY) {
+                r = lm->say(text);
             } else {
                 r = lm->ask(text, max, on_token);
             }
             big.ask_exit();
-            if (!r.error.empty()) error((end ? "voice: " : "ask: ") + r.error);
+            static const char* kWhat[] = {"ask: ", "tool_result: ", "say: "};
+            if (!r.error.empty()) error((end ? "voice: " : kWhat[kind]) + r.error);
+            if (r.tool) {
+                json call = {{"type", "tool_call"}, {"text", r.text}, {"gap", r.tool_gap}};
+                if (end) call["voice"] = true;
+                emit(call);
+            }
             json done = {{"type", "done"},
                          {"ttft_ms", r.ttft_ms},
                          {"total_ms", r.total_ms},
@@ -424,7 +451,9 @@ struct Engine {
                          {"frames", r.frames},
                          {"frame_ms", r.frame_ms},
                          {"codec_ms", r.codec_ms},
-                         {"sound_ms", r.sound_ms}};
+                         {"sound_ms", r.sound_ms},
+                         {"kind", kind == ASK ? "ask" : kind == TOOL_RESULT ? "tool_result" : "say"}};
+            if (r.tool) done["tool"] = true;
             if (end) {
                 done["voice"] = true, done["end_to_first_ms"] = end_to_first, done["speech_ms"] = speech_ms;
                 done["wait_ms"] = wait_ms;
@@ -677,23 +706,55 @@ int ce_refresh(void* h) {
     return 0;
 }
 
-int ce_ask(void* h, const char* text, int max_tokens) {
-    auto* e = static_cast<Engine*>(h);
-    if (!e || !text) return -1;
+namespace {
+int enqueue(ce::Engine* e, ce::Engine::AskKind kind, const char* text, const char* say, int max_tokens) {
     {
         std::unique_lock<std::mutex> g(e->mu);
-        if (e->asking || e->speaking || e->v_end) {
+        std::string why;
+        if (e->asking || e->speaking || e->v_end) why = "busy";
+        else if (kind == ce::Engine::TOOL_RESULT && !e->lm->awaiting_tool()) why = "no tool call is waiting";
+        else if (kind == ce::Engine::SAY && !e->lm->can_say()) why = "no speech output";
+        if (!why.empty()) {
             g.unlock();
-            e->error("busy");
+            ce::t_last_error = why;
+            e->error(why);
             return -1;
         }
         e->asking = true;
         e->lm->clear_cancel();
+        e->ask_kind = kind;
         e->ask_text = text;
+        e->ask_say = say ? say : "";
         e->ask_max = max_tokens > 0 ? max_tokens : e->cfg.max_tokens;
         e->ask_pending = true;
     }
     e->cv.notify_all();
+    return 0;
+}
+}  // namespace
+
+int ce_ask(void* h, const char* text, int max_tokens) {
+    auto* e = static_cast<ce::Engine*>(h);
+    if (!e || !text) return -1;
+    return enqueue(e, ce::Engine::ASK, text, nullptr, max_tokens);
+}
+
+int ce_tool_result(void* h, const char* result, const char* say) {
+    auto* e = static_cast<ce::Engine*>(h);
+    if (!e || !result) return -1;
+    return enqueue(e, ce::Engine::TOOL_RESULT, result, say, 0);
+}
+
+int ce_say(void* h, const char* text) {
+    auto* e = static_cast<ce::Engine*>(h);
+    if (!e || !text || !*text) return -1;
+    return enqueue(e, ce::Engine::SAY, text, nullptr, 0);
+}
+
+int ce_set_state(void* h, const char* text) {
+    auto* e = static_cast<ce::Engine*>(h);
+    if (!e) return -1;
+    e->lm->set_state(text ? text : "");
     return 0;
 }
 
@@ -764,6 +825,8 @@ const char* ce_status(void* h) {
         st["frame_id"] = e->fid;
         st["speaking"] = e->speaking.load();
     }
+    st["awaiting_tool"] = e->lm->awaiting_tool();
+    st["tools"] = !e->cfg.tools.empty();
     {
         std::lock_guard<std::mutex> g(e->amu);
         st["listening"] = e->listening;

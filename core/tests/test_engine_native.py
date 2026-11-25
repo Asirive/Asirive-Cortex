@@ -100,3 +100,9 @@ def test_bench_row_error_is_no_match():
     case = {"image": "t.jpg", "question": "q", "expect": ["x"]}
     row = row_from_events(case, [{"type": "error", "what": "encode: boom"}])
     assert row["match"] is False and row["answer"].startswith("ERROR: encode: boom")
+
+
+def test_tool_call_events_are_known_and_routed():
+    assert native.parse_event('{"type": "tool_call", "text": "<tool_call>"}')["type"] == "tool_call"
+    assert native.route_event({"type": "tool_call", "text": "x"}, True) == "answer"
+    assert native.route_event({"type": "tool_call", "text": "x", "voice": True}, False) == "voice"

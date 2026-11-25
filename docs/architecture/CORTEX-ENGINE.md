@@ -166,10 +166,14 @@ int   ce_set_listening(void* h, int on);
 int   ce_push_audio(void* h, const float* pcm, int n);     // 16 kHz mono
 const char* ce_status(void* h);                  // JSON: threads, affinities, muted, echo_lag_ms, prebuffer_ms...
 int   ce_reset_history(void* h);
+int   ce_tool_result(void* h, const char* result, const char* say);  // say NULL: the LM answers; else spoken as is
+int   ce_say(void* h, const char* text);         // a fixed sentence in Cortex's voice (TTS slots)
+int   ce_set_state(void* h, const char* text);   // a line put before every question ("" clears)
 void  ce_close(void* h);
 ```
 
-Events: `token`, `done` (`stop`, `ttft_ms`, `frames`, `frame_ms`…), `view`, `speech_start`, `speech_end`,
+Events: `token`, `tool_call` (`text`: the call in the model's XML form, `gap`), `done` (`kind` ask / tool_result /
+say, `stop` incl. `tool`, `ttft_ms`, `frames`, `frame_ms`…), `view`, `speech_start`, `speech_end`,
 `sound_start`, `sound_end` (`sound_ms`, `gaps`, `cut`), `error`.
 
 **Python:** `cortex_core.engine.native.Engine`. The live dev TUI is `sh /opt/cortex/scripts/engine/live_tui.sh`
@@ -179,16 +183,30 @@ Events: `token`, `done` (`stop`, `ttft_ms`, `frames`, `frame_ms`…), `view`, `s
 - `model`, `mmproj`, `split_dir`, `qnn_lib_dir` (required).
 - Cores: `lm_cpus`, `vision_cpus`, `island_cpus`, `island_small_cpus`, `audio_cpus`, `codec_cpus`, `speaker_cpus`.
 - Vision and LM: `skip_cos`, `max_tokens`, `max_history_tokens`, `system_prompt`.
+- Tools: `tools` (one JSON object per line, from `contracts/tools/tools.json`), `tool_bias`, `tts_language`.
 - Listening: `vad_weights`, `vad_on`, `vad_off`, `vad_hangover_ms`.
 - Speaking: `speak`, `voice`, `max_speech_s`, `codec_inline`, `codec_threads`, `prebuffer_ms`, `rebuffer_ms`.
 - Echo: `mute_tail_ms`, `echo_lag_ms`.
 - Speaker device: `speaker_device`, `ucm_card`, `ucm_verb`, `ucm_device`, `mixer`.
 
 **Tests:** `sh core/scripts/engine/box_build.sh [filter]` copies the sources to the box, builds there and runs
-`engine_tests`. Currently 73/73, covering:
+`engine_tests`. Currently 82/82, covering:
 - the ports against goldens (vision, islands, VAD, speech);
 - the scheduler, preemption, cuts, echo and context limits;
-- the speaker.
+- the speaker;
+- tool calls, results, `ce_say` and the state line.
+
+**Tool calls (2026-11-26).** Every answer opens with the template's `<think></think>` (thinking off). Without it
+LFM3 wrote that pair into its own answers. With `tools` set, the tools go into the system prompt in the template's
+`<tools>` block. One logit peek on the answer's first position decides the path: if `<tool_call>` (+ `tool_bias`)
+beats every other token, the call is generated as silent text (special tokens kept). It is sent as a `tool_call`
+event and `done` with `stop:"tool"`, and the turn stays open (`awaiting_tool` in status). `ce_tool_result` decodes
+the template's `tool` turn and either lets the LM answer (it may call again) or decodes and speaks a fixed `say`. A
+new question while a call waits drops the call. `ce_say` copies a pristine TTS head (seq 4: "Perform TTS in
+American English using a female voice.") into seq 5, decodes the sentence and runs the speech loop audio-only
+(`<|audio_start|>`). The conversation is untouched. S's context limit is reduced by the TTS head's cells. Both
+kinds wait for sound still playing ("Checking.") instead of cutting it. Measured: the call decision costs nothing
+(no extra decode); `ce_say` first frame 175 ms; "Stop." 14 frames, a 25-word sentence 106 frames.
 
 ## 6. Numbers (12 test cases, 2026-11-24 to 11-26)
 
@@ -222,7 +240,8 @@ Details: `docs/measurements/2026-11-{lfm3-omni-baseline,speedups,npu-vision,engi
 - **View refresh 1.42 s** (target 1.4). Options: islands + read on cpu1-7, or a 112-token canvas.
 - **History bias**: a long-running conversation can drag old topics into a new view (11/12 vs 12/12). Whether to
   drop history on a scene change is a product decision.
-- **Untested:** tool calls on Q4_0, power (no meter on the box), and the product camera (all tests used the
+- **Tool calls on Q4_0** work on the test questions (right tool and argument, chit-chat makes no call). The
+  ~40-request English + Singlish eval (M0) is still to run. **Untested:** power (no meter on the box), and the product camera (all tests used the
   ZV-1F; frames must be 16:9).
 - The live earbud check of the echo and stutter fixes is pending (see [../HANDOFF.md](../HANDOFF.md)).
 
@@ -254,4 +273,5 @@ runtime, and it keeps llama.cpp and QNN as the kernels underneath.
 - [ ] Weights license review (commercial use, redistribution on device)
 - [ ] Power: watts per interaction and idle (needs a meter), tied to the battery choice
 - [ ] Escalation policy to Gemini (triggers, thresholds, UX)
-- [ ] Tool registry schema shared by both brains (infra contracts); tool calls on Q4_0
+- [x] Tool registry schema shared by both brains (`contracts/tools/tools.json`); tool calls on Q4_0 in the engine
+- [ ] Tool-call accuracy eval (M0 of the agent-harness plan)

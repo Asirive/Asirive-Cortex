@@ -12,6 +12,14 @@ Hands-free: the button only toggles listening; the engine's VAD finds where spee
     eng.push_audio(mic_chunk)          # 16 kHz mono, float [-1, 1] or int16, any chunk size, real time
     ev = eng.next_voice(timeout=...)   # speech_start, speech_end, token (voice), done (voice), or a voice error
 
+Tools (config "tools"): an answer may be a call instead (a tool_call event, then done with stop "tool"); the
+caller runs the tool and answers with tool_result(), which the LM reads and answers (or a fixed `say` is spoken).
+
+    for ev in eng.ask("When is bus 858 coming?"): ...   # tool_call {"text": "<tool_call>..."}, done {"stop": "tool"}
+    for ev in eng.tool_result('{"minutes": [4, 13]}'): ...
+    for ev in eng.say("In 30 metres, turn left."): ...  # a fixed sentence in Cortex's voice
+    eng.set_state("mode=OUTDOOR_NAV")                   # a line put before every question
+
 Events come from engine threads through a C callback that only parses and enqueues (it holds the GIL briefly).
 """
 from __future__ import annotations
@@ -23,7 +31,7 @@ import threading
 from pathlib import Path
 from typing import Iterator
 
-EVENT_TYPES = {"token", "done", "view", "error", "speech_start", "speech_end", "sound_start", "sound_end"}
+EVENT_TYPES = {"token", "tool_call", "done", "view", "error", "speech_start", "speech_end", "sound_start", "sound_end"}
 _CB = ctypes.CFUNCTYPE(None, ctypes.c_char_p, ctypes.c_void_p)
 
 
@@ -35,7 +43,7 @@ def route_event(ev: dict, asking: bool) -> str:
         return "voice"
     if t == "error" and str(ev.get("what", "")).startswith(("voice:", "audio:", "speaker:")):
         return "voice"
-    if t in ("token", "done") or (t == "error" and asking):
+    if t in ("token", "tool_call", "done") or (t == "error" and asking):
         return "answer"
     return "views"
 
@@ -76,6 +84,9 @@ class Engine:
         for fn in ("ce_refresh", "ce_cancel", "ce_reset_history"):
             getattr(L, fn).argtypes = [ctypes.c_void_p]
         L.ce_ask.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
+        L.ce_tool_result.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p]
+        for fn in ("ce_say", "ce_set_state"):
+            getattr(L, fn).argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         L.ce_status.restype, L.ce_status.argtypes = ctypes.c_char_p, [ctypes.c_void_p]
         L.ce_close.argtypes = [ctypes.c_void_p]
         L.ce_set_listening.argtypes = [ctypes.c_void_p, ctypes.c_int]
@@ -132,11 +143,34 @@ class Engine:
         return self._views.get(timeout=timeout)
 
     def ask(self, text: str, max_tokens: int = 0, timeout: float = 60.0) -> Iterator[dict]:
-        """Yields token events and ends with the done (or error) event."""
+        """Yields token events (or one tool_call) and ends with the done (or error) event."""
+        return self._run(lambda: self._lib.ce_ask(self._h, text.encode(), max_tokens), timeout)
+
+    def tool_result(self, result: str, say: str | None = None, timeout: float = 60.0) -> Iterator[dict]:
+        """The answer to the waiting tool call. say None: the LM reads result and answers (it may call again);
+        else result and say are recorded and say is spoken as is. Yields like ask()."""
+        return self._run(
+            lambda: self._lib.ce_tool_result(self._h, result.encode(), say.encode() if say else None), timeout)
+
+    def say(self, text: str, timeout: float = 60.0) -> Iterator[dict]:
+        """Speaks a fixed sentence in Cortex's voice (needs the speaker). Yields the done (or error) event."""
+        return self._run(lambda: self._lib.ce_say(self._h, text.encode()), timeout)
+
+    def set_state(self, text: str) -> None:
+        """A short line put before every question from now on ("" clears it)."""
+        self._lib.ce_set_state(self._h, text.encode())
+
+    def _run(self, start, timeout: float) -> Iterator[dict]:
+        while True:  # an error left by a refused call (it is emitted while _asking is set) is not this call's
+            try:
+                self._answer.get_nowait()
+            except queue.Empty:
+                break
         self._asking.set()
         try:
-            if self._lib.ce_ask(self._h, text.encode(), max_tokens):
-                yield {"type": "error", "what": "busy"}
+            if start():
+                what = (self._lib.ce_last_error() or b"busy").decode(errors="replace")
+                yield {"type": "error", "what": what}
                 return
             while True:
                 ev = self._answer.get(timeout=timeout)

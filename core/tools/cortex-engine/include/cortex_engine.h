@@ -24,7 +24,17 @@
  *   sound began before done). A speaker that will not open is an error event "speaker: ..." and answers are text.
  *   ce_status gains "speak", "talking", "muted", "prebuffer_ms".
  *
- * Config JSON: model, mmproj, split_dir, qnn_lib_dir (required); system_prompt, lm_cpus [4-7], vision_cpus [1-3],
+ * Tool calls (config "tools": the tools as one JSON object per line, the model's own schema form): every answer opens
+ * with "<think></think>" as in the model's template, and when its first token is <tool_call> the answer is the call:
+ * made as text only, never spoken or sent as token events, then
+ *   {"type":"tool_call","text":"<tool_call>\n<function=NAME>\n<parameter=ARG>\nVALUE\n</parameter>\n...","gap":..}
+ *   and done with "stop":"tool","tool":true. The engine then waits for ce_tool_result (status "awaiting_tool").
+ *   gap: the <tool_call> logit minus the best other token's (> 0: the call won; tool_bias is added before the test).
+ * Every done carries "kind": "ask" (typed or spoken question), "tool_result" or "say".
+ * ce_say speaks a fixed sentence in Cortex's voice (TTS on two slots of its own; the conversation is not changed).
+ *
+ * Config JSON: model, mmproj, split_dir, qnn_lib_dir (required); system_prompt, tools "", tool_bias 0,
+ * tts_language "American English", lm_cpus [4-7], vision_cpus [1-3],
  * island_cpus [4-7], island_small_cpus [1,2] (islands while an answer holds the big cores), skip_cos 0.98, max_tokens 60, max_history_tokens 1536; audio_cpus [1-3],
  * vad_weights "/var/lib/cortex/models/silero_vad_v4.bin", vad_on 0.5, vad_off 0.35, vad_hangover_ms 500;
  * speak true, voice "female", speaker_device "plughw:0,0" ("null", "wav:<path>" for tests), ucm_card "hw:0",
@@ -49,6 +59,16 @@ int ce_refresh(void* h);                          /* prepare, encode, skip check
 int ce_ask(void* h, const char* text, int max_tokens); /* -1 and an error "busy" event while an ask runs */
 int ce_cancel(void* h);                           /* stops the answer and cuts its sound now */
 int ce_reset_history(void* h);
+/* The answer to the waiting tool call (result: what the tool returned, any text). say NULL or "": the LM reads the
+ * result and answers (spoken; it may call another tool). say set: the result and say are recorded as the answer and
+ * say is spoken as is. Waits for sound still playing (e.g. "Checking.") instead of cutting it. -1 when no call waits
+ * or the engine is busy. */
+int ce_tool_result(void* h, const char* result, const char* say);
+/* Speaks text in Cortex's voice (navigation cues, templates). Waits for sound still playing. -1 without a speaker or
+ * while busy (an answer, or the user talking). */
+int ce_say(void* h, const char* text);
+/* A short line put before every question from now on ("" clears it): mode, navigation state. */
+int ce_set_state(void* h, const char* text);
 /* hands-free on/off (the button). Off drops an utterance in progress. -1 if the VAD weights did not load. */
 int ce_set_listening(void* h, int on);
 /* microphone audio: 16 kHz mono float in [-1, 1]; copied, any length. Ignored while listening is off. */

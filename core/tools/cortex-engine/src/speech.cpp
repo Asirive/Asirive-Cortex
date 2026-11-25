@@ -318,7 +318,7 @@ bool Speech::decode_embd(const float* e, int seq, int* pos) {
 }
 
 SpeakResult Speech::run(int seq, int* pos, const std::string& lead, int max_tokens, int max_frames, uint32_t seed,
-                        const SpeakIo& io) {
+                        const SpeakIo& io, bool audio_only) {
     SpeakResult r;
     const llama_vocab* vocab = llama_model_get_vocab(llama_get_model(lctx_));
     auto fail = [&](const std::string& m) {
@@ -337,9 +337,9 @@ SpeakResult Speech::run(int seq, int* pos, const std::string& lead, int max_toke
     llama_sampler_reset(greedy_);
     llama_set_embeddings(lctx_, true);
 
-    {  // lead + <|mixed_start|> in one batch, logits on the last
+    {  // lead + <|mixed_start|> (or <|audio_start|>) in one batch, logits on the last
         auto t = tokenize(vocab, lead);
-        t.push_back(tok_mixed_start_);
+        t.push_back(audio_only ? tok_audio_start_ : tok_mixed_start_);
         llama_batch b = llama_batch_init((int)t.size(), 0, 1);
         b.n_tokens = (int)t.size();
         for (int i = 0; i < b.n_tokens; i++)
@@ -350,8 +350,13 @@ SpeakResult Speech::run(int seq, int* pos, const std::string& lead, int max_toke
         if (rc != 0) return fail("mixed start decode failed (" + std::to_string(rc) + ")");
         *pos += (int)t.size();
     }
+    if (audio_only) {  // the first step is a frame: it starts from the start token's hidden state
+        const float* he = llama_get_embeddings_ith(lctx_, -1);
+        if (!he) return fail("no hidden state (embeddings off?)");
+        h_state_.assign(he, he + n_embd_);
+    }
 
-    enum Mode { TEXT, AUDIO, MIXED } mode = MIXED;
+    enum Mode { TEXT, AUDIO, MIXED } mode = audio_only ? AUDIO : MIXED;
     int slots_left = kTextBlock;
     bool speaking = false, text_done = false;
     double frame_total = 0;

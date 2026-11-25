@@ -94,10 +94,10 @@ class Speech {
 public:
     static std::unique_ptr<Speech> open(llama_context* lctx, mtmd_context* mctx, std::string* err);
     ~Speech();
-    // Decodes `lead` + <|mixed_start|> on seq at *pos, then generates until a stop. Advances *pos. Turns the context's
-    // embeddings output on for the run and off after it.
+    // Decodes `lead` + <|mixed_start|> (audio_only: <|audio_start|>, the TTS form) on seq at *pos, then generates
+    // until a stop. Advances *pos. Turns the context's embeddings output on for the run and off after it.
     SpeakResult run(int seq, int* pos, const std::string& lead, int max_tokens, int max_frames, uint32_t seed,
-                    const SpeakIo& io);
+                    const SpeakIo& io, bool audio_only = false);
     int max_pos = 1 << 30;  // the context's end: generation stops before a decode at *pos >= max_pos (stop "max")
 
 private:

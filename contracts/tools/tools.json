@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "modes": ["IDLE", "OUTDOOR_NAV", "BUS_WATCH", "TRANSIT", "INDOOR_NAV", "EXPLORE"],
+  "tools": [
+    {
+      "name": "search_places",
+      "description": "Find a place in Singapore by name, address or postal code. Returns the best matches with their distance.",
+      "parameters": {
+        "query": {"type": "string", "description": "What the user called the place, e.g. Northpoint, home, 768019", "required": true}
+      },
+      "modes": "all",
+      "spoken_by": "lm"
+    },
+    {
+      "name": "plan_trip",
+      "description": "Plan a trip from here to a place found by search_places, by walking, bus and MRT.",
+      "parameters": {
+        "place_id": {"type": "string", "description": "The id of a place from search_places", "required": true}
+      },
+      "modes": ["IDLE", "OUTDOOR_NAV"],
+      "spoken_by": "lm"
+    },
+    {
+      "name": "start_navigation",
+      "description": "Start guiding the user along the trip just planned.",
+      "parameters": {},
+      "modes": "all",
+      "spoken_by": "template"
+    },
+    {
+      "name": "stop_navigation",
+      "description": "Stop guiding the user.",
+      "parameters": {},
+      "modes": "all",
+      "spoken_by": "template"
+    },
+    {
+      "name": "nav_status",
+      "description": "Where the user is on the trip: the next step, distance and time left.",
+      "parameters": {},
+      "modes": ["OUTDOOR_NAV", "BUS_WATCH", "TRANSIT", "INDOOR_NAV"],
+      "spoken_by": "template"
+    },
+    {
+      "name": "nearby_bus_stops",
+      "description": "The bus stops nearest to the user.",
+      "parameters": {},
+      "modes": "all",
+      "spoken_by": "lm"
+    },
+    {
+      "name": "services_at_stop",
+      "description": "The bus services that call at a bus stop.",
+      "parameters": {
+        "stop": {"type": "string", "description": "5-digit bus stop code or stop name; empty = the nearest stop", "required": false}
+      },
+      "modes": "all",
+      "spoken_by": "lm"
+    },
+    {
+      "name": "bus_arrivals",
+      "description": "When the next buses come at a bus stop.",
+      "parameters": {
+        "service": {"type": "string", "description": "Bus number, e.g. 858; empty = all services", "required": false},
+        "stop": {"type": "string", "description": "5-digit bus stop code; empty = the nearest stop", "required": false}
+      },
+      "modes": "all",
+      "spoken_by": "template"
+    },
+    {
+      "name": "gps_accuracy",
+      "description": "How accurate the user's GPS position is right now.",
+      "parameters": {},
+      "modes": "all",
+      "spoken_by": "template"
+    },
+    {
+      "name": "set_mode",
+      "description": "Ask to switch Cortex's mode, e.g. EXPLORE to describe the surroundings, INDOOR_NAV when the user says they are inside.",
+      "parameters": {
+        "mode": {"type": "string", "enum": ["IDLE", "OUTDOOR_NAV", "INDOOR_NAV", "EXPLORE"], "description": "The mode to switch to", "required": true}
+      },
+      "modes": "all",
+      "spoken_by": "template"
+    },
+    {
+      "name": "camera",
+      "description": "Turn the camera on or off.",
+      "parameters": {
+        "on": {"type": "boolean", "description": "true = on, false = off", "required": true}
+      },
+      "modes": "all",
+      "spoken_by": "template"
+    }
+  ]
+}

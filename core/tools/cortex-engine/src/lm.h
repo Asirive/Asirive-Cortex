@@ -29,6 +29,11 @@ struct LmImpl;
 
 struct LmConfig {
     std::string model, mmproj, system_prompt;
+    // Tool calls: the tools as one JSON object per line ("" = none). Every answer opens with
+    // "<think></think>" as in the model's template, and a first token <tool_call> makes the answer a call.
+    std::string tools;
+    float tool_bias = 0;                          // added to the <tool_call> logit before the decision
+    std::string tts_language = "American English";  // ce_say's TTS prompt
     std::vector<int> cpus = {4, 5, 6, 7};
     int n_threads = 4;
     int n_ctx = 4096;
@@ -69,6 +74,9 @@ struct AskResult {
     double frame_ms = 0;     // mean time to make one frame on the LM (depthformer + feedback decode)
     double codec_ms = 0;     // mean time to turn one frame into sound (inline codec only)
     double sound_ms = 0;     // audio length: frames * 80
+    // tool calls
+    bool tool = false;       // the answer is a tool call (text holds it; stop "tool")
+    float tool_gap = 0;      // <tool_call> logit (+ bias) minus the best other token's, at the decision
 };
 
 class Lm {
@@ -92,6 +100,17 @@ public:
     // by the new answer), so nothing of them reaches on_pcm afterwards. Call it from the thread that asks.
     void drop_sound();
     void reset_history();
+
+    // ---- tool calls
+    bool awaiting_tool() const { return tool_wait_.load(); }
+    // The answer to the waiting call. say empty: the LM answers (and may call again); else result + say are recorded
+    // and say is spoken as is.
+    AskResult tool_result(const std::string& result, const std::string& say, int max_tokens,
+                          const std::function<void(const std::string&)>& on_token);
+    // Speaks text in Cortex's voice on the TTS slots; the conversation is not changed. Needs speak.
+    AskResult say(const std::string& text);
+    bool can_say() const;
+    void set_state(const std::string& text);
     double copy_ms() const { return copy_ms_; }
     int history_tokens() const;
     double last_read_ms() const { return last_read_ms_; }
@@ -126,7 +145,18 @@ private:
     void generate(AskResult& r, int max_tokens, const std::function<void(const std::string&)>& on_token,
                   std::chrono::steady_clock::time_point t0);
     void generate_speech(AskResult& r, int max_tokens, const std::function<void(const std::string&)>& on_token,
-                         std::chrono::steady_clock::time_point t0);
+                         std::chrono::steady_clock::time_point t0, int seq = 3, bool audio_only = false);
+    // After the answer's opening is decoded (logits on its last token): is the first token <tool_call>?
+    bool decide_tool(AskResult& r);
+    void generate_tool(AskResult& r, int max_tokens, std::chrono::steady_clock::time_point t0);
+    // The answer after the decision; a tool call leaves the turn open (tool_wait_), else it is finished.
+    void answer(AskResult& r, int max_tokens, const std::function<void(const std::string&)>& on_token,
+                std::chrono::steady_clock::time_point t0);
+    void finish_turn();
+    void abandon_tool();  // a new question while a call waits: the call is dropped, S starts again from V
+    std::string state_prefix();
+    int s_limit() const;
+    void speak_tts(AskResult& r, const std::string& text, std::chrono::steady_clock::time_point t0);
     // Speak mode: one end through on_pcm per answer. An ask opens it; generate_speech or, on an early return,
     // SoundEnd's destructor sends it.
     struct SoundEnd {
@@ -151,10 +181,16 @@ private:
     mtmd_context* mctx_ = nullptr;
     std::mutex mu_;                       // one llama_context: all decodes are serialised
     std::atomic<bool> preempt_{false}, reading_{false}, cancel_{false};
-    int pos_[4] = {0, 0, 0, 0};
+    int pos_[6] = {0, 0, 0, 0, 0, 0};  // seq 4: the TTS head (system prompt), seq 5: one ce_say
     int pos_base_ = 0;                    // H position after start + system
     std::vector<Turn> history_;           // turns already in H
     std::vector<Turn> pending_;           // turns in S, not yet in H
+    std::string open_;                    // closes the user turn, opens the answer ("<think></think>" with tools)
+    std::atomic<bool> tool_wait_{false};  // a call was made and waits for its result
+    Turn cur_;                            // the open turn while a call waits: a = call + results so far
+    int tok_tool_call_ = -1;
+    std::mutex state_mu_;
+    std::string state_;
     std::atomic<int> pending_n_{0};
     bool have_view_ = false, s_on_view_ = false;
     long view_frame_id_ = -1, s_frame_id_ = -1;

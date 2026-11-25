@@ -22,6 +22,7 @@ const char* kStart = "<|startoftext|>";
 const char* kUser = "<|im_start|>user\n";
 const char* kEnd = "<|im_end|>\n<|im_start|>assistant\n";  // closes the user turn, opens the answer
 const char* kTurnEnd = "<|im_end|>\n";
+const char* kThink = "<think></think>";  // the template's answer opening when thinking is off (tools on)
 constexpr int kBatch = 2048;
 
 void quiet_log(ggml_log_level level, const char* text, void*) {
@@ -120,6 +121,12 @@ std::unique_ptr<Lm> Lm::open(const LmConfig& cfg, std::string* err) {
         std::string& sp = lm->cfg_.system_prompt;
         sp += (sp.empty() ? "" : "\n") + std::string("Speak using a ") + cfg.voice + " voice.";
     }
+    if (!cfg.tools.empty()) {  // the template: system prompt, blank line, the tools one per line
+        std::string& sp = lm->cfg_.system_prompt;
+        sp += (sp.empty() ? "" : "\n\n") + std::string("<tools>\n") + cfg.tools + "\n</tools>";
+    }
+    // the template's answer opening with thinking off; without it LFM3 writes "<think></think>" into the answer itself
+    lm->open_ = std::string(kEnd) + kThink;
     auto* im = lm->im_ = new LmImpl();
     llama_model_params mp = llama_model_default_params();
     mp.n_gpu_layers = 0;
@@ -128,7 +135,7 @@ std::unique_ptr<Lm> Lm::open(const LmConfig& cfg, std::string* err) {
     llama_context_params cp = llama_context_default_params();
     cp.n_ctx = cfg.n_ctx;
     cp.n_batch = cp.n_ubatch = kBatch;
-    cp.n_seq_max = 4;
+    cp.n_seq_max = 6;  // H, V, V', S + the TTS head and one ce_say
     cp.kv_unified = true;  // slots share their common prefix cells; a copy only re-tags cells
     cp.n_threads = cp.n_threads_batch = cfg.n_threads;
     lm->ctx_ = llama_init_from_model(lm->model_, cp);
@@ -197,6 +204,11 @@ std::unique_ptr<Lm> Lm::open(const LmConfig& cfg, std::string* err) {
         llama_sampler_chain_add(im->smpl, llama_sampler_init_greedy());
     }
     im->one = llama_batch_init(1, 0, 1);
+    if (!cfg.tools.empty()) {
+        const auto t = tokenize(lm->model_, "<tool_call>");
+        if (t.size() != 1) return fail("this model has no <tool_call> token");
+        lm->tok_tool_call_ = t[0];
+    }
     std::string e;
     if (cfg.speak) {
         im->speech = Speech::open(lm->ctx_, lm->mctx_, &e);
@@ -211,6 +223,11 @@ std::unique_ptr<Lm> Lm::open(const LmConfig& cfg, std::string* err) {
         }
     }
     if (!lm->rebuild_history(&e)) return fail(e);
+    if (cfg.speak) {  // ce_say: the model's own TTS prompt, read once into seq 4 and copied for every sentence
+        const std::string tts = std::string(kStart) + "<|im_start|>system\nPerform TTS in " + cfg.tts_language +
+                                " using a " + cfg.voice + " voice." + kTurnEnd;
+        if (!lm->decode_text(tts, 4, false, &e)) return fail("tts head: " + e);
+    }
     return lm;
 }
 
@@ -252,26 +269,22 @@ bool Lm::decode_text(const std::string& text, int seq, bool logits_last, std::st
     return rc == 0;
 }
 
-static std::string turn_text(const std::string& q, const std::string& a) {
-    return std::string(kUser) + q + kEnd + a + kTurnEnd;
-}
-
 int Lm::turn_tokens(const Turn& t) const {
-    if (t.rows.empty()) return (int)tokenize(model_, turn_text(t.q, t.a)).size();
+    if (t.rows.empty()) return (int)tokenize(model_, std::string(kUser) + t.q + open_ + t.a + kTurnEnd).size();
     return (int)(tokenize(model_, kUser).size() + t.rows.size() / n_embd_inp() +
-                 tokenize(model_, std::string(kEnd) + t.a + kTurnEnd).size());
+                 tokenize(model_, open_ + t.a + kTurnEnd).size());
 }
 
 // a finished turn in H: text, or a spoken question kept as its audio rows (no transcript is made)
 bool Lm::decode_turn(const Turn& t, int seq, std::string* err) {
-    if (t.rows.empty()) return decode_text(turn_text(t.q, t.a), seq, false, err);
+    if (t.rows.empty()) return decode_text(std::string(kUser) + t.q + open_ + t.a + kTurnEnd, seq, false, err);
     if (!decode_text(kUser, seq, false, err)) return false;
     const int rc = decode_rows(ctx_, t.rows.data(), (int)(t.rows.size() / n_embd_inp()), n_embd_inp(), seq, &pos_[seq]);
     if (rc != 0) {
         if (err) *err = rc == 2 ? "preempted" : "audio rows decode failed (" + std::to_string(rc) + ")";
         return false;
     }
-    return decode_text(std::string(kEnd) + t.a + kTurnEnd, seq, false, err);
+    return decode_text(open_ + t.a + kTurnEnd, seq, false, err);
 }
 
 std::string Lm::head_text() const {
@@ -350,6 +363,8 @@ void Lm::reset_history() {
     history_.clear();
     pending_.clear();
     pending_n_ = 0;
+    tool_wait_ = false;
+    cur_ = Turn{};
     std::string e;
     rebuild_history(&e);
     clear(1);
@@ -423,16 +438,18 @@ AskResult Lm::ask(const std::string& question, int max_tokens, const std::functi
     AskResult r;
     SoundEnd sound_end(this);
     std::string text;
+    abandon_tool();
     if (v_active_) {  // a typed question over an unfinished utterance: S holds half a turn
         s_on_view_ = v_active_ = false;
         v_rows_.clear();
         v_n_ = v_in_s_ = 0;
     }
+    const std::string q = state_prefix() + question;
     if (s_on_view_ && s_has_room()) {
-        text = std::string(kTurnEnd) + kUser + question + kEnd;  // follow-up: S already holds the conversation
+        text = std::string(kTurnEnd) + kUser + q + open_;  // follow-up: S already holds the conversation
     } else {
         copy(have_view_ ? 1 : 0, 3);
-        text = (have_view_ ? "\n" : kUser) + question + kEnd;
+        text = (have_view_ ? "\n" : kUser) + q + open_;
         s_on_view_ = true;
         s_frame_id_ = have_view_ ? view_frame_id_ : -1;
     }
@@ -442,10 +459,170 @@ AskResult Lm::ask(const std::string& question, int max_tokens, const std::functi
         s_on_view_ = false;
         return r;
     }
-    generate(r, max_tokens, on_token, t0);
-    pending_.push_back({question, r.text, {}});
-    pending_n_ = (int)pending_.size();
+    cur_ = Turn{q, "", {}};
+    answer(r, max_tokens, on_token, t0);
     return r;
+}
+
+// ---------------------------------------------------------------- tool calls
+
+std::string Lm::state_prefix() {
+    std::lock_guard<std::mutex> g(state_mu_);
+    return state_.empty() ? std::string() : "[" + state_ + "]\n";
+}
+
+void Lm::set_state(const std::string& text) {
+    std::lock_guard<std::mutex> g(state_mu_);
+    state_ = text;
+}
+
+bool Lm::decide_tool(AskResult& r) {
+    if (tok_tool_call_ < 0) return false;
+    const float* l = llama_get_logits_ith(ctx_, -1);
+    if (!l) return false;
+    const int n = llama_vocab_n_tokens(llama_model_get_vocab(model_));
+    float best = -INFINITY;
+    for (int i = 0; i < n; i++)
+        if (i != tok_tool_call_ && l[i] > best) best = l[i];
+    r.tool_gap = l[tok_tool_call_] + cfg_.tool_bias - best;
+    return r.tool_gap > 0;
+}
+
+// The call as text: <tool_call> (decided, so not sampled) and greedy tokens up to the turn's end. Special tokens are
+// kept in the text (<function=...> is the call's syntax). Nothing goes to on_token: a call is never shown or spoken.
+void Lm::generate_tool(AskResult& r, int max_tokens, std::chrono::steady_clock::time_point t0) {
+    LmImpl* im = im_;
+    const llama_vocab* vocab = llama_model_get_vocab(model_);
+    llama_sampler_reset(im->smpl);
+    r.tool = true;
+    r.stop = "max";
+    for (; r.n_out < max_tokens; r.n_out++) {
+        if (cancel_) {
+            r.cancelled = true;
+            r.stop = "cancel";
+            break;
+        }
+        const llama_token tok = r.n_out == 0 ? tok_tool_call_ : llama_sampler_sample(im->smpl, ctx_, -1);
+        if (r.n_out == 0) r.ttft_ms = ms_since(t0);
+        if (llama_vocab_is_eog(vocab, tok)) {
+            r.stop = "tool";
+            break;
+        }
+        if (pos_[3] >= s_limit()) break;
+        char buf[256];
+        const int n = llama_token_to_piece(vocab, tok, buf, sizeof buf, 0, true);
+        if (n > 0) r.text.append(buf, (size_t)n);
+        im->one.n_tokens = 1;
+        im->one.token[0] = tok;
+        im->one.pos[0] = pos_[3];
+        im->one.n_seq_id[0] = 1;
+        im->one.seq_id[0][0] = 3;
+        im->one.logits[0] = true;
+        if (llama_decode(ctx_, im->one) != 0) {
+            r.error = "llama_decode failed while making a tool call";
+            r.stop = "error";
+            break;
+        }
+        pos_[3]++;
+    }
+    r.total_ms = ms_since(t0);
+}
+
+void Lm::answer(AskResult& r, int max_tokens, const std::function<void(const std::string&)>& on_token,
+                std::chrono::steady_clock::time_point t0) {
+    if (decide_tool(r)) {
+        generate_tool(r, max_tokens, t0);
+        if (r.stop == "tool") {
+            cur_.a += r.text;
+            tool_wait_ = true;
+        } else {  // cut, out of room or failed: no call is made, and S holds half of one
+            tool_wait_ = false;
+            cur_ = Turn{};
+            s_on_view_ = false;
+        }
+        return;
+    }
+    generate(r, max_tokens, on_token, t0);
+    cur_.a += r.text;
+    finish_turn();
+}
+
+void Lm::finish_turn() {
+    pending_.push_back(std::move(cur_));
+    cur_ = Turn{};
+    pending_n_ = (int)pending_.size();
+    tool_wait_ = false;
+}
+
+void Lm::abandon_tool() {
+    if (!tool_wait_) return;
+    tool_wait_ = false;
+    cur_ = Turn{};
+    s_on_view_ = false;  // S ends in a call that will never be answered: the next question starts again from V
+}
+
+AskResult Lm::tool_result(const std::string& result, const std::string& say, int max_tokens,
+                          const std::function<void(const std::string&)>& on_token) {
+    const auto t0 = clk::now();
+    preempt_ = true;
+    std::lock_guard<std::mutex> g(mu_);
+    preempt_ = false;
+    AskResult r;
+    SoundEnd sound_end(this);
+    if (!tool_wait_) {
+        r.error = "no tool call is waiting";
+        return r;
+    }
+    // the template's tool turn, after the call's assistant turn is closed, then the next answer opens
+    const std::string turn = std::string(kTurnEnd) + "<|im_start|>tool\n<tool_response>\n" + result +
+                             "\n</tool_response>" + kTurnEnd + "<|im_start|>assistant\n" + kThink;
+    if (!say.empty()) {  // a template: recorded as the answer, spoken as is
+        if (!decode_text(turn + say, 3, false, &r.error)) {
+            abandon_tool();
+            return r;
+        }
+        cur_.a += turn + say;
+        finish_turn();
+        speak_tts(r, say, t0);
+        r.text = say;
+        return r;
+    }
+    if (!decode_text(turn, 3, true, &r.error)) {
+        abandon_tool();
+        return r;
+    }
+    cur_.a += turn;
+    answer(r, max_tokens, on_token, t0);
+    return r;
+}
+
+bool Lm::can_say() const { return im_->speech != nullptr; }
+
+AskResult Lm::say(const std::string& text) {
+    const auto t0 = clk::now();
+    preempt_ = true;
+    std::lock_guard<std::mutex> g(mu_);
+    preempt_ = false;
+    AskResult r;
+    SoundEnd sound_end(this);
+    speak_tts(r, text, t0);
+    r.text = text;
+    return r;
+}
+
+// text in Cortex's voice: the TTS head (seq 4) copied into seq 5, the sentence as the user turn, audio only
+void Lm::speak_tts(AskResult& r, const std::string& text, std::chrono::steady_clock::time_point t0) {
+    if (!im_->speech) {
+        r.error = "no speech output";
+        return;
+    }
+    copy(4, 5);
+    if (!decode_text(std::string(kUser) + text + kEnd + kThink, 5, false, &r.error)) {
+        clear(5);
+        return;
+    }
+    generate_speech(r, 16, nullptr, t0, 5, true);
+    clear(5);
 }
 
 void Lm::end_sound() {
@@ -456,7 +633,11 @@ void Lm::end_sound() {
     else if (cfg_.on_pcm) cfg_.on_pcm(nullptr, 0, true);
 }
 
-bool Lm::s_has_room() const { return pos_[3] < (int)llama_n_ctx(ctx_) * 2 / 3; }
+bool Lm::s_has_room() const { return pos_[3] < s_limit() * 2 / 3; }
+
+// S's cells end where the context's do, less the TTS head's own (seq 4; one ce_say on seq 5 shares them and runs
+// only between answers)
+int Lm::s_limit() const { return (int)llama_n_ctx(ctx_) - pos_[4]; }
 
 void Lm::drop_sound() {
     if (im_->codec_thread) im_->codec_thread->drop();
@@ -482,7 +663,7 @@ void Lm::generate(AskResult& r, int max_tokens, const std::function<void(const s
             r.stop = "eog";
             break;
         }
-        if (pos_[3] >= (int)llama_n_ctx(ctx_)) break;  // the context's end (stop "max"): no room to decode it
+        if (pos_[3] >= s_limit()) break;  // the context's end (stop "max"): no room to decode it
         char buf[256];
         const int n = llama_token_to_piece(vocab, tok, buf, sizeof buf, 0, false);
         if (n > 0) {
@@ -512,7 +693,7 @@ void Lm::generate(AskResult& r, int max_tokens, const std::function<void(const s
 // the codec thread (or the inline codec); sound comes out through on_pcm. One end per answer, also after a cut or an
 // error, so the speaker always closes the answer.
 void Lm::generate_speech(AskResult& r, int max_tokens, const std::function<void(const std::string&)>& on_token,
-                         std::chrono::steady_clock::time_point t0) {
+                         std::chrono::steady_clock::time_point t0, int seq, bool audio_only) {
     LmImpl* im = im_;
     Codec* codec = im->codec.get();
     CodecThread* ct = im->codec_thread.get();
@@ -550,8 +731,8 @@ void Lm::generate_speech(AskResult& r, int max_tokens, const std::function<void(
     };
     io.cancelled = [this] { return cancel_.load(); };
     const int max_frames = std::max(1, cfg_.max_speech_s * 1000 / 80);
-    im->speech->max_pos = (int)llama_n_ctx(ctx_);
-    SpeakResult s = im->speech->run(3, &pos_[3], "", max_tokens, max_frames, cfg_.seed, io);
+    im->speech->max_pos = seq == 3 ? s_limit() : (int)llama_n_ctx(ctx_);
+    SpeakResult s = im->speech->run(seq, &pos_[seq], "", max_tokens, max_frames, cfg_.seed, io, audio_only);
     if (codec) {
         if (s.stop != "cancel") codec->flush(&im->pcm);  // the last frame's tail; a cut drops it
         emit(true);
@@ -562,12 +743,12 @@ void Lm::generate_speech(AskResult& r, int max_tokens, const std::function<void(
     }
     sound_open_ = false;  // this answer's end is sent
     // the loop decoded into S itself: take its position from the memory, whatever happened
-    pos_[3] = llama_memory_seq_pos_max(llama_get_memory(ctx_), 3) + 1;
+    pos_[seq] = llama_memory_seq_pos_max(llama_get_memory(ctx_), seq) + 1;
     r.stop = s.stop;
     r.cancelled = s.stop == "cancel";
     if (s.stop == "error") {
         r.error = s.error;
-        s_on_view_ = false;
+        if (seq == 3) s_on_view_ = false;
     }
     r.n_out = s.n_text;
     r.frames = s.frames;
@@ -593,12 +774,13 @@ int Lm::n_embd_inp() const { return llama_model_n_embd_inp(model_); }
 // conversation about it); a view that landed since the utterance began restarts S from it, rows to come again.
 bool Lm::voice_s_locked(std::string* err) {
     if (v_active_ && v_gen_ == view_gen_) return true;
+    if (!v_active_) abandon_tool();  // the user asks something new while a call waits
     std::string pre;
     if (!v_active_ && s_on_view_ && s_has_room()) {
-        pre = std::string(kTurnEnd) + kUser;  // follow-up on the same view
+        pre = std::string(kTurnEnd) + kUser + state_prefix();  // follow-up on the same view
     } else {
         copy(have_view_ ? 1 : 0, 3);
-        pre = have_view_ ? "\n" : kUser;
+        pre = (have_view_ ? "\n" : kUser) + state_prefix();
         s_on_view_ = true;
         s_frame_id_ = have_view_ ? view_frame_id_ : -1;
     }
@@ -660,13 +842,12 @@ AskResult Lm::voice_answer(int max_tokens, const std::function<void(const std::s
     }
     r.view_frame_id = s_frame_id_;
     if (s_frame_id_ >= 0) r.view_age_ms = std::chrono::duration<double, std::milli>(t0 - view_time_).count();
-    if (!decode_text(kEnd, 3, true, &r.error)) {
+    if (!decode_text(open_, 3, true, &r.error)) {
         s_on_view_ = false;
         return r;
     }
-    generate(r, max_tokens, on_token, t0);
-    pending_.push_back({std::string(), r.text, std::move(v_rows_)});
-    pending_n_ = (int)pending_.size();
+    cur_ = Turn{std::string(), "", std::move(v_rows_)};
+    answer(r, max_tokens, on_token, t0);
     return r;
 }
 
