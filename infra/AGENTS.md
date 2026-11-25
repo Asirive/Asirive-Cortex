@@ -42,8 +42,11 @@ Legacy consumers: `v3_core/` (device links, hybrid memory sync),
 - `navbundle/build.py`: the Singapore nav bundle from an OSM extract (pyosmium, one pass, clipped to SG) + LTA
   DataMall BusServices headways when `--lta-dir` holds them (the key stays on the server; a fetch job writes the
   JSON). Writes `~/cortex-data/navbundle/<version>/` in the format of `core/cortex_core/nav/bundle.py`. Measured in
-  `docs/measurements/2026-11-nav-bundle.md`; tested in `core/tests/test_navbundle_build.py`. The LTA fetch job and
-  the gateway's live-arrivals proxy are NOT built.
+  `docs/measurements/2026-11-nav-bundle.md`; tested in `core/tests/test_navbundle_build.py`.
+- `navbundle/lta_fetch.py`: DataMall BusServices / BusRoutes / BusStops, paged, written atomically into the
+  `--lta-dir` the builder reads; key from `LTA_ACCOUNT_KEY` or `~/.config/cortex/lta_key` (chmod 600), never logged.
+  Tested against a local stand-in (`core/tests/test_lta_fetch.py`); NOT yet run against DataMall (no key on the
+  server yet). The gateway's live-arrivals proxy is NOT built.
 - Not built: hardware-backed device key, CA key custody off the box, phone-side TCP tunnel for the device TLS stream
   verifier/A-B client, camera relay, dataset pipeline, Python/Dart codegen. Gap
   table: docs/architecture/FLEET-OTA-AND-SECURITY.md.
@@ -103,3 +106,4 @@ psql -f supabase/migrations/001_initial_schema.sql   # schema apply (reference)
 - 2026-10-29: Postgres state store with advisory-lock leader election (warm standby failover), tested on PG16. Not active-active.
 - 2026-10-30: Device mTLS: internal/pki device CA, certificate issued at claim over the device-generated P-256 key, dedicated device listener (TLS 1.3, client cert required, revocation at handshake, renewal endpoint). Public handler no longer serves /ws/device when enabled. Sealed envelope decided against (see V4-ECOSYSTEM section 6).
 - 2026-11-26: `navbundle/build.py` (offline Singapore nav bundle: walking graph, bus stops/routes, all MRT/LRT lines incl. Punggol/Bukit Panjang LRT, 100k places incl. multipolygons with ways in, LTA headways). 50 s, 1.13 GB peak RSS, 52 MB out on the server.
+- 2026-11-26: `navbundle/lta_fetch.py` (DataMall static bus data for the builder's headways; key outside the repo).
