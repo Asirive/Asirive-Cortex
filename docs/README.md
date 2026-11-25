@@ -13,8 +13,8 @@ they live in git history if you need them.
   product + ecosystem source of truth: device, app, cloud infra, contracts,
   agent harness, privacy model, decision log.
 
-- **[architecture/CORTEX-ENGINE.md](architecture/CORTEX-ENGINE.md)** — plan for
-  the power-efficient LFM3-Omni inference engine (phased, measurement-gated).
+- **[architecture/CORTEX-ENGINE.md](architecture/CORTEX-ENGINE.md)**: Cortex-EmbD, our parallel inference engine
+  (LFM3-Omni on NPU + big/small CPU cores): what is built, how it runs in parallel, and its numbers.
 - **[architecture/FLEET-OTA-AND-SECURITY.md](architecture/FLEET-OTA-AND-SECURITY.md)** —
   how updates roll out, security gaps, fleet coverage checklist.
 
