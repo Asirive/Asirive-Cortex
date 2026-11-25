@@ -143,7 +143,9 @@ Every answer comes in LFM3-Omni's own voice, made and played at the same time:
    older answers, so nothing of an old answer leaks into a new one.
 
 End of speech → **first sound: 600–641 ms**. Answers end naturally (`eog`). The limits only stop a runaway:
-`max_tokens` 512, `max_speech_s` 60, and the end of the context.
+`max_tokens` 2048, `max_speech_s` 180, and the end of the context (`n_ctx` 8192). Raised on 2026-11-26 from
+512 / 60 / 4096: a long answer (942 tokens, 37.8 s of speech) now ends at `eog`. Doubling the context costs
++86 MB RSS (3049 → 3135 MB) and no measurable TTFT (115 → 117 ms median).
 
 ### Not hearing itself (echo)
 The mic hears Cortex's voice from the earbuds about 450 ms late (device buffer + earbuds + USB/PipeWire capture).
@@ -182,15 +184,15 @@ say, `stop` incl. `tool`, `ttft_ms`, `frames`, `frame_ms`…), `view`, `speech_s
 **Config** (JSON to `ce_open`; on the box `/var/lib/cortex/bench/engine/engine.json`):
 - `model`, `mmproj`, `split_dir`, `qnn_lib_dir` (required).
 - Cores: `lm_cpus`, `vision_cpus`, `island_cpus`, `island_small_cpus`, `audio_cpus`, `codec_cpus`, `speaker_cpus`.
-- Vision and LM: `skip_cos`, `max_tokens`, `max_history_tokens`, `system_prompt`.
+- Vision and LM: `n_ctx` (1024..32768, default 8192), `skip_cos`, `max_tokens` (default 2048), `max_history_tokens` (default 1536, at most n_ctx/2), `system_prompt`.
 - Tools: `tools` (one JSON object per line, from `contracts/tools/tools.json`), `tool_bias`, `tts_language`.
 - Listening: `vad_weights`, `vad_on`, `vad_off`, `vad_hangover_ms`.
-- Speaking: `speak`, `voice`, `max_speech_s`, `codec_inline`, `codec_threads`, `prebuffer_ms`, `rebuffer_ms`.
+- Speaking: `speak`, `voice`, `max_speech_s` (default 180, at most 600), `codec_inline`, `codec_threads`, `prebuffer_ms`, `rebuffer_ms`.
 - Echo: `mute_tail_ms`, `echo_lag_ms`.
 - Speaker device: `speaker_device`, `ucm_card`, `ucm_verb`, `ucm_device`, `mixer`.
 
 **Tests:** `sh core/scripts/engine/box_build.sh [filter]` copies the sources to the box, builds there and runs
-`engine_tests`. Currently 82/82, covering:
+`engine_tests`. Currently 85/85, covering:
 - the ports against goldens (vision, islands, VAD, speech);
 - the scheduler, preemption, cuts, echo and context limits;
 - the speaker;

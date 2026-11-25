@@ -36,7 +36,7 @@ struct LmConfig {
     std::string tts_language = "American English";  // ce_say's TTS prompt
     std::vector<int> cpus = {4, 5, 6, 7};
     int n_threads = 4;
-    int n_ctx = 4096;
+    int n_ctx = 8192;
     // image tokens per decode batch during a background read. Preemption does not need small batches (llama's abort
     // callback fires inside graph compute), so the whole image goes in one batch for prefill throughput.
     int chunk = 256;
@@ -48,7 +48,7 @@ struct LmConfig {
     // ---- speech out: every answer in LFM3-Omni's own voice (interleaved text + audio)
     bool speak = false;
     std::string voice = "female";  // "Speak using a <voice> voice." joins the system prompt
-    int max_speech_s = 30;         // audio frames per answer are capped at this (stop "max")
+    int max_speech_s = 180;        // audio frames per answer are capped at this (stop "max")
     // Codes -> PCM. Normally on its own thread and mtmd context on codec_cpus, behind the LM (one mtmd context runs
     // one graph at a time, so sharing the LM's would make the depthformer wait). Inline runs it in the LM loop.
     bool codec_inline = false;

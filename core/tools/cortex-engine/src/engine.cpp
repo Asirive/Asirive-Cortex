@@ -62,7 +62,7 @@ struct Config {
     std::vector<int> lm_cpus{4, 5, 6, 7}, vision_cpus{1, 2, 3}, island_cpus{4, 5, 6, 7}, audio_cpus{1, 2, 3};
     std::vector<int> island_small_cpus{1, 2};  // islands during an answer
     double skip_cos = 0.98;
-    int max_tokens = 512, max_history_tokens = 1536;  // an answer ends at its own end (eog); this only stops a runaway
+    int max_tokens = 2048, max_history_tokens = 1536, n_ctx = 8192;  // an answer ends at its own end (eog); this only stops a runaway
     std::string vad_weights = "/var/lib/cortex/models/silero_vad_v4.bin";
     ListenConfig listen;
     int fail_encode_after = 0;  // test-only fault injection: encodes after this many fail
@@ -70,7 +70,7 @@ struct Config {
     bool speak = true, codec_inline = false;
     std::string voice = "female";
     SpeakerConfig speaker;  // device, UCM route, mixer, prebuffer_ms, cpus (speaker_cpus)
-    int mute_tail_ms = 300, max_speech_s = 60, codec_threads = 1;
+    int mute_tail_ms = 300, max_speech_s = 180, codec_threads = 1;
     int echo_lag_ms = 500;  // the echo delay assumed until an answer has been measured (0..1500)
     std::vector<int> codec_cpus{3};
 };
@@ -93,6 +93,11 @@ Config parse_config(const char* text) {
     c.skip_cos = j.value("skip_cos", c.skip_cos);
     c.max_tokens = j.value("max_tokens", c.max_tokens);
     c.max_history_tokens = j.value("max_history_tokens", c.max_history_tokens);
+    c.n_ctx = j.value("n_ctx", c.n_ctx);
+    if (c.n_ctx < 1024 || c.n_ctx > 32768) throw std::runtime_error("config: n_ctx is 1024..32768");
+    if (c.max_tokens < 1) throw std::runtime_error("config: max_tokens is >= 1");
+    if (c.max_history_tokens < 0 || c.max_history_tokens > c.n_ctx / 2)
+        throw std::runtime_error("config: max_history_tokens is 0..n_ctx/2");
     c.fail_encode_after = j.value("fail_encode_after", 0);
     c.audio_cpus = j.value("audio_cpus", c.audio_cpus);
     c.vad_weights = j.value("vad_weights", c.vad_weights);
@@ -120,7 +125,7 @@ Config parse_config(const char* text) {
         s.mixer.clear();
         for (auto& [k, v] : j["mixer"].items()) s.mixer.emplace_back(k, v.get<int>());
     }
-    if (c.max_speech_s < 0 || c.max_speech_s > 90) throw std::runtime_error("config: max_speech_s is 0..90");
+    if (c.max_speech_s < 0 || c.max_speech_s > 600) throw std::runtime_error("config: max_speech_s is 0..600");
     if (c.echo_lag_ms < 0 || c.echo_lag_ms > 1500) throw std::runtime_error("config: echo_lag_ms is 0..1500");
     if (c.mute_tail_ms < 0 || s.prebuffer_ms < 0 || s.rebuffer_ms < 0 || c.codec_threads < 1)
         throw std::runtime_error("config: mute_tail_ms, prebuffer_ms and rebuffer_ms are >= 0, codec_threads >= 1");
@@ -367,7 +372,7 @@ struct Engine {
         lc.model = cfg.model, lc.mmproj = cfg.mmproj, lc.system_prompt = cfg.system_prompt;
         lc.tools = cfg.tools, lc.tool_bias = cfg.tool_bias, lc.tts_language = cfg.tts_language;
         lc.cpus = cfg.lm_cpus, lc.n_threads = (int)cfg.lm_cpus.size();
-        lc.max_history_tokens = cfg.max_history_tokens;
+        lc.max_history_tokens = cfg.max_history_tokens, lc.n_ctx = cfg.n_ctx;
         if (speaker) {
             lc.speak = true, lc.voice = cfg.voice, lc.max_speech_s = cfg.max_speech_s;
             lc.codec_inline = cfg.codec_inline, lc.codec_cpus = cfg.codec_cpus, lc.codec_threads = cfg.codec_threads;
@@ -827,6 +832,7 @@ const char* ce_status(void* h) {
     }
     st["awaiting_tool"] = e->lm->awaiting_tool();
     st["tools"] = !e->cfg.tools.empty();
+    st["n_ctx"] = e->cfg.n_ctx, st["max_tokens"] = e->cfg.max_tokens, st["max_speech_s"] = e->cfg.max_speech_s;
     {
         std::lock_guard<std::mutex> g(e->amu);
         st["listening"] = e->listening;

@@ -35,11 +35,11 @@
  *
  * Config JSON: model, mmproj, split_dir, qnn_lib_dir (required); system_prompt, tools "", tool_bias 0,
  * tts_language "American English", lm_cpus [4-7], vision_cpus [1-3],
- * island_cpus [4-7], island_small_cpus [1,2] (islands while an answer holds the big cores), skip_cos 0.98, max_tokens 60, max_history_tokens 1536; audio_cpus [1-3],
+ * island_cpus [4-7], island_small_cpus [1,2] (islands while an answer holds the big cores), skip_cos 0.98, max_tokens 2048, max_history_tokens 1536 (0..n_ctx/2), n_ctx 8192 (1024..32768); audio_cpus [1-3],
  * vad_weights "/var/lib/cortex/models/silero_vad_v4.bin", vad_on 0.5, vad_off 0.35, vad_hangover_ms 500;
  * speak true, voice "female", speaker_device "plughw:0,0" ("null", "wav:<path>" for tests), ucm_card "hw:0",
  * ucm_verb "HiFi", ucm_device "Headphones", mixer {"HPHL Volume":20,"HPHR Volume":20}, prebuffer_ms 200,
- * mute_tail_ms 300, max_speech_s 30 (0..30), codec_cpus [3], codec_threads 1, speaker_cpus [3], codec_inline false.
+ * mute_tail_ms 300, max_speech_s 180 (0..600), codec_cpus [3], codec_threads 1, speaker_cpus [3], codec_inline false.
  * cpu0 is the safety core and is refused.
  */
 #ifndef CORTEX_ENGINE_H
