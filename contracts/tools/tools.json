@@ -59,9 +59,9 @@
     },
     {
       "name": "bus_arrivals",
-      "description": "When the next buses come at a bus stop.",
+      "description": "When the next buses come at a bus stop. When the user names a bus number (858, 969, 39...), always pass it as service.",
       "parameters": {
-        "service": {"type": "string", "description": "Bus number, e.g. 858; empty = all services", "required": false},
+        "service": {"type": "string", "description": "The bus number the user said, e.g. 858 or 969; leave out only if they named no bus", "required": false},
         "stop": {"type": "string", "description": "5-digit bus stop code; empty = the nearest stop", "required": false}
       },
       "modes": "all",

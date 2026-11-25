@@ -2,6 +2,10 @@
 
     python -m cortex_core.brain.tool_eval wavs --out DIR      # the cases spoken in Cortex's own TTS voice (16 kHz)
     python -m cortex_core.brain.tool_eval run [--spoken DIR] --report OUT.json
+    python -m cortex_core.brain.tool_eval run --llama-server http://127.0.0.1:8080 --model NAME --report OUT.json
+
+--llama-server runs the typed cases against any llama.cpp server (started with --jinja) instead of the box's engine:
+the same prompt, tools, cases and scoring, for a model on a dev machine. It stands in for the box; it is not the gate.
 
 Cases: brain/data/tool_eval.json. A case passes "tool" when the first call names the expected tool (or no call is
 made when none is expected) and "args" when every expected value is found in that argument (case-insensitive
@@ -194,6 +198,59 @@ def run(cases: list[dict], spoken: Path | None) -> dict:
     return report
 
 
+# ------------------------------------------------------------------ any llama.cpp server (dev machines)
+
+def _as_call_text(msg: dict) -> str | None:
+    """A chat answer -> LFM tool-call XML for score(): structured tool_calls, or raw XML left in the content."""
+    tcs = msg.get("tool_calls") or []
+    if tcs:
+        out = []
+        for tc in tcs:
+            fn = tc.get("function", {})
+            args = fn.get("arguments") or {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except ValueError:
+                    args = {}
+            body = "".join(f"<parameter={k}>\n{v}\n</parameter>\n" for k, v in args.items())
+            out.append(f"<tool_call>\n<function={fn.get('name', '')}>\n{body}</function>\n</tool_call>")
+        return "\n".join(out)
+    content = msg.get("content") or ""
+    return content if "<tool_call>" in content else None
+
+
+def run_server(cases: list[dict], url: str, model: str = "", timeout: float = 120.0) -> dict:
+    import urllib.request
+
+    oa_tools = [{"type": "function", "function": json.loads(line)}
+                for line in tools.load().lfm_tools().splitlines() if line.strip()]
+    report: dict = {"model": model, "backend": f"llama-server {url}", "prompt": prompt.SYSTEM,
+                    "when": time.strftime("%Y-%m-%d %H:%M")}
+    rows, ms = [], []
+    for c in cases:
+        req = {"messages": [{"role": "system", "content": prompt.SYSTEM}, {"role": "user", "content": c["q"]}],
+               "tools": oa_tools, "temperature": 0, "max_tokens": 256}
+        t0 = time.perf_counter()
+        r = urllib.request.Request(url.rstrip("/") + "/v1/chat/completions", data=json.dumps(req).encode(),
+                                   headers={"content-type": "application/json"})
+        with urllib.request.urlopen(r, timeout=timeout) as resp:
+            ans = json.loads(resp.read())
+        took = (time.perf_counter() - t0) * 1000
+        call = _as_call_text(ans["choices"][0]["message"])
+        row = score(c, call)
+        row["call_ms"] = round(took)
+        rows.append(row)
+        if call:
+            ms.append(took)
+        print(("ok " if row["args_ok"] else "XX ") + f"{c['q']!r} -> {row['got']} {row['args']}", flush=True)
+    report["typed"] = summarize(rows) | {"rows": rows}
+    if ms:
+        ms.sort()
+        report["typed"]["call_total_ms_median"] = round(ms[len(ms) // 2])
+    return report
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m cortex_core.brain.tool_eval")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -202,12 +259,14 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("run")
     r.add_argument("--spoken", type=Path)
     r.add_argument("--report", type=Path, required=True)
+    r.add_argument("--llama-server", help="a llama.cpp server URL instead of the box's engine (typed cases only)")
+    r.add_argument("--model", default="", help="the model's name for the report (with --llama-server)")
     a = ap.parse_args(argv)
     cases = load_cases()
     if a.cmd == "wavs":
         make_wavs(a.out, cases)
         return 0
-    rep = run(cases, a.spoken)
+    rep = run_server(cases, a.llama_server, a.model) if a.llama_server else run(cases, a.spoken)
     a.report.write_text(json.dumps(rep, indent=1))
     for k in ("typed", "spoken"):
         if k in rep:
