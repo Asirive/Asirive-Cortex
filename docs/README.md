@@ -6,6 +6,9 @@ they live in git history if you need them.
 
 ## Start here
 
+- **[HANDOFF.md](HANDOFF.md)**: current state of the cortex-engine work, what still needs checking, and how to
+  build and test on the box.
+
 - **[architecture/V4-ECOSYSTEM.md](architecture/V4-ECOSYSTEM.md)** — the V4
   product + ecosystem source of truth: device, app, cloud infra, contracts,
   agent harness, privacy model, decision log.
