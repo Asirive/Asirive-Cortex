@@ -140,3 +140,32 @@ def test_state_line(city):
     assert s.startswith("nav: walking") and "next:" in s
     st = f.status()
     assert st["mode"] == "walk" and st["remaining_m"] == pytest.approx(550, abs=10)
+
+
+def _ride_first(city):
+    its = Planner(city).plan(C.node(0, 0), C.node(0, 20), hour=9)
+    it = next(i for i in its if i.legs[0].mode != "walk")
+    return it, np.asarray(city.stop_x)[it.legs[0].stops].astype(float), \
+        np.asarray(city.stop_y)[it.legs[0].stops].astype(float)
+
+
+def test_walking_away_from_the_stop_is_off_route(city):
+    it, sx, sy = _ride_first(city)
+    f = Follower(city, it)
+    evs = []
+    for k in range(1, 15):  # 1.3 m/s, south, away from the line
+        evs += f.update(Fix(sx[0], sy[0] - 10 * k, 5.0, 8.0 * k, 1.3))
+    types = [e.type for e in evs]
+    assert types.count("off_route") == 1 and "boarded" not in types
+    assert f.status()["off_route"]
+
+
+def test_a_crawling_bus_is_boarding_not_off_route(city):
+    it, sx, sy = _ride_first(city)
+    f = Follower(city, it)
+    evs = f.update(Fix(sx[0], sy[0], 5.0, 0.0, 0.0))
+    evs += f.update(Fix(sx[0] + 50, sy[0], 5.0, 10.0, 5.0))  # pulled away at 5 m/s
+    for k in range(1, 6):  # then a jam: 1 m/s along the line
+        evs += f.update(Fix(sx[0] + 50 + 10 * k, sy[0], 5.0, 10.0 + 10 * k, 1.0))
+    types = [e.type for e in evs]
+    assert "boarded" in types and "off_route" not in types

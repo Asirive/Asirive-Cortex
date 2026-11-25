@@ -8,7 +8,8 @@ Walking legs: the position is projected onto the leg's path; each step is announ
 when reached. Off route: farther than max(OFF_MIN_M, 1.5 x accuracy) for OFF_FIXES fixes in a row (one wild fix
 is not a detour); back on route after ON_FIXES good fixes. Fixes worse than BAD_ACC_M are ignored for decisions.
 Bus/MRT legs: BUS_WATCH once within BOARD_M of the boarding stop; on board once moving faster than a walk away
-from it; then the next stop, "alight at the next stop", and "get off now". Arrived within ARRIVE_M of the end.
+from it (walking LEFT_STOP_M away instead, OFF_FIXES times, is off route); then the next stop, "alight at the
+next stop", and "get off now". Arrived within ARRIVE_M of the end.
 """
 from __future__ import annotations
 
@@ -30,6 +31,7 @@ BOARD_M = 40.0
 ALIGHT_NOW_M = 120.0  # a bus covers this in ~15 s: time to stand and press the bell
 ARRIVE_M = 15.0
 RIDING_MPS = 3.0
+LEFT_STOP_M = 100.0  # before boarding: this far from the stop at a walk, OFF_FIXES times = gone elsewhere
 
 
 @dataclass
@@ -214,6 +216,14 @@ class Follower:
                 self._said.add(("watch", self.leg))
                 ev.append(Event("at_stop", f"You are at {l.from_name}. Wait here for {l.mode} {l.service}.",
                                 {"stop": l.board_stop, "service": l.service}))
+            if speed < RIDING_MPS and d0 > max(LEFT_STOP_M, 1.5 * f.acc_m):
+                self._bad += 1
+                if self._bad >= OFF_FIXES and not self.off:
+                    self.off = True
+                    ev.append(Event("off_route", f"You have left {l.from_name}. Finding the way again.",
+                                    {"dist_m": d0}))
+                return ev
+            self._bad = 0
             if speed >= RIDING_MPS and d0 > BOARD_M:
                 self._said.add(("boarded", self.leg))
                 ev.append(Event("boarded", f"On {l.mode} {l.service}. {len(l.stops) - 1} stops to {l.to_name}.",
