@@ -161,3 +161,56 @@ def test_describe_distance():
     assert describe_distance(42) == "in 40 metres"
     assert describe_distance(240) == "in 240 metres"
     assert describe_distance(1500) == "in 1.5 kilometres"
+
+
+def test_nearest_many_matches_nearest(city):
+    w = Walker(city)
+    rng = np.random.default_rng(1)
+    x0, y0 = C.xy(-3, -3)
+    qx = x0 + rng.uniform(0, 1300, 400)
+    qy = y0 + rng.uniform(0, 1300, 400)
+    many = w.nearest_many(qx, qy, 120.0)
+    one = [w.nearest(float(a), float(b), 120.0) for a, b in zip(qx, qy)]
+    d_many = [np.hypot(w.x[i] - a, w.y[i] - b) if i >= 0 else -1 for i, a, b in zip(many, qx, qy)]
+    d_one = [np.hypot(w.x[i] - a, w.y[i] - b) if i >= 0 else -1 for i, a, b in zip(one, qx, qy)]
+    assert np.allclose(d_many, d_one)  # same distance (ties may pick another node)
+    assert (many == -1).sum() > 0  # points far outside the grid
+
+
+def test_area_place_uses_its_entrance(tmp_path):
+    """A mall whose middle is nearest a footway across the road gets the node by its entrance instead."""
+    from cortex_core.nav import build, geo
+    lat, lon = [], []
+    for r, c in [(0, 0), (0, 4), (6, 0), (6, 4)]:  # two separate east-west paths 300 m apart, no link between
+        a, o = C.latlon(r, c)
+        lat.append(a), lon.append(o)
+    ways = [(0, 1, 0, "South Path"), (2, 3, 0, "North Path")]
+    mid = C.latlon(2.5, 2)  # the centroid is nearer the south path...
+    ent = C.latlon(5.6, 2)  # ...but the entrance opens onto the north path
+    places = [{"name": "Test Mall", "kind": "mall", "lat": mid[0], "lon": mid[1], "access": [ent]},
+              {"name": "Kiosk", "kind": "shop", "lat": mid[0], "lon": mid[1]}]
+    arr = build.assemble(lat, lon, ways, [], [], places, log=lambda *_: None)
+    b = B.Bundle(B.write(tmp_path, "v", arr, {}))
+    assert set(b.place_nodes(0)) <= {2, 3}  # the ways in are on the north path, not the nearer south one
+    assert b.place_nodes(1) == [int(b.place_node[1])] and int(b.place_node[1]) in (0, 1)  # a point place
+    w = Walker(b)
+    p = w.route(2, b.place_nodes(0))
+    assert p is not None and p.nodes[-1] in (2, 3)
+
+
+def test_route_to_the_quickest_of_several(city):
+    w = Walker(city)
+    p = w.route(C.node(0, 0), [C.node(0, 10), C.node(3, 0), C.node(20, 20)])
+    assert p.nodes[-1] == C.node(3, 0) and p.length_m == pytest.approx(150, rel=0.01)
+    r = w.reach([C.node(0, 0), C.node(20, 20)], 60)
+    assert r[C.node(0, 1)] == pytest.approx(50, rel=0.01) and r[C.node(19, 20)] == pytest.approx(50, rel=0.01)
+
+
+def test_kind_bonus_station_over_clinic(tmp_path):
+    from cortex_core.nav import build
+    a, o = C.latlon(0, 0)
+    stops = [{"code": 0, "name": "Khatib", "lat": a, "lon": o, "kind": B.K_MRT}]
+    places = [{"name": "Khatib Polyclinic", "kind": "clinic", "lat": a, "lon": o}]
+    arr = build.assemble([a, a + 0.001], [o, o], [(0, 1, 0, "")], stops, [], places, log=lambda *_: None)
+    b = B.Bundle(B.write(tmp_path, "v", arr, {}))
+    assert Places(b).search("khatib")[0].kind == "mrt_station"

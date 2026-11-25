@@ -61,11 +61,11 @@ class Itinerary:
                 if l.minutes >= 0.5:
                     parts.append(f"walk {max(1, round(l.minutes))} min")
             elif l.mode == "bus":
-                parts.append(f"bus {l.service} for {len(l.stops) - 1} stops")
+                parts.append(f"bus {l.service} for {_n(len(l.stops) - 1, 'stop')}")
             else:
-                parts.append(f"{l.mode} {l.service} for {len(l.stops) - 1} stops")
+                parts.append(f"{l.mode} {l.service} for {_n(len(l.stops) - 1, 'stop')}")
         s = ", then ".join(parts) if parts else "you are there"
-        return f"{s[0].upper()}{s[1:]}. About {round(self.minutes)} minutes."
+        return f"{s[0].upper()}{s[1:]}. About {_n(max(1, round(self.minutes)), 'minute')}."
 
 
 class Planner:
@@ -94,8 +94,8 @@ class Planner:
                     out[s] = d
         return out
 
-    def plan(self, src_node: int, dst_node: int, hour: float = 9.0, n: int = 3) -> list[Itinerary]:
-        """Best itineraries, the chosen one first. Includes walking only when that is about as quick."""
+    def plan(self, src_node: int, dst_node, hour: float = 9.0, n: int = 3) -> list[Itinerary]:
+        """Best itineraries, the chosen one first. dst_node: a node or several (a place's ways in)."""
         b = self.b
         band = B.band_of(hour)
         walk_only = self.w.route(src_node, dst_node, max_cost=4000.0)
@@ -217,7 +217,12 @@ class Planner:
         legs = [l for l in legs if not (l.mode == "walk" and l.meters < 1 and l.path is not None and len(l.path.nodes) <= 1)] or legs
         return Itinerary(legs, sum(l.minutes for l in legs), rides)
 
-    def _walk_leg(self, a: int, z: int, metres: float, to_name: str) -> Leg:
-        p = self.w.route(a, z, max_cost=3000.0) if a >= 0 and z >= 0 else None
+    def _walk_leg(self, a: int, z, metres: float, to_name: str) -> Leg:
+        ok = a >= 0 and (z >= 0 if np.isscalar(z) else len(z) > 0)
+        p = self.w.route(a, z, max_cost=3000.0) if ok else None
         m = p.length_m if p is not None else metres
         return Leg("walk", m / WALK_MPS / 60, meters=m, to_name=to_name, path=p)
+
+
+def _n(k: int, word: str) -> str:
+    return f"{k} {word}" if k == 1 else f"{k} {word}s"

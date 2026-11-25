@@ -65,3 +65,44 @@ def test_space_while_talking_cuts_the_answer(tmp_path):
         asyncio.run(go())
     finally:
         session.close()
+
+
+def test_trip_panel_shows_mode_tools_and_gps(tmp_path):
+    from cortex_core.tui.live_app import trip
+    from cortex_core.tui.live_state import LiveState
+    s = LiveState()
+    assert "no agent harness" in str(trip(s))
+    s.brain("state", {"line": "mode=OUTDOOR_NAV; trip: walk to Yishun MRT Station"})
+    s.brain("tool_run", {"name": "plan_trip", "args": {"place_id": "p12"}, "result": {"minutes": 9}, "say": None,
+                         "ms": 61.0, "checking": False, "error": None})
+    s.brain("nav", {"type": "step", "text": "Turn left onto Yishun Avenue 2."})
+    s.brain("gps", {"lat": 1.42951, "lon": 103.83512, "acc_m": 6.0, "t": 100.0})
+    out = str(trip(s, now=103.0))
+    assert "OUTDOOR_NAV" in out and "walk to Yishun" in out
+    assert "plan_trip(place_id='p12') -> {\"minutes\":9}  61 ms" in out
+    assert "Turn left onto Yishun Avenue 2." in out and "±6 m  3 s ago" in out
+
+
+def test_brain_session_on_screen(tmp_path):
+    from cortex_core.brain.brain import Brain
+    from tests.test_live_session import BrainEngine, FakeNav, call
+    eng = BrainEngine(call("nearby_bus_stops"))
+    session = LiveSession(eng, brain=Brain(eng, FakeNav())).start()
+
+    async def go():
+        app = LiveTUI(session, Collector(tmp_path, tmp_path, tmp_path, tmp_path))
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.press("slash")
+            await pilot.press(*"bus stop", "enter")
+            for _ in range(30):
+                await pilot.pause(0.1)
+                if "nearby_bus_stops" in str(app.query_one("#trip", Static).render()):
+                    break
+            assert "IDLE" in str(app.query_one("#trip", Static).render())
+            assert "nearby_bus_stops()" in str(app.query_one("#trip", Static).render())
+            assert "80 metres" in str(app.query_one("#conv", Static).render())
+
+    try:
+        asyncio.run(go())
+    finally:
+        session.close()

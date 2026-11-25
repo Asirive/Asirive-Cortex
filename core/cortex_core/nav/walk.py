@@ -6,6 +6,7 @@ add 25 m, signalled crossings 10 m, walking on a road without a footway 1.3x, co
 from __future__ import annotations
 
 import heapq
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -95,23 +96,80 @@ class Walker:
                     best, bd = int(ids[j]), float(d[j])
         return best
 
+    def nearest_many(self, qx, qy, max_m: float = 300.0, cell: float = 50.0) -> np.ndarray:
+        """nearest() for many points at once (vectorised; the bundle builder places 100k+ addresses with it)."""
+        qx = np.asarray(qx, np.float64)
+        qy = np.asarray(qy, np.float64)
+        ok = self.off[1:] > self.off[:-1]
+        ids = np.nonzero(ok)[0]
+        gx = np.floor(self.x[ids] / cell).astype(np.int64)
+        gy = np.floor(self.y[ids] / cell).astype(np.int64)
+        key = gx * 4_000_037 + gy
+        order = np.argsort(key, kind="stable")
+        keys, ids = key[order], ids[order]
+        cx = np.floor(qx / cell).astype(np.int64)
+        cy = np.floor(qy / cell).astype(np.int64)
+        best = np.full(len(qx), -1, np.int64)
+        bd = np.full(len(qx), np.inf)
+        stop_after = np.full(len(qx), 1 << 30)  # ring index after which a query is settled
+        R = int(np.ceil(max_m / cell)) + 1
+        for r in range(R + 1):
+            live = np.nonzero(stop_after >= r)[0]
+            if len(live) == 0:
+                break
+            ring = [(dx, dy) for dx in range(-r, r + 1) for dy in range(-r, r + 1) if max(abs(dx), abs(dy)) == r]
+            for dx, dy in ring:
+                k = (cx[live] + dx) * 4_000_037 + (cy[live] + dy)
+                lo = np.searchsorted(keys, k)
+                hi = np.searchsorted(keys, k, side="right")
+                n = hi - lo
+                j = 0
+                while True:
+                    sel = np.nonzero(n > j)[0]
+                    if len(sel) == 0:
+                        break
+                    q = live[sel]
+                    c = ids[lo[sel] + j]
+                    d = np.hypot(self.x[c] - qx[q], self.y[c] - qy[q])
+                    better = d < bd[q]
+                    bd[q[better]] = d[better]
+                    best[q[better]] = c[better]
+                    j += 1
+            found = live[np.isfinite(bd[live]) & (stop_after[live] == 1 << 30)]
+            stop_after[found] = r + 1  # a point in the next ring can still be nearer (cell corners)
+        best[bd > max_m] = -1
+        return best
+
     # ---- routing
-    def route(self, src: int, dst: int, max_cost: float = 30000.0) -> WalkPath | None:
-        """A* by cost (heuristic: straight-line metres, admissible since every factor >= 0.95)."""
-        if src == dst:
+    def route(self, src: int, dst, max_cost: float = 30000.0) -> WalkPath | None:
+        """A* by cost to dst (a node, or several: the path ends at the cheapest). Heuristic: straight-line metres to
+        the nearest target x 0.95, admissible since every cost factor is >= 0.95."""
+        targets = {int(dst)} if np.isscalar(dst) else {int(d) for d in dst}
+        if not targets:
+            return None
+        if src in targets:
             return self._path([src], 0.0)
         x, y, off, to, cost = self.x, self.y, self.off, self.to, self.cost
-        tx, ty = x[dst], y[dst]
+        tl = sorted(targets)
+        tx, ty = x[tl], y[tl]
+        one = len(tl) == 1
+        t0x, t0y = float(tx[0]), float(ty[0])
+
+        def h(v):
+            if one:
+                return 0.95 * math.hypot(x[v] - t0x, y[v] - t0y)
+            return 0.95 * float(np.min(np.hypot(tx - x[v], ty - y[v])))
         g = {src: 0.0}
         prev = {src: -1}
-        h0 = 0.95 * float(np.hypot(x[src] - tx, y[src] - ty))
-        pq = [(h0, 0.0, src)]
+        pq = [(h(src), 0.0, src)]
         done = set()
+        end = -1
         while pq:
             f, gc, u = heapq.heappop(pq)
             if u in done:
                 continue
-            if u == dst:
+            if u in targets:
+                end = u
                 break
             done.add(u)
             if gc > max_cost:
@@ -122,19 +180,21 @@ class Walker:
                 if ng < g.get(v, np.inf):
                     g[v] = ng
                     prev[v] = u
-                    heapq.heappush(pq, (ng + 0.95 * float(np.hypot(x[v] - tx, y[v] - ty)), ng, v))
-        if dst not in prev:
+                    heapq.heappush(pq, (ng + h(v), ng, v))
+        if end < 0:
             return None
+        dst = end
         nodes = [dst]
         while prev[nodes[-1]] != -1:
             nodes.append(prev[nodes[-1]])
         nodes.reverse()
         return self._path(nodes, g[dst])
 
-    def reach(self, src: int, max_m: float) -> dict[int, float]:
-        """Walking metres (by cost, but bounded by length) from src to every node within max_m."""
-        dist = {src: 0.0}
-        pq = [(0.0, src)]
+    def reach(self, src, max_m: float) -> dict[int, float]:
+        """Walking cost-metres from src (a node, or several) to every node within max_m."""
+        srcs = [int(src)] if np.isscalar(src) else [int(v) for v in src]
+        dist = {v: 0.0 for v in srcs}
+        pq = [(0.0, v) for v in srcs]
         off, to, cost = self.off, self.to, self.cost
         while pq:
             d, u = heapq.heappop(pq)

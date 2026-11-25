@@ -1,5 +1,7 @@
 """python -m cortex_core.tui [--state-dir DIR]                       (needs CORTEX_DEV_BUILD=1)
 python -m cortex_core.tui --live [--camera DEV] [--mic DEV] ...       talk to Cortex with the real camera and mic
+python -m cortex_core.tui --live --nav ...                            ... through the agent harness (tools, modes,
+                                                                      navigation; GPS from the link's socket)
 
 --live opens the engine (libcortex_engine.so) in this process: run it through core/scripts/engine/live_tui.sh on the
 box, which sets the QNN library paths."""
@@ -30,6 +32,19 @@ def native_output_to(path: Path) -> None:
     sys.stderr = sys.__stderr__ = os.fdopen(tty_err, "w", buffering=1)
 
 
+def make_brain(eng, a: argparse.Namespace):
+    """The agent harness over the engine: the newest nav bundle, the box's saved places, the tools contract."""
+    from cortex_core.brain import tools as T
+    from cortex_core.brain.brain import Brain
+    from cortex_core.nav import bundle as B
+    from cortex_core.nav.service import NavService
+
+    b = B.Bundle(B.latest(a.nav_bundles))
+    nav = NavService(b, saved=a.saved_places)
+    reg = T.load(a.tools) if a.tools else T.load()
+    return Brain(eng, nav, reg)
+
+
 def live(a: argparse.Namespace) -> int:
     from cortex_core.engine import capture
     from cortex_core.engine.native import Engine
@@ -45,10 +60,15 @@ def live(a: argparse.Namespace) -> int:
     config = json.loads(Path(a.engine_config).read_text())
     eng = Engine(a.lib, config)
     cam = mic = None
-    session = None
+    session = listener = None
     try:
         cam = capture.Camera(cam_dev) if cam_dev else None
-        session = LiveSession(eng, cam, refresh_s=a.refresh_s, max_tokens=a.max_tokens)
+        brain = make_brain(eng, a) if a.nav else None
+        session = LiveSession(eng, cam, refresh_s=a.refresh_s, max_tokens=a.max_tokens, brain=brain)
+        if brain is not None:
+            from cortex_core.link import gps
+            listener = gps.GpsListener(a.gps_sock, session.on_fix).start()  # fixes forwarded by the link service
+            session.note(f"agent harness on · nav bundle {brain.nav.b.path.name} · GPS from {a.gps_sock}")
         if mic_dev:
             mic = capture.Mic(mic_dev, session.on_mic)
         else:
@@ -61,6 +81,8 @@ def live(a: argparse.Namespace) -> int:
         for p in (mic, cam):
             if p is not None:
                 p.close()
+        if listener is not None:
+            listener.stop()
         if session is not None:
             session.close()
         eng.close()
@@ -82,6 +104,11 @@ def main(argv: Optional[list[str]] = None, env: Mapping[str, str] = os.environ) 
     p.add_argument("--max-tokens", type=int, default=0, help="0: the engine's limit")
     p.add_argument("--native-log", type=Path, default=Path("/var/lib/cortex/bench/engine/live_native.log"),
                    help="where llama.cpp / QNN messages go in --live")
+    p.add_argument("--nav", action="store_true", help="host the agent harness: tools, modes, navigation, GPS")
+    p.add_argument("--nav-bundles", default="/var/lib/cortex/nav/bundles", help="newest bundle here is used")
+    p.add_argument("--saved-places", default="/var/lib/cortex/nav/saved_places.json")
+    p.add_argument("--tools", default="", help="tools.json (default: the contract the package finds)")
+    p.add_argument("--gps-sock", default="/run/cortex/gps.sock")
     a = p.parse_args(argv)
     if a.live:
         return live(a)

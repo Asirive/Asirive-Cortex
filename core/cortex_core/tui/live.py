@@ -5,6 +5,10 @@
     voice thread   speech_start / speech_end / spoken answer / sound_start / sound_end events -> state
     ask            a typed question runs on its own thread
 
+With a brain (cortex_core.brain.Brain) the session hosts the agent harness: typed questions and spoken tool calls
+go through the brain's dispatcher, on_fix() feeds GPS to it, and the camera follows the mode's cadence
+(brain.vision_s; None = one view when the user starts talking or types).
+
 The engine is duck-typed (cortex_core.engine.native.Engine), so tests run with a fake."""
 from __future__ import annotations
 
@@ -17,11 +21,16 @@ from cortex_core.tui.live_state import LiveState
 
 
 class LiveSession:
-    def __init__(self, engine, camera=None, refresh_s: float = 1.0, max_tokens: int = 0):
+    def __init__(self, engine, camera=None, refresh_s: float = 1.0, max_tokens: int = 0, brain=None):
         self.eng, self.camera, self.refresh_s, self.max_tokens = engine, camera, refresh_s, max_tokens
+        self.brain = brain
         self.state = LiveState()
         self.lock = threading.Lock()
         self.stop = threading.Event()
+        self.want_view = threading.Event()  # "on talk" modes: one view for the question being asked
+        if brain is not None:
+            brain.on_event = self._brain_event
+            self.state.mode = brain.mode
         self._threads = [threading.Thread(target=self._voice_loop, name="voice", daemon=True)]
         if camera is not None:
             self._threads.append(threading.Thread(target=self._vision_loop, name="vision", daemon=True))
@@ -34,6 +43,20 @@ class LiveSession:
     def _apply(self, ev: dict) -> None:
         with self.lock:
             self.state.apply(ev)
+
+    def _brain_event(self, kind: str, data: dict) -> None:
+        with self.lock:
+            if kind in ("token", "done"):
+                self.state.apply(data)
+            else:
+                self.state.brain(kind, data)
+
+    def on_fix(self, fix: dict) -> None:
+        """A GPS fix (gps.parse_fix'd) from the link: to the brain, and the panel."""
+        with self.lock:
+            self.state.brain("gps", fix)
+        if self.brain is not None:
+            self.brain.on_fix(fix["lat"], fix["lon"], fix["acc_m"], fix.get("t"), fix.get("speed"))
 
     def note(self, line: str) -> None:
         with self.lock:
@@ -86,9 +109,25 @@ class LiveSession:
                 return
             self.state.asking = True
             self.state.typed(question)
+        self.want_view.set()
         threading.Thread(target=self._ask, args=(question,), name="ask", daemon=True).start()
 
     def _ask(self, question: str) -> None:
+        if self.brain is not None:
+            try:
+                t = self.brain.ask(question, self.max_tokens)
+                if t.said:  # a fixed sentence ended the turn: show it as the answer
+                    with self.lock:
+                        a = self.state._answer()
+                        a.text, a.done = t.said, True
+            except queue.Empty:
+                self.note("ask: no answer (timeout)")
+            except Exception as e:  # noqa: BLE001 - keep the screen alive
+                self.note(f"ask: {type(e).__name__}: {e}")
+            finally:
+                with self.lock:
+                    self.state.asking = False
+            return
         try:
             for ev in self.eng.ask(question, self.max_tokens):
                 if ev.get("type") == "error" and ev.get("what") == "busy":
@@ -112,14 +151,37 @@ class LiveSession:
                 ev = self.eng.next_voice(timeout=0.2)
             except queue.Empty:
                 continue
+            if ev.get("type") == "speech_start":
+                self.want_view.set()
             self._apply(ev)
+            if self.brain is not None:
+                try:
+                    t = self.brain.voice_event(ev)
+                except Exception as e:  # noqa: BLE001
+                    self.note(f"brain: {type(e).__name__}: {e}")
+                    continue
+                if t is not None and t.said:
+                    with self.lock:
+                        a = self.state._answer()
+                        a.text, a.done = t.said, True
+
+    def _interval(self) -> float | None:
+        return self.refresh_s if self.brain is None else self.brain.vision_s
 
     def _vision_loop(self) -> None:
         last_id: Optional[int] = None
         while not self.stop.is_set():
             t0 = time.monotonic()
+            every = self._interval()
+            if every is None:  # this mode looks only when the user talks
+                if not self.want_view.wait(0.1):
+                    continue
+                self.want_view.clear()
+                last_id = None  # the newest frame even if it was seen before
             f = self.camera.latest()
             if f is None or f[0] == last_id:
+                if every is None:
+                    self.want_view.set()  # no frame yet: keep the request
                 self.stop.wait(0.05)
                 continue
             last_id, rgb = f
@@ -137,7 +199,7 @@ class LiveSession:
                 self.stop.wait(1.0)
                 continue
             self._apply(ev)
-            self.stop.wait(max(0.0, self.refresh_s - (time.monotonic() - t0)))
+            self.stop.wait(max(0.0, (every or 0.0) - (time.monotonic() - t0)))
 
     def close(self) -> None:
         self.stop.set()

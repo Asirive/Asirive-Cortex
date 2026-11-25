@@ -35,6 +35,12 @@ class LiveState:
     log: deque = field(default_factory=lambda: deque(maxlen=200))
     mic_dbfs: Optional[float] = None
     camera_frames: int = 0
+    # the agent harness (brain), when it hosts the turns
+    mode: str = ""
+    nav_line: str = ""
+    tools: deque = field(default_factory=lambda: deque(maxlen=6))  # "name(args) -> result  12 ms"
+    cue: str = ""
+    gps: dict = field(default_factory=dict)  # last fix: lat, lon, acc_m, age reference t
 
     def _add(self, t: Turn) -> Turn:
         self.turns.append(t)
@@ -97,3 +103,37 @@ class LiveState:
                              **{k: ev[k] for k in ("prep_ms", "encode_ms", "read_ms") if k in ev}}
         elif t == "error":
             self.log.append(f"error: {ev.get('what', '?')}")
+
+    def brain(self, kind: str, data: dict) -> None:
+        """Events from Brain.on_event (tokens and done go through apply)."""
+        if kind == "mode":
+            self.mode = data.get("to", "")
+            self.log.append(f"mode {data.get('from')} -> {data.get('to')}")
+        elif kind == "state":
+            line = data.get("line", "")
+            self.nav_line = line
+            m = re.search(r"mode=(\w+)", line)
+            if m:
+                self.mode = m.group(1)
+        elif kind == "tool_run":
+            args = ", ".join(f"{k}={v!r}" for k, v in (data.get("args") or {}).items())
+            res = data.get("error") or data.get("say") or _short(data.get("result"))
+            flag = " (checking)" if data.get("checking") else ""
+            self.tools.append(f"{data.get('name')}({args}) -> {res}  {data.get('ms', 0):.0f} ms{flag}")
+        elif kind == "nav":
+            self.cue = data.get("text", "")
+            self.log.append(f"nav {data.get('type')}: {self.cue}")
+        elif kind == "said":
+            self.log.append(f"said: {data.get('text')}")
+        elif kind == "camera":
+            self.log.append("camera " + ("on" if data.get("on") else "off"))
+        elif kind == "gps":
+            self.gps = dict(data)
+        elif kind == "error":
+            self.log.append(f"error: {data.get('what', '?')}")
+
+
+def _short(v, n: int = 60) -> str:
+    import json
+    s = json.dumps(v, ensure_ascii=False, separators=(",", ":")) if not isinstance(v, str) else v
+    return s if len(s) <= n else s[: n - 1] + "…"

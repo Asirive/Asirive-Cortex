@@ -10,7 +10,7 @@ import signal
 from pathlib import Path
 
 from cortex_core.contracts.gen.cortex.v1 import session_pb2
-from cortex_core.link import identity, provision
+from cortex_core.link import gps, identity, provision
 from cortex_core.link.cmdverify import CommandVerifier
 from cortex_core.link.owner_control import OwnerControl
 from cortex_core.link.phone_link import FileControls, PhoneLink, RuntimeHooks
@@ -18,11 +18,23 @@ from cortex_core.link.session import DeviceInfo, GatewayClient, Handlers
 
 log = logging.getLogger("cortex.link")
 STATE_DIR = os.environ.get("CORTEX_STATE_DIR", "/var/lib/cortex/identity")
+NAV_STATE = os.environ.get("CORTEX_NAV_STATE", "/var/lib/cortex/nav")  # dev GPS recordings (never leave the box)
 
 
 def telemetry() -> session_pb2.Heartbeat:
     # TODO(core): fill from the safety/supervisor status files once those publish them.
     return session_pb2.Heartbeat(safety=session_pb2.SafetyState.SAFETY_STATE_DEGRADED)
+
+
+def location_sink(fwd: "gps.GpsForwarder", rec: "gps.GpsRecorder"):
+    """The phone's fixes: on to the brain (dropped if it isn't listening), and to disk on dev builds only."""
+    def on_location(fix: dict) -> None:
+        fwd.send(fix)
+        try:
+            rec.write(fix)
+        except OSError as e:
+            log.warning("gps recording failed: %s", e)
+    return on_location
 
 
 async def serve(hb: Path, stop: asyncio.Event) -> None:
@@ -34,6 +46,8 @@ async def serve(hb: Path, stop: asyncio.Event) -> None:
     beater = asyncio.create_task(beat())
     phone = PhoneLink(STATE_DIR, None, RuntimeHooks(STATE_DIR), os.environ.get("CORTEX_GATEWAY_WS", ""))  # type: ignore[arg-type]
     phone.control = OwnerControl(FileControls(), phone.paired)
+    phone.on_location = location_sink(gps.GpsForwarder(os.environ.get("CORTEX_GPS_SOCK", gps.SOCK)),
+                                      gps.GpsRecorder(NAV_STATE))
     phone_task = asyncio.create_task(phone.serve(stop=stop))  # answers the app even while unpaired
     phone_task.add_done_callback(lambda t: t.cancelled() or t.exception() is None or log.error("phone link stopped: %r", t.exception()))
     client = None

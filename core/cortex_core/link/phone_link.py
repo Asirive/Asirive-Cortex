@@ -28,7 +28,7 @@ from typing import Any, Callable, Optional, Protocol
 import websockets
 
 from cortex_core.contracts import local_pb2 as lp
-from cortex_core.link import identity, provision
+from cortex_core.link import gps, identity, provision
 from cortex_core.link.owner_control import OwnerControl
 
 log = logging.getLogger("cortex.phonelink")
@@ -60,6 +60,7 @@ class PhoneLink:
         self.dir, self.control, self.hooks, self.default_ws_url = state_dir, control, hooks, default_ws_url
         self._secret_path = os.path.join(state_dir, "link.secret")
         self._lock = threading.Lock()  # one provision at a time
+        self.on_location: Optional[Callable[[dict], None]] = None  # the phone's GPS (gps.parse_fix'd), signed op only
 
     # ---- state ----
     def _secret(self) -> Optional[bytes]:
@@ -180,6 +181,15 @@ class PhoneLink:
             if kind not in ("sound", "vibrate", "voice"):
                 return {"ok": False, "error": "unknown test"}
             return {"ok": self.hooks.play_test(kind)}
+        if op == "location":
+            if self.on_location is None:
+                return {"ok": False, "error": "location not wanted"}
+            try:
+                fix = gps.parse_fix(a)
+            except gps.FixError as e:
+                return {"ok": False, "error": f"bad fix: {e}"}
+            self.on_location(fix)
+            return {"ok": True}
         if op == "install":
             m = a.get("manifest")
             return {"ok": isinstance(m, dict) and self.hooks.install_update(m)}

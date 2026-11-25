@@ -21,6 +21,9 @@ ALIASES = {
     "northpoint": "northpoint city", "causeway": "causeway point", "tamp": "tampines", "cck": "choa chu kang",
     "bp": "bukit panjang", "pasir ris": "pasir ris", "sengkang": "sengkang", "the": "",
 }
+# a station or a landmark is what people mean far more often than a shop unit or a bus stop of the same name
+KIND_BONUS = {"mrt_station": 0.08, "lrt_station": 0.06, "mall": 0.04, "hospital": 0.04, "bus_interchange": 0.03,
+              "address": -0.05, "bus_stop": -0.02}
 _WORD = re.compile(r"[a-z0-9]+")
 _POSTAL = re.compile(r"^\d{6}$")
 
@@ -86,6 +89,7 @@ class Places:
     def __init__(self, b):
         self.b = b
         self._names: list[str] | None = None
+        self._kind: list[str] | None = None
 
     def name(self, i: int) -> str:
         return self.b.s(int(self.b.place_name[i]))
@@ -94,6 +98,20 @@ class Places:
         if self._names is None:  # built on the first search, kept (normalized names of every place)
             self._names = [normalize(self.name(i)) for i in range(self.b.n_places)]
         return self._names
+
+    def warm(self) -> "Places":
+        """Build the name and kind lists now (about 0.3 s on the server for 99k places) so the first search is fast;
+        call it on a thread at startup."""
+        self._norm_names()
+        self._kinds()
+        return self
+
+    def _kinds(self) -> list[str]:
+        if self._kind is None:
+            ks = {int(k) for k in np.unique(self.b.place_kind)}
+            names = {k: self.b.s(k) for k in ks}
+            self._kind = [names[int(k)] for k in self.b.place_kind]
+        return self._kind
 
     def _candidates(self, q: str) -> np.ndarray:
         keys = self.b.tri_key
@@ -124,6 +142,7 @@ class Places:
         if len(ids) == 0:
             return []
         names = self._norm_names()
+        kinds = self._kinds()
         scores = []
         for i, sh in zip(ids, share):
             n = names[int(i)]
@@ -138,6 +157,7 @@ class Places:
             qw = q.split()
             s += 0.2 * sum(w in n.split() for w in qw) / len(qw)
             s -= 0.01 * max(0, len(n) - len(q)) / 10  # prefer the tighter name
+            s += KIND_BONUS.get(kinds[int(i)], 0.0)
             scores.append(s)
         scores = np.array(scores)
         if x is not None:

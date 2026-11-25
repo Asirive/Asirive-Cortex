@@ -117,3 +117,137 @@ def test_typed_ask_runs_off_thread_and_refuses_overlap():
         assert "busy" in s.state.log[-1]
     finally:
         s.close()
+
+
+# ---------------------------------------------------------------- the session hosting the brain (agent harness)
+from cortex_core.brain.brain import Brain  # noqa: E402
+from cortex_core.nav.service import Result  # noqa: E402
+
+CALL = "<tool_call>\n<function={}>\n{}</function>\n</tool_call>"
+
+
+def call(name, **a):
+    return CALL.format(name, "".join(f"<parameter={k}>\n{v}\n</parameter>\n" for k, v in a.items()))
+
+
+class BrainEngine(FakeEngine):
+    """ask -> a tool call; tool_result -> the LM's words (or the template sentence)."""
+
+    def __init__(self, first):
+        super().__init__()
+        self.first, self.results, self.said, self.states = first, [], [], []
+
+    def ask(self, text, max_tokens=0, timeout=60):
+        self.asks.append(text)
+        return iter([{"type": "tool_call", "text": self.first}, {"type": "done", "tool": True}])
+
+    def tool_result(self, result, say=None, timeout=60):
+        self.results.append((result, say))
+        if say:
+            return iter([{"type": "done", "said": True}])
+        return iter([{"type": "token", "text": "Stop 46971 is 80 metres away."}, {"type": "done", "stop": "eog"}])
+
+    def say(self, text, timeout=60):
+        self.said.append(text)
+        return iter([{"type": "done"}])
+
+    def set_state(self, text):
+        self.states.append(text)
+
+
+class FakeNav:
+    navigating = False
+
+    def __init__(self):
+        self.fixes = []
+
+    def mode_hint(self):
+        return None
+
+    def state_line(self):
+        return ""
+
+    def on_fix(self, lat, lon, acc_m, t=None, speed=None):
+        self.fixes.append((lat, lon, acc_m))
+        return []
+
+    def call(self, name, args):
+        if name == "gps_accuracy":
+            return Result({"acc_m": 6}, "GPS is good, about 6 metres.")
+        return Result({"stops": [{"code": "46971", "m": 80}]})
+
+
+def test_brain_typed_ask_runs_the_tool_and_shows_it():
+    eng = BrainEngine(call("nearby_bus_stops"))
+    s = LiveSession(eng, brain=Brain(eng, FakeNav())).start()
+    try:
+        s.ask("which bus stop is near me")
+        assert until(lambda: not s.state.asking)
+        assert s.state.turns[-1].text == "Stop 46971 is 80 metres away." and s.state.turns[-1].done
+        assert len(s.state.tools) == 1 and s.state.tools[0].startswith("nearby_bus_stops() -> ")
+        assert eng.results[0][1] is None  # an LM tool: the model says it
+        assert s.state.mode == "IDLE"
+    finally:
+        s.close()
+
+
+def test_brain_template_tool_answer_is_the_fixed_sentence():
+    eng = BrainEngine(call("gps_accuracy"))
+    s = LiveSession(eng, brain=Brain(eng, FakeNav())).start()
+    try:
+        s.ask("is my gps ok")
+        assert until(lambda: not s.state.asking)
+        assert eng.results[0][1] == "GPS is good, about 6 metres."
+        assert s.state.turns[-1].text == "GPS is good, about 6 metres."
+    finally:
+        s.close()
+
+
+def test_brain_voice_tool_call_is_dispatched():
+    eng = BrainEngine(call("nearby_bus_stops"))
+    s = LiveSession(eng, brain=Brain(eng, FakeNav())).start()
+    try:
+        eng.voice.put({"type": "speech_start", "at_ms": 0.0})
+        eng.voice.put({"type": "speech_end", "at_ms": 900.0, "speech_ms": 900.0})
+        eng.voice.put({"type": "tool_call", "text": call("nearby_bus_stops"), "voice": True})
+        eng.voice.put({"type": "done", "voice": True, "tool": True})
+        assert until(lambda: any(t.text == "Stop 46971 is 80 metres away." for t in s.state.turns))
+        assert len(eng.results) == 1 and len(s.state.tools) == 1
+    finally:
+        s.close()
+
+
+def test_brain_mode_and_gps_reach_the_panel():
+    eng = BrainEngine(call("set_mode", mode="EXPLORE"))
+    nav = FakeNav()
+    s = LiveSession(eng, brain=Brain(eng, nav)).start()
+    try:
+        s.ask("describe around me")
+        assert until(lambda: s.state.mode == "EXPLORE" and not s.state.asking)
+        assert eng.results[0][1].startswith("Exploring")
+        s.on_fix({"lat": 1.43, "lon": 103.83, "acc_m": 7.0, "t": 5.0, "speed": None})
+        assert nav.fixes == [(1.43, 103.83, 7.0)] and s.state.gps["acc_m"] == 7.0
+    finally:
+        s.close()
+
+
+def test_vision_follows_the_mode_idle_looks_only_on_talk():
+    eng, cam = BrainEngine(call("set_mode", mode="EXPLORE")), FakeCamera()
+    brain = Brain(eng, FakeNav())
+    s = LiveSession(eng, cam, brain=brain).start()
+    try:
+        time.sleep(0.3)
+        assert eng.pushed == []  # IDLE: no views by itself
+        eng.voice.put({"type": "speech_start", "at_ms": 0.0})
+        assert until(lambda: eng.pushed == [1])  # the user talks: one view of the newest frame
+        time.sleep(0.2)
+        assert eng.pushed == [1]
+        brain.camera_on = False
+        brain.modes.mode = "EXPLORE"
+        time.sleep(0.2)
+        assert eng.pushed == [1]  # camera off: none even in a looking mode
+        brain.camera_on = True
+        cam.f = (2, cam.f[1])
+        assert until(lambda: eng.pushed[-1] == 2)  # EXPLORE: views every second by itself
+    finally:
+        s.close()

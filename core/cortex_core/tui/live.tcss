@@ -12,16 +12,16 @@ Screen {
 }
 
 #panels {
-    grid-size: 2 3;
+    grid-size: 2 4;
     grid-columns: 3fr 2fr;
-    grid-rows: 1fr 1fr 1fr;
+    grid-rows: 1fr 1fr 1fr 1fr;
     grid-gutter: 0 1;
     padding: 0 1;
     height: 1fr;
 }
 
 #conv-box {
-    row-span: 3;
+    row-span: 4;
 }
 
 .panel {

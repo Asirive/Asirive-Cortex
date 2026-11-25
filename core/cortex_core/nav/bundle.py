@@ -38,6 +38,8 @@ Places:
     place_x, place_y      float32 [Q]
     place_node            int32 [Q]
     place_postal          int32 [Q]        6-digit postal code, 0 = none
+    pacc_off              int32 [Q+1]      walking nodes you can reach the place by (an area's entrances / edge):
+    pacc_node             int32            pacc_node[pacc_off[i]:pacc_off[i+1]]; routes end at the quickest one
     tri_key               int32 [T]        sorted trigram keys (see places.trigrams)
     tri_off               int32 [T+1]
     tri_ids               int32            place ids per trigram
@@ -63,7 +65,7 @@ REQUIRED = ("node_x", "node_y", "edge_off", "edge_to", "edge_len", "edge_flags",
             "stop_code", "stop_ref", "stop_name", "stop_x", "stop_y", "stop_node", "stop_kind",
             "pat_off", "pat_stop", "pat_dist", "pat_service", "pat_mode", "pat_headway", "pat_speed",
             "sp_off", "sp_pat", "sp_idx", "tr_off", "tr_to", "tr_len",
-            "place_name", "place_kind", "place_x", "place_y", "place_node", "place_postal",
+            "place_name", "place_kind", "place_x", "place_y", "place_node", "place_postal", "pacc_off", "pacc_node",
             "tri_key", "tri_off", "tri_ids", "str_blob", "str_off")
 
 
@@ -189,6 +191,13 @@ class Bundle:
 
     def pattern_dist(self, p: int) -> np.ndarray:
         return self._a["pat_dist"][self._a["pat_off"][p]:self._a["pat_off"][p + 1]]
+
+    def place_nodes(self, i: int) -> list[int]:
+        """Every walking node the place can be reached by (at least its own node)."""
+        a = self._a["pacc_node"][self._a["pacc_off"][i]:self._a["pacc_off"][i + 1]]
+        out = [int(n) for n in a if n >= 0]
+        n0 = int(self._a["place_node"][i])
+        return out or ([n0] if n0 >= 0 else [])
 
     def stop_label(self, s: int) -> str:
         name = self.s(int(self._a["stop_name"][s]))

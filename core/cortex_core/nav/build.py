@@ -8,7 +8,9 @@ ways:     [(u, v, flags, name)]  undirected footpath segments between node indic
 stops:    [{"code": 59009 | 0, "ref": "NS13" | "", "name", "lat", "lon", "kind": K_BUS|K_MRT|K_LRT}]
 patterns: [{"service": "858", "mode": K_BUS, "stops": [stop index...], "headway": [4 x minutes],
             "dist": [metres from first stop] (optional: straight-line sum), "speed": m/s (optional)}]
-places:   [{"name", "kind", "lat", "lon", "postal": int (optional)}]
+places:   [{"name", "kind", "lat", "lon", "postal": int (optional),
+            "access": [(lat, lon)...] (optional: entrances / outline of an area; the place's walking node is the
+            one nearest to any of them, not to the middle of the building)}]
 """
 from __future__ import annotations
 
@@ -52,7 +54,7 @@ def assemble(lat, lon, ways, stops, patterns, places, log=print) -> dict[str, np
     wk = Walker(g)
 
     sx, sy = geo.to_xy(np.array([s["lat"] for s in stops], np.float64), np.array([s["lon"] for s in stops], np.float64))
-    stop_node = np.array([wk.nearest(float(x), float(y), 400.0) for x, y in zip(sx, sy)], np.int32)
+    stop_node = wk.nearest_many(sx, sy, 400.0).astype(np.int32)
     a.update({
         "stop_code": np.array([int(s.get("code") or 0) for s in stops], np.int32),
         "stop_ref": np.array([S.id(s.get("ref") or (f"{int(s['code']):05d}" if s.get("code") else "")) for s in stops], np.int32),
@@ -116,19 +118,41 @@ def assemble(lat, lon, ways, stops, patterns, places, log=print) -> dict[str, np
             nm_ = s["name"] + (f" bus stop {int(s['code']):05d}" if s.get("code") else " bus stop")
             kind = "bus_stop"
         else:
-            nm_ = s["name"] if "station" in s["name"].lower() else f"{s['name']} station"
+            word = "MRT" if s["kind"] == B.K_MRT else "LRT"
+            nm_ = s["name"] if "station" in s["name"].lower() else f"{s['name']} {word} Station"
             kind = "mrt_station" if s["kind"] == B.K_MRT else "lrt_station"
         x, y = geo.to_xy(s["lat"], s["lon"])
         names.append(nm_), kinds.append(kind), qx.append(float(x)), qy.append(float(y)), post.append(0)
     qx_, qy_ = np.array(qx), np.array(qy)
+    node0, a["pacc_off"], a["pacc_node"] = _place_nodes(wk, places, qx_, qy_)
     a.update({
         "place_name": np.array([S.id(x) for x in names], np.int32),
         "place_kind": np.array([S.id(k) for k in kinds], np.int32),
         "place_x": qx_.astype(np.float32), "place_y": qy_.astype(np.float32),
-        "place_node": np.array([wk.nearest(float(x), float(y), 500.0) for x, y in zip(qx_, qy_)], np.int32),
+        "place_node": node0,
         "place_postal": np.array(post, np.int32),
     })
     a.update(P.build_index(names))
     log(f"places: {len(names)}")
     a.update(S.pack())
     return a
+
+
+
+def _place_nodes(wk, places: list[dict], qx: np.ndarray, qy: np.ndarray):
+    """(node nearest each place's point, pacc_off, pacc_node): an area's access points snapped to the walking graph
+    (deduplicated, within 300 m); a point place has none (its own node is used)."""
+    node = wk.nearest_many(qx, qy, 500.0).astype(np.int32)
+    own, ax, ay = [], [], []
+    for i, p in enumerate(places):
+        for la, lo in p.get("access") or ():
+            x, y = geo.to_xy(la, lo)
+            own.append(i), ax.append(float(x)), ay.append(float(y))
+    nq = len(qx)
+    if not own:
+        return node, np.zeros(nq + 1, np.int32), np.zeros(0, np.int32)
+    nn = wk.nearest_many(np.array(ax), np.array(ay), 300.0)
+    pairs = sorted({(o, int(n)) for o, n in zip(own, nn) if n >= 0})
+    src = np.array([o for o, _ in pairs], np.int64)
+    off, acc = B.csr(nq, src, np.array([n for _, n in pairs], np.int32))
+    return node, off, acc

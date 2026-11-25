@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,6 +61,7 @@ class NavService:
         self.walker = Walker(b)
         self.planner = Planner(b, self.walker)
         self.places = Places(b)
+        threading.Thread(target=self.places.warm, name="places-warm", daemon=True).start()
         self.arrivals = arrivals
         self.clock = clock
         self.hour = hour or (lambda: (lambda t: t.tm_hour + t.tm_min / 60)(time.localtime(self.clock())))
@@ -168,7 +170,7 @@ class NavService:
         x, y = here if here else (None, None)
         for h in self.places.search(query, x, y, limit=3 - len(out) if out else 3):
             d = h.brief()
-            self.matches[d["place_id"]] = {"name": h.name, "x": h.x, "y": h.y}
+            self.matches[d["place_id"]] = {"name": h.name, "x": h.x, "y": h.y, "node": self.b.place_nodes(h.id)}
             out.append(d)
         if not out:
             return Result({"matches": [], "note": f"nothing called {query!r} in the map"})
@@ -185,9 +187,11 @@ class NavService:
         except ValueError:
             # the LM passed a name instead of an id: take the best match
             hits = self.places.search(pid, *(self._here() or (None, None)), limit=1)
-            return {"name": hits[0].name, "x": hits[0].x, "y": hits[0].y} if hits else None
+            return {"name": hits[0].name, "x": hits[0].x, "y": hits[0].y,
+                    "node": self.b.place_nodes(hits[0].id)} if hits else None
         if 0 <= i < self.b.n_places:
-            return {"name": self.places.name(i), "x": float(self.b.place_x[i]), "y": float(self.b.place_y[i])}
+            return {"name": self.places.name(i), "x": float(self.b.place_x[i]), "y": float(self.b.place_y[i]),
+                    "node": self.b.place_nodes(i)}
         return None
 
     def _plan_to(self, dest: dict) -> Itinerary | None:
@@ -195,8 +199,8 @@ class NavService:
         if here is None:
             return None
         a = self.walker.nearest(*here, max_m=300.0)
-        z = self.walker.nearest(dest["x"], dest["y"], max_m=500.0)
-        if a < 0 or z < 0:
+        z = self._dest_node(dest)
+        if a < 0 or (np.isscalar(z) and z < 0):
             return None
         its = self.planner.plan(a, z, hour=self.hour())
         return its[0] if its else None
@@ -212,8 +216,8 @@ class NavService:
             return _err("you are off the walking map here")
         t = time.perf_counter()
         a = self.walker.nearest(*here, max_m=300.0)
-        z = self.walker.nearest(dest["x"], dest["y"], max_m=500.0)
-        if z < 0:
+        z = self._dest_node(dest)
+        if np.isscalar(z) and z < 0:
             return _err(f"{dest['name']} is off the walking map")
         its = self.planner.plan(a, z, hour=self.hour())
         ms = (time.perf_counter() - t) * 1000
@@ -225,6 +229,11 @@ class NavService:
         if len(its) > 1:
             d["other"] = [i.summary() for i in its[1:]]
         return Result(d)
+
+    def _dest_node(self, dest: dict):
+        """The place's ways in (routes end at the quickest), else the node nearest to its point (-1: none)."""
+        nodes = dest.get("node") or []
+        return list(nodes) if nodes else self.walker.nearest(dest["x"], dest["y"], max_m=500.0)
 
     @staticmethod
     def _first_step(it: Itinerary) -> str:

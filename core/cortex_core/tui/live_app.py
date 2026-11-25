@@ -98,6 +98,30 @@ def timings(s: LiveState) -> Text:
     return t
 
 
+def trip(s: LiveState, now: float | None = None) -> Text:
+    """The agent harness: mode, what the trip says (the LM's state line), recent tool calls, last cue, GPS."""
+    import time as _t
+    t = Text()
+    if not s.mode:
+        return Text("no agent harness (start with --nav)", style="dim")
+    t.append(f" {s.mode} ", style=f"bold #0A0A08 on {YELLOW}")
+    t.append(NL)
+    if s.nav_line:
+        t.append(s.nav_line + NL, style="dim")
+    g = s.gps
+    if g:
+        age = (now if now is not None else _t.time()) - float(g.get("t") or 0)
+        t.append(f"GPS     {g['lat']:.5f}, {g['lon']:.5f}  ±{g['acc_m']:.0f} m  {age:.0f} s ago{NL}")
+    else:
+        t.append(f"GPS     no fix yet{NL}", style="dim")
+    if s.cue:
+        t.append("Cue     ", style="bold")
+        t.append(s.cue + NL)
+    for line in list(s.tools)[-4:]:
+        t.append("› " + line + NL, style="#7FD4FF")
+    return t
+
+
 class LiveTUI(App):
     CSS_PATH = "live.tcss"
     TITLE = "ASIRIVE CORTEX · LIVE · DEV"
@@ -115,7 +139,8 @@ class LiveTUI(App):
             conv.border_title = "CONVERSATION"
             with conv:
                 yield Static(id="conv")
-            for pid, title in (("status", "STATUS"), ("timings", "LAST ANSWER"), ("system", "SYSTEM")):
+            for pid, title in (("status", "STATUS"), ("trip", "MODE · TRIP · TOOLS"), ("timings", "LAST ANSWER"),
+                               ("system", "SYSTEM")):
                 box = VerticalScroll(id=pid + "-box", classes="panel")
                 box.border_title = title
                 with box:
@@ -136,13 +161,14 @@ class LiveTUI(App):
     def redraw(self) -> None:
         with self.session.lock:
             s = self.session.state
-            conv, st, tm = conversation(s), status(s), timings(s)
+            conv, st, tm, tr = conversation(s), status(s), timings(s), trip(s)
             new = list(s.log)
             s.log.clear()  # the screen's log owns them now
         self.query_one("#conv", Static).update(conv)
         self.query_one("#conv-box", VerticalScroll).scroll_end(animate=False)
         self.query_one("#status", Static).update(st)
         self.query_one("#timings", Static).update(tm)
+        self.query_one("#trip", Static).update(tr)
         log = self.query_one("#log", RichLog)
         for line in new:
             log.write(line)
