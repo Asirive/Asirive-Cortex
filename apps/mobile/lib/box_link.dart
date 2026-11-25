@@ -131,6 +131,20 @@ class BoxLink implements DeviceLink {
   @override
   Future<bool> playTest(String kind) => _simple('test', {'kind': kind});
 
+  /// Holds one connection and sends each fix [next] gives as a signed `location` op until it gives null
+  /// (true) or the link breaks (false). [sent] hears whether the box took each fix. For LocationStreamer.
+  Future<bool> locationSession(Future<Map<String, dynamic>?> Function() next, void Function(bool accepted) sent) async =>
+      await _session<bool>((hello, call) async {
+        if (hello['paired'] != true) return false; // nothing is signed before pairing
+        while (true) {
+          final f = await next();
+          if (f == null) return true;
+          final r = await call('location', f);
+          sent(r['ok'] == true);
+        }
+      }) ??
+      false;
+
   @override
   Future<bool> handOver(Map<String, dynamic> claimReply, String claimCode) async {
     // Keep the secret before sending it: if the box's answer is lost, the box may still have it.

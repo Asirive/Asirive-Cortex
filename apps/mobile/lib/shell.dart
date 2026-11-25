@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import 'api.dart';
+import 'box_link.dart';
+import 'location_stream.dart';
 import 'scope.dart';
 import 'screens/calls.dart';
 import 'screens/companion.dart';
@@ -37,12 +39,22 @@ class Shell extends StatefulWidget {
 class _ShellState extends State<Shell> with Ticker<Shell> {
   AppTab? current;
   String? ringing; // call id already shown, so one call opens one screen
+  LocationStreamer? _gps; // phone GPS -> glasses for navigation, while the owner's app is open
 
   @override
   void initState() {
     super.initState();
     tickEvery(const Duration(seconds: 4), _checkInbox);
     ShellNav.request.addListener(_onRequest);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _startGps());
+  }
+
+  void _startGps() {
+    if (!mounted) return;
+    final s = SessionScope.of(context);
+    final link = s.services.link;
+    if (s.side == Side.companion || link is! BoxLink) return; // only the owner's phone, on a real cable link
+    _gps = LocationStreamer(link.locationSession, phonePositions)..start();
   }
 
   void _onRequest() {
@@ -58,6 +70,7 @@ class _ShellState extends State<Shell> with Ticker<Shell> {
   @override
   void dispose() {
     ShellNav.request.removeListener(_onRequest);
+    _gps?.stop();
     super.dispose();
   }
 
