@@ -9,8 +9,11 @@
 //                                 It never calls llama_decode, so it is never pinned to an LM core.
 //   codec thread   (codec_cpus)   speech codes -> PCM behind the LM, on its own mtmd context (Lm's CodecThread).
 //   speaker thread (speaker_cpus) PCM ring -> headphone jack, paced by the device (Speaker).
-// Every answer is spoken (speak): the mic is muted from the answer's start until mute_tail_ms after its sound ends,
-// and ce_cancel / a new answer cut the sound at once.
+// Every answer is spoken (speak): the mic is muted from the answer's start until echo_lag + mute_tail_ms after its
+// sound ends, and ce_cancel / a new answer cut the sound at once. echo_lag is how late the mic hears Cortex's own
+// voice (device buffer + earbuds + capture path, ~450 ms on the box); the audio thread measures it at every answer
+// (the first loud mic chunk after the answer's first loud sample is played), so the user is heard as soon as the
+// echo is over, and never the echo.
 //
 // Each thread opens its own part (Vision::shared on control, Lm::open on the worker) because ggml pins the thread
 // that creates or drives a threadpool to the pool's first core; the caller of ce_open is never pinned.
@@ -57,7 +60,7 @@ struct Config {
     std::vector<int> lm_cpus{4, 5, 6, 7}, vision_cpus{1, 2, 3}, island_cpus{4, 5, 6, 7}, audio_cpus{1, 2, 3};
     std::vector<int> island_small_cpus{1, 2};  // islands during an answer
     double skip_cos = 0.98;
-    int max_tokens = 60, max_history_tokens = 1536;
+    int max_tokens = 512, max_history_tokens = 1536;  // an answer ends at its own end (eog); this only stops a runaway
     std::string vad_weights = "/var/lib/cortex/models/silero_vad_v4.bin";
     ListenConfig listen;
     int fail_encode_after = 0;  // test-only fault injection: encodes after this many fail
@@ -65,7 +68,8 @@ struct Config {
     bool speak = true, codec_inline = false;
     std::string voice = "female";
     SpeakerConfig speaker;  // device, UCM route, mixer, prebuffer_ms, cpus (speaker_cpus)
-    int mute_tail_ms = 300, max_speech_s = 30, codec_threads = 1;
+    int mute_tail_ms = 300, max_speech_s = 60, codec_threads = 1;
+    int echo_lag_ms = 500;  // the echo delay assumed until an answer has been measured (0..1500)
     std::vector<int> codec_cpus{3};
 };
 
@@ -96,21 +100,24 @@ Config parse_config(const char* text) {
     c.codec_threads = j.value("codec_threads", c.codec_threads);
     c.max_speech_s = j.value("max_speech_s", c.max_speech_s);
     c.mute_tail_ms = j.value("mute_tail_ms", c.mute_tail_ms);
+    c.echo_lag_ms = j.value("echo_lag_ms", c.echo_lag_ms);
     SpeakerConfig& s = c.speaker;
     s.device = j.value("speaker_device", s.device);
     s.ucm_card = j.value("ucm_card", s.ucm_card);
     s.ucm_verb = j.value("ucm_verb", s.ucm_verb);
     s.ucm_device = j.value("ucm_device", s.ucm_device);
     s.prebuffer_ms = j.value("prebuffer_ms", s.prebuffer_ms);
+    s.rebuffer_ms = j.value("rebuffer_ms", s.rebuffer_ms);
     s.cpus = j.value("speaker_cpus", s.cpus);
     if (j.contains("mixer")) {
         if (!j["mixer"].is_object()) throw std::runtime_error("config: mixer is {\"control\": value, ...}");
         s.mixer.clear();
         for (auto& [k, v] : j["mixer"].items()) s.mixer.emplace_back(k, v.get<int>());
     }
-    if (c.max_speech_s < 0 || c.max_speech_s > 30) throw std::runtime_error("config: max_speech_s is 0..30");
-    if (c.mute_tail_ms < 0 || s.prebuffer_ms < 0 || c.codec_threads < 1)
-        throw std::runtime_error("config: mute_tail_ms and prebuffer_ms are >= 0, codec_threads >= 1");
+    if (c.max_speech_s < 0 || c.max_speech_s > 90) throw std::runtime_error("config: max_speech_s is 0..90");
+    if (c.echo_lag_ms < 0 || c.echo_lag_ms > 1500) throw std::runtime_error("config: echo_lag_ms is 0..1500");
+    if (c.mute_tail_ms < 0 || s.prebuffer_ms < 0 || s.rebuffer_ms < 0 || c.codec_threads < 1)
+        throw std::runtime_error("config: mute_tail_ms, prebuffer_ms and rebuffer_ms are >= 0, codec_threads >= 1");
     for (auto* set : {&c.lm_cpus, &c.vision_cpus, &c.island_cpus, &c.audio_cpus, &c.island_small_cpus, &c.codec_cpus,
                       &s.cpus}) {
         if (set->empty()) throw std::runtime_error("config: a cpu set is empty");
@@ -192,6 +199,10 @@ struct Engine {
     std::unique_ptr<Speaker> speaker;
     std::atomic<bool> talking{false}, muted{false}, sound_voice{false};
     std::atomic<double> mute_until{0}, sound_start_at{0};
+    // echo: the answer's first loud sample (ms into its sound, -1 none yet; set by on_pcm) and the measured delay
+    std::atomic<double> loud_off_ms{-1}, echo_lag{0};
+    long pcm_n = 0;  // samples of this answer through on_pcm
+    bool muted_now() const { return muted || now_steady_ms() < mute_until + echo_lag; }
 
     void on_sound(const SoundEvent& s) {  // speaker thread or a cutting caller, under the speaker's lock
         json j = {{"type", s.type}, {"at_ms", s.at_ms}};
@@ -211,14 +222,25 @@ struct Engine {
     std::atomic<double> end_at_ms{0};  // steady ms of the spoken question's end
 
     void on_pcm(const float* pcm, int n, bool end) {  // codec thread (or the LM thread with codec_inline)
-        if (n > 0) speaker->push(pcm, n);
+        if (n > 0) {
+            if (loud_off_ms < 0) {
+                for (int i = 0; i < n; i++)
+                    if (std::fabs(pcm[i]) > 0.03f) {  // ~-30 dBFS: speech, not the codec's near-silence
+                        loud_off_ms = (pcm_n + i) / 24.0;
+                        break;
+                    }
+            }
+            pcm_n += n;
+            speaker->push(pcm, n);
+        }
         if (end) speaker->end();
     }
 
     // a new answer (LM worker): what the codec still holds of earlier answers is dropped, so none of it reaches this
     // answer; their sound is cut; the mic goes off
     void sound_begin(bool voice, clk::time_point end_time) {
-        lm->drop_sound();
+        lm->drop_sound();  // the codec holds nothing of earlier answers now: on_pcm is quiet until this one's sound
+        pcm_n = 0, loud_off_ms = -1;
         speaker->begin();
         sound_voice = voice;
         end_at_ms = std::chrono::duration<double, std::milli>(end_time.time_since_epoch()).count();
@@ -429,6 +451,8 @@ struct Engine {
         long gen_seen = 0;
         int64_t base = 0;  // first sample of the current listening period, in the Listener's count
         bool in_utt = false, was_muted = false;
+        // echo measurement: the room's level while the mic is live, and the answer being measured
+        double floor_db = -60, measured_for = -1;
         auto drop_utt = [&] {  // an open utterance is dropped, the VAD starts clean
             if (in_utt) {
                 audio_in->drop();
@@ -459,7 +483,29 @@ struct Engine {
                 aq.clear();
             }
             // Cortex is talking (or its sound just ended): the mic hears the answer, not the user
-            const bool mute = muted || now_steady_ms() < mute_until;
+            const double now = now_steady_ms();
+            if (!buf.empty()) {
+                double e2 = 0;
+                for (float x : buf) e2 += (double)x * x;
+                const double db = std::max(-100.0, 10 * std::log10(e2 / buf.size() + 1e-12));
+                // The echo's onset: the answer's first loud sample went out at s0 + loud_off; the mic hears it lag
+                // ms later as a jump of 12 dB over the room. A later lag is taken at once (the echo outlasting the
+                // mute is the failure), an earlier one a quarter of the way (one early noise is not the echo).
+                const double s0 = sound_start_at, off = loud_off_ms;
+                if (speaker && talking && s0 != measured_for && off >= 0) {
+                    const double ref = s0 + off;
+                    if (now > ref + 1500) {
+                        measured_for = s0;  // no echo heard: the estimate stands
+                    } else if (now >= ref && db > floor_db + 12) {
+                        const double lag = now - ref, est = echo_lag;
+                        echo_lag = lag > est ? lag : est + 0.25 * (lag - est);
+                        measured_for = s0;
+                    }
+                }
+                // the room's floor, never Cortex's voice: it follows quiet at once and speech only slowly
+                if (!muted_now()) floor_db += (db < floor_db ? 0.3 : 0.02) * (db - floor_db);
+            }
+            const bool mute = muted_now();
             if (mute != was_muted) {
                 was_muted = mute;
                 drop_utt();  // either edge: what the VAD held is from the other side of the mute
@@ -564,6 +610,7 @@ void* ce_open(const char* config_json, ce_event_cb cb, void* user) {
     auto* e = new Engine();
     try {
         e->cfg = ce::parse_config(config_json);
+        e->echo_lag = e->cfg.echo_lag_ms;
     } catch (const std::exception& ex) {
         ce::t_last_error = ex.what();
         delete e;
@@ -724,7 +771,8 @@ const char* ce_status(void* h) {
     if (!e->listen_error.empty()) st["listen_error"] = e->listen_error;
     st["speak"] = e->speaker != nullptr;
     st["talking"] = e->talking.load();
-    st["muted"] = e->muted || ce::now_steady_ms() < e->mute_until;
+    st["muted"] = e->muted_now();
+    if (e->speaker) st["echo_lag_ms"] = std::lround(e->echo_lag.load());
     if (e->speaker) st["prebuffer_ms"] = e->speaker->prebuffer_ms();
     st["view_frame_id"] = e->view_id.load();
     st["history_tokens"] = e->lm->history_tokens();

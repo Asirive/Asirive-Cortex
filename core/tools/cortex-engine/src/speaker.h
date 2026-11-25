@@ -1,8 +1,10 @@
 // Cortex's voice out: a ring of 24 kHz mono PCM and a writer thread that plays it on a sink as it arrives.
 //
 // Playback of an answer starts once `prebuffer` of audio is queued (or the answer's audio is complete). A ring that
-// runs dry mid-answer is a gap (the device underruns); an answer with a gap raises the next answer's prebuffer by
-// 100 ms (cap 800), three gapless answers lower it by 50 ms (floor: the configured value).
+// runs dry mid-answer is a gap (the device underruns): playback pauses until rebuffer_ms is queued again, so a
+// producer slower than real time costs a rare pause instead of a stutter every few periods. An answer with a gap
+// raises the next answer's prebuffer by 100 ms (cap 800), three gapless answers lower it by 50 ms (floor: the
+// configured value).
 //
 // Sinks: "null" (paced at real time, discards), "wav:<path>" (paced, writes a 16-bit WAV), else an ALSA device. ALSA
 // is loaded with dlopen("libasound.so.2") (no headers on the box); opening it also applies the UCM verb/device that
@@ -24,6 +26,8 @@ struct SpeakerConfig {
     std::string device = "plughw:0,0", ucm_card = "hw:0", ucm_verb = "HiFi", ucm_device = "Headphones";
     std::vector<std::pair<std::string, int>> mixer = {{"HPHL Volume", 20}, {"HPHR Volume", 20}};  // 20 = 0 dB (0..24, -30 dB + 1.5 dB/step)
     int prebuffer_ms = 200, rate = 24000;
+    // after the ring runs dry mid-answer, playback resumes once this much is queued again (or the answer is complete)
+    int rebuffer_ms = 1000;
     std::vector<int> cpus = {3};
 };
 

@@ -362,6 +362,10 @@ SpeakResult Speech::run(int seq, int* pos, const std::string& lead, int max_toke
             r.stop = "cancel";
             break;
         }
+        if (*pos >= max_pos) {  // every step below decodes one position
+            r.stop = "max";
+            break;
+        }
         const bool interleaving = mode == MIXED;
         const bool next_text = mode == TEXT || (mode == MIXED && !speaking);
         if (next_text) {

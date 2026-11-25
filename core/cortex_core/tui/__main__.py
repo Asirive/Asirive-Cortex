@@ -79,7 +79,7 @@ def main(argv: Optional[list[str]] = None, env: Mapping[str, str] = os.environ) 
     p.add_argument("--camera", default="auto", help="V4L2 device, auto = first non-codec node")
     p.add_argument("--mic", default="auto", help="ALSA capture device, auto = first USB audio card")
     p.add_argument("--refresh-s", type=float, default=1.0, help="at most one view refresh per this many seconds")
-    p.add_argument("--max-tokens", type=int, default=60)
+    p.add_argument("--max-tokens", type=int, default=0, help="0: the engine's limit")
     p.add_argument("--native-log", type=Path, default=Path("/var/lib/cortex/bench/engine/live_native.log"),
                    help="where llama.cpp / QNN messages go in --live")
     a = p.parse_args(argv)

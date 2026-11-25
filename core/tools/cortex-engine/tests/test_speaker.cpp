@@ -184,6 +184,26 @@ TEST(speaker_dry_ring_counts_gap_and_grows_prebuffer) {
     CHECK(r.spk->prebuffer_ms() == 250);
 }
 
+TEST(speaker_slow_producer_pauses_instead_of_stuttering) {
+    // The LM makes speech at ~0.93x real time. Resuming the moment 20 ms arrives turns that deficit into a stutter
+    // every few periods; a ring that ran dry waits for rebuffer_ms of lead, so the deficit costs a rare pause.
+    Rig r;
+    ce::SoundEvent e;
+    r.spk->begin();
+    const auto piece = tone(20);
+    auto next = steady_clock::now();
+    for (int i = 0; i < 300; i++) {  // 6 s of sound in ~6.45 s
+        r.push(piece);
+        next += microseconds(21500);
+        std::this_thread::sleep_until(next);
+    }
+    r.spk->end();
+    CHECK(r.rec.wait("sound_end", 1, &e, 3000));
+    std::printf("  gaps %d sound_ms %.0f\n", e.gaps, e.sound_ms);
+    CHECK(e.gaps >= 1 && e.gaps <= 2);
+    CHECK(std::fabs(e.sound_ms - 6000) < 1);
+}
+
 TEST(speaker_prebuffer_caps_at_800) {
     Rig r(20.0);  // 20x real time
     ce::SoundEvent e;

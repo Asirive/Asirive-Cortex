@@ -118,6 +118,9 @@ private:
         std::vector<float> rows;  // a spoken question: its audio rows instead of q
     };
     bool voice_s_locked(std::string* err);  // S ready for the utterance's rows on the current view
+    // A follow-up continues S only while a third of the context is still free for it: past that the conversation
+    // starts again from V (its turns are still committed to H), so an answer is not cut by the context's end.
+    bool s_has_room() const;
     bool decode_turn(const Turn& t, int seq, std::string* err);
     int turn_tokens(const Turn& t) const;
     void generate(AskResult& r, int max_tokens, const std::function<void(const std::string&)>& on_token,

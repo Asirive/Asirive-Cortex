@@ -350,7 +350,14 @@ void Speaker::run() {
             cv_.wait(l);
             continue;
         }
-        dry_ = false;
+        if (dry_) {  // ran dry: wait for a lead again, so a slow producer is a rare pause, not a stutter
+            const size_t lead = (size_t)std::max(c_.rebuffer_ms, prebuffer_ms_) * c_.rate / 1000;
+            if (n_ < lead && !ended_) {
+                cv_.wait(l);
+                continue;
+            }
+            dry_ = false;
+        }
         const int k = (int)std::min<size_t>(n_, period);
         const size_t cap = ring_.size();
         for (int i = 0; i < k; i++) buf[i] = ring_[(head_ + i) % cap];

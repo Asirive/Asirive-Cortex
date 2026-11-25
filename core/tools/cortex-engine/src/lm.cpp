@@ -428,7 +428,7 @@ AskResult Lm::ask(const std::string& question, int max_tokens, const std::functi
         v_rows_.clear();
         v_n_ = v_in_s_ = 0;
     }
-    if (s_on_view_) {
+    if (s_on_view_ && s_has_room()) {
         text = std::string(kTurnEnd) + kUser + question + kEnd;  // follow-up: S already holds the conversation
     } else {
         copy(have_view_ ? 1 : 0, 3);
@@ -456,6 +456,8 @@ void Lm::end_sound() {
     else if (cfg_.on_pcm) cfg_.on_pcm(nullptr, 0, true);
 }
 
+bool Lm::s_has_room() const { return pos_[3] < (int)llama_n_ctx(ctx_) * 2 / 3; }
+
 void Lm::drop_sound() {
     if (im_->codec_thread) im_->codec_thread->drop();
 }
@@ -480,6 +482,7 @@ void Lm::generate(AskResult& r, int max_tokens, const std::function<void(const s
             r.stop = "eog";
             break;
         }
+        if (pos_[3] >= (int)llama_n_ctx(ctx_)) break;  // the context's end (stop "max"): no room to decode it
         char buf[256];
         const int n = llama_token_to_piece(vocab, tok, buf, sizeof buf, 0, false);
         if (n > 0) {
@@ -547,6 +550,7 @@ void Lm::generate_speech(AskResult& r, int max_tokens, const std::function<void(
     };
     io.cancelled = [this] { return cancel_.load(); };
     const int max_frames = std::max(1, cfg_.max_speech_s * 1000 / 80);
+    im->speech->max_pos = (int)llama_n_ctx(ctx_);
     SpeakResult s = im->speech->run(3, &pos_[3], "", max_tokens, max_frames, cfg_.seed, io);
     if (codec) {
         if (s.stop != "cancel") codec->flush(&im->pcm);  // the last frame's tail; a cut drops it
@@ -590,7 +594,7 @@ int Lm::n_embd_inp() const { return llama_model_n_embd_inp(model_); }
 bool Lm::voice_s_locked(std::string* err) {
     if (v_active_ && v_gen_ == view_gen_) return true;
     std::string pre;
-    if (!v_active_ && s_on_view_) {
+    if (!v_active_ && s_on_view_ && s_has_room()) {
         pre = std::string(kTurnEnd) + kUser;  // follow-up on the same view
     } else {
         copy(have_view_ ? 1 : 0, 3);

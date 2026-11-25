@@ -264,6 +264,30 @@ TEST(speech_max_speech_s_stops) {
     CHECK(r2.error.empty() && r2.stop != "error");
 }
 
+TEST(speech_long_answer_stops_at_the_context) {
+    // An answer longer than the context has room for ends there (stop "max"), not in a failed decode, and the
+    // follow-up still gets an answer (S starts again from the view when it has no room for one).
+    Pcm pcm;
+    auto c = lm_config();
+    c.on_pcm = pcm.fn();
+    c.n_ctx = 256, c.max_speech_s = 60;
+    std::string err;
+    auto lm = ce::Lm::open(c, &err);
+    CHECK(lm != nullptr);
+    if (!lm) return;
+    int maxed = 0;
+    for (int i = 0; i < 5; i++) {
+        auto r = lm->ask(i ? "Go on with the story." : "Tell me a long story about a lighthouse keeper.", 512, nullptr);
+        std::printf("  ask %d: stop %s frames %d text %d error \"%s\"\n", i, r.stop.c_str(), r.frames, r.n_out,
+                    r.error.c_str());
+        CHECK(r.error.empty() && r.stop != "error");
+        CHECK(r.frames > 0);
+        maxed += r.stop == "max";
+    }
+    CHECK(pcm.wait_ends(5) && pcm.ends == 5);
+    std::printf("  %d of 5 answers reached the context's end\n", maxed);
+}
+
 TEST(speech_cancel_stops_within_200ms) {
     Pcm pcm;
     auto c = lm_config();

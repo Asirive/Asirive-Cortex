@@ -161,7 +161,11 @@ TEST(speak_api_mic_muted_while_talking) {
     CHECK(ce_cancel(h) == 0);
     CHECK(ev.wait("sound_end", &end, &at, 2000));
     CHECK(status(h)["muted"] == true);  // the tail: the room still rings
-    std::this_thread::sleep_for(milliseconds(300 + 150));
+    {
+        const int lag = status(h).value("echo_lag_ms", -1);
+        CHECK(lag >= 0 && lag <= 1500);
+        std::this_thread::sleep_for(milliseconds(300 + lag + 150));  // mute_tail + the echo's delay
+    }
     CHECK(status(h)["muted"] == false);
     json done, sp;
     size_t d = 0;
@@ -169,6 +173,62 @@ TEST(speak_api_mic_muted_while_talking) {
     const size_t mark2 = ev.size();
     play(h, wav("question1"));  // heard again
     size_t m = mark2;
+    CHECK(ev.wait("speech_start", &sp, &m, 5000));
+    ce_close(h);
+}
+
+TEST(speak_api_echo_is_not_a_question) {
+    // The box: the mic hears Cortex's voice from the earbuds ~450 ms late (speaker buffer + USB/PipeWire capture),
+    // until ~550 ms after sound_end. That tail must not become a question Cortex then answers.
+    Events ev;
+    void* h = open_speak(ev);
+    CHECK(h != nullptr);
+    if (!h) return;
+    CHECK(ce_set_listening(h, 1) == 0);
+    const auto voice = wav("question1");
+    const std::vector<float> quiet(320, 0.0f);
+    CHECK(ce_ask(h, kShort, 60) == 0);
+    const double lag = 450, tail = 550;
+    // the echo's tail is mid-word on the box: from sound_end on it plays the loudest second of the recording
+    size_t loud = 0;
+    {
+        double best = -1;
+        for (size_t s = 0; s + 16000 <= voice.size(); s += 320) {
+            double e = 0;
+            for (size_t i = s; i < s + 16000; i++) e += voice[i] * voice[i];
+            if (e > best) best = e, loud = s;
+        }
+    }
+    size_t k = 0;
+    bool tail_set = false;
+    auto next = steady_clock::now();
+    double end_rx = -1;
+    for (;;) {  // the microphone at real-time pace: the echo while it is due, else silence
+        double start_rx = -1;
+        for (auto& e : ev.snapshot()) {
+            if (e["type"] == "sound_start" && start_rx < 0) start_rx = e["_rx_ms"];
+            if (e["type"] == "sound_end") end_rx = e["_rx_ms"];
+        }
+        const double t = now_ms();
+        const bool echo = start_rx >= 0 && t >= start_rx + lag && (end_rx < 0 || t < end_rx + tail);
+        const float* p = quiet.data();
+        if (end_rx >= 0 && !tail_set) k = loud, tail_set = true;
+        if (echo) {
+            if (k + 320 > voice.size()) k = 0;
+            p = voice.data() + k, k += 320;
+        }
+        CHECK(ce_push_audio(h, p, 320) == 0);
+        if (end_rx >= 0 && t > end_rx + 2000) break;
+        next += milliseconds(20);
+        std::this_thread::sleep_until(next);
+    }
+    std::printf("  echo tail heard as speech: %ld times, echo_lag_ms %s\n", ev.count("speech_start"),
+                status(h).value("echo_lag_ms", json(-1)).dump().c_str());
+    CHECK(ev.count("speech_start") == 0);
+    const size_t mark = ev.size();
+    play(h, voice);  // the user, after the answer: heard
+    size_t m = mark;
+    json sp;
     CHECK(ev.wait("speech_start", &sp, &m, 5000));
     ce_close(h);
 }
@@ -187,7 +247,11 @@ TEST(speak_api_zero_audio_answer_unmutes) {
     std::printf("  frames %d, sound_end played %.0f ms\n", done.value("frames", -1), end.value("sound_ms", -1.0));
     CHECK(done.value("frames", -1) == 0);
     CHECK(ev.count("sound_start") == 0);
-    std::this_thread::sleep_for(milliseconds(300 + 150));
+    {
+        const int lag = status(h).value("echo_lag_ms", -1);
+        CHECK(lag >= 0 && lag <= 1500);
+        std::this_thread::sleep_for(milliseconds(300 + lag + 150));  // mute_tail + the echo's delay
+    }
     CHECK(status(h)["muted"] == false);
     CHECK(status(h)["talking"] == false);
     ce_close(h);

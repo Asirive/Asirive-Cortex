@@ -98,6 +98,7 @@ public:
     // embeddings output on for the run and off after it.
     SpeakResult run(int seq, int* pos, const std::string& lead, int max_tokens, int max_frames, uint32_t seed,
                     const SpeakIo& io);
+    int max_pos = 1 << 30;  // the context's end: generation stops before a decode at *pos >= max_pos (stop "max")
 
 private:
     Speech() = default;

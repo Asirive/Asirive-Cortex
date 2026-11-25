@@ -17,7 +17,7 @@ from cortex_core.tui.live_state import LiveState
 
 
 class LiveSession:
-    def __init__(self, engine, camera=None, refresh_s: float = 1.0, max_tokens: int = 60):
+    def __init__(self, engine, camera=None, refresh_s: float = 1.0, max_tokens: int = 0):
         self.eng, self.camera, self.refresh_s, self.max_tokens = engine, camera, refresh_s, max_tokens
         self.state = LiveState()
         self.lock = threading.Lock()

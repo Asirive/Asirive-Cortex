@@ -131,7 +131,7 @@ class Engine:
         """The next view (or refresh error) event."""
         return self._views.get(timeout=timeout)
 
-    def ask(self, text: str, max_tokens: int = 60, timeout: float = 60.0) -> Iterator[dict]:
+    def ask(self, text: str, max_tokens: int = 0, timeout: float = 60.0) -> Iterator[dict]:
         """Yields token events and ends with the done (or error) event."""
         self._asking.set()
         try:
