@@ -44,7 +44,9 @@ var (
 
 // System holds Cortex's speaking rules (core/AGENTS.md section 3); the answer is spoken to a blind user as is.
 const System = "You are Cortex, the voice of smart glasses worn by a blind or low-vision person in Singapore. The " +
-	"frames are the last few seconds from their camera, oldest first, about one second apart. Answer the question " +
+	"frames, when there are any, are the last few seconds from their camera, oldest first, about one second apart; " +
+	"with no frames the camera is off, so answer from what you know and say you cannot see if the question needs " +
+	"sight. Answer the question " +
 	"in at most two short sentences. Say only what the frames show: never invent numbers, names, routes or " +
 	"destinations you cannot read. Give positions relative to the user (left, right, ahead, clock positions); never " +
 	"use colour as the only way to identify something. Do not say filler like 'let me check'. If the frames do not " +
@@ -86,24 +88,35 @@ type serverMsg struct {
 	GoAway            *struct{} `json:"goAway"`
 }
 
-// Ask asks Gemini about frames (JPEG, oldest first; none: the camera is off) and calls say with each finished
-// sentence as it is transcribed. It returns the whole answer.
+// Check reports ErrBadInput for a question or frames Ask would refuse, without calling Gemini.
+func Check(question string, frames [][]byte) error {
+	q := strings.TrimSpace(question)
+	if q == "" || len(q) > MaxQuestion {
+		return fmt.Errorf("%w: question empty or over %d bytes", ErrBadInput, MaxQuestion)
+	}
+	if len(frames) > MaxFrames {
+		return fmt.Errorf("%w: more than %d frames", ErrBadInput, MaxFrames)
+	}
+	for _, f := range frames {
+		if len(f) > MaxFrame || len(f) < 4 || f[0] != 0xFF || f[1] != 0xD8 {
+			return fmt.Errorf("%w: a frame is not a JPEG under %d kB", ErrBadInput, MaxFrame>>10)
+		}
+	}
+	return nil
+}
+
+// Ask asks Gemini about frames (JPEG, oldest first; none: the camera is off). It returns the whole answer. While it
+// is made, say gets each finished sentence that is known not to be the last one: as soon as new text starts after
+// it (a fragment later, not a sentence later). The last sentence is never passed to say, so a caller that speaks
+// the said sentences at once and the rest of the answer at the end says everything exactly once.
 func (c *Client) Ask(ctx context.Context, question string, frames [][]byte, say func(string)) (string, error) {
 	if c == nil || c.Key == "" {
 		return "", ErrNoKey
 	}
+	if err := Check(question, frames); err != nil {
+		return "", err
+	}
 	q := strings.TrimSpace(question)
-	if q == "" || len(q) > MaxQuestion {
-		return "", fmt.Errorf("%w: question empty or over %d bytes", ErrBadInput, MaxQuestion)
-	}
-	if len(frames) > MaxFrames {
-		return "", fmt.Errorf("%w: more than %d frames", ErrBadInput, MaxFrames)
-	}
-	for _, f := range frames {
-		if len(f) > MaxFrame || len(f) < 4 || f[0] != 0xFF || f[1] != 0xD8 {
-			return "", fmt.Errorf("%w: a frame is not a JPEG under %d kB", ErrBadInput, MaxFrame>>10)
-		}
-	}
 	if say == nil {
 		say = func(string) {}
 	}
@@ -143,6 +156,8 @@ func (c *Client) Ask(ctx context.Context, question string, frames [][]byte, say 
 		for _, f := range frames {
 			parts = append(parts, part{InlineData: &inlineData{"image/jpeg", base64.StdEncoding.EncodeToString(f)}})
 		}
+	} else {
+		parts = append(parts, part{Text: "The camera is off: no frames."})
 	}
 	parts = append(parts, part{Text: q})
 	turn := map[string]any{"clientContent": map[string]any{
@@ -155,6 +170,7 @@ func (c *Client) Ask(ctx context.Context, question string, frames [][]byte, say 
 	var all []string
 	total := 0
 	full := false
+	held := "" // the newest finished sentence, until text after it shows it was not the last
 	emit := func(s string) {
 		if full {
 			return
@@ -165,16 +181,18 @@ func (c *Client) Ask(ctx context.Context, question string, frames [][]byte, say 
 		}
 		total += len(s) + 1
 		all = append(all, s)
-		say(s)
+		if held != "" {
+			say(held)
+		}
+		held = s
 	}
 	thinking := strings.Contains(c.Model, "extended-thinking")
 	for !full {
 		m = serverMsg{}
 		if err := conn.ReadJSON(&m); err != nil {
-			if len(all) > 0 { // cut after speaking something: keep what was said
-				break
-			}
-			return "", fmt.Errorf("%w: session ended without an answer", ErrUpstream)
+			// cut mid-answer: an error even if sentences were already said, because the rest may change what
+			// they mean ("Cross now." ... "after the car passes"). The caller tells the user the answer was lost.
+			return "", fmt.Errorf("%w: session ended before the answer was complete", ErrUpstream)
 		}
 		sc := m.ServerContent
 		if sc == nil {
@@ -182,16 +200,21 @@ func (c *Client) Ask(ctx context.Context, question string, frames [][]byte, say 
 		}
 		if sc.OutputTranscription != nil {
 			sp.add(sc.OutputTranscription.Text, emit)
+			if held != "" && !full && strings.TrimSpace(sp.buf) != "" {
+				say(held)
+				held = ""
+			}
 		}
 		if sc.TurnComplete {
-			sp.flush(emit)
 			status := sc.InteractionStatus
 			if status == "" {
 				status = m.InteractionStatus
 			}
 			if status == "IDLE" || (!thinking && status == "") {
+				sp.flush(emit)
 				break
 			}
+			sp.buf += " " // more is coming (IN_PROGRESS): the sentence goes on in the next utterance
 		}
 	}
 	if len(all) == 0 {

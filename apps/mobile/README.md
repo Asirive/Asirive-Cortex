@@ -75,3 +75,14 @@ flutter test
 ```
 
 `GATEWAY_URL` defaults to a placeholder, so without it every call reports "Can't reach Cortex".
+
+## CI and the beta APK
+
+`.github/workflows/app.yml` runs `flutter analyze` and `flutter test` (Flutter 3.50.1) on every app change, then
+builds a release APK pointed at `https://infra.asirive.com` (box link `wss://209.25.142.16:2613/ws/device`). On
+`v4` it replaces the `app-beta` pre-release, so the newest APK is always at
+https://github.com/Asirive/Asirive-Cortex/releases/download/app-beta/cortex.apk. With the secrets
+`CORTEX_KEYSTORE_B64`, `CORTEX_KEYSTORE_PASSWORD`, `CORTEX_KEY_ALIAS`, `CORTEX_KEY_PASSWORD` set, every build has
+the same signature and installs over the last; without them each build is signed with a throwaway debug key.
+
+The talk button (home screen, "TALK TO CORTEX") sends the box the same tap as the glasses button.

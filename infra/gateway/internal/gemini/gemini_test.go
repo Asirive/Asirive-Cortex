@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,6 +28,10 @@ type fakeLive struct {
 	query      string
 	closeEarly bool
 	delay      time.Duration
+	// dropBeforeComplete hangs up after the fragments, before turnComplete (the network dropped mid-answer)
+	dropBeforeComplete bool
+	onFrag             func(i int)  // called after each fragment is sent
+	sent               atomic.Int32 // fragments sent so far
 }
 
 func (f *fakeLive) start() *httptest.Server {
@@ -54,6 +59,13 @@ func (f *fakeLive) start() *httptest.Server {
 				c.WriteJSON(map[string]any{"serverContent": map[string]any{
 					"modelTurn":           map[string]any{"parts": []any{map[string]any{"inlineData": map[string]any{"mimeType": "audio/pcm;rate=24000", "data": "AAAA"}}}},
 					"outputTranscription": map[string]any{"text": frag}}})
+				n := f.sent.Add(1)
+				if f.onFrag != nil {
+					f.onFrag(int(n))
+				}
+			}
+			if f.dropBeforeComplete {
+				return
 			}
 			status := "IN_PROGRESS"
 			if i == len(f.utterances)-1 {
@@ -86,7 +98,8 @@ func TestAskStreamsSentencesFromTheLiveSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(said) != 2 || said[0] != "This is bus 858, moving to your left." || said[1] != "The pole is at 10 o'clock." {
+	if len(said) != 1 || said[0] != "This is bus 858, moving to your left." { // the last sentence is only in ans
+
 		t.Fatalf("said %q", said)
 	}
 	if ans != "This is bus 858, moving to your left. The pole is at 10 o'clock." {
@@ -128,15 +141,14 @@ func TestAskStreamsSentencesFromTheLiveSession(t *testing.T) {
 }
 
 func TestAskWaitsForIdleAcrossUtterances(t *testing.T) {
-	f := &fakeLive{t: t, utterances: [][]string{{"The bus is "}, {"858"}}} // no full stop: flushed at turnComplete
+	// an utterance break (turnComplete, IN_PROGRESS) mid-sentence does not cut the sentence; no full stop at the
+	// end: flushed at the final turnComplete
+	f := &fakeLive{t: t, utterances: [][]string{{"The bus is "}, {"858"}}}
 	srv := f.start()
 	defer srv.Close()
 	said, ans, err := collect(client(srv), "q", nil)
-	if err != nil || len(said) != 2 || said[0] != "The bus is" || said[1] != "858" || ans != "The bus is 858" {
+	if err != nil || len(said) != 0 || ans != "The bus is 858" {
 		t.Fatalf("%q %q %v", said, ans, err)
-	}
-	if parts := f.turn["clientContent"].(map[string]any)["turns"].([]any)[0].(map[string]any)["parts"].([]any); len(parts) != 1 {
-		t.Fatalf("no frames: parts %v", parts)
 	}
 }
 
@@ -206,5 +218,50 @@ func TestSentences(t *testing.T) {
 	want := []string{"Bus 858 is here.", "It is moving!", "Pole on the left"}
 	if strings.Join(out, "|") != strings.Join(want, "|") {
 		t.Fatalf("%q", out)
+	}
+}
+
+func TestCutMidAnswerIsAnError(t *testing.T) {
+	f := &fakeLive{t: t, utterances: [][]string{{"Cross now. ", "Wait for"}}, dropBeforeComplete: true}
+	srv := f.start()
+	defer srv.Close()
+	said, ans, err := collect(client(srv), "can I cross", nil)
+	if !errors.Is(err, ErrUpstream) || ans != "" {
+		t.Fatalf("half an answer returned as whole: %q %v", ans, err)
+	}
+	if strings.Join(said, "|") != "Cross now." { // already streamed; the caller says the rest was lost
+		t.Fatalf("%q", said)
+	}
+}
+
+func TestASentenceIsSaidAsSoonAsTheNextOneStarts(t *testing.T) {
+	// the fake Gemini waits after each fragment until the client has seen what it should have said by then
+	f := &fakeLive{t: t, utterances: [][]string{{"Bus 858 is here. ", "It", " is moving. ", "Step back."}}}
+	srv := f.start()
+	defer srv.Close()
+	var said []string
+	var at []int // fragments seen by the server when each sentence was said
+	c := client(srv)
+	f.onFrag = func(i int) { time.Sleep(20 * time.Millisecond) }
+	ans, err := c.Ask(context.Background(), "q", nil, func(s string) { said = append(said, s); at = append(at, int(f.sent.Load())) })
+	if err != nil || ans != "Bus 858 is here. It is moving. Step back." {
+		t.Fatalf("%q %v", ans, err)
+	}
+	// "Bus 858 is here." once "It" arrived (fragment 2), "It is moving." once "Step back." arrived (4); the last never
+	if strings.Join(said, "|") != "Bus 858 is here.|It is moving." || at[0] != 2 || at[1] != 4 {
+		t.Fatalf("said %q at fragments %v", said, at)
+	}
+}
+
+func TestCameraOffIsSaidNotLeftToGuess(t *testing.T) {
+	f := &fakeLive{t: t, utterances: [][]string{{"I can't see right now."}}}
+	srv := f.start()
+	defer srv.Close()
+	if _, _, err := collect(client(srv), "what is ahead", nil); err != nil {
+		t.Fatal(err)
+	}
+	parts := f.turn["clientContent"].(map[string]any)["turns"].([]any)[0].(map[string]any)["parts"].([]any)
+	if len(parts) != 2 || !strings.Contains(parts[0].(map[string]any)["text"].(string), "camera is off") {
+		t.Fatalf("parts %v", parts)
 	}
 }

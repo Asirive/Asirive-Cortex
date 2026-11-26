@@ -153,3 +153,96 @@ func TestSecondOpinionDailyCap(t *testing.T) {
 		t.Fatal("daily window did not slide")
 	}
 }
+
+// With Accept: application/x-ndjson the box gets each sentence the moment Gemini finishes it, so it can start
+// speaking while the rest is still being made: {"sentence": ...} lines, then {"done": true, "answer": ...}.
+func TestSecondOpinionStreamsSentences(t *testing.T) {
+	release := make(chan struct{})
+	up := websocket.Upgrader{}
+	fail := false
+	gm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var m map[string]any
+		conn.ReadJSON(&m)
+		conn.WriteJSON(map[string]any{"setupComplete": map[string]any{}})
+		conn.ReadJSON(&m)
+		tr := func(s string) map[string]any {
+			return map[string]any{"serverContent": map[string]any{"outputTranscription": map[string]any{"text": s}}}
+		}
+		conn.WriteJSON(tr("It is bus 858. "))
+		conn.WriteJSON(tr("It is"))
+		<-release // Gemini is still talking until the test has the first sentence
+		if fail {
+			return // connection drops mid-answer
+		}
+		conn.WriteJSON(tr(" stopping now."))
+		conn.WriteJSON(map[string]any{"serverContent": map[string]any{"turnComplete": true, "interactionStatus": "IDLE"}})
+		conn.ReadMessage()
+	}))
+	defer gm.Close()
+
+	ca, _ := pki.LoadOrCreate(t.TempDir(), time.Now())
+	s := New(fleet.New(), "boot")
+	s.CA, s.RequireMTLS = ca, true
+	s.Gemini = gemini.New("k")
+	s.Gemini.Base = "ws" + strings.TrimPrefix(gm.URL, "http")
+	api := httptest.NewServer(s.Handler())
+	defer api.Close()
+	sc, roots := serverCert(t)
+	dev := httptest.NewUnstartedServer(s.DeviceHandler())
+	dev.TLS = s.DeviceTLS(sc)
+	dev.StartTLS()
+	defer dev.Close()
+	a := claimDevice(t, s, api.URL, login(t, s, "stream@example.com"))
+	c := &http.Client{Transport: &http.Transport{TLSClientConfig: a.tlsCfg(roots)}}
+
+	open := func() (*http.Response, *json.Decoder) {
+		req, _ := http.NewRequest("POST", dev.URL+"/device/second-opinion", strings.NewReader(`{"question":"which bus"}`))
+		req.Header.Set("Accept", "application/x-ndjson")
+		res, err := c.Do(req)
+		if err != nil || res.StatusCode != 200 || res.Header.Get("Content-Type") != "application/x-ndjson" {
+			t.Fatalf("open: %v %v", err, res)
+		}
+		return res, json.NewDecoder(res.Body)
+	}
+	next := func(d *json.Decoder) map[string]any {
+		var m map[string]any
+		if err := d.Decode(&m); err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		return m
+	}
+
+	res, d := open()
+	got := make(chan map[string]any)
+	go func() { got <- next(d) }()
+	select {
+	case m := <-got:
+		if m["sentence"] != "It is bus 858." {
+			t.Fatalf("first line %v", m)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("first sentence held back until the answer was complete")
+	}
+	release <- struct{}{}
+	if m := next(d); m["done"] != true || m["answer"] != "It is bus 858. It is stopping now." || m["rest"] != "It is stopping now." {
+		t.Fatalf("last line %v", m)
+	}
+	res.Body.Close()
+
+	// dropped mid-answer: what was said stays said, then an error line (the box says it lost the answer)
+	fail = true
+	res, d = open()
+	defer res.Body.Close()
+	if m := next(d); m["sentence"] != "It is bus 858." {
+		t.Fatalf("first line %v", m)
+	}
+	release <- struct{}{}
+	if m := next(d); m["error"] != "opinion_failed" || m["done"] != nil {
+		t.Fatalf("error line %v", m)
+	}
+}

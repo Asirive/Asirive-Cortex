@@ -112,6 +112,16 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) setState(() => note = done ? 'Assistant paused. Obstacle warnings are still on.' : 'Could not reach the pocket box. Plug it in with the cable and try again.');
   }
 
+  /// The talk button: one tap, the same as a tap on the glasses button (start or stop listening, or stop Cortex
+  /// talking). No confirmation, so it is as quick as the glasses. A failure is spoken too.
+  Future<void> _talk() async {
+    final s = SessionScope.of(context);
+    if (await s.services.link.talk()) return;
+    const msg = 'Could not reach the pocket box. Plug it in with the cable, or use the glasses button.';
+    s.services.speaker.say(msg);
+    if (mounted) setState(() => note = msg);
+  }
+
   Future<void> _update() async {
     final d = SessionScope.of(context).devices.first;
     final ok = await confirmSheet(context,
@@ -199,6 +209,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _WideTile(title: 'Glasses are offline', sub: 'Turn on internet sharing on this phone', icon: Icons.wifi_off, bad: true, onTap: () => push(context, const InternetScreen()))
       else if (offer != null)
         _WideTile(title: 'Update ready', sub: 'Tap to read what happens and install', icon: Icons.download, onTap: _update),
+      if (d != null) _TalkTile(onTap: _talk),
       SizedBox(
         height: 128,
         child: Row(children: [
@@ -427,6 +438,33 @@ class _SafetyTile extends StatelessWidget {
       ),
     );
   }
+}
+
+class _TalkTile extends StatelessWidget {
+  const _TalkTile({required this.onTap});
+  final VoidCallback onTap;
+  @override
+  Widget build(BuildContext context) => Semantics(
+        button: true,
+        label: 'Talk to Cortex. The same as the glasses button: tap to start or stop listening, or to stop Cortex talking.',
+        excludeSemantics: true,
+        child: GestureDetector(
+          onTap: onTap,
+          child: Container(
+            height: 88,
+            padding: const EdgeInsets.symmetric(horizontal: 22),
+            decoration: BoxDecoration(color: Cx.accent, borderRadius: BorderRadius.circular(Cx.tileRadius)),
+            child: const Row(children: [
+              Icon(Icons.mic_none, size: 32, color: Cx.ground),
+              SizedBox(width: 16),
+              Expanded(
+                child: Text('TALK TO CORTEX',
+                    style: TextStyle(fontFamily: 'JetBrainsMono', fontSize: 16, letterSpacing: 1.7, fontWeight: FontWeight.w700, color: Cx.ground)),
+              ),
+            ]),
+          ),
+        ),
+      );
 }
 
 class _PauseTile extends StatelessWidget {

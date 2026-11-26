@@ -83,10 +83,11 @@ class FakeLink implements DeviceLink {
   }
 
   int talks = 0;
+  bool talkOk = true;
   @override
   Future<bool> talk() async {
     talks++;
-    return true;
+    return talkOk;
   }
 }
 

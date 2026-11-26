@@ -106,7 +106,10 @@ def _fake_gemini():
         parts = json.loads(ws.recv())["clientContent"]["turns"][0]["parts"]
         n = sum("inlineData" in x for x in parts)
         q = parts[-1]["text"]
-        for frag, status in ((f"With {n} ", None), (f"frames: {q}.", "IN_PROGRESS"), (None, "IDLE")):
+        script = ((f"With {n} ", None), (f"frames: {q}.", "IN_PROGRESS"), (None, "IDLE"))
+        if q.startswith("two"):  # a two-sentence answer: the first streams to the box before the second is done
+            script = (("It is bus 858. ", None), ("It is", None), (" stopping.", None), (None, "IDLE"))
+        for frag, status in script:
             if frag:
                 ws.send(json.dumps({"serverContent": {"outputTranscription": {"text": frag}}}))
             if status:
@@ -329,6 +332,11 @@ def test_gemini_takeover_through_the_gateway(gateway):
     ask = provision.second_opinion_client(p)
     assert ask("which bus is this", [jpeg, jpeg, jpeg]) == "With 3 frames: which bus is this."
     assert ask("what day is it", []) == "With 0 frames: what day is it."
+    heard = []
+    assert ask("two sentences", [], say=heard.append) == "It is bus 858. It is stopping."
+    assert heard == ["It is bus 858."]  # streamed early; the last sentence comes with the whole answer
+    data, rest = Takeover(ask).run("two sentences", True, say=heard.append)
+    assert rest == "It is stopping." and data["answer"] == "It is bus 858. It is stopping."
 
     eng = FakeEngine(lambda k, t, s: [{"type": "tool_call", "text": call("second_opinion", question="which bus is this")},
                                       {"type": "done", "tool": True}] if k == "ask" else None)

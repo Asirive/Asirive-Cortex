@@ -9,7 +9,7 @@ import pytest
 
 from cortex_core.brain import tools as T
 from cortex_core.brain.brain import Brain
-from cortex_core.brain.takeover import MAX_FRAMES, NOT_SURE, NOT_SURE_OFFLINE, OpinionError, Takeover
+from cortex_core.brain.takeover import LOST, MAX_FRAMES, NOT_SURE, NOT_SURE_OFFLINE, OpinionError, Takeover
 from cortex_core.engine import capture
 
 from test_brain import FakeEngine, call
@@ -22,7 +22,7 @@ class Gem:
     def __init__(self, answer="It is bus 858, right in front of you.", exc=None):
         self.answer, self.exc, self.asked = answer, exc, []
 
-    def __call__(self, question, frames):
+    def __call__(self, question, frames, say=None):
         self.asked.append((question, frames))
         if self.exc:
             raise self.exc
@@ -144,13 +144,72 @@ def test_clip_only_has_frames_from_after_the_camera_came_back_on():
 
 
 def test_slow_gemini_says_checking_first():
-    def slow(q, j):
+    def slow(q, j, say=None):
         time.sleep(0.3)
         return "A door on your left."
     eng = FakeEngine(lambda k, t, s: [{"type": "tool_call", "text": call("second_opinion", question="q")},
                                       {"type": "done", "tool": True}] if k == "ask" else None)
     Brain(eng, None, T.load(), checking_s=0.05, takeover=Takeover(slow)).ask("q")
     assert ("say", "Checking.", None) in eng.log and eng.log[-1][2] == "A door on your left."
+
+
+class Streaming:
+    """A gateway that streams: early sentences through say (with a pause between, like Gemini speaking), then the
+    whole answer; or a drop after the early sentences."""
+
+    def __init__(self, early, answer, drop=False, gap=0.15):
+        self.early, self.answer, self.drop, self.gap = early, answer, drop, gap
+        self.said_at = []
+
+    def __call__(self, question, frames, say=None):
+        for s in self.early:
+            time.sleep(self.gap)
+            self.said_at.append(time.monotonic())
+            say(s)
+        time.sleep(self.gap)
+        if self.drop:
+            raise OpinionError("gateway failed: stream cut")
+        return self.answer
+
+
+def test_run_returns_only_the_unsaid_rest_to_speak():
+    heard = []
+    g = Streaming(["It is bus 858."], "It is bus 858. It is stopping now.", gap=0)
+    data, say = Takeover(g).run("which bus", True, say=heard.append)
+    assert heard == ["It is bus 858."] and say == "It is stopping now."
+    assert data["answer"] == "It is bus 858. It is stopping now."  # the whole answer is recorded for follow-ups
+
+
+def test_run_without_a_say_hook_speaks_everything_at_the_end():
+    g = Streaming(["It is bus 858."], "It is bus 858. It is stopping now.", gap=0)
+    _, say = Takeover(g).run("which bus", True)
+    assert say == "It is bus 858. It is stopping now."
+
+
+def test_a_drop_after_some_sentences_says_the_rest_was_lost():
+    heard = []
+    g = Streaming(["Cross now."], None, drop=True, gap=0)
+    data, say = Takeover(g).run("can I cross", True, say=heard.append)
+    assert heard == ["Cross now."] and say == LOST and "error" in data
+
+
+def test_brain_speaks_early_sentences_before_gemini_finishes_and_nothing_twice():
+    spoken = []
+
+    def script(kind, text, say):
+        if kind == "say":
+            spoken.append((time.monotonic(), text))
+        if kind == "ask":
+            return [{"type": "tool_call", "text": call("second_opinion", question="which bus")},
+                    {"type": "done", "tool": True}]
+    eng = FakeEngine(script)
+    g = Streaming(["It is bus 858.", "It is at the stop."], "It is bus 858. It is at the stop. Step forward.")
+    t = Brain(eng, None, T.load(), checking_s=0.05, takeover=Takeover(g)).ask("which bus")
+    said = [x for _, x in spoken]
+    assert said == ["Checking.", "It is bus 858.", "It is at the stop."]
+    assert spoken[1][0] < g.said_at[1] + 0.1  # sentence 1 spoken before Gemini had finished sentence 2
+    assert eng.log[-1][0] == "tool_result" and eng.log[-1][2] == "Step forward." and t.said == "Step forward."
+    assert json.loads(eng.log[-1][1])["answer"] == "It is bus 858. It is at the stop. Step forward."
 
 
 # ---------------------------------------------------------------- frames to JPEG

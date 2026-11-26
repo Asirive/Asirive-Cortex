@@ -126,6 +126,9 @@ func main() {
 	} else {
 		log.Print("gemini second opinion: off (no CORTEX_GEMINI_KEY_FILE)")
 	}
+	if b := strings.TrimRight(os.Getenv("CORTEX_WEB_BASE"), "/"); b != "" {
+		srv.WebBase = b
+	}
 	if b := os.Getenv("CORTEX_APP_LINK_BASE"); b != "" {
 		srv.AppLinkBase = b
 	}

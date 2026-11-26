@@ -1,0 +1,18 @@
+# Public HTTPS front for the LAN gateway, reached through the playit HTTPS tunnel (infra.asirive.com).
+#  /v1/*  app API (its own account auth)
+#  /api/* operator API (gateway bearer token; the console sends it, so it cannot sit behind basic auth)
+#  else   fleet console page, behind a username + password (console-auth.caddy, kept only on the server)
+infra.asirive.com {
+	@app path /v1/*
+	handle @app {
+		reverse_proxy gateway:8080
+	}
+	@api path /api/*
+	handle @api {
+		reverse_proxy gateway:8080
+	}
+	handle {
+		import /etc/caddy/console-auth.caddy
+		reverse_proxy gateway:8080
+	}
+}

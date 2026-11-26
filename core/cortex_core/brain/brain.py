@@ -18,11 +18,13 @@ Cues (nav events) wait for the running turn to end, except urgent ones (get off 
 Memory scans (cortex_core.memory) run only while idle, hold the turn lock, and are cut (engine.cancel) the moment the
 user types or starts talking; a cut scan stores nothing. Cues wait for a scan like for a turn.
 Gemini takeover (brain.takeover): the LM's silent second_opinion call sends the fresh frame (camera on only) and the
-question to Gemini through the gateway; the answer is spoken as a template. Offline: "I'm not sure".
+question to Gemini through the gateway; sentences Gemini has finished are spoken as they stream in, the rest is the
+template. Offline: "I'm not sure".
 """
 from __future__ import annotations
 
 import json
+import queue
 import threading
 import time
 from collections import deque
@@ -239,10 +241,11 @@ class Brain:
 
     def _run_tool(self, call: T.Call) -> ToolRun:
         box: dict = {}
+        early: queue.Queue = queue.Queue()  # sentences the tool has ready before it ends (a streamed answer)
 
         def work():
             try:
-                box["r"] = self._exec(call)
+                box["r"] = self._exec(call, early.put)
             except Exception as e:  # noqa: BLE001 - a broken tool must not kill the turn
                 box["r"] = ({"error": f"{call.name} failed: {e}"}, None)
 
@@ -254,12 +257,17 @@ class Brain:
         if checking:
             for _ in self.eng.say("Checking."):
                 pass
-            th.join()
+        while th.is_alive() or not early.empty():  # the engine is spoken to from this thread only
+            try:
+                text = early.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            self._say(text)
         res, say = box["r"]
         return ToolRun(call.name, call.args, res, say, (time.monotonic() - t0) * 1000, checking,
                        res.get("error") if isinstance(res, dict) else None)
 
-    def _exec(self, call: T.Call) -> tuple[dict, str | None]:
+    def _exec(self, call: T.Call, early: Callable[[str], None] | None = None) -> tuple[dict, str | None]:
         if call.name == "set_mode":
             if str(call.args["mode"]).strip().upper() == "IDLE" == self.modes.mode:
                 # small LMs call this on "hi": nothing to change, so the LM answers the user itself
@@ -276,7 +284,8 @@ class Brain:
             return self.memory.search(str(call.args["item"]))
         if call.name == "second_opinion":
             from cortex_core.brain.takeover import Takeover
-            return (self.takeover or Takeover(None)).run(str(call.args["question"]), self.camera_on, self.camera_since)
+            return (self.takeover or Takeover(None)).run(str(call.args["question"]), self.camera_on, self.camera_since,
+                                                         say=early)
         if call.name == "camera":
             if bool(call.args["on"]) and not self.camera_on:
                 self.camera_since = time.monotonic()

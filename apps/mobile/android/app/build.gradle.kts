@@ -29,11 +29,23 @@ android {
         versionName = flutter.versionName
     }
 
+    // Release signing: CI sets CORTEX_KEYSTORE (+ passwords) from repository secrets, so every build is signed with
+    // the same key and installs over the last one. Without it (a local build) the debug key is used.
+    val keystore = System.getenv("CORTEX_KEYSTORE")?.takeIf { it.isNotBlank() && file(it).exists() }
+    signingConfigs {
+        if (keystore != null) {
+            create("release") {
+                storeFile = file(keystore)
+                storePassword = System.getenv("CORTEX_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("CORTEX_KEY_ALIAS")
+                keyPassword = System.getenv("CORTEX_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName(if (keystore != null) "release" else "debug")
         }
     }
 }

@@ -1,0 +1,102 @@
+name: app
+
+# The phone app: analyze + tests on every change, then an Android APK. On v4 the APK is also published as the
+# "app-beta" pre-release, so a phone can download it from one fixed link:
+#   https://github.com/Asirive/Asirive-Cortex/releases/download/app-beta/cortex.apk
+# Signing: with the repository secrets CORTEX_KEYSTORE_B64 (base64 of the .jks), CORTEX_KEYSTORE_PASSWORD,
+# CORTEX_KEY_ALIAS and CORTEX_KEY_PASSWORD every build has the same signature and installs over the last one.
+# Without them the APK is signed with the runner's throwaway debug key: it installs, but each new build needs the
+# old one uninstalled first.
+on:
+  push:
+    branches: [v4]
+    paths: ["apps/mobile/**", ".github/workflows/app.yml"]
+  pull_request:
+    paths: ["apps/mobile/**", ".github/workflows/app.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: "3.50.1"
+  GATEWAY_URL: "https://infra.asirive.com"
+  # the box's mTLS link to the gateway (playit TCP tunnel to the gateway's device listener)
+  DEVICE_WS_URL: "wss://209.25.142.16:2613/ws/device"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze --no-fatal-infos
+      - run: flutter test
+
+  android:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # the app-beta pre-release
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: Release key (from secrets, if set)
+        env:
+          KS: ${{ secrets.CORTEX_KEYSTORE_B64 }}
+        run: |
+          if [ -n "$KS" ]; then
+            echo "$KS" | base64 -d > "$RUNNER_TEMP/cortex.jks"
+            echo "CORTEX_KEYSTORE=$RUNNER_TEMP/cortex.jks" >> "$GITHUB_ENV"
+            echo "Signed with the Cortex release key." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No CORTEX_KEYSTORE_B64 secret: signed with a throwaway debug key (uninstall the old app before installing)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - run: flutter pub get
+      - name: Build APK
+        env:
+          CORTEX_KEYSTORE_PASSWORD: ${{ secrets.CORTEX_KEYSTORE_PASSWORD }}
+          CORTEX_KEY_ALIAS: ${{ secrets.CORTEX_KEY_ALIAS }}
+          CORTEX_KEY_PASSWORD: ${{ secrets.CORTEX_KEY_PASSWORD }}
+        run: |
+          flutter build apk --release --build-number=${{ github.run_number }} \
+            --dart-define=GATEWAY_URL=$GATEWAY_URL --dart-define=DEVICE_WS_URL=$DEVICE_WS_URL
+          cp build/app/outputs/flutter-apk/app-release.apk "$RUNNER_TEMP/cortex.apk"
+          sha256sum "$RUNNER_TEMP/cortex.apk" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cortex-apk-${{ github.run_number }}
+          path: ${{ runner.temp }}/cortex.apk
+          retention-days: 30
+      - name: Publish app-beta pre-release
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/v4'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete app-beta --yes --cleanup-tag || true
+          gh release create app-beta "$RUNNER_TEMP/cortex.apk" --prerelease --target "$GITHUB_SHA" \
+            --title "Cortex app (beta build ${{ github.run_number }})" \
+            --notes "Android APK built from ${GITHUB_SHA::7} on v4. Gateway: $GATEWAY_URL. Not for the Play Store; install on a test phone only."

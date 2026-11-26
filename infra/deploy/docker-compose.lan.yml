@@ -1,0 +1,47 @@
+# LAN-only gateway for the home server: no Caddy, no coturn.
+# Ports 80/8080/8443 are taken on that machine, so this uses 18080 (console + API, plain HTTP) and
+# 18443 (device mTLS, TLS 1.3, client cert required). ./tls holds a private LAN server CA + a cert for
+# 192.168.0.149 (made once with openssl on the server; not in git); the box must trust tls/server-ca.pem.
+# Run from this folder:  docker compose -f docker-compose.lan.yml up -d --build
+services:
+  gateway:
+    build: ../gateway
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # live bus arrivals and the Gemini second opinion for boxes (device listener only); keys are files, never env
+      CORTEX_LTA_KEY_FILE: /keys/lta_key
+      CORTEX_GEMINI_KEY_FILE: /keys/gemini_key
+    command:
+      - "-addr=:8080"
+      - "-state=/data/cortex-state.json"
+      - "-pki-dir=/data/pki"
+      - "-device-addr=:8443"
+      - "-device-cert=/tls/server.crt"
+      - "-device-key=/tls/server.key"
+    volumes:
+      - gateway-data:/data
+      - ./tls:/tls:ro
+      - ${HOME}/.config/cortex/lta_key:/keys/lta_key:ro
+      - ${HOME}/.config/cortex/gemini_key:/keys/gemini_key:ro
+    ports:
+      - "18080:8080"
+      - "18443:8443"
+    mem_limit: 256m
+
+  caddy:                              # TLS for infra.asirive.com; playit forwards public 80/443 to local 19080/19443
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "19080:80"
+      - "19443:443"
+    volumes:
+      - ./Caddyfile.lan:/etc/caddy/Caddyfile:ro
+      - ./console-auth.caddy:/etc/caddy/console-auth.caddy:ro
+      - caddy-data:/data
+    depends_on: [gateway]
+    mem_limit: 128m
+
+volumes:
+  gateway-data:
+  caddy-data:

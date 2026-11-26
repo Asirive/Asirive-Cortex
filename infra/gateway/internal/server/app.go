@@ -20,6 +20,8 @@ const BetaConsentVersion = "beta-2026-10"
 
 func (s *Server) appRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/auth/register", s.appRegister)
+	mux.HandleFunc("GET /v1/link/{kind}", s.linkPage)
+	mux.HandleFunc("GET /v1/brand/{file}", s.brandFile)
 	mux.HandleFunc("POST /v1/auth/verify", s.appVerify)
 	mux.HandleFunc("POST /v1/auth/resend", s.appResend)
 	mux.HandleFunc("POST /v1/auth/login", s.appLogin)
@@ -84,8 +86,7 @@ func (s *Server) appRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if tok != "" {
-		s.mailAsync(strings.ToLower(strings.TrimSpace(req.Email)), "Confirm your Asirive account",
-			"Welcome to Asirive.\n\nOpen this link on your phone to confirm your email:\n"+s.link("verify", tok)+"\n\nIf you didn't sign up, ignore this email.")
+		s.accountMail(strings.ToLower(strings.TrimSpace(req.Email)), "verify", tok)
 	}
 	// same answer whether or not the address already had an account
 	writeJSON(w, map[string]string{"result": "check_email"})
@@ -97,7 +98,7 @@ func (s *Server) appResend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if tok := s.Accounts.ResendVerify(req.Email, time.Now()); tok != "" {
-		s.mailAsync(strings.ToLower(strings.TrimSpace(req.Email)), "Confirm your Asirive account", "Open this link to confirm your email:\n"+s.link("verify", tok))
+		s.accountMail(strings.ToLower(strings.TrimSpace(req.Email)), "verify", tok)
 	}
 	writeJSON(w, map[string]string{"result": "check_email"})
 }
@@ -148,7 +149,7 @@ func (s *Server) appResetRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if to, tok := s.Accounts.ResetRequest(req.Email, time.Now()); tok != "" {
-		s.mailAsync(to, "Reset your Asirive password", "Open this link to choose a new password (valid for 1 hour):\n"+s.link("reset", tok)+"\n\nIf you didn't ask for this, ignore this email.")
+		s.accountMail(to, "reset", tok)
 	}
 	writeJSON(w, map[string]string{"result": "check_email"})
 }

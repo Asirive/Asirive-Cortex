@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/asirive/cortex/gateway/internal/gemini"
@@ -16,8 +17,15 @@ import (
 //	POST /device/second-opinion  {"question": "...", "frames_jpeg": ["<base64>", ...]}
 //
 // frames_jpeg is a short clip, oldest first, about a second apart (at most gemini.MaxFrames; none: the camera is
-// off). The gateway asks Gemini Live about it and returns {"answer": "...", "sentences": [...]}: at most two
-// spoken sentences, said to the user as is. The Gemini key stays here.
+// off). The gateway asks Gemini Live about it and returns {"answer": "..."}: at most two spoken sentences, said to
+// the user as is. The Gemini key stays here.
+//
+// With "Accept: application/x-ndjson" the answer streams instead, one JSON object per line, flushed at once:
+// {"sentence": "..."} for each finished sentence once Gemini has started the next one (the box speaks it straight
+// away, while Gemini is still talking), then {"done": true, "answer": "<all of it>", "rest": "<the sentences not
+// sent as lines, never empty>"}, which the box speaks and records as the template; or, if Gemini fails mid-answer,
+// {"error": "opinion_failed"} (what was already said stays said; the box says the rest was lost). Input errors are
+// found before the first line and are plain 400s.
 // Frames and questions are passed through, never stored or logged. Cost caps per device: opinionPerMin a minute
 // and opinionPerDay a day.
 const (
@@ -69,8 +77,11 @@ func (s *Server) secondOpinion(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusTooManyRequests, "rate_limited", "Too many second-opinion requests; try again in a minute.")
 		return
 	}
-	var sentences []string
-	ans, err := s.Gemini.Ask(r.Context(), req.Question, frames, func(x string) { sentences = append(sentences, x) })
+	if strings.Contains(r.Header.Get("Accept"), "application/x-ndjson") {
+		s.streamOpinion(w, r, req.Question, frames)
+		return
+	}
+	ans, err := s.Gemini.Ask(r.Context(), req.Question, frames, nil)
 	switch {
 	case errors.Is(err, gemini.ErrBadInput):
 		writeErr(w, http.StatusBadRequest, "bad_request", "Question empty or too long, or a frame is not a small JPEG.")
@@ -79,5 +90,36 @@ func (s *Server) secondOpinion(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "opinion_failed", "Gemini did not answer.")
 		return
 	}
-	writeJSON(w, map[string]any{"answer": ans, "sentences": sentences})
+	writeJSON(w, map[string]any{"answer": ans})
+}
+
+// streamOpinion answers as NDJSON, flushing each sentence the moment Gemini finishes it.
+func (s *Server) streamOpinion(w http.ResponseWriter, r *http.Request, question string, frames [][]byte) {
+	if err := gemini.Check(question, frames); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad_request", "Question empty or too long, or a frame is not a small JPEG.")
+		return
+	}
+	fl, _ := w.(http.Flusher)
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Accel-Buffering", "no") // a proxy in front must not hold sentences back
+	w.WriteHeader(http.StatusOK)
+	enc := json.NewEncoder(w)
+	line := func(v any) {
+		enc.Encode(v)
+		if fl != nil {
+			fl.Flush()
+		}
+	}
+	var said []string
+	ans, err := s.Gemini.Ask(r.Context(), question, frames, func(x string) {
+		said = append(said, x)
+		line(map[string]string{"sentence": x})
+	})
+	if err != nil {
+		line(map[string]string{"error": "opinion_failed"})
+		return
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(ans, strings.Join(said, " ")))
+	line(map[string]any{"done": true, "answer": ans, "rest": rest})
 }

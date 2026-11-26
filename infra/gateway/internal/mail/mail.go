@@ -16,6 +16,12 @@ type Mailer interface {
 	Send(to, subject, text string) error
 }
 
+// HTMLMailer is a Mailer that can also send a styled HTML body alongside the plain-text one.
+type HTMLMailer interface {
+	Mailer
+	SendHTML(to, subject, text, html string) error
+}
+
 // Resend sends through the Resend HTTP API (https://resend.com/docs/api-reference/emails/send-email).
 type Resend struct {
 	APIKey   string
@@ -24,7 +30,14 @@ type Resend struct {
 	Client   *http.Client
 }
 
-func (m *Resend) Send(to, subject, text string) error {
+func (m *Resend) Send(to, subject, text string) error { return m.send(to, subject, text, "") }
+
+// SendHTML sends both parts (multipart/alternative); clients that cannot show HTML fall back to text.
+func (m *Resend) SendHTML(to, subject, text, html string) error {
+	return m.send(to, subject, text, html)
+}
+
+func (m *Resend) send(to, subject, text, html string) error {
 	ep := m.Endpoint
 	if ep == "" {
 		ep = "https://api.resend.com/emails"
@@ -33,7 +46,11 @@ func (m *Resend) Send(to, subject, text string) error {
 	if c == nil {
 		c = &http.Client{Timeout: 10 * time.Second}
 	}
-	body, _ := json.Marshal(map[string]any{"from": m.From, "to": []string{to}, "subject": subject, "text": text})
+	msg := map[string]any{"from": m.From, "to": []string{to}, "subject": subject, "text": text}
+	if html != "" {
+		msg["html"] = html
+	}
+	body, _ := json.Marshal(msg)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	req, _ := http.NewRequestWithContext(ctx, "POST", ep, bytes.NewReader(body))

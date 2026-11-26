@@ -82,6 +82,9 @@ type Server struct {
 	Mailer     mail.Mailer
 	// AppLinkBase prefixes deep links in emails (default asirive://).
 	AppLinkBase string
+	// WebBase is the public https origin of this gateway (e.g. https://infra.asirive.com). When set, emails link to
+	// a confirm page there (works in every mail client) instead of the asirive:// deep link.
+	WebBase string
 	// AllowSharedDeviceToken lets devices connect with the shared dev token (simulator only).
 	AllowSharedDeviceToken bool
 	up                     websocket.Upgrader

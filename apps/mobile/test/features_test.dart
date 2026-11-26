@@ -60,6 +60,29 @@ void main() {
       expect(h.speaker.said.last, contains('not plugged in'));
     });
 
+    testWidgets('talk is one tap, like the glasses button: no confirmation; a failure is said plainly', (t) async {
+      final h = Harness()..gw.devices = [dev()];
+      await boot(t, h);
+      final talk = find.bySemanticsLabel(RegExp('^Talk to Cortex'));
+      expect(talk, findsOneWidget);
+      await t.tap(talk);
+      await t.pumpAndSettle();
+      expect(h.link.talks, 1);
+      expect(find.text('PAUSE THE ASSISTANT?'), findsNothing);
+      h.link.talkOk = false;
+      await t.tap(talk);
+      await t.pumpAndSettle();
+      expect(h.link.talks, 2);
+      expect(find.textContaining('Could not reach the pocket box'), findsOneWidget);
+      expect(h.speaker.said.last, contains('Could not reach the pocket box')); // the user may not see the screen
+    });
+
+    testWidgets('no glasses set up: no talk button', (t) async {
+      final h = Harness();
+      await boot(t, h);
+      expect(find.bySemanticsLabel(RegExp('^Talk to Cortex')), findsNothing);
+    });
+
     testWidgets('pause asks first, then reports when the cable is out', (t) async {
       final h = Harness()..gw.devices = [dev()];
       h.link.pauseOk = false;

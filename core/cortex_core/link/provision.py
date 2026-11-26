@@ -121,9 +121,10 @@ def arrivals_client(p: Provisioning, timeout: float = 3.0):
 
 
 def second_opinion_client(p: Provisioning, connect_s: float = 3.0, answer_s: float = 30.0):
-    """The brain's takeover `ask(question, frames) -> answer` (frames: JPEGs, oldest first, [] with the camera off):
-    Gemini Live through the gateway over mTLS
-    (POST /device/second-opinion; the gateway holds the key and caps requests per device). Raises
+    """The brain's takeover `ask(question, frames, say=None) -> answer` (frames: JPEGs, oldest first, [] with the
+    camera off): Gemini Live through the gateway over mTLS (POST /device/second-opinion; the gateway holds the key and
+    caps requests per device). The answer streams (NDJSON): say gets each sentence Gemini has finished and moved on
+    from, as it arrives; the return value is the whole answer. answer_s caps the wait for each line. Raises
     brain.takeover.OpinionError: online False when the gateway cannot be reached (connect_s caps that, so
     "not sure" comes quickly offline), True when it answered with an error (rate limit, Gemini down, not set up)."""
     import base64
@@ -134,7 +135,7 @@ def second_opinion_client(p: Provisioning, connect_s: float = 3.0, answer_s: flo
     u = urllib.parse.urlsplit(p.gateway_ws_url.replace("wss://", "https://", 1))
     path = u.path.rsplit("/ws/device", 1)[0] + "/device/second-opinion"
 
-    def ask(question: str, frames: list[bytes]) -> str:
+    def ask(question: str, frames: list[bytes], say=None) -> str:
         body = json.dumps({"question": question,
                            "frames_jpeg": [base64.b64encode(f).decode() for f in frames or []]}).encode()
         conn = None
@@ -148,15 +149,34 @@ def second_opinion_client(p: Provisioning, connect_s: float = 3.0, answer_s: flo
             raise OpinionError(f"gateway unreachable: {type(e).__name__}", online=False) from None
         try:
             conn.sock.settimeout(answer_s)
-            conn.request("POST", path, body, {"Content-Type": "application/json"})
+            conn.request("POST", path, body, {"Content-Type": "application/json", "Accept": "application/x-ndjson"})
             r = conn.getresponse()
-            data = json.loads(r.read() or b"{}")
+            if r.status != 200:
+                data = json.loads(r.read() or b"{}")
+                raise OpinionError(f"gateway HTTP {r.status}: {data.get('error_code', '')}")
+            if not r.getheader("Content-Type", "").startswith("application/x-ndjson"):  # an older gateway
+                data = json.loads(r.read() or b"{}")
+            else:
+                data = {}
+                while True:
+                    raw = r.readline(64 << 10)
+                    if not raw:
+                        raise OpinionError("gateway failed: stream ended early")
+                    if not raw.strip():
+                        continue
+                    m = json.loads(raw)
+                    if "sentence" in m:
+                        if say is not None:
+                            say(str(m["sentence"]))
+                    elif m.get("error"):
+                        raise OpinionError(f"gateway failed: {m['error']}")
+                    elif m.get("done"):
+                        data = m
+                        break
         except (OSError, ValueError, http.client.HTTPException) as e:
             raise OpinionError(f"gateway failed: {type(e).__name__}") from None
         finally:
             conn.close()
-        if r.status != 200:
-            raise OpinionError(f"gateway HTTP {r.status}: {data.get('error_code', '')}")
         ans = str(data.get("answer") or "").strip()
         if not ans:
             raise OpinionError("empty answer")

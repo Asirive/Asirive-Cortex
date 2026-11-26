@@ -55,6 +55,20 @@ Haziq's rule: Gemini takes over **only when the local LM is unsure and there is 
 
 About 3,000–3,400 input tokens per question with 3–4 frames.
 
+### Streaming the answer (built 2026-11-26)
+
+Gemini's transcription arrives at speaking pace, so on a two-sentence answer the first sentence is finished seconds
+before the turn ends. The box asks with `Accept: application/x-ndjson`; the gateway sends `{"sentence"}` for each
+sentence once Gemini has started the next one (a fragment later, not a sentence later), then
+`{"done", "answer", "rest"}`. The box speaks each early sentence at once (after "Checking.") and hands `rest` to the
+engine as the template, so the whole answer is in the tool result and nothing is said twice. The last sentence is
+always held back, because the engine has no "record without speaking" call. A drop mid-answer is now an error, not
+a short answer: the box says "Sorry, I lost the rest of that answer." With no frames, Gemini is told "The camera is
+off" (it used to answer "the frames do not show...").
+
+Real API through the gateway (4 synthetic frames): first sentence spoken at 3.4 s and 3.9 s, whole answer at 6.3 s
+and 7.4 s. A one-sentence answer gains nothing (it ends with the turn).
+
 ## Configuration
 
 | Where | Setting |
@@ -67,7 +81,6 @@ About 3,000–3,400 input tokens per question with 3–4 frames.
 - No tool-eval cases yet for when the real LM should call `second_opinion`. How often it does (or calls it
   instead of answering things it knows) is unmeasured.
 - Only synthetic frames so far. Real camera frames (blur, glare, crowds) are untested.
-- Latency on the box is unmeasured: 4 JPEG encodes via ffmpeg plus the round trip. On the server it is
-  7–8 s, all of it after "Checking.". Streaming the first sentence to the box would cut that to about 2–3 s;
-  not built.
+- Latency on the box is unmeasured: 4 JPEG encodes via ffmpeg plus the round trip. On the server the first
+  sentence is heard at about 3.5–4 s (streamed), the whole answer at 6–7.5 s.
 - The Gemini Live voice switch ("talk to Gemini") is a separate feature and is not built.
