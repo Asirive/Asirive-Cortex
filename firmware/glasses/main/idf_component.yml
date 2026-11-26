@@ -1,0 +1,6 @@
+# Versions are what the code was written against (TinyUSB's AUDIO20_* names, esp32-camera on the i2c_master
+# driver); the first build pins them in dependencies.lock, which is committed after that build.
+dependencies:
+  idf: ">=5.4"
+  espressif/tinyusb: "^0.21.0"
+  espressif/esp32-camera: "^2.1.0"

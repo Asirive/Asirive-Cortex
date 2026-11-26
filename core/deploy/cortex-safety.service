@@ -10,6 +10,7 @@ Before=cortex-supervisor.service cortex-link.service cortex-ota.service
 Type=simple
 User=cortex
 Group=cortex
+SupplementaryGroups=dialout
 Environment=PYTHONPATH=/opt/cortex CORTEX_HB_DIR=/run/cortex/hb
 RuntimeDirectory=cortex
 RuntimeDirectoryPreserve=yes

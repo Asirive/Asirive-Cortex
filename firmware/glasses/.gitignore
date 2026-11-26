@@ -1,0 +1,6 @@
+build/
+managed_components/
+sdkconfig
+sdkconfig.old
+components/vl53l7cx_uld/st/
+.deps/

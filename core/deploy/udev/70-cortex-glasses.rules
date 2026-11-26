@@ -1,0 +1,5 @@
+# Asirive glasses (ESP32-S3 composite: UVC camera, UAC2 audio, CDC safety channel). Stable names for the services.
+# VID 303a is Espressif's; PID 8a51 is a placeholder until one is allocated (firmware/glasses/main/usb_desc.h).
+# Install: sudo cp 70-cortex-glasses.rules /etc/udev/rules.d/ && sudo udevadm control --reload && sudo udevadm trigger
+SUBSYSTEM=="tty", ENV{ID_VENDOR_ID}=="303a", ENV{ID_MODEL_ID}=="8a51", ENV{ID_USB_INTERFACE_NUM}=="05", SYMLINK+="cortex-glasses-safety", GROUP="dialout", MODE="0660"
+SUBSYSTEM=="video4linux", ENV{ID_VENDOR_ID}=="303a", ENV{ID_MODEL_ID}=="8a51", ATTR{index}=="0", SYMLINK+="cortex-glasses-camera", GROUP="video", MODE="0660"

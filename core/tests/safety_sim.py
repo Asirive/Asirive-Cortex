@@ -220,7 +220,7 @@ def run(sc: Scenario, seed: int = 0, cfg: Optional[dict] = None, gyro_bias_dps: 
         t0 = time.perf_counter()
         svc.step()
         proc.append(time.perf_counter() - t0)
-    return {"warns": warns, "contact": contact(sc), "proc_ms": [1000 * p for p in proc]}
+    return {"warns": warns, "contact": contact(sc), "proc_ms": [1000 * p for p in proc], "frames": frames}
 
 
 def contact(sc: Scenario) -> Optional[float]:
