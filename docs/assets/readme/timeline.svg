@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 330" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" role="img" aria-label="Two clocks. Obstacle: 66 ms ToF frame, 5 ms USB, 40 ms motor, about 111 ms to the skin. Question: user stops talking, first word in about 191 ms, well inside the one second budget.">
+  <rect width="960" height="330" rx="18" fill="#000"/>
+  <text x="32" y="44" fill="#EAFF00" font-size="20" font-weight="700" letter-spacing="3">TWO CLOCKS</text>
+  <text x="32" y="68" fill="#8a8a8a" font-size="13">Scale: 0 to 1000 ms. One bar = one path, end to end.</text>
+
+  <!-- axis -->
+  <g stroke="#333" stroke-width="1">
+    <line x1="200" y1="92" x2="200" y2="268"/><line x1="380" y1="92" x2="380" y2="268"/>
+    <line x1="560" y1="92" x2="560" y2="268"/><line x1="740" y1="92" x2="740" y2="268"/>
+    <line x1="920" y1="92" x2="920" y2="268" stroke="#EAFF00" stroke-dasharray="4 4"/>
+  </g>
+  <g fill="#666" font-size="11" text-anchor="middle">
+    <text x="200" y="288">0</text><text x="380" y="288">250 ms</text><text x="560" y="288">500 ms</text><text x="740" y="288">750 ms</text>
+  </g>
+  <text x="920" y="288" fill="#EAFF00" font-size="11" text-anchor="middle">1 s budget</text>
+
+  <!-- safety: 66 + 5 + 40 = 111 ms ; 0.72 px per ms -->
+  <text x="32" y="122" fill="#fff" font-size="14" font-weight="700">OBSTACLE</text>
+  <text x="32" y="140" fill="#8a8a8a" font-size="11">head-height, cpu0</text>
+  <rect x="200" y="108" width="47.5" height="34" fill="#EAFF00"/>
+  <rect x="247.5" y="108" width="3.6" height="34" fill="#fff"/>
+  <rect x="251.1" y="108" width="28.8" height="34" fill="#9aa800"/>
+  <text x="292" y="124" fill="#fff" font-size="12">ToF frame 66 + USB 5 + motor 40</text>
+  <text x="292" y="140" fill="#EAFF00" font-size="12" font-weight="700">≈ 111 ms to the skin</text>
+
+  <!-- voice: 131 wait + 61 TTFT = 191 -->
+  <text x="32" y="206" fill="#fff" font-size="14" font-weight="700">QUESTION</text>
+  <text x="32" y="224" fill="#8a8a8a" font-size="11">stop talking → first word</text>
+  <rect x="200" y="192" width="94.3" height="34" fill="#fff"/>
+  <rect x="294.3" y="192" width="43.9" height="34" fill="#EAFF00"/>
+  <text x="350" y="208" fill="#fff" font-size="12">speech flush 131 + first token 61</text>
+  <text x="350" y="224" fill="#EAFF00" font-size="12" font-weight="700">≈ 191 ms, 5x under budget</text>
+
+  <text x="32" y="316" fill="#666" font-size="11">Sources: docs/measurements/2026-11-safety-sim.md (simulated sensor), 2026-11-speedups.md (on the box).</text>
+</svg>
