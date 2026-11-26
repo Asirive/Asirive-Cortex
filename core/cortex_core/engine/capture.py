@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import IO, Optional
 
@@ -33,6 +34,40 @@ def mic_cmd(device: str) -> list[str]:
                     + (["--target", target] if target else []) + ["-"])
     return _pin(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "alsa", "-i", device,
                  "-ac", "1", "-ar", "16000", "-f", "s16le", "-"])
+
+
+def jpeg(rgb, quality: int = 80) -> bytes:
+    """An RGB frame [h, w, 3] uint8 as JPEG bytes (the Gemini takeover). Pillow when installed (dev machines),
+    else ffmpeg (the box), pinned like the camera."""
+    import numpy as np
+
+    a = np.ascontiguousarray(rgb, dtype=np.uint8)
+    h, w = a.shape[:2]
+    try:
+        import io
+
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.fromarray(a, "RGB").save(buf, "JPEG", quality=quality)
+        return buf.getvalue()
+    except ImportError:
+        pass
+    q = max(2, min(31, round(31 - quality * 0.29)))  # ffmpeg's mjpeg q:v, 2 best .. 31 worst
+    r = subprocess.run(_pin(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
+                             "-s", f"{w}x{h}", "-i", "-", "-frames:v", "1", "-q:v", str(q), "-f", "mjpeg", "-"]),
+                       input=a.tobytes(), capture_output=True, timeout=5, check=True)
+    return r.stdout
+
+
+def fresh_jpeg(cam, max_age_s: float = 2.0) -> Optional[bytes]:
+    """The camera's newest frame as JPEG, or None with no camera, no frame yet, or a frame older than max_age_s."""
+    if cam is None:
+        return None
+    f = cam.latest()
+    if f is None or cam.latest_age() > max_age_s:
+        return None
+    return jpeg(f[1])
 
 
 def find_camera(v4l=Path("/sys/class/video4linux")) -> Optional[str]:
@@ -120,6 +155,7 @@ class Camera(_Proc):
         self.w, self.h = width, height
         self._lock = threading.Lock()
         self._latest = None
+        self._t = 0.0
         self._id = 0
         self.thread = threading.Thread(target=self._run, name="camera", daemon=True)
         self.thread.start()
@@ -135,10 +171,16 @@ class Camera(_Proc):
             with self._lock:
                 self._id += 1
                 self._latest = (self._id, np.frombuffer(b, dtype=np.uint8).reshape(self.h, self.w, 3))
+                self._t = time.monotonic()
 
     def latest(self):
         with self._lock:
             return self._latest
+
+    def latest_age(self) -> float:
+        """Seconds since the newest frame arrived (inf before the first)."""
+        with self._lock:
+            return time.monotonic() - self._t if self._latest is not None else float("inf")
 
     def alive(self) -> bool:
         return self.thread.is_alive()

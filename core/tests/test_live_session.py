@@ -260,3 +260,13 @@ def test_gateway_arrivals_only_when_claimed(tmp_path):
     assert gateway_arrivals(str(tmp_path)) is None
     (tmp_path / "device.json").write_text('{"device_id": "d", "token": "t", "gateway_ws_url": "wss://gw:8443/ws/device"}')
     assert callable(gateway_arrivals(str(tmp_path)))
+
+
+def test_gateway_takeover_only_when_claimed(tmp_path):
+    from cortex_core.brain.takeover import NOT_SURE_OFFLINE
+    from cortex_core.tui.__main__ import gateway_takeover
+    t = gateway_takeover(str(tmp_path))
+    assert t.ask is None and t.run("what is this", True)[1] == NOT_SURE_OFFLINE
+    assert t.frame() is None  # no camera: no picture
+    (tmp_path / "device.json").write_text('{"device_id": "d", "token": "t", "gateway_ws_url": "wss://gw:8443/ws/device"}')
+    assert callable(gateway_takeover(str(tmp_path)).ask)

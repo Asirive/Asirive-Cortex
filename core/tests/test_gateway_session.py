@@ -67,9 +67,13 @@ def gateway(tmp_path_factory):
     api, dev = free_port(), free_port()
     log = open(d / "gw.log", "w")
     dm = _fake_datamall()
+    gm = _fake_gemini()
     (d / "lta_key").write_text("dm-key\n")
+    (d / "gemini_key").write_text("gm-key\n")
     env = dict(os.environ, CORTEX_DEV_TOKEN="boot", CORTEX_LTA_KEY_FILE=str(d / "lta_key"),
-               CORTEX_LTA_BASE=f"http://127.0.0.1:{dm.server_port}/BusArrival")
+               CORTEX_LTA_BASE=f"http://127.0.0.1:{dm.server_port}/BusArrival",
+               CORTEX_GEMINI_KEY_FILE=str(d / "gemini_key"), CORTEX_GEMINI_BASE=f"http://127.0.0.1:{gm.server_port}",
+               CORTEX_GEMINI_MODEL="stand-in")
     p = subprocess.Popen([binp, "-addr", f"127.0.0.1:{api}", "-device-addr", f"127.0.0.1:{dev}", "-device-cert", str(d / "s.crt"),
                           "-device-key", str(d / "s.key"), "-pki-dir", str(d / "pki"), "-state", str(d / "st.json")],
                          env=env, stdout=log, stderr=log)
@@ -83,6 +87,36 @@ def gateway(tmp_path_factory):
     p.terminate()
     p.wait(5)
     dm.shutdown()
+    gm.shutdown()
+
+
+def _fake_gemini():
+    """Gemini's generateContent: answers whether it was given a picture, so the test sees the frame arrive."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["content-length"])))
+            if self.headers.get("x-goog-api-key") != "gm-key" or self.path != "/models/stand-in:generateContent":
+                self.send_response(403)
+                self.end_headers()
+                return
+            parts = body["contents"][0]["parts"]
+            img = any("inlineData" in x for x in parts)
+            q = parts[-1]["text"]
+            text = f"With a picture: {q}." if img else f"Without a picture: {q}."
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"candidates": [{"content": {"parts": [{"text": text}]}}]}).encode())
+
+        def log_message(self, *a):
+            pass
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
 
 
 def _fake_datamall():
@@ -275,3 +309,36 @@ def test_live_bus_arrivals_through_the_gateway(gateway):
     r = nav.call("bus_arrivals", {})
     assert r.data.get("live") is not True
 
+
+def test_gemini_takeover_through_the_gateway(gateway):
+    """The LM's second_opinion call -> box -> gateway (mTLS, server key) -> Gemini -> spoken answer."""
+    from cortex_core.brain import tools as T
+    from cortex_core.brain.brain import Brain
+    from cortex_core.brain.takeover import NOT_SURE, NOT_SURE_OFFLINE, Takeover
+    from cortex_core.link import provision
+    from test_brain import FakeEngine, call
+    c, keyp, certp = pair(gateway, "BETA", False)
+    d = str(gateway["dir"] / "prov-gem")
+    os.makedirs(d, exist_ok=True)
+    os.replace(keyp, os.path.join(d, "device.key"))
+    p = provision.save(d, c, gateway["dev"], (gateway["dir"] / "s.crt").read_bytes())
+    jpeg = b"\xff\xd8\xff\xe0" + b"\0" * 64
+    ask = provision.second_opinion_client(p)
+    assert ask("which bus is this", jpeg) == "With a picture: which bus is this."
+    assert ask("what day is it", None) == "Without a picture: what day is it."
+
+    eng = FakeEngine(lambda k, t, s: [{"type": "tool_call", "text": call("second_opinion", question="which bus is this")},
+                                      {"type": "done", "tool": True}] if k == "ask" else None)
+    Brain(eng, None, T.load(), takeover=Takeover(ask, frame=lambda: jpeg)).ask("which bus is this")
+    assert eng.log[1][2] == "With a picture: which bus is this."
+
+    # the gateway refuses (revoked): "not sure", never a crash
+    http("POST", gateway["api"] + f"/api/registrations/{c['device_id']}/revoke", "boot")
+    data, say = Takeover(ask).run("which bus is this", True)
+    assert say == NOT_SURE and data["error"]  # refused at TLS or 401, never an answer
+    # no route to the gateway: the offline sentence, quickly
+    import dataclasses
+    import time as _t
+    off = provision.second_opinion_client(dataclasses.replace(p, gateway_ws_url="wss://127.0.0.1:1/ws/device"))
+    t0 = _t.monotonic()
+    assert Takeover(off).run("q", True)[1] == NOT_SURE_OFFLINE and _t.monotonic() - t0 < 4

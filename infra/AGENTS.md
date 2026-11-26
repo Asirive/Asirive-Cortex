@@ -52,6 +52,8 @@ Legacy consumers: `v3_core/` (device links, hybrid memory sync),
   verifier/A-B client, camera relay, dataset pipeline, Python/Dart codegen. Gap
   table: docs/architecture/FLEET-OTA-AND-SECURITY.md.
 
+- `gateway/internal/gemini` + `POST /device/second-opinion` (device mTLS listener only): the box's Gemini takeover. `{question, image_jpeg (base64, optional)}` -> `{answer}`; Gemini `generateContent` with the server's key (`CORTEX_GEMINI_KEY_FILE`, chmod 600, or `CORTEX_GEMINI_KEY`; `CORTEX_GEMINI_MODEL`, default `gemini-2.5-flash`; `CORTEX_GEMINI_BASE` for tests), key in a header never the URL, Cortex's speaking rules as the system instruction, answer cut at a sentence <= 400 chars. 6 requests/min and 100/day per device; 503 not set up, 400 bad input, 429 capped, 502 Gemini failed. Frames and questions are never stored or logged. Tested with a stand-in Gemini (`go test ./internal/gemini ./internal/server`, and from the Python box); NOT yet run against real Gemini (no key on the server).
+
 ## V4 target (greenfield)
 
 1. **Fleet gateway (Go).** Device registry, persistent device/app channels,
@@ -109,3 +111,4 @@ psql -f supabase/migrations/001_initial_schema.sql   # schema apply (reference)
 - 2026-11-26: `navbundle/build.py` (offline Singapore nav bundle: walking graph, bus stops/routes, all MRT/LRT lines incl. Punggol/Bukit Panjang LRT, 100k places incl. multipolygons with ways in, LTA headways). 50 s, 1.13 GB peak RSS, 52 MB out on the server.
 - 2026-11-26: `navbundle/lta_fetch.py` (DataMall static bus data for the builder's headways; key outside the repo).
 - 2026-11-26: Gateway live bus arrivals (`internal/lta`, `/device/bus-arrivals` on the mTLS listener); box client `cortex_core/link/provision.arrivals_client`. Go 1.27 on the dev server (`~/.local/go`).
+- 2026-11-26: Gateway Gemini second opinion (`internal/gemini`, `/device/second-opinion`; `rateWindow.allowWithin` for the daily cap).

@@ -118,3 +118,47 @@ def arrivals_client(p: Provisioning, timeout: float = 3.0):
 
     return arrivals
 
+
+
+def second_opinion_client(p: Provisioning, connect_s: float = 3.0, answer_s: float = 15.0):
+    """The brain's takeover `ask(question, jpeg|None) -> answer`: Gemini through the gateway over mTLS
+    (POST /device/second-opinion; the gateway holds the key and caps requests per device). Raises
+    brain.takeover.OpinionError: online False when the gateway cannot be reached (connect_s caps that, so
+    "not sure" comes quickly offline), True when it answered with an error (rate limit, Gemini down, not set up)."""
+    import base64
+    import http.client
+
+    from cortex_core.brain.takeover import OpinionError
+
+    u = urllib.parse.urlsplit(p.gateway_ws_url.replace("wss://", "https://", 1))
+    path = u.path.rsplit("/ws/device", 1)[0] + "/device/second-opinion"
+
+    def ask(question: str, jpeg: Optional[bytes]) -> str:
+        body = json.dumps({"question": question,
+                           "image_jpeg": base64.b64encode(jpeg).decode() if jpeg else ""}).encode()
+        conn = None
+        try:
+            ctx = identity.ssl_context(p.key_path, p.cert_path, p.server_ca_path)
+            conn = http.client.HTTPSConnection(u.hostname, u.port or 443, timeout=connect_s, context=ctx)
+            conn.connect()
+        except (OSError, ValueError) as e:  # no internet, DNS, refused, TLS refused, timeout
+            if conn is not None:
+                conn.close()
+            raise OpinionError(f"gateway unreachable: {type(e).__name__}", online=False) from None
+        try:
+            conn.sock.settimeout(answer_s)
+            conn.request("POST", path, body, {"Content-Type": "application/json"})
+            r = conn.getresponse()
+            data = json.loads(r.read() or b"{}")
+        except (OSError, ValueError, http.client.HTTPException) as e:
+            raise OpinionError(f"gateway failed: {type(e).__name__}") from None
+        finally:
+            conn.close()
+        if r.status != 200:
+            raise OpinionError(f"gateway HTTP {r.status}: {data.get('error_code', '')}")
+        ans = str(data.get("answer") or "").strip()
+        if not ans:
+            raise OpinionError("empty answer")
+        return ans
+
+    return ask

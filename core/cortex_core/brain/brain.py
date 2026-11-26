@@ -17,6 +17,8 @@ so the LM can try again; a second one ends the turn with "Sorry, I couldn't do t
 Cues (nav events) wait for the running turn to end, except urgent ones (get off now, off route), which cut it.
 Memory scans (cortex_core.memory) run only while idle, hold the turn lock, and are cut (engine.cancel) the moment the
 user types or starts talking; a cut scan stores nothing. Cues wait for a scan like for a turn.
+Gemini takeover (brain.takeover): the LM's silent second_opinion call sends the fresh frame (camera on only) and the
+question to Gemini through the gateway; the answer is spoken as a template. Offline: "I'm not sure".
 """
 from __future__ import annotations
 
@@ -35,7 +37,7 @@ CHECKING_S = 0.7
 MAX_CHAIN = 4
 SORRY = "Sorry, I couldn't do that."
 URGENT = {"alight_now", "off_route"}
-BRAIN_TOOLS = {"set_mode", "camera", "search_memory"}
+BRAIN_TOOLS = {"set_mode", "camera", "search_memory", "second_opinion"}
 TALK_STALE_S = 30.0  # a speech_start whose answer never came stops counting as "talking" after this
 
 
@@ -62,8 +64,9 @@ class Turn:
 class Brain:
     def __init__(self, engine, nav=None, registry: T.Registry | None = None,
                  on_event: Callable[[str, dict], None] | None = None, checking_s: float = CHECKING_S,
-                 memory=None):
+                 memory=None, takeover=None):
         self.eng = engine
+        self.takeover = takeover  # brain.takeover.Takeover (None: no gateway, second_opinion says "not sure")
         self.nav = nav
         self.memory = memory
         self._scanning = threading.Event()
@@ -270,6 +273,9 @@ class Brain:
             if self.memory is None:
                 return {"error": "memory is not running"}, None
             return self.memory.search(str(call.args["item"]))
+        if call.name == "second_opinion":
+            from cortex_core.brain.takeover import Takeover
+            return (self.takeover or Takeover(None)).run(str(call.args["question"]), self.camera_on)
         if call.name == "camera":
             self.camera_on = bool(call.args["on"])
             self.on_event("camera", {"on": self.camera_on})

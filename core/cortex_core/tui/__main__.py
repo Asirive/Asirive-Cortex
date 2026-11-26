@@ -32,18 +32,35 @@ def native_output_to(path: Path) -> None:
     sys.stderr = sys.__stderr__ = os.fdopen(tty_err, "w", buffering=1)
 
 
+def _identity(identity_dir: str | None):
+    from cortex_core.link import provision
+
+    try:
+        return provision.load(identity_dir) if identity_dir else None
+    except (OSError, ValueError, KeyError):  # unreadable as this user, half-written
+        return None
+
+
 def gateway_arrivals(identity_dir: str | None):
     """Live bus arrivals through the gateway when this box is claimed (else None: headway estimates)."""
     from cortex_core.link import provision
 
-    try:
-        p = provision.load(identity_dir) if identity_dir else None
-    except (OSError, ValueError, KeyError):  # unreadable as this user, half-written
-        p = None
+    p = _identity(identity_dir)
     return provision.arrivals_client(p) if p is not None else None
 
 
-def make_brain(eng, a: argparse.Namespace):
+def gateway_takeover(identity_dir: str | None, cam=None):
+    """The Gemini takeover through the gateway when this box is claimed (else: second_opinion says not sure)."""
+    from cortex_core.brain.takeover import Takeover
+    from cortex_core.engine import capture
+    from cortex_core.link import provision
+
+    p = _identity(identity_dir)
+    return Takeover(provision.second_opinion_client(p) if p is not None else None,
+                    frame=lambda: capture.fresh_jpeg(cam))
+
+
+def make_brain(eng, a: argparse.Namespace, cam=None):
     """The agent harness over the engine: the newest nav bundle, the box's saved places, the tools contract."""
     from cortex_core.brain import tools as T
     from cortex_core.brain.brain import Brain
@@ -57,7 +74,8 @@ def make_brain(eng, a: argparse.Namespace):
     reg = T.load(a.tools) if a.tools else T.load()
     store = Store(a.memory_db)
     store.purge()
-    return Brain(eng, nav, reg, memory=Memory(store, engine_looker(eng), where=nav.where))
+    return Brain(eng, nav, reg, memory=Memory(store, engine_looker(eng), where=nav.where),
+                 takeover=gateway_takeover(a.identity_dir, cam))
 
 
 def live(a: argparse.Namespace) -> int:
@@ -78,12 +96,14 @@ def live(a: argparse.Namespace) -> int:
     session = listener = None
     try:
         cam = capture.Camera(cam_dev) if cam_dev else None
-        brain = make_brain(eng, a) if a.nav else None
+        brain = make_brain(eng, a, cam) if a.nav else None
         session = LiveSession(eng, cam, refresh_s=a.refresh_s, max_tokens=a.max_tokens, brain=brain)
         if brain is not None:
             from cortex_core.link import gps
             listener = gps.GpsListener(a.gps_sock, session.on_fix).start()  # fixes forwarded by the link service
             session.note(f"agent harness on · nav bundle {brain.nav.b.path.name} · GPS from {a.gps_sock}")
+            if brain.takeover.ask is None:
+                session.note("second opinion off: no claimed identity, so unsure answers say 'not sure'")
             if not brain.memory.can_learn:
                 session.note("memory: this engine build has no ce_peek, so it recalls but learns nothing new")
         if mic_dev:
@@ -125,7 +145,8 @@ def main(argv: Optional[list[str]] = None, env: Mapping[str, str] = os.environ) 
     p.add_argument("--nav-bundles", default="/var/lib/cortex/nav/bundles", help="newest bundle here is used")
     p.add_argument("--saved-places", default="/var/lib/cortex/nav/saved_places.json")
     p.add_argument("--identity-dir", default="/var/lib/cortex/identity",
-                   help="claimed-box identity; live bus arrivals go through its gateway (missing = headway estimates)")
+                   help="claimed-box identity; live bus arrivals and the Gemini second opinion go through its gateway "
+                        "(missing = headway estimates, 'not sure')")
     p.add_argument("--tools", default="", help="tools.json (default: the contract the package finds)")
     p.add_argument("--gps-sock", default="/run/cortex/gps.sock")
     p.add_argument("--memory-db", default="/var/lib/cortex/memory/memory.db")

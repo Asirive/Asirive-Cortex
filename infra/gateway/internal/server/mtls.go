@@ -11,12 +11,13 @@ import (
 )
 
 // DeviceHandler is the ONLY thing served on the device (mTLS) listener: the device
-// WebSocket, certificate renewal and live bus arrivals. The operator API and app API are not reachable here.
+// WebSocket, certificate renewal, live bus arrivals and the Gemini second opinion. The operator API and app API are not reachable here.
 func (s *Server) DeviceHandler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/device", s.deviceWS)
 	mux.HandleFunc("POST /device/renew", s.renewCert)
 	mux.HandleFunc("GET /device/bus-arrivals", s.busArrivals)
+	mux.HandleFunc("POST /device/second-opinion", s.secondOpinion)
 	return secure(mux)
 }
 

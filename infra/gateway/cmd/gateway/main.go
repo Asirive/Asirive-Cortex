@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/asirive/cortex/gateway/internal/fleet"
+	"github.com/asirive/cortex/gateway/internal/gemini"
 	"github.com/asirive/cortex/gateway/internal/lta"
 	"github.com/asirive/cortex/gateway/internal/ota"
 	"github.com/asirive/cortex/gateway/internal/server"
@@ -102,6 +103,28 @@ func main() {
 		log.Print("live bus arrivals: on (device listener /device/bus-arrivals)")
 	} else {
 		log.Print("live bus arrivals: off (no CORTEX_LTA_KEY_FILE)")
+	}
+	// Gemini second opinion for devices: the key from CORTEX_GEMINI_KEY_FILE (preferred, chmod 600) or
+	// CORTEX_GEMINI_KEY, never logged. Without it the box says it is not sure instead of asking.
+	gemKey := os.Getenv("CORTEX_GEMINI_KEY")
+	if f := os.Getenv("CORTEX_GEMINI_KEY_FILE"); f != "" {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			log.Fatalf("CORTEX_GEMINI_KEY_FILE: %v", err)
+		}
+		gemKey = string(b)
+	}
+	if strings.TrimSpace(gemKey) != "" {
+		srv.Gemini = gemini.New(gemKey)
+		if b := os.Getenv("CORTEX_GEMINI_BASE"); b != "" { // tests and staging only
+			srv.Gemini.Base = b
+		}
+		if m := os.Getenv("CORTEX_GEMINI_MODEL"); m != "" {
+			srv.Gemini.Model = m
+		}
+		log.Printf("gemini second opinion: on (model %s, device listener /device/second-opinion)", srv.Gemini.Model)
+	} else {
+		log.Print("gemini second opinion: off (no CORTEX_GEMINI_KEY_FILE)")
 	}
 	if b := os.Getenv("CORTEX_APP_LINK_BASE"); b != "" {
 		srv.AppLinkBase = b

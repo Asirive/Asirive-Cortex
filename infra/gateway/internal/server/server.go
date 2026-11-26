@@ -32,6 +32,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/asirive/cortex/gateway/internal/fleet"
+	"github.com/asirive/cortex/gateway/internal/gemini"
 	pb "github.com/asirive/cortex/gateway/internal/gen/cortex/v1"
 	"github.com/asirive/cortex/gateway/internal/lta"
 	"github.com/asirive/cortex/gateway/internal/ota"
@@ -68,7 +69,11 @@ type Server struct {
 	// Arrivals is the live bus-arrivals proxy (nil or keyless = not offered; the box falls back to headways).
 	Arrivals     *lta.Client
 	arrivalsRate rateWindow
-	AlertTo      []string // ops email recipients for fleet alerts
+	// Gemini is the second-opinion proxy (nil or keyless = not offered; the box says it is not sure).
+	Gemini       *gemini.Client
+	opinionRate  rateWindow // per minute
+	opinionDaily rateWindow // per day (cost cap)
+	AlertTo      []string   // ops email recipients for fleet alerts
 	alerts       map[string]*alertState
 	Pusher       push.Pusher // nil = no wake-up
 	// TurnSecret is coturn static-auth-secret; TurnURLs e.g. turn:turn.asirive.com:3478?transport=udp

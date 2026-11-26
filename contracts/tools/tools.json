@@ -100,6 +100,15 @@
       },
       "modes": "all",
       "spoken_by": "lm"
+    },
+    {
+      "name": "second_opinion",
+      "description": "Call this instead of answering when you are not sure what the camera shows or what the right answer is. A stronger online model looks at the same view and answers the user. Do not guess.",
+      "parameters": {
+        "question": {"type": "string", "description": "The user's question, in full, e.g. which bus is this", "required": true}
+      },
+      "modes": "all",
+      "spoken_by": "template"
     }
   ]
 }

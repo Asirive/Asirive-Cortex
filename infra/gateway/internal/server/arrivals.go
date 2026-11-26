@@ -25,6 +25,11 @@ type rateWindow struct {
 }
 
 func (rw *rateWindow) allow(id string, now time.Time, perMin int) bool {
+	return rw.allowWithin(id, now, perMin, time.Minute)
+}
+
+// allowWithin: at most n hits per device in any window of length win.
+func (rw *rateWindow) allowWithin(id string, now time.Time, n int, win time.Duration) bool {
 	rw.mu.Lock()
 	defer rw.mu.Unlock()
 	if rw.hits == nil {
@@ -32,11 +37,11 @@ func (rw *rateWindow) allow(id string, now time.Time, perMin int) bool {
 	}
 	keep := rw.hits[id][:0]
 	for _, t := range rw.hits[id] {
-		if now.Sub(t) < time.Minute {
+		if now.Sub(t) < win {
 			keep = append(keep, t)
 		}
 	}
-	if len(keep) >= perMin {
+	if len(keep) >= n {
 		rw.hits[id] = keep
 		return false
 	}
