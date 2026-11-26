@@ -91,6 +91,9 @@ class Engine:
         L.ce_close.argtypes = [ctypes.c_void_p]
         L.ce_set_listening.argtypes = [ctypes.c_void_p, ctypes.c_int]
         L.ce_push_audio.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+        self.can_peek = hasattr(L, "ce_peek")  # memory's silent look; older builds lack it (memory then only recalls)
+        if self.can_peek:
+            L.ce_peek.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]
 
         self._views: queue.Queue[dict] = queue.Queue()  # view events, and errors while no ask runs
         self._answer: queue.Queue[dict] = queue.Queue()  # token / done, and errors during an ask
@@ -145,6 +148,13 @@ class Engine:
     def ask(self, text: str, max_tokens: int = 0, timeout: float = 60.0) -> Iterator[dict]:
         """Yields token events (or one tool_call) and ends with the done (or error) event."""
         return self._run(lambda: self._lib.ce_ask(self._h, text.encode(), max_tokens), timeout)
+
+    def peek(self, text: str, max_tokens: int = 60, timeout: float = 30.0) -> Iterator[dict]:
+        """A silent question about the current view (memory scans): not spoken, not added to the conversation.
+        Cut by speech start, ask and cancel (done with cancelled true). Yields like ask()."""
+        if not self.can_peek:
+            raise RuntimeError("this engine build has no ce_peek")
+        return self._run(lambda: self._lib.ce_peek(self._h, text.encode(), max_tokens), timeout)
 
     def tool_result(self, result: str, say: str | None = None, timeout: float = 60.0) -> Iterator[dict]:
         """The answer to the waiting tool call. say None: the LM reads result and answers (it may call again);

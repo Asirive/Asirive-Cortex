@@ -48,6 +48,11 @@ async def serve(hb: Path, stop: asyncio.Event) -> None:
     phone.control = OwnerControl(FileControls(), phone.paired)
     phone.on_location = location_sink(gps.GpsForwarder(os.environ.get("CORTEX_GPS_SOCK", gps.SOCK)),
                                       gps.GpsRecorder(NAV_STATE))
+    try:
+        from cortex_core.memory.store import DEFAULT_PATH, Store
+        phone.memory = Store(os.environ.get("CORTEX_MEMORY_DB", DEFAULT_PATH))  # the app's item list
+    except Exception:  # noqa: BLE001 - no memory store must not stop the link
+        log.exception("memory store unavailable: the app cannot edit items")
     phone_task = asyncio.create_task(phone.serve(stop=stop))  # answers the app even while unpaired
     phone_task.add_done_callback(lambda t: t.cancelled() or t.exception() is None or log.error("phone link stopped: %r", t.exception()))
     client = None

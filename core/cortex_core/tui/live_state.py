@@ -127,6 +127,9 @@ class LiveState:
             self.log.append(f"said: {data.get('text')}")
         elif kind == "camera":
             self.log.append("camera " + ("on" if data.get("on") else "off"))
+        elif kind == "memory":
+            self.log.append("memory: " + "; ".join(f"{s.get('item')} {s.get('spot') or ''}".strip()
+                                                   for s in data.get("seen", [])))
         elif kind == "gps":
             self.gps = dict(data)
         elif kind == "error":

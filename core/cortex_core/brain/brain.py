@@ -5,15 +5,18 @@
     brain.voice_event(ev)               # every event from engine.next_voice(): spoken questions are driven the same way
     brain.on_fix(lat, lon, acc_m, t)    # GPS: follower cues are spoken, modes follow the trip, the state line updates
     brain.vision_s                      # camera cadence for the current mode (None: only when the user talks)
+    brain.on_view(ev)                   # every view event: memory may scan it while idle (returns the scan thread)
 
 on_event(kind, data): "token"/"done" (the LM's text after a tool result, and typed answers), "tool_call", "tool_run",
-"mode", "state", "nav", "said", "camera", "error". Voice events the host fed in through voice_event are not echoed.
+"mode", "state", "nav", "said", "camera", "memory", "error". Voice events the host fed in through voice_event are not echoed.
 
 Dispatch (spec 6.2): parse -> validate -> mode check -> run. Tools taking longer than CHECKING_S get "Checking."
 spoken first. spoken_by "template" results are spoken as a fixed sentence (ce_tool_result with say); "lm" results go
 back to the LM, which answers or calls again (chains up to MAX_CHAIN calls). A malformed call gets one error result
 so the LM can try again; a second one ends the turn with "Sorry, I couldn't do that."
 Cues (nav events) wait for the running turn to end, except urgent ones (get off now, off route), which cut it.
+Memory scans (cortex_core.memory) run only while idle, hold the turn lock, and are cut (engine.cancel) the moment the
+user types or starts talking; a cut scan stores nothing. Cues wait for a scan like for a turn.
 """
 from __future__ import annotations
 
@@ -32,7 +35,8 @@ CHECKING_S = 0.7
 MAX_CHAIN = 4
 SORRY = "Sorry, I couldn't do that."
 URGENT = {"alight_now", "off_route"}
-BRAIN_TOOLS = {"set_mode", "camera"}
+BRAIN_TOOLS = {"set_mode", "camera", "search_memory"}
+TALK_STALE_S = 30.0  # a speech_start whose answer never came stops counting as "talking" after this
 
 
 @dataclass
@@ -57,9 +61,13 @@ class Turn:
 
 class Brain:
     def __init__(self, engine, nav=None, registry: T.Registry | None = None,
-                 on_event: Callable[[str, dict], None] | None = None, checking_s: float = CHECKING_S):
+                 on_event: Callable[[str, dict], None] | None = None, checking_s: float = CHECKING_S,
+                 memory=None):
         self.eng = engine
         self.nav = nav
+        self.memory = memory
+        self._scanning = threading.Event()
+        self._talking_since: float | None = None
         self.reg = registry or T.load()
         self.on_event = on_event or (lambda kind, data: None)
         self.checking_s = checking_s
@@ -101,17 +109,31 @@ class Brain:
             self.modes.force(hint)
 
     # ------------------------------------------------------------------ asking
+    def _take_turn(self) -> None:
+        """The turn lock; a memory scan holding it is cut so the user never waits for it."""
+        while not self.turn_lock.acquire(timeout=0.02):
+            if self._scanning.is_set():
+                self.eng.cancel()
+
     def ask(self, text: str, max_tokens: int = 0) -> Turn:
-        with self.turn_lock:
+        self._take_turn()
+        try:
             t = Turn()
             self._drive(self.eng.ask(text, max_tokens), t)
             self.last_turn = t
+        finally:
+            self.turn_lock.release()
         self._flush_cues()
         return t
 
     def voice_event(self, ev: dict) -> Turn | None:
         """Feed every event from engine.next_voice(). Returns the Turn when a spoken question has been answered."""
         typ = ev.get("type")
+        if typ == "speech_start":
+            self._talking_since = time.monotonic()
+            if self._scanning.is_set():  # the engine cuts a peek on speech start itself; this is the belt to it
+                self.eng.cancel()
+            return None
         if typ == "tool_call" and ev.get("voice"):
             self._voice_call = ev["text"]
             self.on_event("tool_call", {"text": ev["text"], "voice": True})
@@ -125,12 +147,16 @@ class Brain:
             t = self._voice_turn or Turn(voice=True)
             self._voice_turn = None
             t.done = ev
+            self._talking_since = None
             call, self._voice_call = self._voice_call, None
             if call is not None:
-                with self.turn_lock:
+                self._take_turn()
+                try:
                     malformed = [0]
                     nxt = self._handle_call(call, t, malformed)
                     self._drive(nxt, t, depth=1, malformed=malformed)
+                finally:
+                    self.turn_lock.release()
             self.last_turn = t
             self._flush_cues()
             return t
@@ -240,6 +266,10 @@ class Brain:
             if not ch.ok:
                 r["error"] = ch.reason
             return r, ch.say
+        if call.name == "search_memory":
+            if self.memory is None:
+                return {"error": "memory is not running"}, None
+            return self.memory.search(str(call.args["item"]))
         if call.name == "camera":
             self.camera_on = bool(call.args["on"])
             self.on_event("camera", {"on": self.camera_on})
@@ -296,3 +326,41 @@ class Brain:
     def vision_s(self) -> float | None:
         """Seconds between camera views in this mode; None: only when the user talks (or the camera is off: never)."""
         return self.modes.vision_s if self.camera_on else None
+
+    # ------------------------------------------------------------------ memory
+    def _idle(self) -> bool:
+        talking = self._talking_since is not None and time.monotonic() - self._talking_since < TALK_STALE_S
+        if talking or self.cues or self._voice_turn is not None or self._voice_call is not None:
+            return False
+        if not self.turn_lock.acquire(blocking=False):
+            return False
+        self.turn_lock.release()
+        return True
+
+    def on_view(self, ev: dict) -> threading.Thread | None:
+        """Every view event from the engine. Starts a memory scan on a thread when memory wants one and the brain
+        is idle; returns that thread (None: no scan)."""
+        if self.memory is None or self._scanning.is_set() or not self.memory.wants_scan(ev, self._idle()):
+            return None
+        self._scanning.set()
+        th = threading.Thread(target=self._scan, args=(ev,), name="memory-scan", daemon=True)
+        th.start()
+        return th
+
+    def _scan(self, ev: dict) -> None:
+        try:
+            if not self.turn_lock.acquire(blocking=False):
+                return
+            try:
+                seen = self.memory.scan(ev)
+            except Exception as e:  # noqa: BLE001 - a broken scan must not take the brain down
+                self.on_event("error", {"type": "error", "what": f"memory: {e}"})
+                seen = []
+            finally:
+                self._scanning.clear()
+                self.turn_lock.release()
+            if seen:
+                self.on_event("memory", {"seen": [s.__dict__ for s in seen]})
+        finally:
+            self._scanning.clear()
+        self._flush_cues()

@@ -199,6 +199,8 @@ class LiveSession:
                 self.stop.wait(1.0)
                 continue
             self._apply(ev)
+            if self.brain is not None:
+                self.brain.on_view(ev)  # memory may scan this view while the brain is idle
             self.stop.wait(max(0.0, (every or 0.0) - (time.monotonic() - t0)))
 
     def close(self) -> None:

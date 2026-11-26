@@ -91,6 +91,15 @@
       },
       "modes": "all",
       "spoken_by": "template"
+    },
+    {
+      "name": "search_memory",
+      "description": "Where the user last left one of their things (keys, wallet, phone, glasses, bag, cane, or an item they added in the app): the spot, place and how long ago it was seen.",
+      "parameters": {
+        "item": {"type": "string", "description": "The thing the user asked about, e.g. keys or water bottle", "required": true}
+      },
+      "modes": "all",
+      "spoken_by": "lm"
     }
   ]
 }

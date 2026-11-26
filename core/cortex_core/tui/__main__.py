@@ -47,13 +47,17 @@ def make_brain(eng, a: argparse.Namespace):
     """The agent harness over the engine: the newest nav bundle, the box's saved places, the tools contract."""
     from cortex_core.brain import tools as T
     from cortex_core.brain.brain import Brain
+    from cortex_core.memory.memory import Memory, engine_looker
+    from cortex_core.memory.store import Store
     from cortex_core.nav import bundle as B
     from cortex_core.nav.service import NavService
 
     b = B.Bundle(B.latest(a.nav_bundles))
     nav = NavService(b, saved=a.saved_places, arrivals=gateway_arrivals(a.identity_dir))
     reg = T.load(a.tools) if a.tools else T.load()
-    return Brain(eng, nav, reg)
+    store = Store(a.memory_db)
+    store.purge()
+    return Brain(eng, nav, reg, memory=Memory(store, engine_looker(eng), where=nav.where))
 
 
 def live(a: argparse.Namespace) -> int:
@@ -80,6 +84,8 @@ def live(a: argparse.Namespace) -> int:
             from cortex_core.link import gps
             listener = gps.GpsListener(a.gps_sock, session.on_fix).start()  # fixes forwarded by the link service
             session.note(f"agent harness on · nav bundle {brain.nav.b.path.name} · GPS from {a.gps_sock}")
+            if not brain.memory.can_learn:
+                session.note("memory: this engine build has no ce_peek, so it recalls but learns nothing new")
         if mic_dev:
             mic = capture.Mic(mic_dev, session.on_mic)
         else:
@@ -122,6 +128,7 @@ def main(argv: Optional[list[str]] = None, env: Mapping[str, str] = os.environ) 
                    help="claimed-box identity; live bus arrivals go through its gateway (missing = headway estimates)")
     p.add_argument("--tools", default="", help="tools.json (default: the contract the package finds)")
     p.add_argument("--gps-sock", default="/run/cortex/gps.sock")
+    p.add_argument("--memory-db", default="/var/lib/cortex/memory/memory.db")
     a = p.parse_args(argv)
     if a.live:
         return live(a)

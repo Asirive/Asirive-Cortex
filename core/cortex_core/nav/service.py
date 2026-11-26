@@ -123,6 +123,33 @@ class NavService:
             return None
         return self.fix.x, self.fix.y
 
+    def where(self, near_m: float = 75.0) -> dict | None:
+        """The newest fresh fix and the place it is at, for memory: {"name", "lat", "lon", "acc_m"}, or None with no
+        fresh fix. name: a saved place within max(40 m, accuracy), else the nearest named place within near_m (bus
+        stops, postcodes and bare addresses left out), else None."""
+        here = self._here()
+        if here is None:
+            return None
+        x, y = here
+        lat, lon = geo.to_latlon(x, y)
+        out = {"name": None, "lat": float(lat), "lon": float(lon), "acc_m": float(self.fix.acc_m)}
+        lim = max(40.0, float(self.fix.acc_m))
+        best = min(((float(np.hypot(v["x"] - x, v["y"] - y)), v["name"]) for v in self.saved.values()),
+                   default=None)
+        if best is not None and best[0] <= lim:
+            out["name"] = best[1]
+            return out
+        px, py = np.asarray(self.b.place_x), np.asarray(self.b.place_y)
+        d = np.hypot(px - x, py - y)
+        kinds = self.places._kinds()
+        for i in np.argsort(d)[:50]:
+            if d[i] > near_m:
+                break
+            if kinds[int(i)] not in ("bus_stop", "postcode", "address"):
+                out["name"] = self.places.name(int(i))
+                break
+        return out
+
     @property
     def navigating(self) -> bool:
         return self.follower is not None

@@ -61,6 +61,7 @@ class PhoneLink:
         self._secret_path = os.path.join(state_dir, "link.secret")
         self._lock = threading.Lock()  # one provision at a time
         self.on_location: Optional[Callable[[dict], None]] = None  # the phone's GPS (gps.parse_fix'd), signed op only
+        self.memory = None  # cortex_core.memory.store.Store: the app's item list (op "memory"), signed op only
 
     # ---- state ----
     def _secret(self) -> Optional[bytes]:
@@ -190,10 +191,47 @@ class PhoneLink:
                 return {"ok": False, "error": f"bad fix: {e}"}
             self.on_location(fix)
             return {"ok": True}
+        if op == "memory":
+            return self._memory(a)
         if op == "install":
             m = a.get("manifest")
             return {"ok": isinstance(m, dict) and self.hooks.install_update(m)}
         return {"ok": False, "error": "unknown op"}
+
+    def _memory(self, a: dict) -> dict:
+        """The app's memory screen: list / add / remove the user's items, forget sightings."""
+        if self.memory is None:
+            return {"ok": False, "error": "memory not running"}
+        from cortex_core.memory import items as mi
+        act = a.get("action")
+        try:
+            if act == "list":
+                return {"ok": True, "items": [{"name": i.name, "details": i.details, "aliases": list(i.aliases),
+                                               "builtin": i.builtin} for i in mi.catalogue(self.memory)]}
+            if act == "add":
+                name, details, aliases = a.get("name"), a.get("details", ""), a.get("aliases", [])
+                if not isinstance(name, str) or not isinstance(details, str) or not isinstance(aliases, list) \
+                        or not all(isinstance(x, str) for x in aliases):
+                    return {"ok": False, "error": "bad item"}
+                self.memory.add_item(name, details, aliases)
+                return {"ok": True}
+            if act == "remove":
+                if not isinstance(a.get("name"), str):
+                    return {"ok": False, "error": "bad item"}
+                self.memory.remove_item(a["name"])
+                return {"ok": True}
+            if act == "forget":
+                item = a.get("item")
+                if item is not None:
+                    hit = mi.match(mi.catalogue(self.memory), str(item))
+                    if hit is None:
+                        return {"ok": False, "error": f"no item called '{item}'"}
+                    item = hit.name
+                self.memory.forget(item)
+                return {"ok": True}
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": "unknown memory action"}
 
     async def _conn(self, ws) -> None:
         nonce = base64.b64encode(secrets.token_bytes(16)).decode()

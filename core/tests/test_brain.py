@@ -321,7 +321,8 @@ def test_registry_covers_every_service_tool(bundle):
     reg = T.load()
     s, _ = nav(bundle)
     names = {t.name for t in reg.tools}
-    assert names == set(s.tools) | {"set_mode", "camera"}
+    from cortex_core.brain.brain import BRAIN_TOOLS
+    assert names == set(s.tools) | BRAIN_TOOLS
 
 
 def test_chitchat_set_mode_to_the_same_mode_lets_the_model_answer():

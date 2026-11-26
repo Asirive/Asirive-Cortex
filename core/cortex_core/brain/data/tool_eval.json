@@ -43,6 +43,9 @@
     {"q": "Wah today very hot hor.", "expect": null, "sg": true},
     {"q": "What's your name?", "expect": null},
     {"q": "What day comes after Monday?", "expect": null},
-    {"q": "Shiok, thanks ah.", "expect": null, "sg": true}
+    {"q": "Shiok, thanks ah.", "expect": null, "sg": true},
+    {"q": "Where are my keys?", "expect": "search_memory", "args": {"item": "key"}},
+    {"q": "Eh where I put my wallet ah?", "expect": "search_memory", "args": {"item": "wallet"}, "sg": true},
+    {"q": "Have you seen my phone anywhere?", "expect": "search_memory", "args": {"item": "phone"}}
   ]
 }
