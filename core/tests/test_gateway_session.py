@@ -72,7 +72,7 @@ def gateway(tmp_path_factory):
     (d / "gemini_key").write_text("gm-key\n")
     env = dict(os.environ, CORTEX_DEV_TOKEN="boot", CORTEX_LTA_KEY_FILE=str(d / "lta_key"),
                CORTEX_LTA_BASE=f"http://127.0.0.1:{dm.server_port}/BusArrival",
-               CORTEX_GEMINI_KEY_FILE=str(d / "gemini_key"), CORTEX_GEMINI_BASE=f"http://127.0.0.1:{gm.server_port}",
+               CORTEX_GEMINI_KEY_FILE=str(d / "gemini_key"), CORTEX_GEMINI_BASE=f"ws://127.0.0.1:{gm.port}/live",
                CORTEX_GEMINI_MODEL="stand-in")
     p = subprocess.Popen([binp, "-addr", f"127.0.0.1:{api}", "-device-addr", f"127.0.0.1:{dev}", "-device-cert", str(d / "s.crt"),
                           "-device-key", str(d / "s.key"), "-pki-dir", str(d / "pki"), "-state", str(d / "st.json")],
@@ -91,30 +91,33 @@ def gateway(tmp_path_factory):
 
 
 def _fake_gemini():
-    """Gemini's generateContent: answers whether it was given a picture, so the test sees the frame arrive."""
+    """Gemini Live: setupComplete, then the answer as transcription fragments over two utterances (IN_PROGRESS,
+    then IDLE). It says how many frames it was given, so the test sees the clip arrive."""
     import threading
-    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from websockets.sync.server import serve
 
-    class H(BaseHTTPRequestHandler):
-        def do_POST(self):
-            body = json.loads(self.rfile.read(int(self.headers["content-length"])))
-            if self.headers.get("x-goog-api-key") != "gm-key" or self.path != "/models/stand-in:generateContent":
-                self.send_response(403)
-                self.end_headers()
-                return
-            parts = body["contents"][0]["parts"]
-            img = any("inlineData" in x for x in parts)
-            q = parts[-1]["text"]
-            text = f"With a picture: {q}." if img else f"Without a picture: {q}."
-            self.send_response(200)
-            self.send_header("content-type", "application/json")
-            self.end_headers()
-            self.wfile.write(json.dumps({"candidates": [{"content": {"parts": [{"text": text}]}}]}).encode())
-
-        def log_message(self, *a):
+    def handler(ws):
+        if ws.request.headers.get("x-goog-api-key") != "gm-key" or ws.request.path != "/live":
+            ws.close(1008)
+            return
+        setup = json.loads(ws.recv())["setup"]
+        assert setup["model"] == "models/stand-in" and setup["generationConfig"]["responseModalities"] == ["AUDIO"]
+        ws.send(json.dumps({"setupComplete": {}}))
+        parts = json.loads(ws.recv())["clientContent"]["turns"][0]["parts"]
+        n = sum("inlineData" in x for x in parts)
+        q = parts[-1]["text"]
+        for frag, status in ((f"With {n} ", None), (f"frames: {q}.", "IN_PROGRESS"), (None, "IDLE")):
+            if frag:
+                ws.send(json.dumps({"serverContent": {"outputTranscription": {"text": frag}}}))
+            if status:
+                ws.send(json.dumps({"serverContent": {"turnComplete": True, "interactionStatus": status}}))
+        try:
+            ws.recv(5)
+        except Exception:  # noqa: BLE001 - the gateway hangs up
             pass
 
-    srv = HTTPServer(("127.0.0.1", 0), H)
+    srv = serve(handler, "127.0.0.1", 0)
+    srv.port = srv.socket.getsockname()[1]
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
 
@@ -324,13 +327,13 @@ def test_gemini_takeover_through_the_gateway(gateway):
     p = provision.save(d, c, gateway["dev"], (gateway["dir"] / "s.crt").read_bytes())
     jpeg = b"\xff\xd8\xff\xe0" + b"\0" * 64
     ask = provision.second_opinion_client(p)
-    assert ask("which bus is this", jpeg) == "With a picture: which bus is this."
-    assert ask("what day is it", None) == "Without a picture: what day is it."
+    assert ask("which bus is this", [jpeg, jpeg, jpeg]) == "With 3 frames: which bus is this."
+    assert ask("what day is it", []) == "With 0 frames: what day is it."
 
     eng = FakeEngine(lambda k, t, s: [{"type": "tool_call", "text": call("second_opinion", question="which bus is this")},
                                       {"type": "done", "tool": True}] if k == "ask" else None)
-    Brain(eng, None, T.load(), takeover=Takeover(ask, frame=lambda: jpeg)).ask("which bus is this")
-    assert eng.log[1][2] == "With a picture: which bus is this."
+    Brain(eng, None, T.load(), takeover=Takeover(ask, clip=lambda since: [jpeg, jpeg])).ask("which bus is this")
+    assert eng.log[1][2] == "With 2 frames: which bus is this."
 
     # the gateway refuses (revoked): "not sure", never a crash
     http("POST", gateway["api"] + f"/api/registrations/{c['device_id']}/revoke", "boot")

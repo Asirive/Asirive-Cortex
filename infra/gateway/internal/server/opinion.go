@@ -13,15 +13,17 @@ import (
 // The Gemini second opinion for the box, on the device (mTLS) listener only. When the box's local model is not
 // sure, a claimed, unrevoked device sends
 //
-//	POST /device/second-opinion  {"question": "...", "image_jpeg": "<base64>"}   (image_jpeg empty: no image)
+//	POST /device/second-opinion  {"question": "...", "frames_jpeg": ["<base64>", ...]}
 //
-// and gets {"answer": "..."}: at most two spoken sentences, said to the user as is. The Gemini key stays here.
+// frames_jpeg is a short clip, oldest first, about a second apart (at most gemini.MaxFrames; none: the camera is
+// off). The gateway asks Gemini Live about it and returns {"answer": "...", "sentences": [...]}: at most two
+// spoken sentences, said to the user as is. The Gemini key stays here.
 // Frames and questions are passed through, never stored or logged. Cost caps per device: opinionPerMin a minute
 // and opinionPerDay a day.
 const (
 	opinionPerMin = 6
 	opinionPerDay = 100
-	opinionBody   = 2 << 20 // base64 of a 1 MB image plus the question
+	opinionBody   = 5 << 20 // base64 of gemini.MaxFrames frames plus the question
 )
 
 func (s *Server) secondOpinion(w http.ResponseWriter, r *http.Request) {
@@ -38,21 +40,25 @@ func (s *Server) secondOpinion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Question  string `json:"question"`
-		ImageJPEG string `json:"image_jpeg"`
+		Question string   `json:"question"`
+		Frames   []string `json:"frames_jpeg"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, opinionBody)).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "bad_request", "Bad second-opinion request.")
 		return
 	}
-	var img []byte
-	if req.ImageJPEG != "" {
-		b, err := base64.StdEncoding.DecodeString(req.ImageJPEG)
+	if len(req.Frames) > gemini.MaxFrames {
+		writeErr(w, http.StatusBadRequest, "bad_request", "Too many frames.")
+		return
+	}
+	frames := make([][]byte, 0, len(req.Frames))
+	for _, f := range req.Frames {
+		b, err := base64.StdEncoding.DecodeString(f)
 		if err != nil {
-			writeErr(w, http.StatusBadRequest, "bad_image", "The image is not base64.")
+			writeErr(w, http.StatusBadRequest, "bad_image", "A frame is not base64.")
 			return
 		}
-		img = b
+		frames = append(frames, b)
 	}
 	now := time.Now()
 	if !s.opinionDaily.allowWithin(id, now, opinionPerDay, 24*time.Hour) {
@@ -63,14 +69,15 @@ func (s *Server) secondOpinion(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusTooManyRequests, "rate_limited", "Too many second-opinion requests; try again in a minute.")
 		return
 	}
-	ans, err := s.Gemini.Ask(r.Context(), req.Question, img)
+	var sentences []string
+	ans, err := s.Gemini.Ask(r.Context(), req.Question, frames, func(x string) { sentences = append(sentences, x) })
 	switch {
 	case errors.Is(err, gemini.ErrBadInput):
-		writeErr(w, http.StatusBadRequest, "bad_request", "Question empty or too long, or the image is not a JPEG under 1 MB.")
+		writeErr(w, http.StatusBadRequest, "bad_request", "Question empty or too long, or a frame is not a small JPEG.")
 		return
 	case err != nil:
 		writeErr(w, http.StatusBadGateway, "opinion_failed", "Gemini did not answer.")
 		return
 	}
-	writeJSON(w, map[string]any{"answer": ans})
+	writeJSON(w, map[string]any{"answer": ans, "sentences": sentences})
 }

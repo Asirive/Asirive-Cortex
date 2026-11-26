@@ -299,16 +299,18 @@ flowchart LR
   LM -- yes --> A["answers itself<br/>offline"]
   LM -- "no: silent<br/>second_opinion call" --> NET{"gateway<br/>reachable in 3 s?"}
   NET -- no --> NS["'I'm not sure, and I can't<br/>check online right now.'"]
-  NET -- yes --> CAM{"camera on and<br/>frame ≤ 2 s old?"}
-  CAM -- yes --> J["question + JPEG"]
+  NET -- yes --> CAM{"camera on?"}
+  CAM -- yes --> J["question + video<br/>last 4 s, 1 frame/s"]
   CAM -- no --> T["question only"]
   J & T --> GW["gateway (mTLS)<br/>server-side key<br/>6/min · 100/day"]
-  GW --> GEM["Gemini"] --> S["spoken in Cortex's voice"]
+  GW --> GEM["Gemini 3.8 Live<br/>extended thinking, LOW"] --> S["spoken in Cortex's voice"]
   classDef y fill:#EAFF00,stroke:#000,color:#000
   class A,S y
 ```
 
-No API key ever lives on the glasses or the box. Frames and questions are passed through, never stored or logged. <sub><b>tested</b> end to end against a stand-in Gemini; not yet run against the real one.</sub>
+Gemini gets a **short video, not a photo**: one frame a second from the last few seconds, so it can reason about motion and layout ("bus 858, moving to your left; the pole is on your left"). Only frames taken while the camera is on are sent, never ones from before it was switched back on. No API key ever lives on the glasses or the box. Frames and questions are passed through, never stored or logged.
+
+<sub><b>tested</b> through the real gateway against the real Gemini 3.8 Live (synthetic frames only): 7–8 s from asking to the full answer, while "Checking." plays. Not yet tried with real camera frames or on the box.</sub>
 
 ---
 
@@ -363,7 +365,7 @@ flowchart LR
 <tr><td>Brain: modes, tool dispatch, nav cues</td><td>🟡 tested, scripted engine</td><td><code>core/tests/test_brain.py</code>, trips simulated end to end</td></tr>
 <tr><td>Safety (ToF warner)</td><td>🟡 tested in simulation</td><td><code>2026-11-safety-sim.md</code></td></tr>
 <tr><td>Memory ("where are my keys")</td><td>🟡 recalls; learning needs <code>ce_peek</code> on the box</td><td><code>core/tests/test_memory*.py</code></td></tr>
-<tr><td>Gemini takeover, live bus arrivals</td><td>🟡 tested through the real gateway, stand-in upstreams</td><td><code>core/tests/test_gateway_session.py</code></td></tr>
+<tr><td>Gemini takeover (Live video), live bus arrivals</td><td>🟡 tested through the real gateway with real LTA and Gemini keys, on the server; not on the box yet</td><td><code>core/tests/test_gateway_session.py</code></td></tr>
 <tr><td>Gateway, OTA, supervisor, phone link</td><td>🟡 tested, not on a real device</td><td><code>infra/AGENTS.md</code>, <code>core/AGENTS.md</code></td></tr>
 <tr><td>Glasses firmware (UVC + UAC2 + CDC, haptics, fail-safe)</td><td>🟠 written, host-tested, not built on hardware</td><td><code>docs/architecture/GLASSES-USB.md</code></td></tr>
 <tr><td>Tool choice by the real model</td><td>🟠 95 % on a stand-in, box run pending</td><td><code>2026-11-tool-eval.md</code></td></tr>

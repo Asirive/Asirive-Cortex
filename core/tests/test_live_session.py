@@ -267,6 +267,6 @@ def test_gateway_takeover_only_when_claimed(tmp_path):
     from cortex_core.tui.__main__ import gateway_takeover
     t = gateway_takeover(str(tmp_path))
     assert t.ask is None and t.run("what is this", True)[1] == NOT_SURE_OFFLINE
-    assert t.frame() is None  # no camera: no picture
+    assert t.clip(0.0) == []  # no camera: no frames
     (tmp_path / "device.json").write_text('{"device_id": "d", "token": "t", "gateway_ws_url": "wss://gw:8443/ws/device"}')
     assert callable(gateway_takeover(str(tmp_path)).ask)

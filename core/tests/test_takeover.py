@@ -1,5 +1,6 @@
-"""Gemini takeover: the LM's silent second_opinion call -> the fresh frame and its question to Gemini (through the
-gateway) -> Gemini's answer spoken as is. Offline or refused: "not sure". Camera off: no image is sent."""
+"""Gemini takeover: the LM's silent second_opinion call -> a short clip of recent frames (1 a second, oldest first)
+and its question to Gemini Live (through the gateway) -> Gemini's answer spoken as is. Offline or refused: "not
+sure". Camera off: no frame is sent."""
 import json
 import time
 
@@ -8,20 +9,21 @@ import pytest
 
 from cortex_core.brain import tools as T
 from cortex_core.brain.brain import Brain
-from cortex_core.brain.takeover import NOT_SURE, NOT_SURE_OFFLINE, OpinionError, Takeover
+from cortex_core.brain.takeover import MAX_FRAMES, NOT_SURE, NOT_SURE_OFFLINE, OpinionError, Takeover
 from cortex_core.engine import capture
 
 from test_brain import FakeEngine, call
 
 JPEG = b"\xff\xd8\xff\xe0" + b"\0" * 32
+CLIP = [JPEG, JPEG, JPEG]
 
 
 class Gem:
     def __init__(self, answer="It is bus 858, right in front of you.", exc=None):
         self.answer, self.exc, self.asked = answer, exc, []
 
-    def __call__(self, question, jpeg):
-        self.asked.append((question, jpeg))
+    def __call__(self, question, frames):
+        self.asked.append((question, frames))
         if self.exc:
             raise self.exc
         return self.answer
@@ -33,32 +35,39 @@ def test_registry_second_opinion_is_silent_and_spoken_by_template():
     assert "not sure" in t.description
 
 
-def test_answer_with_fresh_frame():
+def test_answer_with_recent_clip():
     g = Gem()
-    data, say = Takeover(g, frame=lambda: JPEG).run("which bus is this", camera_on=True)
-    assert g.asked == [("which bus is this", JPEG)]
+    data, say = Takeover(g, clip=lambda since: CLIP).run("which bus is this", camera_on=True)
+    assert g.asked == [("which bus is this", CLIP)]
     assert say == "It is bus 858, right in front of you."
-    assert data == {"answer": say, "source": "gemini", "image": True}
+    assert data == {"answer": say, "source": "gemini", "frames": 3}
 
 
-def test_camera_off_sends_no_image():
+def test_camera_off_sends_no_frames():
     g = Gem()
-    data, _ = Takeover(g, frame=lambda: JPEG).run("what is this", camera_on=False)
-    assert g.asked == [("what is this", None)] and data["image"] is False
+    data, _ = Takeover(g, clip=lambda since: CLIP).run("what is this", camera_on=False)
+    assert g.asked == [("what is this", [])] and data["frames"] == 0
 
 
-def test_no_fresh_frame_still_asks_without_image():
+def test_no_recent_frames_still_asks_without():
     g = Gem()
-    Takeover(g, frame=lambda: None).run("what is this", camera_on=True)
-    assert g.asked == [("what is this", None)]
+    Takeover(g, clip=lambda since: []).run("what is this", camera_on=True)
+    Takeover(g, clip=lambda since: None).run("what is this", camera_on=True)
+    assert g.asked == [("what is this", []), ("what is this", [])]
+
+
+def test_clip_is_capped():
+    g = Gem()
+    Takeover(g, clip=lambda since: [JPEG] * 9).run("q", camera_on=True)
+    assert len(g.asked[0][1]) == MAX_FRAMES
 
 
 def test_broken_frame_source_does_not_stop_the_answer():
     def boom():
         raise RuntimeError("camera gone")
     g = Gem()
-    _, say = Takeover(g, frame=boom).run("what is this", camera_on=True)
-    assert say == g.answer and g.asked[0][1] is None
+    _, say = Takeover(g, clip=lambda since: boom()).run("what is this", camera_on=True)
+    assert say == g.answer and g.asked[0][1] == []
 
 
 def test_offline_or_unconfigured_says_not_sure():
@@ -85,12 +94,12 @@ def test_brain_speaks_gemini_answer_through_the_engine():
                     {"type": "done", "tool": True}]
     eng = FakeEngine(script)
     g = Gem()
-    b = Brain(eng, None, T.load(), takeover=Takeover(g, frame=lambda: JPEG))
+    b = Brain(eng, None, T.load(), takeover=Takeover(g, clip=lambda since: CLIP))
     t = b.ask("which bus is this")
     assert eng.log[1][0] == "tool_result" and eng.log[1][2] == "It is bus 858, right in front of you."
     assert json.loads(eng.log[1][1])["source"] == "gemini"
     assert t.said == "It is bus 858, right in front of you."
-    assert g.asked[0][1] == JPEG
+    assert g.asked[0][1] == CLIP
 
 
 def test_brain_camera_off_and_no_takeover():
@@ -102,13 +111,36 @@ def test_brain_camera_off_and_no_takeover():
                     {"type": "done", "tool": True}]
     g = Gem()
     eng = FakeEngine(script)
-    b = Brain(eng, None, T.load(), takeover=Takeover(g, frame=lambda: JPEG))
+    b = Brain(eng, None, T.load(), takeover=Takeover(g, clip=lambda since: CLIP))
     b.ask("camera off")
     b.ask("what is in front of me")
-    assert g.asked == [("what is in front of me", None)]  # the camera is off: no frame leaves the box
+    assert g.asked == [("what is in front of me", [])]  # the camera is off: no frame leaves the box
     eng2 = FakeEngine(script)
     Brain(eng2, None, T.load()).ask("what is in front of me")
     assert eng2.log[1][2] == NOT_SURE_OFFLINE
+
+
+def test_clip_only_has_frames_from_after_the_camera_came_back_on():
+    seen = []
+    g = Gem()
+
+    def clip(since):
+        seen.append(since)
+        return CLIP
+
+    def script(kind, text, say):
+        if kind == "ask" and text.startswith("cam"):
+            return [{"type": "tool_call", "text": call("camera", on=text.endswith("on"))}, {"type": "done", "tool": True}]
+        if kind == "ask":
+            return [{"type": "tool_call", "text": call("second_opinion", question="q")}, {"type": "done", "tool": True}]
+    b = Brain(FakeEngine(script), None, T.load(), takeover=Takeover(g, clip=clip))
+    b.ask("q")
+    assert seen == [0.0]  # on since start: any recent frame
+    b.ask("camera off")
+    t_on = time.monotonic()
+    b.ask("camera on")
+    b.ask("q")
+    assert seen[1] >= t_on  # frames taken while it was off are never part of the clip
 
 
 def test_slow_gemini_says_checking_first():
@@ -130,19 +162,36 @@ def test_jpeg_encodes_rgb():
     assert j[:2] == b"\xff\xd8" and j[-2:] == b"\xff\xd9" and 1000 < len(j) < 200_000
 
 
-def test_fresh_jpeg_only_when_recent():
+def test_ring_keeps_one_frame_a_second_oldest_first():
+    r = capture.FrameRing(every_s=1.0, n=4)
+    for k in range(25):  # 5 fps for 5 s
+        r.push(np.full((2, 2, 3), k, np.uint8), t=100 + k * 0.2)
+    clip = r.clip(now=104.9, max_age_s=2.0)
+    assert [int(f[0, 0, 0]) for f in clip] == [5, 10, 15, 20]  # 1 s apart, the newest 4, oldest first
+
+
+def test_ring_gives_nothing_stale():
+    r = capture.FrameRing(every_s=1.0, n=4)
+    for k in range(5):
+        r.push(np.zeros((2, 2, 3), np.uint8), t=100 + k)
+    assert r.clip(now=110, max_age_s=2.0) == []  # the camera stopped: nothing old is sent
+    r.push(np.ones((2, 2, 3), np.uint8), t=200)  # back on after a gap: the old frames are not part of the clip
+    assert len(r.clip(now=200.5, max_age_s=2.0)) == 1
+    r.push(np.ones((2, 2, 3), np.uint8), t=201)
+    assert len(r.clip(now=201.5, since=200.5)) == 1  # nothing from before the camera came back on
+    r.clear()
+    assert r.clip(now=200.5) == []
+
+
+def test_fresh_clip_encodes_jpegs():
     pytest.importorskip("PIL")
 
     class Cam:
-        def __init__(self, age):
-            self.age = age
+        def __init__(self):
+            self.ring = capture.FrameRing()
+            for k in range(3):
+                self.ring.push(np.zeros((36, 64, 3), np.uint8), t=time.monotonic() - 2 + k)
 
-        def latest(self):
-            return (1, np.zeros((36, 64, 3), np.uint8))
-
-        def latest_age(self):
-            return self.age
-
-    assert capture.fresh_jpeg(Cam(0.5), max_age_s=2.0)[:2] == b"\xff\xd8"
-    assert capture.fresh_jpeg(Cam(5.0), max_age_s=2.0) is None
-    assert capture.fresh_jpeg(None) is None
+    clip = capture.fresh_clip(Cam())
+    assert len(clip) == 3 and all(j[:2] == b"\xff\xd8" for j in clip)
+    assert capture.fresh_clip(None) == []

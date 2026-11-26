@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
+
 	"github.com/asirive/cortex/gateway/internal/fleet"
 	"github.com/asirive/cortex/gateway/internal/gemini"
 	"github.com/asirive/cortex/gateway/internal/pki"
@@ -19,14 +21,33 @@ import (
 
 func TestSecondOpinionOnTheDeviceListener(t *testing.T) {
 	var upstream atomic.Int32
+	var frames atomic.Int32
+	up := websocket.Upgrader{}
 	gm := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstream.Add(1)
 		if r.Header.Get("x-goog-api-key") != "srv-gemini" {
 			w.WriteHeader(403)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]any{"candidates": []any{map[string]any{"content": map[string]any{
-			"parts": []any{map[string]any{"text": "It is bus 858, right in front of you."}}}}}})
+		conn, err := up.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var setup, turn map[string]any
+		conn.ReadJSON(&setup)
+		conn.WriteJSON(map[string]any{"setupComplete": map[string]any{}})
+		conn.ReadJSON(&turn)
+		n := int32(0)
+		for _, p := range turn["clientContent"].(map[string]any)["turns"].([]any)[0].(map[string]any)["parts"].([]any) {
+			if _, ok := p.(map[string]any)["inlineData"]; ok {
+				n++
+			}
+		}
+		frames.Store(n)
+		conn.WriteJSON(map[string]any{"serverContent": map[string]any{"outputTranscription": map[string]any{"text": "It is bus 858, right in front of you."}}})
+		conn.WriteJSON(map[string]any{"serverContent": map[string]any{"turnComplete": true, "interactionStatus": "IDLE"}})
+		conn.ReadMessage()
 	}))
 	defer gm.Close()
 
@@ -56,7 +77,7 @@ func TestSecondOpinionOnTheDeviceListener(t *testing.T) {
 		json.NewDecoder(res.Body).Decode(&m)
 		return res.StatusCode, m
 	}
-	good := map[string]any{"question": "which bus is this", "image_jpeg": img}
+	good := map[string]any{"question": "which bus is this", "frames_jpeg": []string{img, img, img}}
 
 	if code, _ := ask(c, dev.URL, good); code != 503 { // no key: says so, never calls out
 		t.Fatalf("no key: %d", code)
@@ -65,17 +86,21 @@ func TestSecondOpinionOnTheDeviceListener(t *testing.T) {
 		t.Fatal("called Gemini without a key")
 	}
 	s.Gemini = gemini.New("srv-gemini")
-	s.Gemini.Base = gm.URL
+	s.Gemini.Base = "ws" + strings.TrimPrefix(gm.URL, "http")
 
 	code, m := ask(c, dev.URL, good)
 	if code != 200 || m["answer"] != "It is bus 858, right in front of you." {
 		t.Fatalf("answer: %d %v", code, m)
 	}
-	if code, _ := ask(c, dev.URL, map[string]any{"question": "what time is it"}); code != 200 { // no image is fine
+	if frames.Load() != 3 {
+		t.Fatalf("frames passed on: %d", frames.Load())
+	}
+	if code, _ := ask(c, dev.URL, map[string]any{"question": "what time is it"}); code != 200 { // camera off: no frames is fine
 		t.Fatalf("no image: %d", code)
 	}
-	for _, bad := range []any{map[string]any{"question": ""}, map[string]any{"question": "q", "image_jpeg": "@@@"},
-		map[string]any{"question": "q", "image_jpeg": base64.StdEncoding.EncodeToString([]byte("PNG..."))},
+	for _, bad := range []any{map[string]any{"question": ""}, map[string]any{"question": "q", "frames_jpeg": []string{"@@@"}},
+		map[string]any{"question": "q", "frames_jpeg": []string{base64.StdEncoding.EncodeToString([]byte("PNG..."))}},
+		map[string]any{"question": "q", "frames_jpeg": []string{img, img, img, img, img, img, img}},
 		map[string]any{"question": strings.Repeat("x", gemini.MaxQuestion+1)}} {
 		if code, _ := ask(c, dev.URL, bad); code != 400 {
 			t.Fatalf("%v: %d", bad, code)
@@ -101,7 +126,7 @@ func TestSecondOpinionOnTheDeviceListener(t *testing.T) {
 	}
 	// Gemini down: 502, the box says it is not sure
 	s.opinionRate = rateWindow{}
-	s.Gemini.Base = "http://127.0.0.1:1"
+	s.Gemini.Base = "ws://127.0.0.1:1"
 	if code, _ := ask(c, dev.URL, good); code != 502 {
 		t.Fatalf("upstream down: %d", code)
 	}

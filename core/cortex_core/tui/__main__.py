@@ -57,7 +57,7 @@ def gateway_takeover(identity_dir: str | None, cam=None):
 
     p = _identity(identity_dir)
     return Takeover(provision.second_opinion_client(p) if p is not None else None,
-                    frame=lambda: capture.fresh_jpeg(cam))
+                    clip=lambda since: capture.fresh_clip(cam, since))
 
 
 def make_brain(eng, a: argparse.Namespace, cam=None):

@@ -120,8 +120,9 @@ def arrivals_client(p: Provisioning, timeout: float = 3.0):
 
 
 
-def second_opinion_client(p: Provisioning, connect_s: float = 3.0, answer_s: float = 15.0):
-    """The brain's takeover `ask(question, jpeg|None) -> answer`: Gemini through the gateway over mTLS
+def second_opinion_client(p: Provisioning, connect_s: float = 3.0, answer_s: float = 30.0):
+    """The brain's takeover `ask(question, frames) -> answer` (frames: JPEGs, oldest first, [] with the camera off):
+    Gemini Live through the gateway over mTLS
     (POST /device/second-opinion; the gateway holds the key and caps requests per device). Raises
     brain.takeover.OpinionError: online False when the gateway cannot be reached (connect_s caps that, so
     "not sure" comes quickly offline), True when it answered with an error (rate limit, Gemini down, not set up)."""
@@ -133,9 +134,9 @@ def second_opinion_client(p: Provisioning, connect_s: float = 3.0, answer_s: flo
     u = urllib.parse.urlsplit(p.gateway_ws_url.replace("wss://", "https://", 1))
     path = u.path.rsplit("/ws/device", 1)[0] + "/device/second-opinion"
 
-    def ask(question: str, jpeg: Optional[bytes]) -> str:
+    def ask(question: str, frames: list[bytes]) -> str:
         body = json.dumps({"question": question,
-                           "image_jpeg": base64.b64encode(jpeg).decode() if jpeg else ""}).encode()
+                           "frames_jpeg": [base64.b64encode(f).decode() for f in frames or []]}).encode()
         conn = None
         try:
             ctx = identity.ssl_context(p.key_path, p.cert_path, p.server_ca_path)

@@ -8,8 +8,10 @@ Haziq's rule: Gemini takes over **only when the local LM is unsure and there is 
   `<tool_call>` is silent, so nothing wrong is said before the takeover. There is no hedge detection on spoken
   text, no "check that" trigger and no `check` disagreement trigger.
 - **Through our gateway.** The box never holds a Gemini key. It posts to `POST /device/second-opinion` on the
-  gateway's device listener with its mTLS identity. The gateway calls Gemini `generateContent` with the server's
-  key and caps each device at 6 requests a minute and 100 a day.
+  gateway's device listener with its mTLS identity. The gateway asks Gemini with the server's key and caps each
+  device at 6 requests a minute and 100 a day.
+- **Video, not a photo (Haziq, same day).** Gemini 3.8 Live Extended Thinking, thinking LOW, gets the last few
+  seconds at one frame a second, so it can reason about motion and spatial layout.
 - **Internet = the gateway answers.** If the box can't connect within 3 s (no internet, no claimed identity, TLS
   refused), the takeover says "I'm not sure, and I can't check online right now." If the gateway answers with an
   error (rate limit, Gemini down, not set up), it says "I'm not sure, and I couldn't check that just now." It
@@ -20,29 +22,52 @@ Haziq's rule: Gemini takes over **only when the local LM is unsure and there is 
 1. The user asks. The LM is not sure and calls `second_opinion(question)` (spoken_by `template`, all modes).
 2. The brain dispatches it on the tool thread. "Checking." is spoken after 0.7 s, as for every tool.
 3. `Takeover.run(question, brain.camera_on)`:
-   - Camera on: `capture.fresh_jpeg(cam)` encodes the newest RGB frame to JPEG (Pillow, else ffmpeg), but only
-     if it is at most 2 s old. Camera off or stale: no image. No frame leaves the box while the camera is off.
-   - `provision.second_opinion_client(p)(question, jpeg)` posts over mTLS: 3 s to connect, 15 s for the answer.
+   - The camera thread keeps a `FrameRing`: one RGB frame a second, the newest 4, in RAM only.
+   - Camera on: `capture.fresh_clip(cam, since)` encodes those frames to JPEG (Pillow, else ffmpeg), oldest
+     first. Only frames taken since the camera was last turned on (`Brain.camera_since`), the newest at most
+     2 s old, and one run without gaps. Camera off: no frames. Frames taken while it was off are never sent.
+   - `provision.second_opinion_client(p)(question, frames)` posts `{question, frames_jpeg}` over mTLS: 3 s to
+     connect, 30 s for the answer.
 4. The gateway (`internal/gemini`):
-   - checks the question (1..500 bytes) and the image (a JPEG under 1 MB);
-   - sends Cortex's speaking rules as the system instruction (at most two short sentences, positions relative
-     to the user, never colour alone, say plainly when the image doesn't show it);
-   - cuts the answer at a sentence end, at most 400 chars.
+   - checks the question (1..500 bytes) and the frames (at most 6, each a JPEG under 512 kB);
+   - opens a Gemini Live WebSocket session (`BidiGenerateContent`, key in the `x-goog-api-key` header):
+     model `gemini-3.8-live-extended-thinking`, `thinkingLevel` LOW, `responseModalities` AUDIO with
+     `outputAudioTranscription` (this model refuses TEXT);
+   - sends Cortex's speaking rules as the system instruction (at most two short sentences, never invent numbers,
+     names or routes it cannot read, positions relative to the user, never colour alone, no filler, say plainly
+     when the frames don't show it);
+   - sends the frames inline in one user turn, then the question, and reads the transcription sentence by
+     sentence until `interactionStatus` IDLE (25 s cap), at most 400 chars of whole sentences.
    Frames and questions are passed through, never stored or logged.
 5. The brain speaks Gemini's answer as is through `ce_tool_result(say=...)`, so it is also recorded in the
-   conversation and follow-ups can use it. The tool result carries `{"answer", "source": "gemini", "image"}`.
+   conversation and follow-ups can use it. The tool result carries `{"answer", "source": "gemini", "frames"}`.
+
+## What the real API did (2026-11-26, synthetic frames: a bus "858" moving left, pole on the left)
+
+| Try | Result |
+| --- | --- |
+| `responseModalities` TEXT | Refused (close 1007). AUDIO + transcription works. |
+| 4 frames sent at once on `realtimeInput.video`, then the question | Not seen: "the frames do not show any bus" (3/3). |
+| Same, paced 1 s apart | Seen (3/3), but costs 4 s before the question can go. |
+| 4 frames inline in the user turn (used) | Seen and motion right 3/3; through the gateway 2/2: 7–8 s to the full answer. |
+| First system prompt, without "never invent" | Once said "route 27 to Hammersmith" (made up); with the rule, not again. |
+| The model may speak a filler first ("Checking the arrival details") | The prompt forbids filler; the client still waits for IDLE. |
+
+About 3,000–3,400 input tokens per question with 3–4 frames.
 
 ## Configuration
 
 | Where | Setting |
 | --- | --- |
-| Gateway | `CORTEX_GEMINI_KEY_FILE` (chmod 600) or `CORTEX_GEMINI_KEY`; `CORTEX_GEMINI_MODEL` (default `gemini-2.5-flash`); `CORTEX_GEMINI_BASE` (tests only). No key: 503, and the box says it is not sure. |
+| Gateway | `CORTEX_GEMINI_KEY_FILE` (chmod 600) or `CORTEX_GEMINI_KEY`; `CORTEX_GEMINI_MODEL` (default `gemini-3.8-live-extended-thinking`); `CORTEX_GEMINI_BASE` (tests only, a ws:// URL). No key: 503, and the box says it is not sure. |
 | Box | The claimed identity in `--identity-dir` (`/var/lib/cortex/identity`). |
 
 ## Not done / not measured
 
 - No tool-eval cases yet for when the real LM should call `second_opinion`. How often it does (or calls it
   instead of answering things it knows) is unmeasured.
-- Not run against real Gemini: there is no key on the gateway yet. The default model name is unverified.
-- Latency on the box is unmeasured: JPEG encode via ffmpeg plus the round trip.
+- Only synthetic frames so far. Real camera frames (blur, glare, crowds) are untested.
+- Latency on the box is unmeasured: 4 JPEG encodes via ffmpeg plus the round trip. On the server it is
+  7–8 s, all of it after "Checking.". Streaming the first sentence to the box would cut that to about 2–3 s;
+  not built.
 - The Gemini Live voice switch ("talk to Gemini") is a separate feature and is not built.

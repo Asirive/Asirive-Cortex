@@ -37,7 +37,7 @@ def mic_cmd(device: str) -> list[str]:
 
 
 def jpeg(rgb, quality: int = 80) -> bytes:
-    """An RGB frame [h, w, 3] uint8 as JPEG bytes (the Gemini takeover). Pillow when installed (dev machines),
+    """An RGB frame [h, w, 3] uint8 as JPEG bytes (the Gemini takeover clip). Pillow when installed (dev machines),
     else ffmpeg (the box), pinned like the camera."""
     import numpy as np
 
@@ -60,14 +60,49 @@ def jpeg(rgb, quality: int = 80) -> bytes:
     return r.stdout
 
 
-def fresh_jpeg(cam, max_age_s: float = 2.0) -> Optional[bytes]:
-    """The camera's newest frame as JPEG, or None with no camera, no frame yet, or a frame older than max_age_s."""
-    if cam is None:
-        return None
-    f = cam.latest()
-    if f is None or cam.latest_age() > max_age_s:
-        return None
-    return jpeg(f[1])
+class FrameRing:
+    """One frame every every_s seconds, the newest n, in RAM only (never written anywhere): the short video the Gemini
+    takeover sends. clear() drops them (the camera going off)."""
+
+    def __init__(self, every_s: float = 1.0, n: int = 4):
+        self.every_s, self.n = every_s, n
+        self._lock = threading.Lock()
+        self._frames: list = []  # (t, rgb), oldest first
+
+    def push(self, rgb, t: float) -> None:
+        with self._lock:
+            if self._frames and t - self._frames[-1][0] < self.every_s - 1e-6:
+                return
+            self._frames.append((t, rgb))
+            del self._frames[:-self.n]
+
+    def clip(self, now: Optional[float] = None, max_age_s: float = 2.0, since: float = 0.0) -> list:
+        """The frames taken at or after since, oldest first, one run without gaps ending at most max_age_s ago;
+        [] when stale."""
+        now = time.monotonic() if now is None else now
+        with self._lock:
+            fr = [f for f in self._frames if f[0] >= since]
+        if not fr or now - fr[-1][0] > max_age_s:
+            return []
+        out = [fr[-1]]
+        for f in reversed(fr[:-1]):  # stop at a gap (the camera was off in between)
+            if out[0][0] - f[0] > 2.5 * self.every_s:
+                break
+            out.insert(0, f)
+        return [rgb for _, rgb in out]
+
+    def clear(self) -> None:
+        with self._lock:
+            self._frames.clear()
+
+
+def fresh_clip(cam, since: float = 0.0, max_age_s: float = 2.0) -> list[bytes]:
+    """The camera's recent frames taken at or after since (one a second, oldest first) as JPEGs; [] with no camera
+    or nothing recent."""
+    ring = getattr(cam, "ring", None)
+    if ring is None:
+        return []
+    return [jpeg(f) for f in ring.clip(max_age_s=max_age_s, since=since)]
 
 
 def find_camera(v4l=Path("/sys/class/video4linux")) -> Optional[str]:
@@ -157,6 +192,7 @@ class Camera(_Proc):
         self._latest = None
         self._t = 0.0
         self._id = 0
+        self.ring = FrameRing()
         self.thread = threading.Thread(target=self._run, name="camera", daemon=True)
         self.thread.start()
 
@@ -168,10 +204,13 @@ class Camera(_Proc):
             b = read_exact(self.p.stdout, n)
             if b is None:
                 return
+            rgb = np.frombuffer(b, dtype=np.uint8).reshape(self.h, self.w, 3)
+            now = time.monotonic()
             with self._lock:
                 self._id += 1
-                self._latest = (self._id, np.frombuffer(b, dtype=np.uint8).reshape(self.h, self.w, 3))
-                self._t = time.monotonic()
+                self._latest = (self._id, rgb)
+                self._t = now
+            self.ring.push(rgb, now)
 
     def latest(self):
         with self._lock:

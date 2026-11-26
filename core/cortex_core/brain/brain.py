@@ -76,6 +76,7 @@ class Brain:
         self.checking_s = checking_s
         self.modes = ModeMachine(self._mode_changed)
         self.camera_on = True
+        self.camera_since = 0.0  # monotonic time the camera was last turned on (0: on from the start)
         self.turn_lock = threading.RLock()
         self.cues: deque[str] = deque()
         self._state = None
@@ -275,8 +276,10 @@ class Brain:
             return self.memory.search(str(call.args["item"]))
         if call.name == "second_opinion":
             from cortex_core.brain.takeover import Takeover
-            return (self.takeover or Takeover(None)).run(str(call.args["question"]), self.camera_on)
+            return (self.takeover or Takeover(None)).run(str(call.args["question"]), self.camera_on, self.camera_since)
         if call.name == "camera":
+            if bool(call.args["on"]) and not self.camera_on:
+                self.camera_since = time.monotonic()
             self.camera_on = bool(call.args["on"])
             self.on_event("camera", {"on": self.camera_on})
             return {"camera": self.camera_on}, "Camera on." if self.camera_on else "Camera off."
