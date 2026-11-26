@@ -62,6 +62,7 @@ class PhoneLink:
         self._lock = threading.Lock()  # one provision at a time
         self.on_location: Optional[Callable[[dict], None]] = None  # the phone's GPS (gps.parse_fix'd), signed op only
         self.memory = None  # cortex_core.memory.store.Store: the app's item list (op "memory"), signed op only
+        self.on_button: Optional[Callable[[str], None]] = None  # the app's talk button ("tap"), signed op only
 
     # ---- state ----
     def _secret(self) -> Optional[bytes]:
@@ -193,6 +194,11 @@ class PhoneLink:
             return {"ok": True}
         if op == "memory":
             return self._memory(a)
+        if op == "button":  # the app's talk button: the same as a tap on the glasses
+            if self.on_button is None or a.get("kind") != "tap":
+                return {"ok": False, "error": "button not available"}
+            self.on_button("tap")
+            return {"ok": True}
         if op == "install":
             m = a.get("manifest")
             return {"ok": isinstance(m, dict) and self.hooks.install_update(m)}

@@ -116,6 +116,7 @@ abstract class DeviceLink {
   Future<bool> handOver(Map<String, dynamic> claimReply, String claimCode); // the whole /claim reply, after the owner confirmed the box
   Future<bool> installUpdate(Map<String, dynamic> manifest); // hand the signed update to the box
   Future<bool> playTest(String kind); // 'sound' | 'vibrate' | 'voice' on the glasses
+  Future<bool> talk(); // the talk button: the same as a tap on the glasses button (listen on/off, or cut Cortex off)
 }
 
 class UnavailableLink implements DeviceLink {
@@ -138,6 +139,8 @@ class UnavailableLink implements DeviceLink {
   Future<bool> installUpdate(Map<String, dynamic> manifest) async => false;
   @override
   Future<bool> playTest(String kind) async => false;
+  @override
+  Future<bool> talk() async => false;
 }
 
 /// Links that open the app: asirive://verify?token=, asirive://reset?token=, asirive://companion?code=.

@@ -81,6 +81,13 @@ class FakeLink implements DeviceLink {
     tested.add(kind);
     return true;
   }
+
+  int talks = 0;
+  @override
+  Future<bool> talk() async {
+    talks++;
+    return true;
+  }
 }
 
 class FakeEngine implements CallEngine {

@@ -1,0 +1,36 @@
+# Headless Cortex: engine + camera + mic + agent harness, started at boot with nobody logged in.
+# Says "Cortex ready." when it can listen; problems (no mic, no camera, no map) are spoken.
+# The button comes from /run/cortex/button.fifo (glasses via cortex-safety, the app's talk button via cortex-link).
+[Unit]
+Description=Cortex brain (headless)
+After=cortex-safety.service sound.target
+Wants=cortex-safety.service
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=cortex
+Group=cortex
+SupplementaryGroups=audio video render
+WorkingDirectory=/opt/cortex
+Environment=PYTHONPATH=/opt/cortex PYTHONDONTWRITEBYTECODE=1
+RuntimeDirectory=cortex
+RuntimeDirectoryPreserve=yes
+RuntimeDirectoryMode=0750
+# qnn.env sets the NPU (QNN) library paths; exec keeps the PID, so READY/WATCHDOG come from the main process
+ExecStart=/bin/sh -c '. /var/lib/cortex/bench/engine/qnn.env && exec /opt/cortex/venv/bin/python -m cortex_core.brain'
+# opening the engine takes about 10 s
+TimeoutStartSec=120
+WatchdogSec=30
+Restart=always
+RestartSec=3
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/run/cortex /var/lib/cortex
+
+[Install]
+WantedBy=cortex.target

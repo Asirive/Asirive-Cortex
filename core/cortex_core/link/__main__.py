@@ -6,6 +6,7 @@ reply is on disk, this dials the gateway over mTLS and stays connected.
 import asyncio
 import logging
 import os
+import time
 import signal
 from pathlib import Path
 
@@ -37,6 +38,16 @@ def location_sink(fwd: "gps.GpsForwarder", rec: "gps.GpsRecorder"):
     return on_location
 
 
+def button_sink(fifo: str):
+    """The app's talk button -> the brain's button pipe, exactly like a glasses tap (dropped if the brain is down)."""
+    from cortex_core.safety.glasses import BUTTON_TAP, ButtonFifo
+    w = ButtonFifo(fifo)
+
+    def press(kind: str) -> None:
+        w(BUTTON_TAP, time.monotonic())
+    return press
+
+
 async def serve(hb: Path, stop: asyncio.Event) -> None:
     async def beat():
         while not stop.is_set():
@@ -48,6 +59,7 @@ async def serve(hb: Path, stop: asyncio.Event) -> None:
     phone.control = OwnerControl(FileControls(), phone.paired)
     phone.on_location = location_sink(gps.GpsForwarder(os.environ.get("CORTEX_GPS_SOCK", gps.SOCK)),
                                       gps.GpsRecorder(NAV_STATE))
+    phone.on_button = button_sink(os.environ.get("CORTEX_BUTTON_FIFO", "/run/cortex/button.fifo"))
     try:
         from cortex_core.memory.store import DEFAULT_PATH, Store
         phone.memory = Store(os.environ.get("CORTEX_MEMORY_DB", DEFAULT_PATH))  # the app's item list

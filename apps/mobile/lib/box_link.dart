@@ -130,6 +130,8 @@ class BoxLink implements DeviceLink {
   Future<bool> installUpdate(Map<String, dynamic> manifest) => _simple('install', {'manifest': manifest});
   @override
   Future<bool> playTest(String kind) => _simple('test', {'kind': kind});
+  @override
+  Future<bool> talk() => _simple('button', {'kind': 'tap'});
 
   /// Holds one connection and sends each fix [next] gives as a signed `location` op until it gives null
   /// (true) or the link breaks (false). [sent] hears whether the box took each fix. For LocationStreamer.

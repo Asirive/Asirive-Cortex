@@ -213,3 +213,29 @@ def test_signature_vectors_shared_with_the_app():
     assert pl.sign(s, "n", 2, "pause", {"confirmed": True}) == "C0GUpVRfHtxaaR7wwcwbuAkTC2kYH4SEvCkmahdjKH8="
     m = {"manifest": {"b": [1, {"z": 'é"', "a": None}], "a": 1.5}}
     assert pl.sign(s, "n", 3, "install", m) == "y3iE7zQCJ7qkRBNjs+XilTXBAe89c26sTR9P1dhSP6s="
+
+
+def test_talk_button_from_the_app(tmp_path):
+    """The app's big talk button is the glasses button: a signed op that writes a tap to the brain's pipe."""
+    link, _ = mk(tmp_path)
+    presses = []
+    link.on_button = lambda kind: presses.append(kind)
+    assert not link.handle(req(1, "button", {"kind": "tap"}), "n", {})["ok"]  # unpaired, unsigned: nothing
+    provision(link)
+    st = {}
+    assert link.handle(req(2, "button", {"kind": "tap"}, SECRET), "n", st)["ok"]
+    assert not link.handle(req(3, "button", {"kind": "boom"}, SECRET), "n", st)["ok"]
+    assert presses == ["tap"]
+    link.on_button = None
+    assert not link.handle(req(4, "button", {"kind": "tap"}, SECRET), "n", st)["ok"]
+
+
+def test_button_sink_writes_the_fifo(tmp_path):
+    from cortex_core.link.__main__ import button_sink
+    fifo = tmp_path / "button.fifo"
+    os.mkfifo(fifo)
+    r = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
+    button_sink(str(fifo))("tap")
+    assert os.read(r, 100).startswith(b"tap ")
+    os.close(r)
+    button_sink(str(tmp_path / "none.fifo"))("tap")  # brain not running: dropped, never raises

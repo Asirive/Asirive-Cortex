@@ -85,7 +85,8 @@ void main() {
       expect(await link.resume(), isTrue);
       expect(await link.playTest('sound'), isTrue);
       expect(await link.installUpdate({'release_id': 'r1'}), isTrue);
-      expect(box.ops.skip(1), ['pause', 'resume', 'test', 'install']);
+      expect(await link.talk(), isTrue);
+      expect(box.ops.skip(1), ['pause', 'resume', 'test', 'install', 'button']);
     });
 
     test('paired box reports internet or not', () async {

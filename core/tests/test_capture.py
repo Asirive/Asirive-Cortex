@@ -85,3 +85,14 @@ def test_rms_dbfs():
     assert capture.rms_dbfs(full) == pytest.approx(0.0, abs=0.01)
     half = np.full(320, 16384, dtype=np.int16)
     assert capture.rms_dbfs(half) == pytest.approx(-6.02, abs=0.05)
+
+
+def test_pipewire_only_when_its_socket_exists(tmp_path, monkeypatch):
+    """A boot service has no login session: pw-record installed but no PipeWire running -> ALSA direct."""
+    monkeypatch.setattr(capture.shutil, "which", lambda n: "/usr/bin/pw-record")
+    assert capture.pipewire_running({"XDG_RUNTIME_DIR": str(tmp_path)}) is False
+    assert capture.pipewire_running({}) is False
+    (tmp_path / "pipewire-0").touch()
+    assert capture.pipewire_running({"XDG_RUNTIME_DIR": str(tmp_path)}) is True
+    monkeypatch.setattr(capture.shutil, "which", lambda n: None)
+    assert capture.pipewire_running({"XDG_RUNTIME_DIR": str(tmp_path)}) is False

@@ -121,11 +121,21 @@ def find_camera(v4l=Path("/sys/class/video4linux")) -> Optional[str]:
     return None
 
 
+def pipewire_running(env=None) -> bool:
+    """pw-record is installed AND this user's PipeWire is up (its socket exists). A boot service has no login
+    session, so PipeWire is not running there even when it is installed."""
+    import os
+
+    env = os.environ if env is None else env
+    rt = env.get("XDG_RUNTIME_DIR")
+    return shutil.which("pw-record") is not None and bool(rt) and Path(rt, "pipewire-0").exists()
+
+
 def find_mic(cards=Path("/proc/asound/cards"), pipewire: Optional[bool] = None) -> Optional[str]:
     """PipeWire's default source when PipeWire runs (it holds USB mics open, so ALSA direct is busy); else the
     first USB audio card (the onboard codec's mic input is unused), as an ALSA device name."""
     if pipewire is None:
-        pipewire = shutil.which("pw-record") is not None
+        pipewire = pipewire_running()
     if pipewire:
         return "pw:"
     try:
