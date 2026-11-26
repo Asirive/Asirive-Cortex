@@ -7,7 +7,8 @@
 
   <img src="https://img.shields.io/badge/V4-ALPHA%2C%20BUILDING-EAFF00?style=for-the-badge&labelColor=000000" alt="V4 alpha, building" />
   <img src="https://img.shields.io/badge/BRAIN-ON%20DEVICE-EAFF00?style=for-the-badge&labelColor=000000" alt="Brain runs on the device" />
-  <img src="https://img.shields.io/badge/FIRST%20WORD-~191%20MS-EAFF00?style=for-the-badge&labelColor=000000" alt="First word about 191 ms after you stop talking" />
+  <img src="https://img.shields.io/badge/ENGINE-CORTEX--EMBD-EAFF00?style=for-the-badge&labelColor=000000" alt="Engine: Cortex-EmbD" />
+  <img src="https://img.shields.io/badge/FIRST%20SOUND-~0.6%20S-EAFF00?style=for-the-badge&labelColor=000000" alt="First sound about 0.6 s after you stop talking" />
   <img src="https://img.shields.io/badge/V3-ARCHIVED-555555?style=for-the-badge&labelColor=000000" alt="V3 archived" />
   <img src="https://img.shields.io/badge/LICENSE-GPLv3-EAFF00?style=for-the-badge&labelColor=000000" alt="License GPL v3" />
 
@@ -32,7 +33,7 @@
 <tr>
 <td><a href="#00-the-one-line-version">00 One line</a></td>
 <td><a href="#01-the-shape-of-v4">01 Shape</a></td>
-<td><a href="#02-one-chip-four-jobs">02 Chip</a></td>
+<td><a href="#02-cortex-embd-our-parallel-inference-engine">02 Cortex-EmbD</a></td>
 <td><a href="#03-two-clocks">03 Clocks</a></td>
 <td><a href="#04-a-question-from-mouth-to-ear">04 Question</a></td>
 <td><a href="#05-the-cane-and-the-head">05 Safety</a></td>
@@ -57,11 +58,11 @@
 
 ## 00 THE ONE-LINE VERSION
 
-**V3 sent the world to the cloud and waited. V4 thinks on the device, answers in under a fifth of a second, and calls the cloud only when it is not sure.**
+**V3 sent the world to the cloud and waited. V4 thinks on the device with our own engine, Cortex-EmbD, starts speaking about 0.6 s after you stop, and calls the cloud only when it is not sure.**
 
 | | V3 (archived) | V4 |
 |:---|:---|:---|
-| Brain | Gemini Live in the cloud, five Python layers | **LFM3-Omni on the Snapdragon**: one model that hears, sees, speaks and calls tools |
+| Brain | Gemini Live in the cloud, five Python layers | **LFM3-Omni-2B on Cortex-EmbD**, our parallel inference engine: one model that hears, sees, speaks and calls tools |
 | Offline | Degraded | **Full**: offline Singapore map, walking routes, buses, MRT |
 | Safety | Mixed into the AI stack | **Its own process on its own core**, no model, no network |
 | Vision | Frames streamed out | **Encoded on the NPU**, never leave the box unless you ask something it can't answer |
@@ -88,7 +89,7 @@ flowchart LR
   subgraph B["🧠 BOX · Dragon Q8B"]
     direction TB
     SAFE["safety<br/>cpu0, real-time"]
-    BRAIN["brain<br/>LFM3-Omni + NPU vision<br/>voice in · speech out · tools"]
+    BRAIN["brain<br/>Cortex-EmbD engine<br/>LFM3-Omni + NPU vision<br/>voice in · speech out · tools"]
     NAV["nav<br/>offline SG bundle"]
     MEM["memory<br/>SQLite, text only"]
     LINK["link<br/>mTLS · phone · GPS"]
@@ -124,11 +125,57 @@ One process per failure domain. `brain` is deliberately **one** process (voice, 
 
 ---
 
-## 02 ONE CHIP, FOUR JOBS
+## 02 CORTEX-EMBD: OUR PARALLEL INFERENCE ENGINE
 
-<img src="docs/assets/readme/core-map.svg" width="100%" alt="Core map: cpu0 safety only; cpu1-3 capture, voice codec and attention islands; cpu4-7 the language model; Hexagon NPU the vision encoder" />
+A plain pipeline does one thing at a time: listen, *then* look, *then* think, *then* speak. A blind user waiting in silence can't tell a slow device from a broken one. So we wrote our own.
 
-<sub><b>measured</b> on the box · vision encoder split into 7 NPU segments (QNN HTP, w8a16) + 6 CPU attention islands · answers match the CPU reference 12/12</sub>
+**Cortex-EmbD** is one native process (C++ on llama.cpp + Qualcomm QNN, `libcortex_engine.so`) that runs LFM3-Omni-2B and **sees, listens, thinks and speaks at the same time**. Every job lives on the silicon that suits it, and jobs pass work through queues and memory slots instead of waiting on each other.
+
+<img src="docs/assets/readme/core-map.svg" width="100%" alt="Core map: cpu0 safety only; cpu1-3 voice encoder, codec and speaker; cpu4-7 the language model; Hexagon NPU the vision encoder" />
+
+<img src="docs/assets/readme/embd-lanes.svg" width="100%" alt="Thread lanes over one question: while the user talks the view is refreshed and speech is encoded and read into the conversation; after the end of speech the LM writes text and audio frames while the codec and speaker play and the next view is encoded" />
+
+### Four memory slots: never read anything twice
+
+LFM3 is a hybrid (conv + attention) model. Its state can be **copied** but not **rewound**, so Cortex-EmbD keeps four slots and only ever copies or clears them.
+
+```mermaid
+flowchart LR
+  H["<b>H</b><br/>system prompt +<br/>finished turns"] -->|"copy + read image<br/>(background)"| V2["<b>V′</b><br/>next view,<br/>being built"]
+  V2 -->|"swap when done"| V["<b>V</b><br/>current view,<br/>ready before you ask"]
+  V -->|"copy, 0.13 ms<br/>+ read only the question"| S["<b>S</b><br/>this conversation<br/>about this view"]
+  S -.->|"turn finished"| H
+  classDef y fill:#EAFF00,stroke:#000,color:#000
+  class V y
+```
+
+That one trick took time-to-first-token from **1.23 s to 115 ms**: an ask no longer re-reads the picture.
+
+### The rules that keep it parallel
+
+| Rule | What it does |
+|:---|:---|
+| **Big-cores gate** | An answer owns cpu4-7. A vision island that arrives mid-answer doesn't wait. It moves to cpu1-2 |
+| **Preemption** | A background view read aborts mid-graph the moment you ask (~20 ms); the old view stays valid |
+| **Scene-skip** | Frames whose features match the last view (cosine ≥ 0.98) are dropped: no LM read, no power |
+| **Speak while writing** | The LM writes 6 text tokens, then 12 audio frames (80 ms each). The codec turns frame *n* into sound while the LM writes *n+1* |
+| **Never hears itself** | The mic is muted from answer start until the measured echo lag + 300 ms after the sound ends |
+| **cpu0 is off-limits** | Cortex-EmbD never schedules on the safety core |
+
+### Numbers (on the box)
+
+| | |
+|:---|---:|
+| Question with the view ready → first token | **115 ms** |
+| End of speech → first token | 108–306 ms (median ~150) |
+| End of speech → first sound | **600–641 ms** |
+| Vision encode, NPU + islands | 282 ms (CPU only: 1190 ms, **4.2×** slower) |
+| View refresh, end to end | 1.42 s |
+| LM decode | ~24 tokens/s |
+| Answers right on the 12 test views | 12/12, text and spoken |
+| Engine tests | 85/85 |
+
+<sub>Rejected after measuring: flash attention (no gain), Vulkan GPU (slower, unstable), more than 4 LM threads (slower), Q4_K_M (half the prefill speed).<br/>Known limits: speech is ~8 % slower than real time (rare 1 s pause), no voice barge-in yet (the button cuts Cortex off), a 500 ms end-of-speech wait. Full write-up: <a href="docs/architecture/CORTEX-ENGINE.md"><code>docs/architecture/CORTEX-ENGINE.md</code></a></sub>
 
 ---
 
@@ -136,12 +183,12 @@ One process per failure domain. `brain` is deliberately **one** process (voice, 
 
 Cortex runs on two clocks that never wait for each other.
 
-<img src="docs/assets/readme/timeline.svg" width="100%" alt="Obstacle path about 111 ms to the skin; question path about 191 ms to the first word; budget 1 second" />
+<img src="docs/assets/readme/timeline.svg" width="100%" alt="Obstacle path about 111 ms to the skin; question path about 150 ms to first token and 0.6 s to first sound; budget 1 second" />
 
 | Path | Budget | Result | How real |
 |:---|:---:|:---:|:---|
 | You stop talking → first answer token | 400 ms | **~150 ms** median | measured, box |
-| You stop talking → first word (after speedups) | 1 s | **191 ms** | measured, box |
+| You stop talking → first sound | 1 s | **600–641 ms** | measured, box |
 | Question with the view ready → first token | 400 ms | **115 ms** | measured, box |
 | Refresh what the camera sees | 1.4 s | 1.42 s (missed by 20 ms) | measured, box |
 | Obstacle frame → vibration | — | ~111 ms (66 + 5 + 40) | simulated sensor |
@@ -169,10 +216,10 @@ sequenceDiagram
   Note over BR: "Checking." only if it takes > 0.7 s
   T-->>BR: {858: 2 and 11 min, live}
   BR->>E: tool result
-  E->>GL: speech, streamed as it is written
+  E->>GL: speech, played while it is still being written
   GL->>U: "The 858 is in 2 minutes, then 11."
-  U-->>GL: talks over it
-  GL->>E: barge-in: speech stops
+  U-->>GL: presses the button
+  GL->>E: cut: sound stops at once
 ```
 
 A tool call is **never spoken**. The model decides silently, so a wrong guess is never half-said before the right answer arrives.
@@ -249,7 +296,7 @@ The cloud is a **second opinion, not a crutch**. It is used only when *both* are
 ```mermaid
 flowchart LR
   Q["question"] --> LM{"local model<br/>sure?"}
-  LM -- yes --> A["answers itself<br/>offline, ~0.2 s"]
+  LM -- yes --> A["answers itself<br/>offline"]
   LM -- "no: silent<br/>second_opinion call" --> NET{"gateway<br/>reachable in 3 s?"}
   NET -- no --> NS["'I'm not sure, and I can't<br/>check online right now.'"]
   NET -- yes --> CAM{"camera on and<br/>frame ≤ 2 s old?"}
@@ -310,7 +357,7 @@ flowchart LR
 
 <table>
 <tr><th>Part</th><th>State</th><th>Evidence</th></tr>
-<tr><td>Engine (NPU vision + LFM3-Omni, voice in, speech out, tool calls)</td><td>🟢 measured on the box</td><td><code>docs/measurements/2026-11-engine-core.md</code></td></tr>
+<tr><td>Cortex-EmbD engine (NPU vision + LFM3-Omni, voice in, speech out, tool calls)</td><td>🟢 measured on the box</td><td><code>docs/measurements/2026-11-engine-core.md</code></td></tr>
 <tr><td>NPU vision encoder</td><td>🟢 measured on the box</td><td><code>2026-11-npu-vision.md</code></td></tr>
 <tr><td>Offline Singapore nav bundle (walk, bus, MRT/LRT, 100k places)</td><td>🟢 measured on the dev server</td><td><code>2026-11-nav-bundle.md</code></td></tr>
 <tr><td>Brain: modes, tool dispatch, nav cues</td><td>🟡 tested, scripted engine</td><td><code>core/tests/test_brain.py</code>, trips simulated end to end</td></tr>
@@ -340,7 +387,7 @@ Asirive-Cortex/
 │   │   ├── memory/       object memory
 │   │   ├── link/         gateway mTLS, phone link, GPS
 │   │   ├── ota/ supervisor/ tui/
-│   ├── tools/cortex-engine/   libcortex_engine.so (llama.cpp + QNN)
+│   ├── tools/cortex-engine/   Cortex-EmbD, libcortex_engine.so (llama.cpp + QNN)
 │   └── AGENTS.md         rules + honest build status, read first
 ├── firmware/glasses/     ESP32-S3 firmware (ESP-IDF, TinyUSB)
 ├── infra/gateway/        Go fleet gateway, OTA signing, LTA + Gemini proxies

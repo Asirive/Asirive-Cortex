@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 440" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" role="img" aria-label="Cortex-EmbD threads over one question. While the user talks: NPU refreshes the view, the audio thread encodes speech, the LM reads it into the conversation slot. After the end of speech: first token, then the LM writes text and audio frames while the codec makes sound and the speaker plays, and the next view is encoded.">
+  <rect width="960" height="440" rx="18" fill="#000"/>
+  <text x="32" y="44" fill="#EAFF00" font-size="20" font-weight="700" letter-spacing="2">CORTEX-EMBD · EVERYTHING AT ONCE</text>
+  <text x="32" y="68" fill="#8a8a8a" font-size="13">One question, five threads and the NPU. Not to scale.</text>
+
+  <!-- phase headers -->
+  <text x="395" y="104" text-anchor="middle" fill="#fff" font-size="12" font-weight="700">USER TALKING</text>
+  <text x="559" y="104" text-anchor="middle" fill="#EAFF00" font-size="12" font-weight="700">end of speech</text>
+  <text x="790" y="104" text-anchor="middle" fill="#fff" font-size="12" font-weight="700">CORTEX ANSWERING</text>
+  <line x1="559" y1="112" x2="559" y2="372" stroke="#EAFF00" stroke-dasharray="4 4"/>
+
+  <!-- lane labels -->
+  <g font-size="12" font-weight="700" fill="#fff">
+    <text x="32" y="138">NPU + islands</text><text x="32" y="188">AUDIO  cpu1-3</text>
+    <text x="32" y="238">LM     cpu4-7</text><text x="32" y="288">CODEC  cpu3</text><text x="32" y="338">SPEAKER cpu3</text>
+  </g>
+  <g fill="#141414">
+    <rect x="230" y="118" width="698" height="30" rx="4"/><rect x="230" y="168" width="698" height="30" rx="4"/>
+    <rect x="230" y="218" width="698" height="30" rx="4"/><rect x="230" y="268" width="698" height="30" rx="4"/>
+    <rect x="230" y="318" width="698" height="30" rx="4"/>
+  </g>
+
+  <!-- blocks -->
+  <rect x="236" y="118" width="170" height="30" rx="4" fill="#EAFF00"/>
+  <text x="321" y="138" text-anchor="middle" fill="#000" font-size="11" font-weight="700">view n, at speech start</text>
+  <rect x="640" y="118" width="282" height="30" rx="4" fill="#5c6400"/>
+  <text x="781" y="138" text-anchor="middle" fill="#fff" font-size="11">view n+1 · islands on cpu1-2</text>
+
+  <rect x="236" y="168" width="316" height="30" rx="4" fill="#fff"/>
+  <text x="394" y="188" text-anchor="middle" fill="#000" font-size="11" font-weight="700">VAD + voice encoder → rows</text>
+
+  <rect x="262" y="218" width="290" height="30" rx="4" fill="#fff"/>
+  <text x="407" y="238" text-anchor="middle" fill="#000" font-size="11" font-weight="700">rows → conversation slot S</text>
+  <rect x="566" y="218" width="34" height="30" rx="4" fill="#EAFF00"/>
+  <text x="583" y="238" text-anchor="middle" fill="#000" font-size="11" font-weight="700">1st</text>
+  <rect x="606" y="218" width="316" height="30" rx="4" fill="#fff"/>
+  <text x="764" y="238" text-anchor="middle" fill="#000" font-size="11" font-weight="700">6 text tokens, 12 audio frames, …</text>
+
+  <rect x="640" y="268" width="282" height="30" rx="4" fill="#bbb"/>
+  <text x="781" y="288" text-anchor="middle" fill="#000" font-size="11" font-weight="700">frame codes → 24 kHz PCM</text>
+
+  <rect x="700" y="318" width="222" height="30" rx="4" fill="#EAFF00"/>
+  <text x="811" y="338" text-anchor="middle" fill="#000" font-size="11" font-weight="700">plays while LM writes on</text>
+
+  <!-- footer -->
+  <text x="32" y="398" fill="#ddd" font-size="12">An ask copies the ready view (0.13 ms) and reads only the question. A background view read</text>
+  <text x="32" y="416" fill="#ddd" font-size="12">gives way to an ask in ~20 ms. Nothing already read is ever read again.</text>
+</svg>

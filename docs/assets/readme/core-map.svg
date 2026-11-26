@@ -1,56 +1,54 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 420" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" role="img" aria-label="Snapdragon core map: cpu0 safety only, cpu1-3 capture and audio codec, cpu4-7 the language model, Hexagon NPU the vision encoder">
-  <rect width="960" height="420" rx="18" fill="#000"/>
-  <text x="32" y="44" fill="#EAFF00" font-size="20" font-weight="700" letter-spacing="3">ONE CHIP, FOUR JOBS, NO SHARING</text>
-  <text x="32" y="68" fill="#8a8a8a" font-size="13">Snapdragon 8cx Gen 3 on the Radxa Dragon Q8B. Every core has one owner.</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 430" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,monospace" role="img" aria-label="Cortex-EmbD core map: cpu0 reserved for safety; cpu1-3 hearing, speech codec and speaker; cpu4-7 the language model; Hexagon NPU the vision encoder">
+  <rect width="960" height="430" rx="18" fill="#000"/>
+  <text x="32" y="44" fill="#EAFF00" font-size="20" font-weight="700" letter-spacing="2">CORTEX-EMBD · ONE CHIP, NO WAITING</text>
+  <text x="32" y="68" fill="#8a8a8a" font-size="13">Snapdragon SC8280XP on the Radxa Dragon Q8B. Every core has one owner.</text>
 
   <!-- cpu0 -->
-  <rect x="32" y="96" width="140" height="200" rx="10" fill="#EAFF00"/>
-  <text x="102" y="128" text-anchor="middle" fill="#000" font-size="15" font-weight="700">cpu0</text>
-  <text x="102" y="196" text-anchor="middle" fill="#000" font-size="22" font-weight="800">SAFETY</text>
-  <text x="102" y="222" text-anchor="middle" fill="#000" font-size="11">SCHED_FIFO</text>
-  <text x="102" y="238" text-anchor="middle" fill="#000" font-size="11">memory locked</text>
-  <text x="102" y="254" text-anchor="middle" fill="#000" font-size="11">no model, no net</text>
+  <rect x="32" y="96" width="140" height="206" rx="10" fill="#EAFF00"/>
+  <text x="102" y="126" text-anchor="middle" fill="#000" font-size="13" font-weight="700">cpu0</text>
+  <text x="102" y="194" text-anchor="middle" fill="#000" font-size="20" font-weight="800">SAFETY</text>
+  <text x="102" y="226" text-anchor="middle" fill="#000" font-size="11">SCHED_FIFO</text>
+  <text x="102" y="242" text-anchor="middle" fill="#000" font-size="11">memory locked</text>
+  <text x="102" y="258" text-anchor="middle" fill="#000" font-size="11">no model, no net</text>
 
-  <!-- cpu1-3 -->
-  <g fill="#1a1a1a" stroke="#EAFF00" stroke-width="1.5">
-    <rect x="192" y="96" width="70" height="200" rx="10"/>
-    <rect x="270" y="96" width="70" height="200" rx="10"/>
-    <rect x="348" y="96" width="70" height="200" rx="10"/>
+  <!-- cpu1-3 group -->
+  <rect x="192" y="96" width="236" height="206" rx="10" fill="#141414" stroke="#EAFF00" stroke-width="1.5"/>
+  <g fill="#000" stroke="#EAFF00" stroke-width="1">
+    <rect x="206" y="108" width="64" height="28" rx="6"/><rect x="278" y="108" width="64" height="28" rx="6"/><rect x="350" y="108" width="64" height="28" rx="6"/>
   </g>
-  <g fill="#EAFF00" font-size="13" text-anchor="middle" font-weight="700">
-    <text x="227" y="128">cpu1</text><text x="305" y="128">cpu2</text><text x="383" y="128">cpu3</text>
+  <g fill="#EAFF00" font-size="12" font-weight="700" text-anchor="middle">
+    <text x="238" y="127">cpu1</text><text x="310" y="127">cpu2</text><text x="382" y="127">cpu3</text>
   </g>
-  <text x="305" y="190" text-anchor="middle" fill="#fff" font-size="16" font-weight="700">CAPTURE + VOICE</text>
-  <text x="305" y="216" text-anchor="middle" fill="#bbb" font-size="11">camera, mic (ffmpeg / PipeWire)</text>
-  <text x="305" y="232" text-anchor="middle" fill="#bbb" font-size="11">speech codec thread</text>
-  <text x="305" y="248" text-anchor="middle" fill="#bbb" font-size="11">attention islands</text>
+  <text x="310" y="184" text-anchor="middle" fill="#fff" font-size="15" font-weight="700">EARS + MOUTH</text>
+  <text x="310" y="216" text-anchor="middle" fill="#bbb" font-size="11">mic → VAD → voice encoder</text>
+  <text x="310" y="234" text-anchor="middle" fill="#bbb" font-size="11">codec + speaker on cpu3</text>
+  <text x="310" y="252" text-anchor="middle" fill="#bbb" font-size="11">vision islands mid-answer</text>
 
-  <!-- cpu4-7 -->
-  <g fill="#262626" stroke="#fff" stroke-width="1.5">
-    <rect x="438" y="96" width="70" height="200" rx="10"/>
-    <rect x="516" y="96" width="70" height="200" rx="10"/>
-    <rect x="594" y="96" width="70" height="200" rx="10"/>
-    <rect x="672" y="96" width="70" height="200" rx="10"/>
+  <!-- cpu4-7 group -->
+  <rect x="448" y="96" width="300" height="206" rx="10" fill="#1f1f1f" stroke="#fff" stroke-width="1.5"/>
+  <g fill="#000" stroke="#fff" stroke-width="1">
+    <rect x="460" y="108" width="62" height="28" rx="6"/><rect x="532" y="108" width="62" height="28" rx="6"/>
+    <rect x="604" y="108" width="62" height="28" rx="6"/><rect x="676" y="108" width="62" height="28" rx="6"/>
   </g>
-  <g fill="#fff" font-size="13" text-anchor="middle" font-weight="700">
-    <text x="473" y="128">cpu4</text><text x="551" y="128">cpu5</text><text x="629" y="128">cpu6</text><text x="707" y="128">cpu7</text>
+  <g fill="#fff" font-size="12" font-weight="700" text-anchor="middle">
+    <text x="491" y="127">cpu4</text><text x="563" y="127">cpu5</text><text x="635" y="127">cpu6</text><text x="707" y="127">cpu7</text>
   </g>
-  <text x="590" y="190" text-anchor="middle" fill="#fff" font-size="16" font-weight="700">THE LANGUAGE MODEL</text>
-  <text x="590" y="216" text-anchor="middle" fill="#bbb" font-size="11">LFM3-Omni Q4_0, Cortex-X1C cores</text>
-  <text x="590" y="232" text-anchor="middle" fill="#bbb" font-size="11">listens, thinks, speaks, calls tools</text>
-  <text x="590" y="248" text-anchor="middle" fill="#bbb" font-size="11">first token in ~115 ms</text>
+  <text x="598" y="184" text-anchor="middle" fill="#fff" font-size="15" font-weight="700">THE LANGUAGE MODEL</text>
+  <text x="598" y="216" text-anchor="middle" fill="#bbb" font-size="11">LFM3-Omni-2B Q4_0 · X1C cores</text>
+  <text x="598" y="234" text-anchor="middle" fill="#bbb" font-size="11">hears, sees, speaks, calls tools</text>
+  <text x="598" y="252" text-anchor="middle" fill="#bbb" font-size="11">first token ~115 ms</text>
 
   <!-- NPU -->
-  <rect x="762" y="96" width="166" height="200" rx="10" fill="#0d0d0d" stroke="#EAFF00" stroke-width="1.5" stroke-dasharray="6 4"/>
-  <text x="845" y="128" text-anchor="middle" fill="#EAFF00" font-size="13" font-weight="700">HEXAGON NPU</text>
-  <text x="845" y="190" text-anchor="middle" fill="#fff" font-size="16" font-weight="700">EYES</text>
-  <text x="845" y="216" text-anchor="middle" fill="#bbb" font-size="11">vision encoder,</text>
-  <text x="845" y="232" text-anchor="middle" fill="#bbb" font-size="11">7 QNN segments</text>
-  <text x="845" y="248" text-anchor="middle" fill="#bbb" font-size="11">~282 ms per view</text>
+  <rect x="768" y="96" width="160" height="206" rx="10" fill="#0d0d0d" stroke="#EAFF00" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="848" y="127" text-anchor="middle" fill="#EAFF00" font-size="12" font-weight="700">HEXAGON NPU</text>
+  <text x="848" y="184" text-anchor="middle" fill="#fff" font-size="15" font-weight="700">EYES</text>
+  <text x="848" y="216" text-anchor="middle" fill="#bbb" font-size="11">vision encoder</text>
+  <text x="848" y="234" text-anchor="middle" fill="#bbb" font-size="11">7 QNN segments</text>
+  <text x="848" y="252" text-anchor="middle" fill="#bbb" font-size="11">282 ms / view</text>
 
-  <!-- footer bar -->
-  <rect x="32" y="322" width="896" height="66" rx="10" fill="#111"/>
-  <text x="52" y="350" fill="#EAFF00" font-size="13" font-weight="700">WHY</text>
-  <text x="100" y="350" fill="#ddd" font-size="13">The AI can max out every other core and the obstacle warning still runs on time.</text>
-  <text x="100" y="372" fill="#8a8a8a" font-size="12">Measured on the box: docs/measurements/2026-11-engine-core.md, 2026-11-npu-vision.md</text>
+  <!-- footer -->
+  <rect x="32" y="326" width="896" height="74" rx="10" fill="#111"/>
+  <text x="52" y="356" fill="#EAFF00" font-size="13" font-weight="700">WHY</text>
+  <text x="100" y="356" fill="#ddd" font-size="13">The AI can load every other core and the obstacle warning still runs on time.</text>
+  <text x="100" y="380" fill="#8a8a8a" font-size="12">Measured on the box · docs/architecture/CORTEX-ENGINE.md</text>
 </svg>
