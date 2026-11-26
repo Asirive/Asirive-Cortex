@@ -1,0 +1,42 @@
+name: firmware
+
+# The glasses firmware (ESP32-S3) must keep building with ESP-IDF v5.5. The image is uploaded as an artifact; it has
+# never been flashed by CI (flashing needs the glasses on a USB port).
+on:
+  push:
+    branches: [v4]
+    paths: ["firmware/glasses/**", ".github/workflows/firmware.yml"]
+  pull_request:
+    paths: ["firmware/glasses/**", ".github/workflows/firmware.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: espressif/idf:release-v5.5
+    defaults:
+      run:
+        shell: bash
+        working-directory: firmware/glasses
+    steps:
+      - uses: actions/checkout@v4
+      - name: ST VL53L7CX driver (not committed)
+        run: ./scripts/fetch_uld.sh
+      - name: Build
+        run: |
+          . "$IDF_PATH/export.sh"
+          idf.py set-target esp32s3
+          idf.py build
+          idf.py size | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: glasses-firmware-${{ github.run_number }}
+          path: |
+            firmware/glasses/build/asirive_glasses.bin
+            firmware/glasses/build/bootloader/bootloader.bin
+            firmware/glasses/build/partition_table/partition-table.bin
+            firmware/glasses/build/flasher_args.json
+          retention-days: 30

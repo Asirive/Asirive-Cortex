@@ -6,6 +6,8 @@
 #include "app.h"
 #include "board.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #define REG_FIFO_CTRL3 0x09
 #define REG_FIFO_CTRL4 0x0A

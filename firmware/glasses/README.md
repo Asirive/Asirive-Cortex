@@ -8,15 +8,24 @@ The glasses are a USB bridge with no AI. This firmware:
 
 The protocol and USB layout are in `docs/architecture/GLASSES-USB.md`.
 
-**Status (2026-11-26).** Written, not built with ESP-IDF yet, never run on hardware.
+**Status (2026-11-26).** Builds with ESP-IDF 5.5.6 (Docker `espressif/idf:release-v5.5`, and in CI:
+`.github/workflows/firmware.yml`): 0 warnings, app image 484 kB (6% of a 7.9 MB slot). Never run on hardware.
 
 What has been tested on the server:
 
 - the portable parts (framing, haptic player, fail-safe, button debouncer, USB descriptors), compiled with gcc;
 - the box side, in `core/tests/test_glasses_link.py` and `core/tests/test_glasses_firmware.py`.
 
-The first ESP-IDF build will surface API mismatches in the hardware modules: `tof.c`, `imu.c`, `camera.c`,
-`audio.c`, `haptic.c` and `main.c`.
+The first build needed only a missing FreeRTOS include in `imu.c`. Compiling says nothing about whether the
+hardware modules (`tof.c`, `imu.c`, `camera.c`, `audio.c`, `haptic.c`) drive the real parts correctly.
+
+Build without installing ESP-IDF (Docker, from this folder):
+
+```
+./scripts/fetch_uld.sh
+docker run --rm -v "$PWD":/project -w /project espressif/idf:release-v5.5 \
+  bash -c '. $IDF_PATH/export.sh && idf.py set-target esp32s3 && idf.py build'
+```
 
 ## Parts (chosen 2026-11, nothing bought for the IMU or motors yet)
 
@@ -102,7 +111,7 @@ over USB) is **not built**.
 - **OV5640 autofocus** is not driven. esp32-camera does not upload the AF firmware, so the lens stays at its rest
   position.
 - **Firmware update** from the box over USB is not built. Only the A/B partitions and rollback are in place.
-- **Component versions are unverified.** `idf_component.yml` asks for `espressif/tinyusb ^0.21` and
-  `esp32-camera ^2.1`. esp32-camera must use the new `i2c_master` driver: ESP-IDF refuses to run the legacy and
+- **Component versions build, but are untested on hardware.** `dependencies.lock` pins IDF 5.5.6,
+  `espressif/tinyusb 0.21.0~6` and `esp32-camera 2.2.0`. esp32-camera must use the new `i2c_master` driver: ESP-IDF refuses to run the legacy and
   new I2C drivers in one image, and the ToF/IMU bus uses the new one.
 - **USB PID** 0x8A51 is a placeholder under Espressif's VID.
