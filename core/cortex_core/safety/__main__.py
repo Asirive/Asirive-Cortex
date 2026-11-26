@@ -1,5 +1,5 @@
-"""Safety service entry point. STUB I/O: no real ToF driver or haptic/audio sinks yet, so on a real
-device this reports 'safety degraded' (the honest answer) until the drivers are written."""
+"""Safety service entry point. STUB I/O: the ToF frames and motor commands go over the glasses ESP32-S3 USB
+(not built: no hardware yet), so on a real device this reports "safety degraded" (the honest answer) until it is."""
 import os
 import signal
 from pathlib import Path
@@ -13,8 +13,8 @@ class NoSensor:
 
 
 class LogOut:
-    def haptic(self, pattern, clock=None): print("HAPTIC", pattern, clock, flush=True)
-    def cue(self, cue_id, clock=None): print("CUE", cue_id, clock, flush=True)
+    def haptic(self, pattern, side="both"): print("HAPTIC", pattern, side, flush=True)
+    def cue(self, cue_id): print("CUE", cue_id, flush=True)
 
 
 def main() -> None:

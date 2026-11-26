@@ -1,15 +1,22 @@
-"""Hazard tiers and the fail-safe loop. Skeleton: tier logic is a placeholder until T0-T3 are ported
-from v3_core/safety_monitor.py with replay tests; the invariants below are the real part.
+"""The safety loop: ToF frame + IMU in, vibration out. Head-level and silent obstacles only (the cane has the rest).
+
+Invariants (core/AGENTS.md section 3):
+- inputs are the ToF frame and its IMU only; nothing here waits on the AI, network or phone
+- heartbeat every step, before anything that could stall
+- never silent when blind: no frames, sensor errors, or a covered lens -> "degraded" vibration + the baked-in
+  audio cue (the one cue that is not vibration), repeated until the sensor is back
+- warnings are vibration only: ("ahead" | "close") on ("left" | "right" | "both")
+- a bad config is the safe defaults, never off
 """
+import math
 import time
 from dataclasses import dataclass
 from typing import Callable, Optional, Protocol, Sequence
 
-# clock positions for 7 forward zones, left to right (clock-position speech only; no spatial audio DSP)
-CLOCK = (9, 10, 11, 12, 1, 2, 3)
+from cortex_core.safety import config as C
+from cortex_core.safety.perceive import Perception, Tilt
+from cortex_core.safety.warn import Warner
 
-DEFAULT_THRESHOLDS_MM = {"T0": 2500, "T1": 1500, "T2": 900, "T3": 450}  # baked-in safe defaults
-TIER_ORDER = ("T0", "T1", "T2", "T3")  # T3 = most urgent
 DEGRADED_REPEAT_S = 5.0
 MAX_BAD_READS = 3
 
@@ -17,93 +24,91 @@ MAX_BAD_READS = 3
 class SensorError(Exception): ...
 
 
+@dataclass
+class Frame:
+    t: float                              # sensor clock, s
+    dist_mm: Sequence[Optional[float]]    # 64 zones, row 0 top, column 0 user's left; None = no target
+    accel: Sequence[float] = (0.0, 0.0, 1.0)   # g, mean over the frame
+    dtheta: Sequence[float] = (0.0, 0.0, 0.0)  # rad, summed over the frame
+
+
 class Sensor(Protocol):
-    def read(self) -> Sequence[Optional[float]]:
-        """Distance in mm per forward zone (len 7); None = no return. May raise SensorError."""
+    def read(self) -> Optional[Frame]:
+        """The next frame, or None if none arrived within the read timeout. May raise SensorError."""
 
 
 class Output(Protocol):
-    def haptic(self, pattern: str, clock: Optional[int] = None) -> None: ...
-    def cue(self, cue_id: str, clock: Optional[int] = None) -> None:
-        """Play a baked-in audio cue (pre-rendered, no TTS, no model)."""
-
-
-@dataclass(frozen=True)
-class Alert:
-    tier: str
-    clock: int
-    distance_mm: float
-
-
-def load_thresholds(cfg: Optional[dict]) -> dict:
-    """Validated versioned config; anything malformed falls back to the safe defaults, never to 'off'."""
-    try:
-        t = {k: float(cfg[k]) for k in TIER_ORDER}  # type: ignore[index]
-        vals = [t[k] for k in TIER_ORDER]
-        if all(v > 0 for v in vals) and vals == sorted(vals, reverse=True) and len(set(vals)) == 4:
-            return t
-    except (TypeError, KeyError, ValueError):
-        pass
-    return dict(DEFAULT_THRESHOLDS_MM)
+    def haptic(self, pattern: str, side: str = "both") -> None: ...
+    def cue(self, cue_id: str) -> None:
+        """Baked-in audio cue (pre-rendered, no TTS, no model). Only for 'safety degraded'."""
 
 
 class SafetyService:
-    def __init__(self, sensor: Sensor, out: Output, beat: Callable[[], None], thresholds: Optional[dict] = None,
+    def __init__(self, sensor: Sensor, out: Output, beat: Callable[[], None], cfg: Optional[dict] = None,
                  clock: Callable[[], float] = time.monotonic):
         self.sensor, self.out, self.beat, self.clock = sensor, out, beat, clock
-        self.th = load_thresholds(thresholds)
+        self.cfg = C.load(cfg)
+        self.perc = Perception(self.cfg)
+        self.tilt = Tilt()
+        self.warner = Warner(self.cfg)
         self.bad_reads = 0
         self.degraded = False
+        self.reason = ""
         self._last_degraded = -1e9
-        self._last_alert: Optional[Alert] = None
-        self._last_alert_t = -1e9
+        self._last_frame = clock()
+        self._blocked_since: Optional[float] = None
+        self._prev_t: Optional[float] = None
 
-    def classify(self, frame: Sequence[Optional[float]]) -> Optional[Alert]:
-        worst: Optional[Alert] = None
-        for i, d in enumerate(frame):
-            if d is None or d != d or d < 0:  # no return, NaN or nonsense: ignore the zone, never crash
-                continue
-            for tier in reversed(TIER_ORDER):
-                if d <= self.th[tier]:
-                    a = Alert(tier, CLOCK[i % len(CLOCK)], d)
-                    if worst is None or (TIER_ORDER.index(a.tier), -a.distance_mm) > (TIER_ORDER.index(worst.tier), -worst.distance_mm):
-                        worst = a
-                    break
-        return worst
+    def _blind(self, now: float, reason: str) -> None:
+        self.degraded, self.reason = True, reason
+        if now - self._last_degraded >= DEGRADED_REPEAT_S:  # never silent: repeat until the sensor is back
+            self._last_degraded = now
+            self.out.haptic("degraded", "both")
+            self.out.cue("safety_degraded")
 
-    def step(self) -> Optional[Alert]:
-        """One loop iteration. Heartbeat first, so a stall anywhere after it still shows up as a missed beat next time."""
+    def step(self) -> list[tuple[str, str]]:
+        """One iteration. Heartbeat first, so a stall anywhere after it shows up as a missed beat."""
         self.beat()
         now = self.clock()
         try:
-            frame = self.sensor.read()
-            self.bad_reads = 0
-            self.degraded = False
+            f = self.sensor.read()
         except Exception:  # any sensor fault: count it, never propagate
             self.bad_reads += 1
             if self.bad_reads >= MAX_BAD_READS:
-                self.degraded = True
-                if now - self._last_degraded >= DEGRADED_REPEAT_S:  # never silent: repeat until the sensor returns
-                    self._last_degraded = now
-                    self.out.haptic("degraded")
-                    self.out.cue("safety_degraded")
-            return None
-        a = self.classify(frame)
-        if a is None:
-            self._last_alert = None
-            return None
-        escalated = self._last_alert is None or TIER_ORDER.index(a.tier) > TIER_ORDER.index(self._last_alert.tier)
-        if escalated or a.tier == "T3" or now - self._last_alert_t >= 1.0:
-            self._last_alert, self._last_alert_t = a, now
-            self.out.haptic(a.tier, a.clock)
-            if a.tier in ("T2", "T3") or escalated:
-                self.out.cue(f"hazard_{a.tier.lower()}", a.clock)
-        return a
+                self._blind(now, "sensor error")
+            return []
+        if f is None:
+            if now - self._last_frame > self.cfg["stale_s"]:
+                self._blind(now, "no frames")
+            return []
+        self.bad_reads = 0
+        self._last_frame = now
+        if len(f.dist_mm) != len(self.perc.dirs):
+            self.bad_reads += 1
+            return []
+        pitch, roll = self.tilt.update(f.accel, f.dtheta)
+        obs = self.perc.process(f.dist_mm, pitch, roll)
+        if obs.blocked:
+            self._blocked_since = self._blocked_since if self._blocked_since is not None else now
+            if now - self._blocked_since >= self.cfg["blocked_s"]:
+                self._blind(now, "sensor covered")
+            return []
+        self._blocked_since = None
+        self.degraded, self.reason = False, ""
+        dt = f.t - self._prev_t if self._prev_t is not None and f.t > self._prev_t else 1 / 15
+        self._prev_t = f.t
+        yaw_dps = math.degrees(f.dtheta[2]) / dt
+        fired = self.warner.update(f.t, obs, yaw_dps, f.dtheta[2])
+        for pattern, side in fired:
+            self.out.haptic(pattern, side)
+        return fired
 
-    def run(self, should_stop: Callable[[], bool], period_s: float = 0.02, sleep: Callable[[float], None] = time.sleep) -> None:
+    def run(self, should_stop: Callable[[], bool], sleep: Callable[[float], None] = time.sleep) -> None:
+        """sensor.read() paces the loop (it waits for the next frame up to its timeout)."""
         while not should_stop():
             try:
                 self.step()
+                if self.bad_reads:
+                    sleep(0.05)  # a sensor that fails at once must not spin the core
             except Exception:  # an output fault must not kill the loop; the next step retries
-                pass
-            sleep(period_s)
+                sleep(0.01)
