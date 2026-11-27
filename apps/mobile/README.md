@@ -80,9 +80,13 @@ flutter test
 
 `.github/workflows/app.yml` runs `flutter analyze` and `flutter test` (Flutter 3.50.1) on every app change, then
 builds a release APK pointed at `https://infra.asirive.com` (box link `wss://209.25.142.16:2613/ws/device`). On
-`v4` it replaces the `app-beta` pre-release, so the newest APK is always at
-https://github.com/Asirive/Asirive-Cortex/releases/download/app-beta/cortex.apk. With the secrets
-`CORTEX_KEYSTORE_B64`, `CORTEX_KEYSTORE_PASSWORD`, `CORTEX_KEY_ALIAS`, `CORTEX_KEY_PASSWORD` set, every build has
-the same signature and installs over the last; without them each build is signed with a throwaway debug key.
+`v4` it replaces `cortex-ci.apk` on the `app-beta` pre-release. That file is signed with a throwaway key; do not
+install it. Within about 5 minutes the gateway server re-signs it with the permanent Cortex key and serves it at
+
+**https://infra.asirive.com/app/cortex.apk** (build number and commit in `/app/version.json`)
+
+so every build installs over the last one. The key (`~/.config/cortex/android/` on the gateway server) is never on
+GitHub. How it works: `infra/deploy/apk_signer.py`. If that server is down, the newest signed APK can't be
+downloaded until it is back.
 
 The talk button (home screen, "TALK TO CORTEX") sends the box the same tap as the glasses button.

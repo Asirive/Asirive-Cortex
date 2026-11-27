@@ -1,12 +1,9 @@
 name: app
 
-# The phone app: analyze + tests on every change, then an Android APK. On v4 the APK is also published as the
-# "app-beta" pre-release, so a phone can download it from one fixed link:
-#   https://github.com/Asirive/Asirive-Cortex/releases/download/app-beta/cortex.apk
-# Signing: with the repository secrets CORTEX_KEYSTORE_B64 (base64 of the .jks), CORTEX_KEYSTORE_PASSWORD,
-# CORTEX_KEY_ALIAS and CORTEX_KEY_PASSWORD every build has the same signature and installs over the last one.
-# Without them the APK is signed with the runner's throwaway debug key: it installs, but each new build needs the
-# old one uninstalled first.
+# The phone app: analyze + tests on every change, then an Android APK. On v4 the APK is published as cortex-ci.apk
+# on the "app-beta" pre-release, signed with the runner's throwaway key. The gateway server picks it up, re-signs it
+# with the permanent Cortex key (which never leaves that server: infra/deploy/apk_signer.py) and serves it at
+#   https://infra.asirive.com/app/cortex.apk
 on:
   push:
     branches: [v4]
@@ -64,32 +61,19 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
-      - name: Release key (from secrets, if set)
-        env:
-          KS: ${{ secrets.CORTEX_KEYSTORE_B64 }}
-        run: |
-          if [ -n "$KS" ]; then
-            echo "$KS" | base64 -d > "$RUNNER_TEMP/cortex.jks"
-            echo "CORTEX_KEYSTORE=$RUNNER_TEMP/cortex.jks" >> "$GITHUB_ENV"
-            echo "Signed with the Cortex release key." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "No CORTEX_KEYSTORE_B64 secret: signed with a throwaway debug key (uninstall the old app before installing)." >> "$GITHUB_STEP_SUMMARY"
-          fi
       - run: flutter pub get
       - name: Build APK
-        env:
-          CORTEX_KEYSTORE_PASSWORD: ${{ secrets.CORTEX_KEYSTORE_PASSWORD }}
-          CORTEX_KEY_ALIAS: ${{ secrets.CORTEX_KEY_ALIAS }}
-          CORTEX_KEY_PASSWORD: ${{ secrets.CORTEX_KEY_PASSWORD }}
+        # signed here with a throwaway key; the gateway server re-signs it with the permanent key
+        # (infra/deploy/apk_signer.py), which never leaves that server
         run: |
           flutter build apk --release --build-number=${{ github.run_number }} \
             --dart-define=GATEWAY_URL=$GATEWAY_URL --dart-define=DEVICE_WS_URL=$DEVICE_WS_URL
-          cp build/app/outputs/flutter-apk/app-release.apk "$RUNNER_TEMP/cortex.apk"
-          sha256sum "$RUNNER_TEMP/cortex.apk" | tee -a "$GITHUB_STEP_SUMMARY"
+          cp build/app/outputs/flutter-apk/app-release.apk "$RUNNER_TEMP/cortex-ci.apk"
+          sha256sum "$RUNNER_TEMP/cortex-ci.apk" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: cortex-apk-${{ github.run_number }}
-          path: ${{ runner.temp }}/cortex.apk
+          path: ${{ runner.temp }}/cortex-ci.apk
           retention-days: 30
       - name: Publish app-beta pre-release
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/v4'
@@ -97,6 +81,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete app-beta --yes --cleanup-tag || true
-          gh release create app-beta "$RUNNER_TEMP/cortex.apk" --prerelease --target "$GITHUB_SHA" \
+          gh release create app-beta "$RUNNER_TEMP/cortex-ci.apk" --prerelease --target "$GITHUB_SHA" \
             --title "Cortex app (beta build ${{ github.run_number }})" \
-            --notes "Android APK built from ${GITHUB_SHA::7} on v4. Gateway: $GATEWAY_URL. Not for the Play Store; install on a test phone only."
+            --notes "Built from ${GITHUB_SHA::7} on v4 (gateway $GATEWAY_URL). cortex-ci.apk is signed with a throwaway key: do not install it. Install https://infra.asirive.com/app/cortex.apk, the same build signed with the Cortex key by the gateway server a few minutes later."

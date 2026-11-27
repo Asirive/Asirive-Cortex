@@ -78,3 +78,4 @@ py -3 -m compileall apps         # syntax gate after changes
 - 2026-10-30: "Extra contrast" now really brightens secondary text and outlines (`Cx.high`, the `...C` colours in theme.dart), not just bold text.
 - 2026-10-30: review fixes: pairing needs the box's key first and keeps the link secret before sending; sign-out clears push more reliably (`session.dart`).
 - 2026-11-27: launcher icon is the Asirive mark (was Flutter's default): Android legacy mipmaps + adaptive/monochrome vector (`res/drawable/ic_launcher_foreground.xml`, marks inside the 66dp safe circle), iOS AppIcon set. Generated from `docs/design/asirive-logo.svg`; the in-app `CxLogo` already drew it.
+- 2026-11-27: Install link is now https://infra.asirive.com/app/cortex.apk, signed with the permanent Cortex key by the gateway server (infra/deploy/apk_signer.py). The GitHub release holds only `cortex-ci.apk` (throwaway-signed, not for phones); the repo-secrets signing step is gone.

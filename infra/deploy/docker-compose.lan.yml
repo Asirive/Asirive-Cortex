@@ -38,6 +38,7 @@ services:
     volumes:
       - ./Caddyfile.lan:/etc/caddy/Caddyfile:ro
       - ./console-auth.caddy:/etc/caddy/console-auth.caddy:ro
+      - ${HOME}/cortex-infra/app:/srv/app:ro       # signed APK from apk_signer.py
       - caddy-data:/data
     depends_on: [gateway]
     mem_limit: 128m

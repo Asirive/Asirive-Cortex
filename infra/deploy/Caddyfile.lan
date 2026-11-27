@@ -1,11 +1,19 @@
 # Public HTTPS front for the LAN gateway, reached through the playit HTTPS tunnel (infra.asirive.com).
 #  /v1/*  app API (its own account auth)
+#  /app/*  the signed Android APK + version.json, written by apk_signer.py (public: the app is not secret)
 #  /api/* operator API (gateway bearer token; the console sends it, so it cannot sit behind basic auth)
 #  else   fleet console page, behind a username + password (console-auth.caddy, kept only on the server)
 infra.asirive.com {
 	@app path /v1/*
 	handle @app {
 		reverse_proxy gateway:8080
+	}
+	handle_path /app/* {
+		root * /srv/app
+		@apk path *.apk
+		header @apk Content-Type application/vnd.android.package-archive
+		header Cache-Control no-cache
+		file_server
 	}
 	@api path /api/*
 	handle @api {

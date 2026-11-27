@@ -1,0 +1,11 @@
+# Re-signs the newest CI build of the app with the permanent Cortex key (infra/deploy/apk_signer.py).
+# User unit on the gateway server: ~/.config/systemd/user/, with cortex-apk-signer.timer.
+[Unit]
+Description=Sign the newest Cortex app build
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 %h/cortex-infra/deploy/apk_signer.py --out %h/cortex-infra/app
+Nice=10
+MemoryMax=1G
