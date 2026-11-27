@@ -63,6 +63,15 @@ func (s *Server) DeviceTLS(serverCert tls.Certificate) *tls.Config {
 	}
 }
 
+// DeviceServer is the internet-facing device listener: DeviceTLS, HTTP/1.1 only (the box needs a websocket upgrade
+// and plain requests, nothing HTTP/2 gives; HTTP/2 is extra attack surface on an open port), and timeouts.
+func (s *Server) DeviceServer(addr string, cert tls.Certificate) *http.Server {
+	p := new(http.Protocols)
+	p.SetHTTP1(true)
+	return &http.Server{Addr: addr, Handler: s.DeviceHandler(), TLSConfig: s.DeviceTLS(cert), Protocols: p,
+		ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 5 * time.Minute}
+}
+
 // renewCert issues a fresh certificate for the same registered key. It needs a still-valid
 // certificate; a device whose certificate has expired must be re-claimed.
 func (s *Server) renewCert(w http.ResponseWriter, r *http.Request) {

@@ -204,7 +204,7 @@ func main() {
 			log.Fatalf("device TLS cert: %v", err)
 		}
 		srv.CA, srv.RequireMTLS, srv.AllowSharedDeviceToken = ca, true, false
-		ds := &http.Server{Addr: *deviceAddr, Handler: srv.DeviceHandler(), TLSConfig: srv.DeviceTLS(sc), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 5 * time.Minute}
+		ds := srv.DeviceServer(*deviceAddr, sc)
 		go func() { log.Fatal(ds.ListenAndServeTLS("", "")) }()
 		log.Printf("device mTLS listener on %s (CA in %s; back up ca.key)", *deviceAddr, *pkiDir)
 	} else {

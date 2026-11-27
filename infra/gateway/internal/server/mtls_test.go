@@ -163,3 +163,39 @@ func TestCARoundTripsAndKeepsKey(t *testing.T) {
 		t.Fatal("CA regenerated on restart; every device would be locked out")
 	}
 }
+
+// The device listener speaks HTTP/1.1 only: the box needs nothing else (a websocket upgrade and plain requests), and
+// HTTP/2 is extra attack surface on a port open to the internet (playit flagged it, 2026-11-27).
+func TestDeviceListenerRefusesHTTP2(t *testing.T) {
+	ca, err := pki.LoadOrCreate(t.TempDir(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := New(fleet.New(), "boot")
+	s.CA, s.RequireMTLS = ca, true
+	sc, roots := serverCert(t)
+	ds := s.DeviceServer("127.0.0.1:0", sc)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go ds.ServeTLS(ln, "", "")
+	defer ds.Close()
+	if ds.ReadHeaderTimeout == 0 || ds.IdleTimeout == 0 {
+		t.Fatal("device server without timeouts")
+	}
+	alpn := func(protos ...string) (string, error) {
+		c, err := tls.Dial("tcp", ln.Addr().String(), &tls.Config{RootCAs: roots, ServerName: "127.0.0.1", NextProtos: protos})
+		if err != nil {
+			return "", err
+		}
+		defer c.Close()
+		return c.ConnectionState().NegotiatedProtocol, nil
+	}
+	if p, err := alpn("h2", "http/1.1"); err != nil || p != "http/1.1" {
+		t.Fatalf("offered h2 and http/1.1: got %q %v", p, err)
+	}
+	if p, err := alpn("h2"); err == nil && p == "h2" {
+		t.Fatal("HTTP/2 negotiated")
+	}
+}
