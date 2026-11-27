@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Asirive mark (docs/design/asirive-logo.svg), scaled into the adaptive icon's safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FF000000" android:pathData="M32.40,32.40h14.40v28.80h-14.40z"/>
+    <path android:fillColor="#FF000000" android:pathData="M32.40,68.40h14.40v7.20h-14.40z"/>
+    <path android:fillColor="#FF000000" android:pathData="M61.20,46.80h14.40v28.80h-14.40z"/>
+    <path android:fillColor="#FF000000" android:pathData="M61.20,32.40h14.40v7.20h-14.40z"/>
+    <path android:fillColor="#FF000000" android:pathData="M46.80,46.80h14.40v14.40h-14.40z"/>
+</vector>

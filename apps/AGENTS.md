@@ -77,3 +77,4 @@ py -3 -m compileall apps         # syntax gate after changes
 - 2026-10-30: `mobile/lib/push.dart` added: the app registers its FCM/APNs address with the gateway after sign-in and clears it on sign-out. Off without Firebase config files; see mobile/README.md for the accounts needed.
 - 2026-10-30: "Extra contrast" now really brightens secondary text and outlines (`Cx.high`, the `...C` colours in theme.dart), not just bold text.
 - 2026-10-30: review fixes: pairing needs the box's key first and keeps the link secret before sending; sign-out clears push more reliably (`session.dart`).
+- 2026-11-27: launcher icon is the Asirive mark (was Flutter's default): Android legacy mipmaps + adaptive/monochrome vector (`res/drawable/ic_launcher_foreground.xml`, marks inside the 66dp safe circle), iOS AppIcon set. Generated from `docs/design/asirive-logo.svg`; the in-app `CxLogo` already drew it.
