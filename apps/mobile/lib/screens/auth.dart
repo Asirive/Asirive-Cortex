@@ -108,7 +108,7 @@ class _SignInScreenState extends State<SignInScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => CxScreen(children: [
+  Widget build(BuildContext context) => CxScreen(enter: true, children: [
         const CxTop(back: false, logo: true, title: 'Asirive Cortex'),
         const CxSpace(44),
         const CxTitle('Sign\nin', size: 64, height: .95),
@@ -187,7 +187,7 @@ class _CreateAccountScreenState extends State<CreateAccountScreen> {
   @override
   Widget build(BuildContext context) {
     final invited = SessionScope.of(context).pendingInvite != null;
-    return CxScreen(children: [
+    return CxScreen(enter: true, children: [
       CxTop(title: invited ? 'Joining as a companion' : 'Step 1 of 3'),
       if (invited)
         Container(
@@ -256,7 +256,7 @@ class _CheckEmailScreenState extends State<CheckEmailScreen> {
   Widget build(BuildContext context) {
     final s = SessionScope.of(context);
     final invited = s.pendingInvite != null;
-    return CxScreen(children: [
+    return CxScreen(enter: true, children: [
       CxTop(title: invited ? 'Joining as a companion' : 'Step 2 of 3'),
       const CxSpace(30),
       const CxIconTile(Icons.mail_outline),
@@ -319,7 +319,7 @@ class _ForgotScreenState extends State<ForgotScreen> {
   Widget build(BuildContext context) {
     final s = SessionScope.of(context);
     if (sent) {
-      return CxScreen(children: [
+      return CxScreen(enter: true, children: [
         CxTop(title: 'Reset password', onBack: () => setState(() => sent = false)),
         const CxSpace(30),
         const CxIconTile(Icons.mail_outline),
@@ -332,7 +332,7 @@ class _ForgotScreenState extends State<ForgotScreen> {
         CxYellowLink('Back to sign in', onTap: () => Navigator.of(context).maybePop()),
       ]);
     }
-    return CxScreen(children: [
+    return CxScreen(enter: true, children: [
       const CxTop(title: 'Reset password'),
       const CxSpace(26),
       const CxTitle('Forgot\npassword', size: 52, height: .98),
@@ -387,7 +387,7 @@ class _NewPasswordScreenState extends State<NewPasswordScreen> {
   }
 
   @override
-  Widget build(BuildContext context) => CxScreen(children: [
+  Widget build(BuildContext context) => CxScreen(enter: true, children: [
         const CxTop(back: false, title: 'Reset password'),
         const CxSpace(26),
         const CxTitle('New\npassword', size: 52, height: .98),
@@ -405,7 +405,7 @@ class EmailConfirmedScreen extends StatelessWidget {
   final bool ok;
   final String? message;
   @override
-  Widget build(BuildContext context) => CxScreen(children: [
+  Widget build(BuildContext context) => CxScreen(enter: true, children: [
         const CxTop(back: false, logo: true, title: 'Asirive Cortex'),
         const CxSpace(30),
         CxIconTile(ok ? Icons.check : Icons.error_outline),
@@ -420,7 +420,7 @@ class EmailConfirmedScreen extends StatelessWidget {
 class SignedOutScreen extends StatelessWidget {
   const SignedOutScreen({super.key});
   @override
-  Widget build(BuildContext context) => CxScreen(children: [
+  Widget build(BuildContext context) => CxScreen(enter: true, children: [
         const CxTop(back: false, logo: true, title: 'Asirive Cortex'),
         const CxSpace(60),
         const CxTitle('You were\nsigned out', size: 52, height: .98),

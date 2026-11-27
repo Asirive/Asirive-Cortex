@@ -58,6 +58,11 @@ rings, feedback tab. Dev/alpha on the self-host server, VPS at beta.
    anywhere in the UI; no media in feedback.
 3. Keep `python -m apps.cortex` as the stable device CLI contract; document
    any new subcommand here.
+4. Motion (`mobile/lib/motion.dart`): every animation ends on its own (no
+   endless loops: tests rely on `pumpAndSettle`, and it costs battery); the
+   phone's "remove animations" setting turns all of it off (`Motion.of`,
+   `Motion.off`); fades keep their semantics, and content on its way out is
+   excluded from semantics so a screen reader only hears the new screen.
 
 ## How to run and check
 
@@ -79,3 +84,4 @@ py -3 -m compileall apps         # syntax gate after changes
 - 2026-10-30: review fixes: pairing needs the box's key first and keeps the link secret before sending; sign-out clears push more reliably (`session.dart`).
 - 2026-11-27: launcher icon is the Asirive mark (was Flutter's default): Android legacy mipmaps + adaptive/monochrome vector (`res/drawable/ic_launcher_foreground.xml`, marks inside the 66dp safe circle), iOS AppIcon set. Generated from `docs/design/asirive-logo.svg`; the in-app `CxLogo` already drew it.
 - 2026-11-27: Install link is now https://infra.asirive.com/app/cortex.apk, signed with the permanent Cortex key by the gateway server (infra/deploy/apk_signer.py). The GitHub release holds only `cortex-ci.apk` (throwaway-signed, not for phones); the repo-secrets signing step is gone.
+- 2026-11-27: motion for the starting pages (`motion.dart`: `Reveal`, `PopIn`, `CxPageTransitions`): the logo builds itself on the loading screen, root screens cross-fade, the intro steps slide in the direction you go (swipe works too) with self-drawing illustrations (route, warnings, typing dots before the answer, contacts), and Welcome and the sign-in pages arrive in a short stagger. Buttons squish when pressed. Android gets the custom page transition; iOS keeps Cupertino for swipe-back. Rule 4 added. Tests: `test/motion_test.dart`.

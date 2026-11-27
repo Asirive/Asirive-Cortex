@@ -1,12 +1,16 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'motion.dart';
 import 'theme.dart';
 
 /// Screen shell: 14px side margin, dark ground, safe area. [bottom] is pinned
 /// to the foot of the screen when the content is short, and scrolls with it when not.
 class CxScreen extends StatelessWidget {
-  const CxScreen({super.key, required this.children, this.bottom = const [], this.tab = false, this.gap = 14});
+  const CxScreen({super.key, required this.children, this.bottom = const [], this.tab = false, this.gap = 14, this.enter = false});
+
+  /// Content rises in, one item after another, when the screen first shows (see Reveal).
+  final bool enter;
   final double gap;
   final List<Widget> children;
   final List<Widget> bottom;
@@ -14,8 +18,9 @@ class CxScreen extends StatelessWidget {
   /// True on a main tab, which leaves room for the floating nav bar.
   final bool tab;
 
-  List<Widget> _gap(List<Widget> l) => [for (var i = 0; i < l.length; i++) ...[l[i], if (i < l.length - 1 && l[i] is! CxSpace) SizedBox(height: gap)]];
-  List<Widget> _bot(List<Widget> l) => [for (var i = 0; i < l.length; i++) ...[l[i], if (i < l.length - 1) const SizedBox(height: 10)]];
+  Widget _in(Widget w, int k) => enter && w is! CxSpace && w is! SizedBox ? Reveal(index: k, child: w) : w;
+  List<Widget> _gap(List<Widget> l) => [for (var i = 0; i < l.length; i++) ...[_in(l[i], i), if (i < l.length - 1 && l[i] is! CxSpace) SizedBox(height: gap)]];
+  List<Widget> _bot(List<Widget> l) => [for (var i = 0; i < l.length; i++) ...[_in(l[i], children.length + i), if (i < l.length - 1) const SizedBox(height: 10)]];
 
   @override
   Widget build(BuildContext context) => Scaffold(
@@ -48,30 +53,78 @@ class CxScreen extends StatelessWidget {
       );
 }
 
-class CxLogo extends StatelessWidget {
-  const CxLogo({super.key, this.size = 44});
+/// The Asirive mark (docs/design/asirive-logo.svg). [animate]: it builds itself once: the yellow square opens, the two
+/// traces grow from their ends, the nodes drop in, and the bridge joins them.
+class CxLogo extends StatefulWidget {
+  const CxLogo({super.key, this.size = 44, this.animate = false});
   final double size;
+  final bool animate;
+  @override
+  State<CxLogo> createState() => _CxLogoState();
+}
+
+class _CxLogoState extends State<CxLogo> with SingleTickerProviderStateMixin {
+  late final AnimationController _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 1100), value: 1);
+
+  bool _started = false;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_started) return;
+    _started = true;
+    if (widget.animate && !Motion.off(context)) _c.forward(from: 0);
+  }
+
+  @override
+  void dispose() {
+    _c.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) => ExcludeSemantics(
-        child: SizedBox(width: size, height: size, child: CustomPaint(painter: _LogoPainter())),
+        child: SizedBox(width: widget.size, height: widget.size, child: CustomPaint(painter: _LogoPainter(_c))),
       );
 }
 
 class _LogoPainter extends CustomPainter {
+  _LogoPainter(this.t) : super(repaint: t);
+  final Animation<double> t;
+
+  // x, y, w, h (of 100); the edge it grows from (0 left, 1 top, 2 right, 3 bottom); its slot in the build (start, end)
+  static const _parts = [
+    [20, 20, 20, 40, 3, .18, .52], // left trace grows up
+    [60, 40, 20, 40, 1, .26, .60], // right trace grows down
+    [20, 70, 20, 10, 1, .50, .74], // left node
+    [60, 20, 20, 10, 3, .56, .80], // right node
+    [40, 40, 20, 20, 0, .70, 1.0], // bridge joins them
+  ];
+
+  double _at(double a, double b) => Curves.easeOutCubic.transform(((t.value - a) / (b - a)).clamp(0.0, 1.0));
+
   @override
   void paint(Canvas c, Size s) {
     final u = s.width / 100;
-    c.drawRect(Offset.zero & s, Paint()..color = Cx.accent);
+    final open = Curves.easeOutBack.transform((t.value / .3).clamp(0.0, 1.0));
+    final sq = Rect.fromCenter(center: s.center(Offset.zero), width: s.width * open, height: s.height * open);
+    c.drawRect(sq, Paint()..color = Cx.accent);
     final p = Paint()..color = Colors.black;
-    for (final r in const [
-      [20, 20, 20, 40], [20, 70, 20, 10], [60, 40, 20, 40], [60, 20, 20, 10], [40, 40, 20, 20]
-    ]) {
-      c.drawRect(Rect.fromLTWH(r[0] * u, r[1] * u, r[2] * u, r[3] * u), p);
+    for (final r in _parts) {
+      final k = _at(r[5].toDouble(), r[6].toDouble());
+      if (k == 0) continue;
+      final x = r[0] * u, y = r[1] * u, w = r[2] * u, h = r[3] * u;
+      c.drawRect(switch (r[4]) {
+        0 => Rect.fromLTWH(x, y, w * k, h),
+        1 => Rect.fromLTWH(x, y, w, h * k),
+        2 => Rect.fromLTWH(x + w * (1 - k), y, w * k, h),
+        _ => Rect.fromLTWH(x, y + h * (1 - k), w, h * k),
+      }, p);
     }
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter old) => false;
+  bool shouldRepaint(covariant _LogoPainter old) => old.t != t;
 }
 
 class CxBack extends StatelessWidget {
@@ -160,7 +213,7 @@ class CxText extends StatelessWidget {
       Text(text, style: (small ? Cx.small : Cx.body).copyWith(color: color));
 }
 
-class CxButton extends StatelessWidget {
+class CxButton extends StatefulWidget {
   const CxButton(this.label, {super.key, required this.onTap, this.outline = false, this.busy = false, this.danger = false, this.icon, this.small = false});
   final IconData? icon;
   final bool small;
@@ -170,7 +223,20 @@ class CxButton extends StatelessWidget {
   final bool danger;
   final bool busy;
   @override
+  State<CxButton> createState() => _CxButtonState();
+}
+
+class _CxButtonState extends State<CxButton> {
+  bool _down = false;
+
+  void _press(bool down) {
+    if (_down != down && mounted) setState(() => _down = down);
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final CxButton(:label, :onTap, :outline, :danger, :busy, :icon, :small) = widget;
+    final live = onTap != null && !busy;
     final fg = outline ? (danger ? Cx.danger : Cx.text) : Cx.ground;
     return Semantics(
       button: true,
@@ -179,7 +245,15 @@ class CxButton extends StatelessWidget {
       excludeSemantics: true,
       child: GestureDetector(
         onTap: busy ? null : onTap,
-        child: Container(
+        onTapDown: live ? (_) => _press(true) : null,
+        onTapUp: live ? (_) => _press(false) : null,
+        onTapCancel: () => _press(false),
+        child: AnimatedScale(
+          scale: _down ? 0.96 : 1,
+          duration: Motion.of(context, Motion.fast),
+          curve: _down ? Curves.easeOut : Curves.easeOutBack,
+          child: AnimatedContainer(
+          duration: Motion.of(context, Motion.fast),
           height: small ? 48 : 56,
           alignment: Alignment.center,
           decoration: BoxDecoration(
@@ -196,6 +270,7 @@ class CxButton extends StatelessWidget {
                   if (icon != null) ...[Icon(icon, size: 20, color: fg), const SizedBox(width: 8)],
                   Text(label, style: TextStyle(fontFamily: 'SpaceGrotesk', fontSize: small ? 16 : 17, fontWeight: FontWeight.w700, color: fg)),
                 ]),
+          ),
         ),
       ),
     );
@@ -408,7 +483,9 @@ class CxPager extends StatelessWidget {
         child: ExcludeSemantics(
           child: Row(children: [
             for (var i = 1; i <= of; i++)
-              Container(
+              AnimatedContainer(
+                duration: Motion.of(context, Motion.base),
+                curve: Motion.move,
                 margin: const EdgeInsets.only(right: 6),
                 height: 6,
                 width: i == step ? 28 : 8,

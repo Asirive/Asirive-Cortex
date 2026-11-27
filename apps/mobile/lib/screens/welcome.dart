@@ -1,6 +1,7 @@
 // ignore_for_file: sort_child_properties_last
 import 'package:flutter/material.dart';
 
+import '../motion.dart';
 import '../theme.dart';
 import '../ui.dart';
 import '../widgets.dart';
@@ -12,12 +13,12 @@ class WelcomeScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return CxScreen(children: [
-      const CxTop(back: false, trailing: CxLogo()),
+    return CxScreen(enter: true, children: [
+      const CxTop(back: false, trailing: CxLogo(animate: true)),
       const SizedBox(height: 4),
       SizedBox(
         height: 200,
-        child: Semantics(label: 'Cortex glasses and pocket box', image: true, child: Center(child: Image.asset('assets/images/hero.png', width: 318, height: 200, fit: BoxFit.contain, excludeFromSemantics: true))),
+        child: Semantics(label: 'Cortex glasses and pocket box', image: true, child: Center(child: PopIn(from: .9, delay: const Duration(milliseconds: 80), child: Image.asset('assets/images/hero.png', width: 318, height: 200, fit: BoxFit.contain, excludeFromSemantics: true)))),
       ),
       const SizedBox(height: 4),
       Text('ASIRIVE CORTEX', style: Cx.label),

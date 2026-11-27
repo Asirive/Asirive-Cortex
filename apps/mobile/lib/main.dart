@@ -11,6 +11,7 @@ import 'shell.dart';
 import 'screens/intro.dart';
 import 'screens/welcome.dart';
 import 'session.dart';
+import 'motion.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
@@ -128,14 +129,27 @@ class _Gate extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final s = SessionScope.of(context);
-    switch (s.phase) {
-      case Phase.loading:
-        return const Scaffold(body: Center(child: CxLogo(size: 64)));
-      case Phase.signedIn:
-        return const Shell();
-      case Phase.signedOut:
-        if (s.expired) return const SignedOutScreen();
-        return s.introSeen ? const WelcomeScreen() : const IntroScreen();
-    }
+    final Widget root = switch (s.phase) {
+      // the logo builds itself while the session loads, then the first screen fades in over it
+      Phase.loading => const Scaffold(body: Center(child: CxLogo(size: 72, animate: true))),
+      Phase.signedIn => const Shell(),
+      Phase.signedOut when s.expired => const SignedOutScreen(),
+      Phase.signedOut => s.introSeen ? const WelcomeScreen() : const IntroScreen(),
+    };
+    return AnimatedSwitcher(
+      duration: Motion.of(context, const Duration(milliseconds: 420)),
+      switchInCurve: Motion.enter,
+      switchOutCurve: Motion.exit,
+      // only the new root is read by a screen reader or takes taps while the old one fades out
+      transitionBuilder: (c, a) {
+        final incoming = c.key == ValueKey(root.runtimeType);
+        return FadeTransition(
+          opacity: a,
+          alwaysIncludeSemantics: incoming,
+          child: incoming ? c : ExcludeSemantics(child: IgnorePointer(child: c)),
+        );
+      },
+      child: KeyedSubtree(key: ValueKey(root.runtimeType), child: root),
+    );
   }
 }

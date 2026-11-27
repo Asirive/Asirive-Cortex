@@ -1,4 +1,7 @@
+import 'package:flutter/cupertino.dart' show CupertinoPageTransitionsBuilder;
 import 'package:flutter/material.dart';
+
+import 'motion.dart';
 
 /// Colours and type from docs/architecture/APP-PLAN.md section 10.
 class Cx {
@@ -41,5 +44,13 @@ class Cx {
             primary: accent, onPrimary: ground, surface: surface, error: danger),
         fontFamily: 'SpaceGrotesk',
         useMaterial3: true,
+        pageTransitionsTheme: const PageTransitionsTheme(builders: {
+          TargetPlatform.android: CxPageTransitions(),
+          TargetPlatform.iOS: CupertinoPageTransitionsBuilder(), // keeps swipe-from-the-edge to go back
+          TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
+          TargetPlatform.linux: CxPageTransitions(),
+          TargetPlatform.windows: CxPageTransitions(),
+          TargetPlatform.fuchsia: CxPageTransitions(),
+        }),
       );
 }
